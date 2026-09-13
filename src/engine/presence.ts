@@ -108,10 +108,12 @@ function parseAnchorId(raw: unknown): AnchorId | undefined {
 /**
  * Reads one endpoint, ignoring keys it does not know.
  *
- * §8.1: a scope (`tname` XOR `type`), an optional `item` within it, and `assoc`. Only a
- * genuinely malformed anchor is rejected — no scope at all, both scopes at once, or a
- * member in a shape that cannot be read — because a receiver that rejects the scope and
- * element together, as yjs publishes them, silently never renders that peer's cursor.
+ * §8.1 and the libraries agree on one rule: at least one of `item`/`tname`/`type`, at most
+ * one *scope* (`tname` XOR `type`), and `item` authoritative when present. A `tname` beside
+ * an `item` is the ordinary yjs shape; an `item` alone is what `yrs` publishes for a
+ * position inside a root type, so neither is malformed. What is malformed is an anchor
+ * with no name at all, both scopes at once, or a member in a shape that cannot be read —
+ * a receiver that rejects a library's own shape renders no cursor for every peer on it.
  */
 export function parseAnchor(raw: unknown): Anchor | undefined {
   if (typeof raw !== 'object' || raw === null) {
@@ -136,9 +138,14 @@ export function parseAnchor(raw: unknown): Anchor | undefined {
     }
     anchor.tname = record.tname;
   }
-  return (anchor.tname !== undefined) === (anchor.type !== undefined)
-    ? undefined
-    : anchor;
+  const named =
+    anchor.item !== undefined ||
+    anchor.tname !== undefined ||
+    anchor.type !== undefined;
+  if (!named || (anchor.tname !== undefined && anchor.type !== undefined)) {
+    return undefined;
+  }
+  return anchor;
 }
 
 /** A remote participant's awareness, attributed to a session peer where possible. */

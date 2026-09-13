@@ -116,18 +116,42 @@ test('assoc normalises to after (>= 0) or before (< 0), and defaults to after', 
   assert.equal(parse(undefined), 0, 'an omitted assoc defaults to after');
 });
 
+test('an element without a scope is a position, not a malformed anchor', () => {
+  // Exactly what a `yrs` client publishes for a caret inside a root type (§8.1): the
+  // element alone. Reading a scope as mandatory would render no cursor for every peer on
+  // the reference client, which is a silent interop failure with nothing on the wire.
+  const item = { client: 9, clock: 1 };
+  const parsed = parseAwarenessState({
+    path: PATH,
+    selection: { anchor: { item, assoc: 0 }, head: { item, assoc: 0 } },
+  })?.selection;
+  assert.deepEqual(parsed, {
+    anchor: { item, assoc: 0 },
+    head: { item, assoc: 0 },
+  });
+
+  // The scope is optional; `item` is what decides the position when both are there.
+  assert.deepEqual(
+    parseAwarenessState({
+      path: PATH,
+      selection: { anchor: { item, tname: PATH, assoc: 0 }, head: { item, assoc: 0 } },
+    })?.selection?.anchor,
+    { item, tname: PATH, assoc: 0 },
+  );
+});
+
 test('a malformed anchor yields no selection, rather than a guessed position', () => {
   const { item } = published(4);
   const good = published(4);
+  // No name at all, both scopes at once, or a member that cannot be read: malformed.
   const rejected: unknown[] = [
     null,
     'not an object',
     42,
     {},
     { assoc: 0 },
-    // An element with no scope to check it against, and both scopes at once.
-    { item, assoc: 0 },
     { item, tname: PATH, type: { client: 1, clock: 0 }, assoc: 0 },
+    { tname: PATH, type: { client: 1, clock: 0 }, assoc: 0 },
     { tname: PATH, item: { client: 1 }, assoc: 0 },
     { tname: PATH, item: { client: 'one', clock: 0 }, assoc: 0 },
     { tname: 12, assoc: 0 },
