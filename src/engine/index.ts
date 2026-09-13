@@ -13,7 +13,10 @@ export type {
 } from './engine.ts';
 export type { EngineEvent, EngineEventListener } from './events.ts';
 export type {
+  Anchor,
+  AnchorId,
   AwarenessState,
+  OffsetSelection,
   Presence,
   Selection,
 } from './presence.ts';

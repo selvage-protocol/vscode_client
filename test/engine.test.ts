@@ -18,6 +18,7 @@ import {
   waitFor,
   waitForPeer,
   waitForPresence,
+  waitForSelection,
 } from './helpers/wait.ts';
 
 const PATH = 'src/main.rs';
@@ -482,39 +483,31 @@ test('presence is attributed to a peer, and dropped when that peer leaves', asyn
 
   const ada = await waitForPeer(guest, 'Ada');
   const bob = await waitForPeer(host, 'Bob');
+  // An anchor names an element, so both replicas need the text before either takes one.
+  host.insert(PATH, 0, 'fn main() {}\n');
+  await converge(host, guest, PATH);
   host.setSelection(PATH, { anchor: 0, head: 2 });
-  guest.setSelection(PATH, caret(11));
+  guest.setSelection(PATH, { anchor: 11, head: 11 });
 
   // A state arrives as a sequence: the empty one published at seating, then the cursor.
-  const bobOnHost = await waitFor("Bob's cursor to reach the host", () =>
-    host
-      .presence()
-      .find(
-        (presence) =>
-          presence.peer?.display_name === 'Bob' &&
-          presence.state?.selection?.anchor === 11,
-      ) ?? false,
+  const bobOnHost = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 11,
   );
-  assert.equal(bobOnHost.clientId, bob.awareness_client_id);
-  assert.deepEqual(bobOnHost.state, {
-    path: PATH,
-    selection: { anchor: 11, head: 11 },
-  });
+  assert.equal(bobOnHost.presence.clientId, bob.awareness_client_id);
+  assert.equal(bobOnHost.presence.state?.path, PATH);
+  assert.deepEqual(bobOnHost.selection, { anchor: 11, head: 11 });
 
-  const adaOnGuest = await waitFor("Ada's cursor to reach the guest", () =>
-    guest
-      .presence()
-      .find(
-        (presence) =>
-          presence.peer?.display_name === 'Ada' &&
-          presence.state?.selection?.anchor === 0,
-      ) ?? false,
+  const adaOnGuest = await waitForSelection(
+    guest,
+    'Ada',
+    PATH,
+    (selection) => selection.anchor === 0,
   );
-  assert.equal(adaOnGuest.clientId, ada.awareness_client_id);
-  assert.deepEqual(adaOnGuest.state, {
-    path: PATH,
-    selection: { anchor: 0, head: 2 },
-  });
+  assert.equal(adaOnGuest.presence.clientId, ada.awareness_client_id);
+  assert.deepEqual(adaOnGuest.selection, { anchor: 0, head: 2 });
 
   const events = record(host);
   await guest.disconnect();
@@ -539,17 +532,16 @@ test('setAwareness(null) clears presence rather than publishing an empty state',
   const { host, guest } = session;
   await waitForPeer(host, 'Bob');
 
-  guest.setAwareness({ path: PATH, selection: caret(0) });
-  const shown = await waitFor("Bob's presence to carry his state", () =>
-    host
-      .presence()
-      .find(
-        (presence) =>
-          presence.peer?.display_name === 'Bob' &&
-          presence.state?.selection !== undefined,
-      ) ?? false,
-  );
-  assert.deepEqual(shown.state, { path: PATH, selection: { anchor: 0, head: 0 } });
+  // Nobody has written to this document, so the only encoding for the position is the
+  // `tname` scope — §8.1 requires it rather than treating it as a degenerate case.
+  guest.setAwareness({ path: PATH, selection: caret(guest.anchorAt(PATH, 0)) });
+  const shown = await waitForSelection(host, 'Bob', PATH);
+  assert.equal(shown.presence.state?.path, PATH);
+  assert.deepEqual(shown.selection, { anchor: 0, head: 0 });
+  assert.deepEqual(shown.presence.state?.selection, {
+    anchor: { tname: PATH, assoc: 0 },
+    head: { tname: PATH, assoc: 0 },
+  });
 
   // `null` means the cursor is gone (spec §8.2), not that it is at nowhere in particular.
   guest.setAwareness(null);
@@ -572,7 +564,7 @@ test('a remote state that stops renewing is forgotten on the server-advertised c
     await session.server.stop();
   });
   const { host, guest } = session;
-  host.setAwareness({ path: PATH, selection: caret(0) });
+  host.setAwareness({ path: PATH, selection: caret(host.anchorAt(PATH, 0)) });
 
   const bob = guest.session().peer.awareness_client_id;
   assert.equal(typeof bob, 'number');
@@ -590,7 +582,7 @@ test('a remote state that stops renewing is forgotten on the server-advertised c
   await waitForPresence(reader, 'Ada');
 
   // The guest's clock is long enough that it does not renew inside the reader's window.
-  guest.setAwareness({ path: PATH, selection: caret(0) });
+  guest.setAwareness({ path: PATH, selection: caret(guest.anchorAt(PATH, 0)) });
   await waitForPresence(reader, 'Bob');
   await waitFor(
     "the reader to forget a state that stopped renewing",

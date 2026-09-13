@@ -18,7 +18,6 @@ import {
   encodeUpdate,
 } from '../../src/engine/sync.ts';
 import { parseAwarenessState } from '../../src/engine/presence.ts';
-import type { Selection } from '../../src/engine/presence.ts';
 
 /** A peer: a document plus the awareness state it publishes. */
 interface Replica {
@@ -52,7 +51,7 @@ const SELECTED = 'le';
 
 test('spike 1: absolute offsets drift under a concurrent edit; relative positions do not', () => {
   const lineStart = SEED.indexOf('let');
-  const selection: Selection = {
+  const selection = {
     anchor: lineStart,
     head: lineStart + SELECTED.length,
   };
@@ -63,7 +62,8 @@ test('spike 1: absolute offsets drift under a concurrent edit; relative position
   sync(ada, bob);
   assert.equal(bob.text.toString(), SEED, 'the seed arrives over the wire');
 
-  // Ada publishes her caret in the shape the spec carries today (§8.1).
+  // Ada publishes her caret in the shape §8.1 used to carry: raw offsets. The parser now
+  // refuses it, and the rest of this spike is the reason it does.
   ada.awareness.setLocalState({ path: 'src/main.rs', selection });
   bob.awareness.setLocalState({ path: 'src/main.rs' });
   applyFrame(
@@ -73,7 +73,12 @@ test('spike 1: absolute offsets drift under a concurrent edit; relative position
     'spike:awareness',
   );
   const received = bob.awareness.getStates().get(ada.doc.clientID);
-  assert.deepEqual(parseAwarenessState(received)?.selection, selection);
+  assert.equal(parseAwarenessState(received)?.path, 'src/main.rs');
+  assert.equal(
+    parseAwarenessState(received)?.selection,
+    undefined,
+    'an offset is not an anchor, so the state carries no selection (§8.1)',
+  );
 
   // The candidate replacement for those offsets: the same selection as a CRDT-relative
   // position, computed while it is still the text the caret was made on.

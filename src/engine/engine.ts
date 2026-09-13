@@ -36,8 +36,14 @@ import type {
 import { EngineClosedError, ProtocolError } from './errors.ts';
 import type { EngineEvent, EngineEventListener } from './events.ts';
 import { fetchMeta, metaAccepts } from './meta.ts';
-import { buildPresence } from './presence.ts';
-import type { AwarenessState, Presence, Selection } from './presence.ts';
+import { buildPresence, toAnchor, toRelativePosition } from './presence.ts';
+import type {
+  Anchor,
+  AwarenessState,
+  OffsetSelection,
+  Presence,
+  Selection,
+} from './presence.ts';
 import {
   applyFrame,
   encodeAwareness,
@@ -523,8 +529,55 @@ export class SelvageEngine {
     this.awareness.setLocalState(state);
   }
 
-  setSelection(path: string, selection: Selection): void {
-    this.setAwareness({ path, selection });
+  /**
+   * Publishes a selection given as editor offsets (UTF-16 code units), converting each
+   * endpoint to the anchor the wire carries (§8.1). Offsets stop at this seam.
+   */
+  setSelection(path: string, selection: OffsetSelection): void {
+    this.setAwareness({
+      path,
+      selection: {
+        anchor: this.anchorAt(path, selection.anchor),
+        head: this.anchorAt(path, selection.head),
+      },
+    });
+  }
+
+  /** The anchor for an offset into `path`, with `assoc` as §8.1 defines it. */
+  anchorAt(path: string, index: number, assoc = 0): Anchor {
+    return toAnchor(
+      Y.createRelativePositionFromTypeIndex(this.doc.getText(path), index, assoc),
+    );
+  }
+
+  /**
+   * Resolves a peer's selection to offsets in this replica, or `undefined` when either
+   * endpoint does not resolve — a document that has not arrived yet resolves later, which
+   * is why a caller resolves on demand rather than the parser resolving once (§8.1).
+   */
+  resolveSelection(path: string, selection: Selection): OffsetSelection | undefined {
+    const text = this.doc.getText(path);
+    const anchor = this.resolveAnchor(path, text, selection.anchor);
+    const head = this.resolveAnchor(path, text, selection.head);
+    if (anchor === undefined || head === undefined) {
+      return undefined;
+    }
+    return { anchor, head };
+  }
+
+  /** One endpoint, against the `Y.Text` named by `path` and no other type (§8.1). */
+  private resolveAnchor(path: string, text: Y.Text, anchor: Anchor): number | undefined {
+    if (anchor.tname !== undefined && anchor.tname !== path) {
+      return undefined;
+    }
+    const absolute = Y.createAbsolutePositionFromRelativePosition(
+      toRelativePosition(anchor),
+      this.doc,
+    );
+    if (absolute === null || absolute.type !== text) {
+      return undefined;
+    }
+    return absolute.index;
   }
 
   /** Every presence record this engine holds, including its own. */

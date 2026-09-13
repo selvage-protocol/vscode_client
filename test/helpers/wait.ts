@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import type { SelvageEngine } from '../../src/engine/engine.ts';
 import type { EngineEvent } from '../../src/engine/events.ts';
-import type { Presence } from '../../src/engine/presence.ts';
+import type { OffsetSelection, Presence } from '../../src/engine/presence.ts';
 import type { PeerInfo } from '../../src/engine/envelope.ts';
 
 /** How long a test is willing to wait for a condition that should hold immediately. */
@@ -112,6 +112,39 @@ export async function waitForPresence(
       .find((candidate) => candidate.peer?.display_name === displayName);
     return presence ?? false;
   });
+}
+
+/**
+ * Waits until a peer's published selection resolves, in this engine's replica, to offsets
+ * `matches` accepts. Resolution is deferred (§8.1): a state can arrive before the document
+ * it anchors into, and resolve on a later poll.
+ */
+export async function waitForSelection(
+  engine: SelvageEngine,
+  displayName: string,
+  path: string,
+  matches: (selection: OffsetSelection) => boolean = () => true,
+): Promise<{ presence: Presence; selection: OffsetSelection }> {
+  return waitFor(
+    `a selection from ${displayName} in ${path}`,
+    () => {
+      for (const presence of engine.presence()) {
+        if (presence.peer?.display_name !== displayName) {
+          continue;
+        }
+        const published = presence.state?.selection;
+        if (published === undefined) {
+          continue;
+        }
+        const selection = engine.resolveSelection(path, published);
+        if (selection !== undefined && matches(selection)) {
+          return { presence, selection };
+        }
+      }
+      return false;
+    },
+    { describe: () => engine.presence() },
+  );
 }
 
 /** Records an engine's events, with waits that report what was actually seen. */

@@ -10,7 +10,13 @@ import assert from 'node:assert/strict';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { fetchMeta } from '../src/engine/meta.ts';
-import { catchUp, waitForPeer, waitFor, converge } from './helpers/wait.ts';
+import {
+  catchUp,
+  converge,
+  waitFor,
+  waitForPeer,
+  waitForSelection,
+} from './helpers/wait.ts';
 import { RealServer } from './helpers/selvaged.ts';
 
 const PATH = 'src/main.rs';
@@ -90,28 +96,29 @@ test('selvaged: two engines converge on concurrent edits and see each other', as
   host.setSelection(PATH, { anchor: 0, head: 2 });
   guest.setSelection(PATH, { anchor: 11, head: 13 });
 
-  const bobOnHost = await waitFor("Bob's cursor to reach the host", () =>
-    host
-      .presence()
-      .find(
-        (presence) =>
-          presence.peer?.display_name === 'Bob' &&
-          presence.state?.selection?.anchor === 11,
-      ) ?? false,
+  // The wire carries anchors and each receiver resolves them against its own replica
+  // (§8.1), so this also says the real server relays a state it does not interpret.
+  const bobOnHost = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 11 && selection.head === 13,
   );
-  assert.equal(bobOnHost.clientId, bob.awareness_client_id);
-  assert.equal(bobOnHost.state?.path, PATH);
+  assert.equal(bobOnHost.presence.clientId, bob.awareness_client_id);
+  assert.equal(bobOnHost.presence.state?.path, PATH);
+  assert.equal(
+    typeof bobOnHost.presence.state?.selection?.anchor,
+    'object',
+    'no index reaches the wire',
+  );
 
-  const adaOnGuest = await waitFor("Ada's cursor to reach the guest", () =>
-    guest
-      .presence()
-      .find(
-        (presence) =>
-          presence.peer?.display_name === 'Ada' &&
-          presence.state?.selection?.anchor === 0,
-      ) ?? false,
+  const adaOnGuest = await waitForSelection(
+    guest,
+    'Ada',
+    PATH,
+    (selection) => selection.anchor === 0 && selection.head === 2,
   );
-  assert.equal(adaOnGuest.clientId, ada.awareness_client_id);
+  assert.equal(adaOnGuest.presence.clientId, ada.awareness_client_id);
 
   // --- concurrent edits ----------------------------------------------------
   // Held outbound frames on both sides, so neither edit can be in the other's history.
