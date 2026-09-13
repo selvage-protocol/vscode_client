@@ -972,6 +972,86 @@ test('an endpoint that does not resolve is no selection, and the state is kept',
   assert.deepEqual(tolerated.selection, { anchor: 4, head: 4 });
 });
 
+test('an element is a position only in the text its state names', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const other = 'src/other.rs';
+  await host.open(PATH);
+  await guest.open(PATH);
+  await host.open(other);
+  host.insert(PATH, 0, 'abc');
+  host.insert(other, 0, 'xy');
+  await converge(host, guest, other);
+
+  // The element exists and resolves — in the other text. `item` is the element, `path` is
+  // where the state puts it, and the branch check is the only thing that catches the two
+  // disagreeing: a `yrs` anchor carries no `tname` for the scope test to reject.
+  const elsewhere = host.anchorAt(other, 0);
+  assert.ok(elsewhere.item !== undefined);
+  const itemOnly: Anchor = { item: elsewhere.item, assoc: 0 };
+  guest.setAwareness({ path: PATH, selection: caret(itemOnly) });
+  const held = await waitFor(
+    "Bob's element-only anchor for the other document",
+    () => {
+      const presence = host
+        .presence()
+        .find(
+          (candidate) =>
+            candidate.peer?.display_name === 'Bob' &&
+            candidate.state?.selection?.anchor.item?.clock === elsewhere.item?.clock,
+        );
+      return presence ?? false;
+    },
+    { describe: () => host.presence() },
+  );
+  assert.ok(held.state?.selection !== undefined);
+  assert.equal(
+    host.resolveSelection(PATH, held.state.selection),
+    undefined,
+    'an element in another text is not a position in this one',
+  );
+});
+
+test('an element that is gone resolves to the boundary, not to nothing', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'abcdef');
+  await converge(host, guest, PATH);
+
+  // A caret on `d`, published as an anchor naming it.
+  guest.setSelection(PATH, { anchor: 3, head: 3 });
+  const published = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 3,
+  );
+  const anchors = published.presence.state?.selection;
+  assert.ok(anchors !== undefined);
+
+  // The element it names is deleted. §8.1 calls the surviving boundary a success, so the
+  // caret does not blink out because someone removed the character it was sitting on.
+  host.delete(PATH, 3, 2);
+  assert.equal(host.text(PATH), 'abcf');
+  assert.deepEqual(
+    host.resolveSelection(PATH, anchors),
+    { anchor: 3, head: 3 },
+    'the deleted element resolves where it was',
+  );
+});
+
 test('a yjs-native anchor, scope and element together, resolves as published', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
