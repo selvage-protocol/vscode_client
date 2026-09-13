@@ -342,17 +342,21 @@ export class SelvageEngine {
       this.room,
       this.token,
     );
+    // One deadline covers the upgrade and the handshake: a transport that never fires
+    // open, error or close must not hold the caller until the OS gives up, so aborting
+    // here closes the socket that never came up.
+    const attempt = new AbortController();
     const waiting = new Promise<SessionInfo>((resolve, reject) => {
       this.seatWaiter = {
         resolve,
         reject,
         timer: setTimeout(() => {
-          this.rejectSeat(
-            new ProtocolError(
-              errCode.helloRequired,
-              'the server did not answer session.hello in time',
-            ),
+          const error = new ProtocolError(
+            errCode.helloRequired,
+            'the server did not answer session.hello in time',
           );
+          this.rejectSeat(error);
+          attempt.abort(error);
         }, this.options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS),
       };
     });
@@ -384,6 +388,7 @@ export class SelvageEngine {
           },
         },
         this.factory,
+        attempt.signal,
       );
       const hello: ClientMessage = {
         v: WIRE_VERSION,
@@ -409,6 +414,7 @@ export class SelvageEngine {
       // This socket belongs to a connection attempt that gave up: nothing it says counts
       // any more, and it must not be left open while the next attempt is made.
       this.generation += 1;
+      attempt.abort(error);
       this.socket?.close();
       this.socket = undefined;
       throw error;

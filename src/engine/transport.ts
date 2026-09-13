@@ -64,12 +64,15 @@ function reasonText(reason: unknown): string {
 /**
  * Opens a socket and reports frames to `handlers`. Rejects when the socket closes or
  * errors before it opened: the caller learns that the transport never came up, rather
- * than being handed a socket that will never speak.
+ * than being handed a socket that will never speak. An `AbortSignal` gives the caller a
+ * deadline for the upgrade: aborting rejects with the signal's reason and closes the
+ * socket, which is what stops a connect that never fires open, error or close.
  */
 export function openSocket(
   url: string,
   handlers: TransportHandlers,
   factory: WebSocketFactory,
+  signal?: AbortSignal,
 ): Promise<OpenSocket> {
   return new Promise((resolve, reject) => {
     let socket: WebSocketLike;
@@ -84,22 +87,47 @@ export function openSocket(
     // is what makes the handler synchronous.
     socket.binaryType = 'arraybuffer';
 
-    let opened = false;
+    let settled = false;
+    const settle = (outcome: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      outcome();
+    };
+
+    const onAbort = (): void => {
+      settle(() => {
+        reject(
+          signal?.reason instanceof Error
+            ? signal.reason
+            : new Error('the connection attempt was abandoned'),
+        );
+      });
+      try {
+        socket.close();
+      } catch {
+        // Already gone.
+      }
+    };
+
     socket.onopen = () => {
-      opened = true;
-      resolve({
-        get isOpen(): boolean {
-          return socket.readyState === SOCKET_OPEN;
-        },
-        sendText(text: string): void {
-          socket.send(text);
-        },
-        sendBinary(bytes: Uint8Array): void {
-          socket.send(bytes);
-        },
-        close(code?: number, reason?: string): void {
-          socket.close(code, reason);
-        },
+      settle(() => {
+        resolve({
+          get isOpen(): boolean {
+            return socket.readyState === SOCKET_OPEN;
+          },
+          sendText(text: string): void {
+            socket.send(text);
+          },
+          sendBinary(bytes: Uint8Array): void {
+            socket.send(bytes);
+          },
+          close(code?: number, reason?: string): void {
+            socket.close(code, reason);
+          },
+        });
       });
     };
     socket.onmessage = (message) => {
@@ -117,17 +145,29 @@ export function openSocket(
     socket.onclose = (event) => {
       const code = typeof event.code === 'number' ? event.code : 1006;
       const reason = reasonText(event.reason);
-      if (!opened) {
-        reject(new Error(`the socket closed before it opened: ${code} ${reason}`));
+      if (!settled) {
+        settle(() => {
+          reject(new Error(`the socket closed before it opened: ${code} ${reason}`));
+        });
       }
       handlers.onClose(code, reason);
     };
     socket.onerror = () => {
       const error = new Error('the WebSocket reported an error');
-      if (!opened) {
-        reject(error);
+      if (!settled) {
+        settle(() => {
+          reject(error);
+        });
       }
       handlers.onError(error);
     };
+
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }

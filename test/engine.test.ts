@@ -124,6 +124,32 @@ test('a handshake refused with close 4000 keeps the code the server named', asyn
   );
 });
 
+test('a connection that never comes up is abandoned by its deadline', async () => {
+  // A transport that upgrades in the OS sense but never fires open, error or close — a
+  // blackholed connect, or a stalled proxy. The handshake deadline covers the upgrade
+  // too, or the caller waits for the operating system to give up instead.
+  const blackhole = new ControlledSocket();
+  let outcome: string | undefined;
+  void SelvageEngine.host('ws://controlled.test', 'Ada', {
+    meta: 'skip',
+    reconnect: false,
+    handshakeTimeoutMs: 50,
+    webSocketFactory: () => blackhole,
+  }).then(
+    () => {
+      outcome = 'seated';
+    },
+    (error: unknown) => {
+      outcome = isProtocolError(error)
+        ? `${error.name}:${error.code}`
+        : String(error);
+    },
+  );
+  await waitFor('the attempt to give up', () => outcome, { timeoutMs: 3000 });
+  assert.equal(outcome, 'ProtocolError:hello_required');
+  assert.ok(blackhole.closes > 0, 'the abandoned socket was closed');
+});
+
 test('a close with no recorded reason is read from its close code', async () => {
   const protocolError = new ControlledSocket();
   const refused = SelvageEngine.host('ws://controlled.test', 'Ada', {
