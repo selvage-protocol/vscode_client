@@ -711,3 +711,203 @@ test('closing a path this connection never held releases nothing, and a bad path
   assert.ok(error instanceof ProtocolError);
   assert.equal(error.code, 'bad_params');
 });
+
+const DRIFT_SEED = 'const answer = 42;\nlet total = 0;\n';
+
+test('an insert before a peer\'s caret moves its offset and leaves its anchor alone', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, DRIFT_SEED);
+  await converge(host, guest, PATH);
+
+  const at = DRIFT_SEED.indexOf('let');
+  guest.setSelection(PATH, { anchor: at, head: at + 2 });
+  const before = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === at,
+  );
+  assert.equal(
+    host.text(PATH).slice(before.selection.anchor, before.selection.head),
+    'le',
+  );
+
+  // The paste §8.1 exists to survive: 157 characters above the caret.
+  const paste = `${'// '.repeat(50)}pasted\n`;
+  host.insert(PATH, 0, paste);
+  const after = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === at + paste.length,
+  );
+  assert.deepEqual(
+    after.presence.state?.selection,
+    before.presence.state?.selection,
+    'the anchor on the wire never moved; only the offset it resolves to did',
+  );
+  assert.equal(
+    host.text(PATH).slice(after.selection.anchor, after.selection.head),
+    'le',
+    'the caret still holds the characters it was put on',
+  );
+});
+
+test('a caret at the end of a document travels as tname and follows an append', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'fn main() {}\n');
+  await converge(host, guest, PATH);
+
+  // The end of a text has no element to name, so tname is the only encoding for it.
+  const end = guest.text(PATH).length;
+  guest.setSelection(PATH, { anchor: end, head: end });
+  const seen = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === end,
+  );
+  assert.deepEqual(seen.presence.state?.selection?.anchor, { tname: PATH, assoc: 0 });
+
+  // tname with assoc 0 is the end of the text, so it follows an append forever (§8.1).
+  host.insert(PATH, host.text(PATH).length, 'trailing\n');
+  const appended = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === host.text(PATH).length,
+  );
+  assert.equal(appended.selection.head, host.text(PATH).length);
+});
+
+test('offsets either side of a non-BMP character are UTF-16 code units', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  // The emoji is a surrogate pair: it holds indices 0 and 1, so "x" is at index 2.
+  host.insert(PATH, 0, '😀x = 1;\n');
+  await converge(host, guest, PATH);
+
+  guest.setSelection(PATH, { anchor: 2, head: 3 });
+  const seen = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 2,
+  );
+  assert.deepEqual(seen.selection, { anchor: 2, head: 3 });
+  assert.equal(host.text(PATH).slice(2, 3), 'x', 'a code-point unit would say index 1');
+
+  // A caret inside the surrogate pair is a state a peer tolerates rather than rejects.
+  guest.setSelection(PATH, { anchor: 1, head: 1 });
+  const half = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 1,
+  );
+  assert.equal(half.selection.head, 1);
+});
+
+test('an endpoint that does not resolve is no selection, and the state is kept', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'fn main() {}\n');
+  await converge(host, guest, PATH);
+
+  /** Bob's state once the anchor it carries is the one this phase published. */
+  const held = async (label: string, matches: (anchor: unknown) => boolean) =>
+    waitFor(
+      label,
+      () =>
+        host
+          .presence()
+          .find(
+            (presence) =>
+              presence.peer?.display_name === 'Bob' &&
+              presence.state?.selection !== undefined &&
+              matches(presence.state.selection.anchor),
+          ) ?? false,
+      { describe: () => host.presence() },
+    );
+
+  // An element no replica has ever seen: unresolvable, and not an exception.
+  guest.setAwareness({
+    path: PATH,
+    selection: caret({ item: { client: 987_654_321, clock: 42 }, assoc: 0 }),
+  });
+  const unknown = await held(
+    "the host to hold Bob's anchor into an unknown client",
+    (anchor) => (anchor as { item?: { client: number } }).item?.client === 987_654_321,
+  );
+  assert.ok(unknown.state?.selection !== undefined);
+  assert.equal(
+    host.resolveSelection(PATH, unknown.state.selection),
+    undefined,
+    'no selection, no clamp, and no throw',
+  );
+  assert.equal(
+    unknown.state.path,
+    PATH,
+    'the state is retained for a later attempt: resolution is deferred (§8.1)',
+  );
+
+  // A tname naming another document is a scope mismatch, however well-formed it is.
+  guest.setAwareness({
+    path: PATH,
+    selection: caret({ tname: 'docs/notes.md', assoc: 0 }),
+  });
+  const mismatched = await held(
+    "the host to hold Bob's mismatched tname",
+    (anchor) => (anchor as { tname?: string }).tname === 'docs/notes.md',
+  );
+  assert.ok(mismatched.state?.selection !== undefined);
+  assert.equal(
+    host.resolveSelection(PATH, mismatched.state.selection),
+    undefined,
+    'tname must equal the path it is resolved against',
+  );
+
+  // And the contrast: unknown keys on a sound anchor still resolve (§8.1).
+  const anchor = guest.anchorAt(PATH, 4);
+  guest.setAwareness({
+    path: PATH,
+    selection: { anchor: { ...anchor, mystery: 'ignored' }, head: anchor },
+  } as never);
+  const tolerated = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 4,
+  );
+  assert.deepEqual(tolerated.selection, { anchor: 4, head: 4 });
+});
