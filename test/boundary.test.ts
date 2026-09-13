@@ -13,6 +13,9 @@ import { resolve } from 'node:path';
 const ENGINE_DIR = resolve(import.meta.dirname, '..', 'src', 'engine');
 const PACKAGE = resolve(import.meta.dirname, '..', 'package.json');
 
+/** A quoted module specifier, single or double quoted, as group 2. */
+const QUOTED = `(['"])([^'"]+)\\1`;
+
 /** Every engine module, so a new file cannot quietly opt out of the rules below. */
 function engineFiles(): string[] {
   return readdirSync(ENGINE_DIR)
@@ -21,18 +24,38 @@ function engineFiles(): string[] {
     .map((name) => resolve(ENGINE_DIR, name));
 }
 
-/** The module specifiers a source file imports, from `import`/`export ... from`. */
+/**
+ * The module specifiers a source file imports, static or dynamic, in either quote
+ * style: `import ... from 'x'`, `export ... from 'x'`, `import 'x'` and `import('x')`.
+ * A static import of `vscode` is erased by the type stripper when it is type-only, so
+ * `npm run typecheck` is the other half of this check — this scan is the half that
+ * needs no compiler.
+ */
 function specifiers(source: string): string[] {
   const found: string[] = [];
   for (const match of source.matchAll(
-    /(?:import|export)[\s\S]*?from\s+'([^']+)'/g,
+    new RegExp(`\\b(?:import|export)\\b[^;]*?\\bfrom\\s*${QUOTED}`, 'g'),
   )) {
-    found.push(match[1]);
+    found.push(match[2]);
   }
-  for (const match of source.matchAll(/import\s+'([^']+)'/g)) {
-    found.push(match[1]);
+  for (const match of source.matchAll(new RegExp(`\\bimport\\s*${QUOTED}`, 'g'))) {
+    found.push(match[2]);
+  }
+  for (const match of source.matchAll(
+    new RegExp(`\\bimport\\s*\\(\\s*${QUOTED}\\s*\\)`, 'g'),
+  )) {
+    found.push(match[2]);
   }
   return found;
+}
+
+/** True for the editor API and the packages that carry it. */
+function isEditorPackage(specifier: string): boolean {
+  return (
+    specifier === 'vscode' ||
+    specifier.startsWith('vscode-') ||
+    specifier.startsWith('@types/vscode')
+  );
 }
 
 test('the engine imports no editor API and no editor runtime', () => {
@@ -40,15 +63,17 @@ test('the engine imports no editor API and no editor runtime', () => {
   assert.ok(files.length >= 8, `expected the engine modules, found ${files.length}`);
   for (const file of files) {
     const source = readFileSync(file, 'utf8');
+    for (const specifier of specifiers(source)) {
+      assert.ok(
+        !isEditorPackage(specifier),
+        `${file} imports ${specifier}, which is the adapter's side of the seam`,
+      );
+    }
+    // A `require` this source could still make at runtime, however it is spelled.
     assert.doesNotMatch(
       source,
-      /(?:from|require\()\s*'vscode'/,
-      `${file} imports vscode, which is the adapter's side of the seam`,
-    );
-    assert.doesNotMatch(
-      source,
-      /'vscode-'|'@types\/vscode'/,
-      `${file} imports a VS Code package`,
+      /\brequire\s*\(\s*['"](?:vscode|vscode-[^'"]*|@types\/vscode)['"]\s*\)/,
+      `${file} requires a VS Code package`,
     );
   }
 });
