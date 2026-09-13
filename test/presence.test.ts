@@ -113,7 +113,20 @@ test('assoc normalises to after (>= 0) or before (< 0), and defaults to after', 
   assert.equal(parse(-1), -1);
   assert.equal(parse(7), 0, 'any non-negative value is "after"');
   assert.equal(parse(-7), -1, 'any negative value is "before"');
+  assert.equal(parse(1.5), 0, 'any number is an assoc, whatever its precision');
+  assert.equal(parse(-1.5), -1);
   assert.equal(parse(undefined), 0, 'an omitted assoc defaults to after');
+
+  // A member that is not a number is not an assoc: the anchor goes, and the path stays —
+  // the receiving client has one thing left it can read (§8.1).
+  for (const unreadable of ['0', 'after', null, {}]) {
+    const state = parseAwarenessState({
+      path: PATH,
+      selection: { anchor: { item, tname: PATH, assoc: unreadable }, head: { item, assoc: 0 } },
+    });
+    assert.equal(state?.selection, undefined, `assoc ${JSON.stringify(unreadable)} is not one`);
+    assert.equal(state?.path, PATH, 'the path survives an unreadable anchor');
+  }
 });
 
 test('an element without a scope is a position, not a malformed anchor', () => {

@@ -65,9 +65,15 @@ export function caret(at: Anchor): Selection {
   return { anchor: at, head: at };
 }
 
-/** `0` (after) or `-1` (before): §8.1 normalises any other value rather than failing. */
-function normaliseAssoc(assoc: unknown): number {
-  return typeof assoc === 'number' && assoc < 0 ? -1 : 0;
+/**
+ * `0` (after) or `-1` (before) for any number, normalised by sign (§8.1); `undefined` when the
+ * member is not a number at all, which is not an `assoc` and costs the anchor it sits in.
+ */
+function normaliseAssoc(assoc: unknown): number | undefined {
+  if (assoc === undefined) {
+    return 0;
+  }
+  return typeof assoc === 'number' ? (assoc < 0 ? -1 : 0) : undefined;
 }
 
 /**
@@ -77,7 +83,7 @@ function normaliseAssoc(assoc: unknown): number {
  * apart, because a peer reading the halves as alternatives renders no cursor at all.
  */
 export function toAnchor(position: Y.RelativePosition): Anchor {
-  const anchor: Anchor = { assoc: normaliseAssoc(position.assoc) };
+  const anchor: Anchor = { assoc: normaliseAssoc(position.assoc) ?? 0 };
   if (position.item !== null) {
     anchor.item = { client: position.item.client, clock: position.item.clock };
   }
@@ -114,13 +120,19 @@ function parseAnchorId(raw: unknown): AnchorId | undefined {
  * position inside a root type, so neither is malformed. What is malformed is an anchor
  * with no name at all, both scopes at once, or a member in a shape that cannot be read —
  * a receiver that rejects a library's own shape renders no cursor for every peer on it.
+ *
+ * An unreadable anchor costs only the selection: the state's `path` survives it.
  */
 export function parseAnchor(raw: unknown): Anchor | undefined {
   if (typeof raw !== 'object' || raw === null) {
     return undefined;
   }
   const record = raw as Record<string, unknown>;
-  const anchor: Anchor = { assoc: normaliseAssoc(record.assoc) };
+  const assoc = normaliseAssoc(record.assoc);
+  if (assoc === undefined) {
+    return undefined;
+  }
+  const anchor: Anchor = { assoc };
   for (const key of ['item', 'type'] as const) {
     const value = record[key];
     if (value === undefined || value === null) {
