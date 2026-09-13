@@ -455,6 +455,36 @@ test('frames this client does not understand are ignored, not fatal', async (t) 
   );
 });
 
+test('a fault the server cannot attach to a request reaches the adapter', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const events = record(session.guest);
+  // `session.error` is for faults with no request to attach them to (spec §6, §11).
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'session.error',
+    params: { code: 'bad_message', message: 'a request needs an id' },
+  }));
+
+  const reported = await events.waitForEvent(
+    'the guest to be told about the fault',
+    (event) => event.type === 'sessionError',
+  );
+  assert.deepEqual(reported, {
+    type: 'sessionError',
+    code: 'bad_message',
+    message: 'a request needs an id',
+  });
+  // The fault is not terminal by itself, so the session is still usable.
+  await session.host.open(PATH);
+  await session.guest.open(PATH);
+  assert.equal(session.guest.openDocuments().includes(PATH), true);
+});
+
 test('closing a path this connection never held releases nothing, and a bad path is refused', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
