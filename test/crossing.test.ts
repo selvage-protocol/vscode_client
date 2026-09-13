@@ -1,7 +1,8 @@
 /**
  * The crossing: bytes from one implementation's library, consumed by the other's code path.
  *
- * The fixture (`spec/vectors/anchors/relative-position.json`) carries one document and the
+ * The fixture is vendored at `test/fixtures/anchors/relative-position.json`, or taken from a
+ * `specification` checkout named by `SELVAGE_VECTORS`. It carries one document and the
  * anchor each library publishes for the same caret in it. This suite rebuilds the `yjs` half
  * from real `yjs`, so a fixture that has drifted from the library fails here, and resolves the
  * `yrs` half — the shape the reference client publishes — against a replica of that document.
@@ -11,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import * as Y from 'yjs';
 
@@ -32,11 +34,12 @@ interface Crossing {
   yrs: Published;
 }
 
+const VENDORED = resolve(import.meta.dirname, 'fixtures');
+
 function fixture(): Crossing {
-  const location = new URL(
-    '../../../spec/vectors/anchors/relative-position.json',
-    import.meta.url,
-  );
+  const override = process.env.SELVAGE_VECTORS;
+  const root = override !== undefined && override !== '' ? override : VENDORED;
+  const location = resolve(root, 'anchors', 'relative-position.json');
   return JSON.parse(readFileSync(location, 'utf8')) as Crossing;
 }
 
