@@ -298,11 +298,38 @@ test('a request is answered by its id, and a refusal rejects that request', asyn
     guest.text(PATH) === 'fn main() {}\n',
   );
 
-  // Two replies that arrive on one connection are matched by id, not by order.
-  const [a, b] = await Promise.all([guest.open('a.txt'), guest.open('b.txt')]);
-  assert.equal(a, undefined);
-  assert.equal(b, undefined);
-  assert.deepEqual(guest.openDocuments().sort(), [PATH, 'a.txt', 'b.txt'].sort());
+  // A reply is matched by the id it carries, not by arrival order: one for an id nobody
+  // is waiting on answers nobody rather than the first outstanding request.
+  const events = record(guest);
+  guest.pauseOutbound(true);
+  const asked = guest.open('a.txt');
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    id: 987_654,
+    result: { documents: ['bogus.txt'] },
+  }));
+  // A frame that follows it, so the assertions cannot outrun the socket.
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'host.detached',
+    params: { grace_ms: 1 },
+  }));
+  await events.waitForEvent(
+    'the frame sent after the stray reply to arrive',
+    (event) => event.type === 'hostDetached',
+  );
+  assert.deepEqual(guest.documents(), [PATH], 'a stray reply changed nothing');
+  assert.equal(guest.openDocuments().includes('a.txt'), false);
+  guest.pauseOutbound(false);
+  await asked;
+  assert.ok(guest.openDocuments().includes('a.txt'));
+
+  // Two requests in flight together are each answered by their own id.
+  await Promise.all([guest.open('b.txt'), guest.open('c.txt')]);
+  assert.deepEqual(
+    guest.openDocuments().sort(),
+    [PATH, 'a.txt', 'b.txt', 'c.txt'].sort(),
+  );
 
   // The server's own refusal (an empty path) rejects the request that carried the id.
   await assert.rejects(guest.open('  '), (error: unknown) =>
