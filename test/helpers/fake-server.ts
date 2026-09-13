@@ -85,6 +85,8 @@ export class FakeServer {
   private accepted = 0;
   /** Every `doc.open` / `doc.close` handled, in arrival order: for tests about ordering. */
   readonly requests: Array<{ client: string; method: string; path: string }> = [];
+  /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
+  readonly refusedOpens = new Set<string>();
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -413,6 +415,13 @@ export class FakeServer {
           method: String(message.method),
           path,
         });
+        if (message.method === method.docOpen && this.refusedOpens.has(path)) {
+          this.respond(client, id, undefined, {
+            code: code.badParams,
+            message: 'this path is refused',
+          });
+          return;
+        }
         if (path.trim() === '') {
           this.respond(client, id, undefined, {
             code: code.badParams,

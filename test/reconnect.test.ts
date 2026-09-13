@@ -225,6 +225,34 @@ test('a reconnect restores the engine’s own holds before it tells the adapter'
   );
 });
 
+test('a re-open the server refuses is reported, not swallowed', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  const firstPeerId = guest.session().peer.peer_id;
+  const events = record(guest);
+
+  // From here the server refuses this path. A refusal is an error response on a
+  // connection that stays up, so nothing else would report that it was not re-opened.
+  session.server.refusedOpens.add(PATH);
+  session.server.drop('Bob');
+  const reported = await events.waitForEvent(
+    'the refused re-open to be reported',
+    (event) => event.type === 'sessionError' && event.code === 'bad_params',
+    { timeoutMs: 3000 },
+  );
+  assert.ok(reported.type === 'sessionError');
+  assert.equal(reported.message, 'this path is refused');
+  assert.notEqual(guest.session().peer.peer_id, firstPeerId);
+  assert.equal(guest.isOpen, true, 'the connection is not what failed');
+});
+
 test('a room destroyed under a client ends the session, and nothing retries it', async (t) => {
   const server = await FakeServer.start({ roomGraceMs: 200 });
   t.after(async () => {
