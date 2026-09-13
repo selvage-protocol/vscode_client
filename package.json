@@ -10,11 +10,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.ts test/spikes/*.test.ts",
     "test:engine": "node --test test/envelope.test.ts test/engine.test.ts test/reconnect.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
-    "test:spikes": "node --test test/spikes/",
-    "test:fast": "node --test test/boundary.test.ts test/envelope.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/"
+    "test:spikes": "node --test test/spikes/*.test.ts",
+    "test:fast": "node --test test/boundary.test.ts test/envelope.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",
