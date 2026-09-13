@@ -3,7 +3,8 @@
 /**
  * The session layer refused something: an `error` response to a request, a
  * `session.error` event, or a refusal during the handshake. `code` is the
- * machine-readable code from `spec/PROTOCOL.md` §11.
+ * machine-readable code from `PROTOCOL.md` §11
+ * (https://github.com/selvage-protocol/specification).
  */
 export class ProtocolError extends Error {
   readonly code: string;

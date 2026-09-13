@@ -1,5 +1,6 @@
 /**
- * The anchor shape `spec/PROTOCOL.md` §8.1 freezes, read at the parser: what a receiver
+ * The anchor shape `PROTOCOL.md` §8.1
+ * (https://github.com/selvage-protocol/specification) freezes, read at the parser: what a receiver
  * accepts, what it normalises, and what leaves it with no selection at all. Resolution
  * against a replica is the engine's half, in `engine.test.ts`.
  */

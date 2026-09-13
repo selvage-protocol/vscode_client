@@ -2,8 +2,9 @@
 
 The `selvage/1` **sync engine** for the Selvage VS Code client: WebSocket transport, the JSON
 session envelope, the handshake, room join by invite URL, document sync and awareness over
-`y-protocols` with an in-process `yjs`. It is the half of `DESIGN.md` §6 that knows about
-CRDTs and sockets and nothing about editors.
+`y-protocols` with an in-process `yjs`. It is the half of
+`DESIGN.md` §6 that knows
+about CRDTs and sockets and nothing about editors.
 
 **`src/engine/` does not import `vscode`, and a test enforces it** (`test/boundary.test.ts`).
 The adapter — documents, decorations, the `FileSystemProvider`, commands — is a later change
@@ -18,7 +19,7 @@ Requirements, as found on this host:
 |---|---|---|
 | Node | `v26.8.1` (`/etc/profiles/per-user/user/bin/node`) | **≥ 22.18** is required: the tests are `.ts` run directly by `node --test`, which needs type stripping |
 | npm | `11.19.0` | `npm ci` reaches the registry (verified: `npm view yjs version` → `13.6.32`) |
-| nix | `2.34.8` | only for building `selvaged` out of `impl/` |
+| nix | `2.34.8` | only for building `selvaged` out of the sibling [`reference_server`](https://github.com/selvage-protocol/reference_server) checkout |
 
 A fresh clone needs `npm ci` (9 packages, ~35 MB, no native builds) and, for the
 real-server test, a `selvaged` binary:
@@ -27,32 +28,30 @@ real-server test, a `selvaged` binary:
 $ npm ci --no-audit --no-fund
 added 9 packages in 1s
 
-$ nix develop ./impl --command sh -c 'cd impl && cargo build -p selvaged'
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.08s
+$ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.80s
 ```
 
 Two notes on that build. `cargo` is **not** on the ambient `PATH`, so it has to come from the
-devshell (`nix-shell -p cargo rustc --run …` also works) — and `nix develop ./impl` runs its
-command with the *repository root* as the working directory, not `impl/`, hence the `cd`.
-The flake **does resolve from a linked worktree** (`git worktree add …`): the shellHook
-installs its git hooks into the *shared* checkout's hooks directory and writes
-`.pre-commit-config.yaml` into the worktree (already ignored by the root `.gitignore`).
-CI should not depend on the hooks.
+devshell (`nix-shell -p cargo rustc --run …` also works) — and `nix develop ../reference_server`
+runs its command with the *current* directory as the working directory, not the flake's, hence
+the `cd`. The flake's shellHook installs its git hooks into this checkout's `.git/hooks` and
+writes `.pre-commit-config.yaml` here; the config is ignored, and CI does not depend on the hooks.
 
 Then:
 
 ```console
-$ npm test                    # everything: 69 tests, of which 4 need the Rust build
-$ npm run test:engine         # wire layer + engine + reconnect, no Rust build needed
+$ npm test                    # everything: 69 tests, of which 4 need the built server
+$ npm run test:engine         # wire layer + engine + reconnect, no server build needed
 $ npm run test:spikes         # the three pre-adapter experiments
-$ npm run test:selvaged       # the conformance gate, needs impl/target/*/selvaged
+$ npm run test:selvaged       # the conformance gate, needs a built ../reference_server/target/*/selvaged
 $ npm run typecheck           # tsc --noEmit, strict, erasableSyntaxOnly
 ```
 
-`test:selvaged` finds the binary at `impl/target/{debug,release}/selvaged`, or wherever
-`SELVAGED_BIN` points. A missing binary **fails** the test with the command that builds it
-rather than skipping: the point of that suite is the real server. The rest of the suite runs
-against a fake `selvaged` (`test/helpers/fake-server.ts`) that implements the handshake, the
+`test:selvaged` finds the binary at `../reference_server/target/{debug,release}/selvaged`, or
+wherever `SELVAGE_SELVAGED` points. A missing binary **fails** the test with the command that
+builds it rather than skipping: the point of that suite is the real server. The rest of the suite
+runs against a fake `selvaged` (`test/helpers/fake-server.ts`) that implements the handshake, the
 document-set semantics, the grace period and payload-opaque relay — it exists for the faults
 the real server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta`
 naming a version this client cannot speak), not as a substitute for it. It **shares
@@ -69,15 +68,17 @@ with the spec: both sides would be wrong the same way. Only `test:selvaged` can.
 | `src/engine/meta.ts` | `GET /meta`: advisory when unreachable, decisive when it names an incompatible version |
 | `src/engine/sync.ts` | y-protocols framing (§7, §8): SyncStep1/Update/Awareness, a frame as a stream of messages |
 | `src/engine/presence.ts` | the awareness state's shape, and the join from `awareness_client_id` to `PeerInfo` (§8.4) |
-| `src/engine/events.ts` | the nine `EngineEvent`s, mirroring `impl/crates/client/src/editor.rs` |
+| `src/engine/events.ts` | the nine `EngineEvent`s, mirroring [`crates/client/src/editor.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/editor.rs) |
 | `src/engine/engine.ts` | `SelvageEngine`: handshake, request/response correlation, the sync handshake, awareness renewal and expiry, reconnect |
 | `src/engine/index.ts` | the public surface — import from here |
 
 Threading: everything is one event loop and synchronous. Frames are written as they are
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
 reacts to `documentChanged` instead of polling. There is no worker, no native module and no
-second process: `DESIGN.md` §6 has VS Code embed both halves, and the module seam is what
-keeps a sidecar a later *move* rather than a rewrite.
+second process:
+`DESIGN.md` §6 has VS Code
+embed both halves, and the module seam is what keeps a sidecar a later *move* rather than a
+rewrite.
 
 Two bounds, and what each one covers. `connect()` is bounded by `handshakeTimeoutMs` (10 s by
 default), which covers the upgrade *and* the handshake: if it expires the socket is closed and
@@ -145,7 +146,8 @@ Three contracts the adapter has to keep, each settled by a spike (`SPIKES.md`):
 3. **Do not impose a trailing-newline invariant in the sync layer.** Content is content; if
    the editor wants the invariant, it owns it in one place.
 
-**A selection on the wire is two CRDT anchors, never offsets** (`spec/PROTOCOL.md` §8.1).
+**A selection on the wire is two CRDT anchors, never offsets** —
+[`PROTOCOL.md` §8.1](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md).
 Each endpoint is a yjs `RelativePosition` as JSON — a scope (`tname`, the document path),
 an optional `item` naming an element inside it, and `assoc` — and no index is carried, so a
 peer's caret survives a paste above it instead of drifting by the length of that paste.
@@ -163,7 +165,7 @@ endpoint that does not resolve means *no selection* — never a clamp or an offs
 |---|---|
 | `test/envelope.test.ts` | version compatibility (same-major, minor decisive only at 0.x), error/close codes, URL round-trips, permissive envelope parsing |
 | `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, convergence, presence attribution and expiry, the room lifecycle, hostile frames |
-| `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine |
+| `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine; the fixture is vendored under `test/fixtures/`, or read from the `specification` checkout named by `SELVAGE_VECTORS` |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again (a fresh `join()`, not the reconnect path), close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
@@ -184,6 +186,13 @@ does not compile.
 ## Not here
 
 `src/adapter/`, the extension manifest, presence rendering, packaging and publication
-(`DESIGN.md` §11). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is
-not y-websocket's), any host-filesystem read, read-only guests (§12.3), per-user undo, and
-`terminal/1`.
+(`DESIGN.md` §11). Also
+deliberately absent: a `y-websocket` provider (Selvage's envelope is not y-websocket's), any
+host-filesystem read, read-only guests (§12.3), per-user undo, and `terminal/1`.
+
+## Licence
+
+The engine is `MIT OR Apache-2.0`, at your option: [`LICENSE-MIT`](LICENSE-MIT) and
+[`LICENSE-APACHE`](LICENSE-APACHE). The cross-library anchor fixture under `test/fixtures/` is
+vendored from the [`specification`](https://github.com/selvage-protocol/specification)
+repository, whose material is `CC-BY-4.0`.

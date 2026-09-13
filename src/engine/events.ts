@@ -1,7 +1,8 @@
 /**
- * The event vocabulary an editor adapter consumes. It mirrors
- * `impl/crates/client/src/editor.rs` — the same nine events, so the seam is a
- * project-wide vocabulary rather than a Rust detail.
+ * The event vocabulary an editor adapter consumes. It mirrors the reference server's
+ * `crates/client/src/editor.rs` — the same nine events, so the seam is a project-wide
+ * vocabulary rather than a Rust detail. The reference server lives at
+ * https://github.com/selvage-protocol/reference_server.
  */
 
 import type { PeerInfo } from './envelope.ts';

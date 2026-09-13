@@ -1,7 +1,8 @@
 /**
  * A minimal server speaking `selvage/1`, for tests that must not depend on a Rust build.
  *
- * It implements the parts of `spec/PROTOCOL.md` the engine talks to: the handshake and
+ * It implements the parts of `PROTOCOL.md`
+ * (https://github.com/selvage-protocol/specification) the engine talks to: the handshake and
  * its refusals (§5, §9), the open-document set and its hold semantics (§5), event
  * delivery (§6), payload-opaque binary relay (§3, §7) and the room grace period (§9).
  *

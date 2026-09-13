@@ -59,20 +59,20 @@ at offset 0; Ada merges Bob's update and the caret is resolved again.
    tolerate rather than reject.
 3. **The Rust client disagreed, and that was the real finding.** `yrs` 0.27.4's
    `Doc::new()` defaults to `OffsetKind::Bytes`
-   (`~/.cargo/registry/src/*/yrs-0.27.4/src/doc.rs`), `impl/crates/client/src/engine.rs`
-   takes that default, and `impl/crates/client/src/presence.rs` renders the resulting
+   (`~/.cargo/registry/src/*/yrs-0.27.4/src/doc.rs`), [`crates/client/src/engine.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/engine.rs)
+   takes that default, and [`crates/client/src/presence.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/presence.rs) renders the resulting
    `u32` as a selection — verified, and already recorded as finding **B** in
    `docs/studies/awareness-and-reconnect.md`. On non-ASCII text the two clients therefore
    name *different* positions for the same cursor: the opposite of what an earlier version
    of this spike asserted from "the Rust client carries `u32` offsets", which says nothing
    about the unit those integers are counted in. The engine's unit was never the open question —
    VS Code and yjs are both UTF-16. **The Rust client has since been moved to match:**
-   `impl/crates/client/src/engine.rs` constructs the document with `OffsetKind::Utf16`, and
-   `impl/crates/harness/tests/offsets.rs` covers a non-BMP character that byte offsets would break.
-   Both clients agree again, and `spec/PROTOCOL.md` §8.1 states the unit normatively.
+   [`crates/client/src/engine.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/engine.rs) constructs the document with `OffsetKind::Utf16`, and
+   [`crates/harness/tests/offsets.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/harness/tests/offsets.rs) covers a non-BMP character that byte offsets would break.
+   Both clients agree again, and [`PROTOCOL.md` §8.1](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md) states the unit normatively.
 
 **Decision for this engine — made, and implemented.** This was the one item the spike
-could not settle on its own: a wire shape is a spec decision, not an engine one. `spec/PROTOCOL.md`
+could not settle on its own: a wire shape is a spec decision, not an engine one. [`PROTOCOL.md`](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md)
 §8.1 has since made it. **A selection is two CRDT anchors and no index reaches the wire.**
 Each endpoint is a yjs `RelativePosition` as JSON: a scope (`tname`, the document path),
 an optional `item` naming an element inside it, and `assoc`. The engine conforms:
@@ -162,7 +162,7 @@ to the adapter, which is where it belongs:
 
 ## Spike 3 — EOL and the trailing newline
 
-**Question (§7 #3, §2.6).** Neither `DESIGN.md` nor `PROTOCOL.md` mentions line endings. OCT
+**Question (§7 #3, §2.6).** Neither `DESIGN.md` nor [`PROTOCOL.md`](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md) mentions line endings. OCT
 needs a ~380-line normalisation class, Teamtype has an ADR about Vim's EOL behaviour, and the
 study calls mixed EOLs *"a convergence bug on mixed platforms"*.
 
@@ -211,7 +211,7 @@ The policy is the adapter's, stated in `README.md`:
   place and must not treat its own application of it as a local edit.
 
 Both policies are per-document state, so neither changes the wire. They do change what a
-*second* client must do to interoperate with a first, so they belong in `PROTOCOL.md` as a
+*second* client must do to interoperate with a first, so they belong in [`PROTOCOL.md`](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md) as a
 statement about document content (an extension note, not a new field).
 
 ---

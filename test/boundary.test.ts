@@ -1,8 +1,9 @@
 /**
- * The seam, enforced rather than intended: `DESIGN.md` §6 puts the sync engine and the
- * editor adapter in one process but on opposite sides of an interface, and the study's §6
- * makes "engine/ has no `vscode` import" the one thing that has to survive for a sidecar or
- * a second editor to be a move rather than a rewrite.
+ * The seam, enforced rather than intended: the design record's §6
+ * () puts the sync engine
+ * and the editor adapter in one process but on opposite sides of an interface, and the
+ * study's §6 makes "engine/ has no `vscode` import" the one thing that has to survive for
+ * a sidecar or a second editor to be a move rather than a rewrite.
  */
 
 import { test } from 'node:test';

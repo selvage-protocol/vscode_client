@@ -1,6 +1,8 @@
 /**
- * The conformance gate, run against the real `selvaged` from `impl/`: two engines, one
- * room, concurrent edits, convergence and presence. This is the test `DESIGN.md` §7 asks
+ * The conformance gate, run against the real `selvaged` built from the sibling
+ * `reference_server` checkout: two engines, one room, concurrent edits, convergence and
+ * presence. This is the test the design record's §7
+ * () asks
  * for and the one that says the TypeScript engine speaks `selvage/1` rather than merely
  * agreeing with itself.
  */

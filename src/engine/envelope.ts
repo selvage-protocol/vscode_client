@@ -1,6 +1,7 @@
 /**
  * The `selvage/1` session envelope: the JSON shapes, the name vocabulary and the
- * compatibility rules of `spec/PROTOCOL.md` §4–§6, §10 and §11.
+ * compatibility rules of `PROTOCOL.md` §4–§6, §10 and §11
+ * (https://github.com/selvage-protocol/specification).
  *
  * Unknown fields and unknown event names are ignored, so every shape here is
  * deliberately permissive: a peer that adds a field must never break this client.

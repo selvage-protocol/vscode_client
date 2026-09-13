@@ -41,7 +41,7 @@ test('version compatibility is same-major, and the minor is decisive only at 0.x
   assert.equal(isCompatible('other/1'), false);
   assert.equal(isCompatible(''), false);
 
-  // The parse mirrors `impl/crates/protocol/src/lib.rs`: the minor defaults to 0.
+  // The parse mirrors the reference server's `crates/protocol/src/lib.rs`: the minor defaults to 0.
   assert.deepEqual(parseVersion('selvage/1'), [1, 0]);
   assert.deepEqual(parseVersion('selvage/1.9'), [1, 9]);
   assert.equal(parseVersion('selvage/1.2.3'), undefined);
