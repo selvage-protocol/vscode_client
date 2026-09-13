@@ -121,6 +121,110 @@ test('a host that dropped reclaims its room rather than minting a second one', a
   assert.ok(merged.includes('after the drop'), merged);
 });
 
+test('a request the connection dies under is failed, and its frame is not replayed', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  const firstPeerId = guest.session().peer.peer_id;
+
+  // Held outbound, so this request never reaches the server before the socket dies.
+  guest.pauseOutbound(true);
+  let queuedOutcome: string | undefined;
+  void guest.open('stale.txt').then(
+    () => {
+      queuedOutcome = 'resolved';
+    },
+    (error: Error) => {
+      queuedOutcome = error.name;
+    },
+  );
+  session.server.drop('Bob');
+  await waitFor('the queued request to be failed by the drop', () => queuedOutcome, {
+    timeoutMs: 2000,
+  });
+  assert.equal(queuedOutcome, 'EngineClosedError');
+
+  // A request issued while there is no connection to carry it is not left outstanding:
+  // replaying it on the next connection would recycle its id onto a fresh peer (§9.1).
+  let downOutcome: string | undefined;
+  void guest.open('late.txt').then(
+    () => {
+      downOutcome = 'resolved';
+    },
+    (error: Error) => {
+      downOutcome = error.name;
+    },
+  );
+  await waitFor('the request issued while down to settle', () => downOutcome, {
+    timeoutMs: 2000,
+  });
+  assert.equal(downOutcome, 'EngineClosedError');
+
+  guest.pauseOutbound(false);
+  await waitFor(
+    'the guest to be seated again',
+    () => guest.session().peer.peer_id !== firstPeerId,
+  );
+  await guest.open('new.txt');
+  assert.deepEqual(guest.openDocuments().sort(), [PATH, 'new.txt'].sort());
+  await waitFor("the room to carry the new hold", () =>
+    host.documents().includes('new.txt'),
+  );
+  assert.deepEqual(
+    host.documents().filter((path) => path !== PATH),
+    ['new.txt'],
+    'a request no connection carried opened nothing for the room',
+  );
+});
+
+test('a reconnect restores the engine’s own holds before it tells the adapter', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  const firstPeerId = guest.session().peer.peer_id;
+
+  // An adapter that re-opens a document the moment it is told the session is back.
+  const reopened: Array<Promise<void>> = [];
+  const stop = guest.on((event) => {
+    if (
+      event.type === 'documentsChanged' &&
+      reopened.length === 0 &&
+      guest.session().peer.peer_id !== firstPeerId
+    ) {
+      reopened.push(guest.open('adapter.txt'));
+    }
+  });
+  t.after(stop);
+
+  const since = session.server.requests.length;
+  session.server.drop('Bob');
+  await waitFor('the adapter to react to the reconnect', () => reopened.length > 0, {
+    timeoutMs: 3000,
+  });
+  await Promise.all(reopened);
+  const order = session.server.requests
+    .slice(since)
+    .filter((request) => request.client === 'Bob')
+    .map((request) => request.path);
+  assert.deepEqual(
+    order,
+    [PATH, 'adapter.txt'],
+    'the engine re-opens its own holds before the events reach the adapter',
+  );
+});
+
 test('a room destroyed under a client ends the session, and nothing retries it', async (t) => {
   const server = await FakeServer.start({ roomGraceMs: 200 });
   t.after(async () => {

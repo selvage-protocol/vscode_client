@@ -158,6 +158,8 @@ interface SeatWaiter {
 interface QueuedFrame {
   text?: string;
   binary?: Uint8Array;
+  /** The request this frame carries, so it can be dropped with its connection. */
+  requestId?: number;
 }
 
 interface Refusal {
@@ -619,8 +621,6 @@ export class SelvageEngine {
     }
     this.seated = true;
     this.refusal = undefined;
-    this.emit({ type: 'documentsChanged', documents: this.documents() });
-    this.emit({ type: 'peersChanged', peers: this.peers() });
     // §7: immediately after seating, SyncStep1 with our state vector — every peer replies
     // with what we are missing. Then publish our awareness, so a newcomer's presence is
     // complete before anyone moves a cursor.
@@ -633,18 +633,32 @@ export class SelvageEngine {
     }, this.clock.renewMs);
     // §9.1: what a dropped socket loses is local, so the documents this client still
     // holds open are re-opened. Content is not replayed: the sync handshake brings it
-    // back from the peers.
+    // back from the peers. This happens before the events below, so an adapter that
+    // re-opens a document in answer to them is ordered after the engine's own re-opens.
     for (const path of [...this.heldDocuments]) {
-      void this.open(path).catch(() => {
-        // A refused re-open ends the session, which the close handler reports.
+      void this.open(path).catch((error: unknown) => {
+        // A method-level refusal is an error response, not a close: the connection stays
+        // up, so this is the only place that can say the document was not re-opened.
+        if (error instanceof ProtocolError) {
+          this.emit({
+            type: 'sessionError',
+            code: error.code,
+            message: error.message,
+          });
+        }
       });
     }
+    this.emit({ type: 'documentsChanged', documents: this.documents() });
+    this.emit({ type: 'peersChanged', peers: this.peers() });
   }
 
   private onSocketClosed(code: number, reason: string): void {
     this.socket = undefined;
     const wasSeated = this.seated;
     this.seated = false;
+    // Every request went out on the socket that just died; no answer can arrive on the
+    // next one, and their frames must not be replayed there.
+    this.failPending();
     if (this.disposed || this.finished) {
       return;
     }
@@ -663,9 +677,6 @@ export class SelvageEngine {
       this.finish();
       return;
     }
-    // Requests went out on the socket that just died; no answer can arrive on the next
-    // one, and the paths this client holds are re-opened when it is seated again.
-    this.failPending();
     if (this.refusal !== undefined) {
       this.emit({
         type: 'sessionError',
@@ -790,6 +801,12 @@ export class SelvageEngine {
     if (this.finished || this.disposed) {
       return Promise.reject(new EngineClosedError());
     }
+    // A request is answered on the connection that carries it. With no seated connection
+    // there is nowhere to send it, and queueing it for the next one would replay it under
+    // an id this client has meanwhile reused (spec §9.1: a reconnect is a new peer).
+    if (!this.seated || this.socket === undefined || !this.socket.isOpen) {
+      return Promise.reject(new EngineClosedError('the connection is down'));
+    }
     const id = (this.requestId += 1);
     const message: ClientMessage = {
       v: WIRE_VERSION,
@@ -799,7 +816,7 @@ export class SelvageEngine {
     };
     return new Promise<void>((resolve, reject) => {
       this.pending.set(id, { kind, path, resolve, reject });
-      this.enqueueText(JSON.stringify(message));
+      this.enqueueText(JSON.stringify(message), id);
     });
   }
 
@@ -848,11 +865,17 @@ export class SelvageEngine {
     this.emit({ type: 'documentsChanged', documents: this.documents() });
   }
 
+  /**
+   * Fails every request still waiting. The connection they went out on is gone, so no
+   * answer can reach them — and their frames must not outlive it either, or the next
+   * connection would answer them under an id it has reissued.
+   */
   private failPending(): void {
     for (const pending of this.pending.values()) {
       pending.reject(new EngineClosedError());
     }
     this.pending.clear();
+    this.queue = this.queue.filter((frame) => frame.requestId === undefined);
   }
 
   // -- inbound ---------------------------------------------------------------
@@ -1011,8 +1034,8 @@ export class SelvageEngine {
 
   // -- outbound --------------------------------------------------------------
 
-  private enqueueText(text: string): void {
-    this.queue.push({ text });
+  private enqueueText(text: string, requestId?: number): void {
+    this.queue.push(requestId === undefined ? { text } : { text, requestId });
     this.flush();
   }
 

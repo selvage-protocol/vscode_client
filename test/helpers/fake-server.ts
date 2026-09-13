@@ -83,6 +83,8 @@ export class FakeServer {
   private readonly clients = new Map<string, Client>();
   private readonly rooms = new Map<string, Room>();
   private accepted = 0;
+  /** Every `doc.open` / `doc.close` handled, in arrival order: for tests about ordering. */
+  readonly requests: Array<{ client: string; method: string; path: string }> = [];
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -406,6 +408,11 @@ export class FakeServer {
       case method.docOpen:
       case method.docClose: {
         const path = typeof params.path === 'string' ? params.path : '';
+        this.requests.push({
+          client: client.peer.display_name,
+          method: String(message.method),
+          path,
+        });
         if (path.trim() === '') {
           this.respond(client, id, undefined, {
             code: code.badParams,
