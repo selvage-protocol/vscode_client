@@ -11,7 +11,7 @@ import { EngineClosedError, ProtocolError, isProtocolError } from '../src/engine
 import * as Y from 'yjs';
 
 import { caret } from '../src/engine/presence.ts';
-import type { Anchor } from '../src/engine/presence.ts';
+import type { Anchor, AwarenessState } from '../src/engine/presence.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
 import { fakeSession, options } from './helpers/session.ts';
@@ -555,6 +555,63 @@ test('setAwareness(null) clears presence rather than publishing an empty state',
       false,
     { describe: () => host.presence() },
   );
+});
+
+test('a sender publishes no selection it cannot anchor', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const other = 'src/other.rs';
+  /** Ada's state as Bob sees it: the wire, not this engine's own view. */
+  const asSeenByBob = (): AwarenessState | undefined =>
+    guest.presence().find((presence) => presence.peer?.display_name === 'Ada')?.state;
+
+  // Opened, and nobody has written to it: this replica holds no `Y.Text`, so an offset in
+  // it names nothing. §8.1: the path travels, the selection does not — the alternative is
+  // "the caret is at the end of the text", which no peer can tell from the real thing.
+  await host.open(other);
+  host.setSelection(other, { anchor: 0, head: 0 });
+  const unwritten = await waitFor(
+    "Ada's state for a document she has not received",
+    () => {
+      const state = asSeenByBob();
+      return state?.path === other ? state : false;
+    },
+    { describe: () => guest.presence() },
+  );
+  assert.equal(
+    unwritten.selection,
+    undefined,
+    'no text in the replica, so no position in it',
+  );
+
+  // An offset past the end of a text this replica does hold is not one either.
+  await host.open(PATH);
+  host.insert(PATH, 0, 'abc');
+  host.setSelection(PATH, { anchor: 99, head: 99 });
+  const past = await waitFor(
+    "Ada's state for a document she holds",
+    () => {
+      const state = asSeenByBob();
+      return state?.path === PATH ? state : false;
+    },
+    { describe: () => guest.presence() },
+  );
+  assert.equal(past.selection, undefined, 'there is no element at offset 99');
+
+  // The contrast: a position that does exist is published, as an anchor.
+  host.setSelection(PATH, { anchor: 1, head: 1 });
+  const held = await waitForSelection(
+    guest,
+    'Ada',
+    PATH,
+    (selection) => selection.anchor === 1,
+  );
+  assert.deepEqual(held.selection, { anchor: 1, head: 1 });
 });
 
 test('a remote state that stops renewing is forgotten on the server-advertised clock', async (t) => {

@@ -481,12 +481,17 @@ export class SelvageEngine {
     return this.request('close', path);
   }
 
-  /** The current text of a document. Empty for a document nobody has written to. */
+  /** The current text of a document. Empty for a document this replica does not hold. */
   text(path: string): string {
-    return this.doc.getText(path).toString();
+    return this.textIfPresent(path)?.toString() ?? '';
   }
 
-  /** The `Y.Text` behind a path, for an adapter that needs CRDT-relative positions. */
+  /**
+   * The `Y.Text` behind a path, for an adapter that needs CRDT-relative positions. Creates
+   * it when it is not there yet, so an anchor taken from a document that has not arrived
+   * names nothing but the scope — a caller that publishes one publishes a position with no
+   * element in it (§8.1).
+   */
   getText(path: string): Y.Text {
     return this.doc.getText(path);
   }
@@ -532,8 +537,21 @@ export class SelvageEngine {
   /**
    * Publishes a selection given as editor offsets (UTF-16 code units), converting each
    * endpoint to the anchor the wire carries (§8.1). Offsets stop at this seam.
+   *
+   * A selection this replica cannot anchor is not published: when the text is not here yet, or
+   * an endpoint is past its end, the state carries the path and no selection (§8.1). The
+   * scope-only fallback would be indistinguishable on the wire from a real caret at the end.
    */
   setSelection(path: string, selection: OffsetSelection): void {
+    const text = this.textIfPresent(path);
+    if (
+      text === undefined ||
+      selection.anchor > text.length ||
+      selection.head > text.length
+    ) {
+      this.setAwareness({ path });
+      return;
+    }
     this.setAwareness({
       path,
       selection: {
@@ -541,6 +559,15 @@ export class SelvageEngine {
         head: this.anchorAt(path, selection.head),
       },
     });
+  }
+
+  /** The `Y.Text` a path already names, without creating one (§8.1's sender rule). */
+  private textIfPresent(path: string): Y.Text | undefined {
+    // `share` holds a type for the name as soon as this replica has one — created by a local
+    // edit, or arrived in a peer's update — and nothing at all before that. The entry can
+    // still be the decoder's placeholder rather than a materialised `Y.Text`, so `getText`
+    // returns the type itself and creates nothing new.
+    return this.doc.share.has(path) ? this.doc.getText(path) : undefined;
   }
 
   /** The anchor for an offset into `path`, with `assoc` as §8.1 defines it. */
@@ -854,6 +881,9 @@ export class SelvageEngine {
 
   private wireDocument(): void {
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
+      // A held document that has just arrived can now be observed, and its arrival is itself
+      // a change an adapter needs to hear about.
+      this.observeArrived(origin);
       if (origin === REMOTE_ORIGIN) {
         // Applying a peer's update must not echo it back into the room.
         return;
@@ -862,12 +892,24 @@ export class SelvageEngine {
     });
   }
 
-  /** Observes one text, so a remote change reports the path it changed and no other. */
+  /**
+   * Observes a held document, so a remote change reports the path it changed and no other.
+   *
+   * A document that has not arrived yet has no text to observe, and creating one would make
+   * it look like an empty document that had — which is a distinction §8.1 needs a sender to
+   * keep. `observeArrived` attaches the observer when the text does appear.
+   */
   private observe(path: string): void {
+    const text = this.textIfPresent(path);
+    if (text !== undefined) {
+      this.attach(path, text);
+    }
+  }
+
+  private attach(path: string, text: Y.Text): void {
     if (this.texts.has(path)) {
       return;
     }
-    const text = this.doc.getText(path);
     text.observe((_event: Y.YTextEvent, transaction: Y.Transaction) => {
       if (transaction.origin === LOCAL_ORIGIN) {
         return;
@@ -875,6 +917,27 @@ export class SelvageEngine {
       this.emit({ type: 'documentChanged', path });
     });
     this.texts.add(path);
+  }
+
+  /**
+   * Attaches the observer to any held document that has now arrived, and reports the
+   * arrival. A document this client created with its own edit reports nothing: the adapter
+   * already has that change.
+   */
+  private observeArrived(origin: unknown): void {
+    for (const path of this.heldDocuments) {
+      if (this.texts.has(path)) {
+        continue;
+      }
+      const text = this.textIfPresent(path);
+      if (text === undefined) {
+        continue;
+      }
+      this.attach(path, text);
+      if (origin !== LOCAL_ORIGIN) {
+        this.emit({ type: 'documentChanged', path });
+      }
+    }
   }
 
   // -- requests --------------------------------------------------------------
