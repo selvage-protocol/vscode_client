@@ -70,22 +70,27 @@ at offset 0; Ada merges Bob's update and the caret is resolved again.
    `impl/crates/harness/tests/offsets.rs` covers a non-BMP character that byte offsets would break.
    Both clients agree again, and `spec/PROTOCOL.md` §8.1 states the unit normatively.
 
-**Decision for this engine.** The wire shape stays as the spec has it — `{ anchor, head }`
-offsets, in UTF-16 code units — because the spec's shape is what every client reads and the
-engine does not get to unilaterally change a wire shape. The engine gives the adapter
-what it needs to move to relative positions *without* a protocol change:
+**Decision for this engine — made, and implemented.** This was the one item the spike
+could not settle on its own: a wire shape is a spec decision, not an engine one. `spec/PROTOCOL.md`
+§8.1 has since made it. **A selection is two CRDT anchors and no index reaches the wire.**
+Each endpoint is a yjs `RelativePosition` as JSON: one scope — `item`, or `tname` for a
+position with no element to name — plus `assoc`. The engine conforms:
 
-- `engine.getText(path)` returns the `Y.Text`, so an adapter can do
-  `Y.createRelativePositionFromTypeIndex` / `createAbsolutePositionFromRelativePosition`
-  itself, and can ship the relative position as JSON inside its awareness state;
-- `engine.setAwareness(state)` takes an opaque `AwarenessState` object, so an adapter may
-  publish `{ path, selection: { start, end } }` with relative positions instead, and a
-  client that understands neither field must ignore it (spec §8.1).
+- `engine.setSelection(path, { anchor, head })` still takes editor **offsets** and anchors
+  them, so the adapter seam goes on speaking the unit the editor speaks (UTF-16 code units);
+- `engine.resolveSelection(path, selection)` resolves a peer's anchors against this replica,
+  and yields `undefined` — *no selection* — when either endpoint does not resolve. No
+  clamping and no offset fallback: §8.1 forbids manufacturing a position;
+- resolution is **deferred**, not part of applying the awareness update, because awareness
+  and sync frames travel on independent queues. A state whose document has not arrived is
+  kept and resolves on a later call rather than being discarded.
 
-This is a **spec decision, not an engine one**, and it is the first item to raise against
-`PROTOCOL.md` §8.1 / §12.4. Until it is made, two Selvage clients with different caret
-shapes still interoperate as peers with no cursors in common, which is why the shape belongs
-in the spec rather than in one client.
+One thing §8.1 says that yjs does not do natively: it carries **exactly one** non-null
+scope, while `Y.createRelativePositionFromTypeIndex` sets `tname` *and* `item` together for
+a root type — `tname` names the scope, `item` the element inside it. This engine emits
+`item` alone where there is one, which resolves identically, and verifies the branch it
+resolved into is the `Y.Text` for `path`. A strict receiver reading §8.1 literally rejects
+the shape yjs produces unedited, which is worth a spec clarification.
 
 ---
 

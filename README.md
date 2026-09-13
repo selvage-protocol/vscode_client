@@ -125,8 +125,10 @@ host.on((event) => {
 | open / close a document | `await engine.open(path)` / `engine.close(path)` (the server's open-document set is the truth; the reply resolves when it accepted) |
 | read a document | `engine.text(path)`, or `engine.getText(path)` for the `Y.Text` itself |
 | apply a local edit | `engine.insert(path, index, text)` / `engine.delete(path, index, length)` — deltas, not whole-buffer writes |
-| publish a caret | `engine.setSelection(path, { anchor, head })`, or `engine.setAwareness(state)` with any shape |
+| publish a caret | `engine.setSelection(path, { anchor, head })` — editor offsets, converted to the anchors the wire carries; or `engine.setAwareness(state)` with any shape |
+| build one anchor | `engine.anchorAt(path, index, assoc)` — for a state assembled by hand |
 | read remote cursors | `engine.presence()` — `{ clientId, peer, state }`, so `presence.peer?.display_name` is who it is |
+| resolve a remote caret | `engine.resolveSelection(path, selection)` → offsets, or `undefined` while an endpoint does not resolve |
 | membership | `engine.peers()`, `engine.session()` |
 | convergence checks | `engine.stateVector()`, `engine.documents()`, `engine.openDocuments()` |
 | concurrency in tests | `engine.pauseOutbound(true)` — held frames make two edits genuinely concurrent |
@@ -143,13 +145,17 @@ Three contracts the adapter has to keep, each settled by a spike (`SPIKES.md`):
 3. **Do not impose a trailing-newline invariant in the sync layer.** Content is content; if
    the editor wants the invariant, it owns it in one place.
 
-Presence offsets are UTF-16 code units (`anchor`/`head`), which is what `Y.Text` indices and
-VS Code's `offsetAt` both use. They are **not** CRDT-relative positions:
-`DESIGN.md` §4.3 asks for those and `spec/PROTOCOL.md` §12.4 records the gap. An adapter that
-wants a cursor which survives a concurrent paste can compute relative positions from
-`engine.getText(path)` and publish them inside its own `setAwareness` state — the awareness
-state is opaque on the wire (§8.1), so that is a shape change, not a protocol one. Making it
-the *specified* shape is a spec decision, and the first one this work raises.
+**A selection on the wire is two CRDT anchors, never offsets** (`spec/PROTOCOL.md` §8.1).
+Each endpoint is a yjs `RelativePosition` as JSON — one scope, `item` or `tname`, plus
+`assoc` — and no index is carried, so a peer's caret survives a paste above it instead of
+drifting by the length of that paste.
+
+Offsets stop at the editor-adapter seam, where they are UTF-16 code units, the unit
+`Y.Text` indices and VS Code's `offsetAt` both count. `setSelection` takes offsets and
+anchors them; `resolveSelection` turns a peer's anchors back into offsets against this
+replica. Resolution is **deferred**: awareness and sync travel on independent queues, so a
+state whose document has not arrived yet is kept and resolves on a later call, and an
+endpoint that does not resolve means *no selection* — never a clamp or an offset fallback.
 
 ## Tests
 
