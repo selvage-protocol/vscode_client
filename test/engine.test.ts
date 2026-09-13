@@ -1052,6 +1052,49 @@ test('an element that is gone resolves to the boundary, not to nothing', async (
   );
 });
 
+test('a selection endpoint published with assoc 0 extends when an insert lands on it', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'abcdef');
+  await converge(host, guest, PATH);
+
+  guest.setSelection(PATH, { anchor: 2, head: 5 });
+  const before = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.head === 5,
+  );
+  assert.equal(
+    before.presence.state?.selection?.head.assoc,
+    0,
+    "the head endpoint is published with `assoc: 0` (§12.4)",
+  );
+
+  // Exactly on the head endpoint, which is the only place `0` and `-1` differ.
+  host.insert(PATH, 5, 'ZZ');
+  const extended = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.head === 7,
+  );
+  assert.equal(host.text(PATH), 'abcdeZZf');
+  assert.deepEqual(extended.selection, { anchor: 2, head: 7 }, 'the selection extends');
+  assert.deepEqual(
+    extended.presence.state?.selection,
+    before.presence.state?.selection,
+    'nothing was republished: the same endpoint resolved further along',
+  );
+});
+
 test('a yjs-native anchor, scope and element together, resolves as published', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
