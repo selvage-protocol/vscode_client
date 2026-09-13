@@ -1125,7 +1125,15 @@ function numberParam(params: unknown, key: string): number | undefined {
 function sessionFrom(params: unknown, baseUrl: string): SessionInfo | undefined {
   const body = params as SessionParams | undefined;
   const peer = parsePeer(body?.self);
-  if (body === undefined || peer === undefined) {
+  const roomId = body?.room_id;
+  // A session without a room id is not a session: seating it would leave every later
+  // reconnect minting a fresh room instead of reclaiming this one (spec §9.1).
+  if (
+    body === undefined ||
+    peer === undefined ||
+    typeof roomId !== 'string' ||
+    roomId === ''
+  ) {
     return undefined;
   }
   const peers: PeerInfo[] = [];
@@ -1137,7 +1145,7 @@ function sessionFrom(params: unknown, baseUrl: string): SessionInfo | undefined 
   }
   const keepalive = body.keepalive;
   return {
-    roomId: typeof body.room_id === 'string' ? body.room_id : '',
+    roomId,
     ...(typeof body.token === 'string' ? { token: body.token } : {}),
     role: peer.role,
     peer,

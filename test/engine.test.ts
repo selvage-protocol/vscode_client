@@ -180,6 +180,48 @@ test('a close with no recorded reason is read from its close code', async () => 
   );
 });
 
+test('a session reply with no room id is refused, not seated in a room named ""', async (t) => {
+  const socket = new ControlledSocket();
+  let seated: SelvageEngine | undefined;
+  const attempted = SelvageEngine.host('ws://controlled.test', 'Ada', {
+    meta: 'skip',
+    reconnect: false,
+    webSocketFactory: () => socket,
+  }).then((engine: SelvageEngine) => {
+    seated = engine;
+    return engine;
+  });
+  t.after(async () => {
+    await seated?.disconnect();
+  });
+
+  await waitFor('the engine to attach its handlers', () => socket.onopen !== null);
+  socket.open();
+  await waitFor('the engine to send session.hello', () => socket.sent.length > 0);
+  // The room id is what a later reconnect carries; without it the next hello would mint
+  // a second room instead of rejoining this one.
+  socket.deliver(
+    JSON.stringify({
+      v: 'selvage/1',
+      event: 'room.joined',
+      params: {
+        self: { peer_id: 'p-1', display_name: 'Ada', role: 'host' },
+        peers: [],
+        documents: [],
+        capabilities: [],
+        keepalive: {
+          ping_interval_ms: 30_000,
+          awareness_renew_ms: 15_000,
+          awareness_expire_ms: 30_000,
+        },
+      },
+    }),
+  );
+  await assert.rejects(attempted, (error: unknown) =>
+    isProtocolError(error, 'bad_message'),
+  );
+});
+
 test('/meta is read before connecting: unreachable is advisory, incompatible is a refusal', async (t) => {
   // `/meta` that names only a version this client cannot speak: refused, no socket opened.
   const incompatible = await FakeServer.start({ metaWireVersions: ['selvage/2'] });
