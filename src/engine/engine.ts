@@ -238,7 +238,7 @@ export class SelvageEngine {
     clearInterval(this.awareness._checkInterval);
     this.wireAwareness();
     this.wireDocument();
-    this.awareness.setLocalState(this.localState ?? {});
+    this.publishAwareness();
   }
 
   // -- opening a session -----------------------------------------------------
@@ -506,10 +506,10 @@ export class SelvageEngine {
 
   // -- presence --------------------------------------------------------------
 
-  /** Publishes this client's presence: document path plus selection. */
+  /** Publishes this client's presence: document path plus selection. `null` clears it. */
   setAwareness(state: AwarenessState | null): void {
     this.localState = state;
-    this.awareness.setLocalState(state ?? {});
+    this.awareness.setLocalState(state);
   }
 
   setSelection(path: string, selection: Selection): void {
@@ -634,7 +634,7 @@ export class SelvageEngine {
     // with what we are missing. Then publish our awareness, so a newcomer's presence is
     // complete before anyone moves a cursor.
     this.enqueueBinary(encodeSyncStep1(this.doc));
-    this.awareness.setLocalState(this.localState ?? {});
+    this.publishAwareness();
     this.flush();
     this.clearTimers();
     this.timer = setInterval(() => {
@@ -726,6 +726,15 @@ export class SelvageEngine {
 
   // -- the awareness clock ---------------------------------------------------
 
+  /** Publishes the local awareness state, unless the adapter cleared it. */
+  private publishAwareness(): void {
+    // A cleared state stays cleared: publishing `{}` would put a live empty presence —
+    // a cursor at nowhere — back on the wire.
+    if (this.localState !== null) {
+      this.awareness.setLocalState(this.localState);
+    }
+  }
+
   /** Renewal and expiry, on the server's clock (spec §8.2). */
   private tick(): void {
     if (!this.seated) {
@@ -734,9 +743,7 @@ export class SelvageEngine {
     // Renewing means republishing the same state with a newer awareness clock. Remote
     // states are forgotten on this tick, so a state goes at the first tick after
     // `last_updated + awareness_expire_ms` — within one renewal of the advertised value.
-    if (this.localState !== null) {
-      this.awareness.setLocalState(this.localState);
-    }
+    this.publishAwareness();
     const deadline = Date.now() - this.clock.expireMs;
     const stale: number[] = [];
     for (const [clientId, meta] of this.awareness.meta) {
@@ -913,7 +920,7 @@ export class SelvageEngine {
           this.emit({ type: 'peersChanged', peers: this.peers() });
           // A newcomer has no awareness of us yet: republish ours, so its presence list
           // is complete before anyone moves a cursor.
-          this.awareness.setLocalState(this.localState ?? {});
+          this.publishAwareness();
         }
         break;
       }

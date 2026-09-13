@@ -413,6 +413,39 @@ test('presence is attributed to a peer, and dropped when that peer leaves', asyn
   );
 });
 
+test('setAwareness(null) clears presence rather than publishing an empty state', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await waitForPeer(host, 'Bob');
+
+  guest.setAwareness({ path: PATH, selection: caret(0) });
+  const shown = await waitFor("Bob's presence to carry his state", () =>
+    host
+      .presence()
+      .find(
+        (presence) =>
+          presence.peer?.display_name === 'Bob' &&
+          presence.state?.selection !== undefined,
+      ) ?? false,
+  );
+  assert.deepEqual(shown.state, { path: PATH, selection: { anchor: 0, head: 0 } });
+
+  // `null` means the cursor is gone (spec §8.2), not that it is at nowhere in particular.
+  guest.setAwareness(null);
+  await waitFor(
+    "Bob's presence to be gone",
+    () =>
+      host.presence().some((presence) => presence.peer?.display_name === 'Bob') ===
+      false,
+    { describe: () => host.presence() },
+  );
+});
+
 test('a remote state that stops renewing is forgotten on the server-advertised clock', async (t) => {
   // The reader runs a compressed clock; the silent peer runs a long one, so it publishes
   // once and never renews. §8.2: expiry is the reader's, at the advertised scale.
