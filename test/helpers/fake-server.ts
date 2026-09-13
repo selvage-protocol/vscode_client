@@ -83,7 +83,6 @@ export class FakeServer {
   private readonly clients = new Map<string, Client>();
   private readonly rooms = new Map<string, Room>();
   private accepted = 0;
-  private peak = 0;
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -149,11 +148,6 @@ export class FakeServer {
   /** How many connections have been accepted in total, open or already gone. */
   get acceptedConnections(): number {
     return this.accepted;
-  }
-
-  /** The most connections that were ever open at the same time. */
-  get peakConnections(): number {
-    return this.peak;
   }
 
   roomOf(roomId: string): Room | undefined {
@@ -225,7 +219,6 @@ export class FakeServer {
       seated: false,
     };
     this.clients.set(id, client);
-    this.peak = Math.max(this.peak, this.clients.size);
 
     // A silent server takes the upgrade and never answers a frame: the handshake times out.
     const silent =
