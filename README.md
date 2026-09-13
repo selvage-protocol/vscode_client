@@ -42,7 +42,7 @@ CI should not depend on the hooks.
 Then:
 
 ```console
-$ npm test                    # everything: 38 tests, ~0.7 s
+$ npm test                    # everything: 40 tests, ~1 s
 $ npm run test:engine         # wire layer + engine + reconnect, no Rust build needed
 $ npm run test:spikes         # the three pre-adapter experiments
 $ npm run test:selvaged       # the conformance gate, needs impl/target/*/selvaged
@@ -146,7 +146,7 @@ the *specified* shape is a spec decision, and the first one this work raises.
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 | `test/boundary.test.ts` | no `vscode` import, no undeclared dependency, the public surface exists |
 
-`npm test` runs them all: **38 tests, 0 failures, ~0.7 s**, of which 4 run against the real
+`npm test` runs them all: **40 tests, 0 failures, ~1 s**, of which 4 run against the real
 server. Nothing sleeps and hopes: every wait is a bounded poll of a real predicate that
 reports the state it observed when it fails (`test/helpers/wait.ts`).
 
