@@ -14,7 +14,7 @@ import { Awareness, removeAwarenessStates } from 'y-protocols/awareness';
 import {
   DEFAULT_KEEPALIVE,
   WIRE_VERSION,
-  closeCodeFor,
+  close,
   code as errCode,
   event as eventName,
   helloParams,
@@ -334,6 +334,9 @@ export class SelvageEngine {
     const generation = (this.generation += 1);
     // Request ids are unique per connection, so a new connection starts counting again.
     this.requestId = 0;
+    // A refusal belongs to the connection that received it: a close must report the
+    // session.error of *this* handshake, not one left over from the socket before.
+    this.refusal = undefined;
     const url = sessionUrl(
       this.options.baseUrl,
       this.room,
@@ -664,10 +667,12 @@ export class SelvageEngine {
     }
     if (this.handshaking) {
       // A handshake owns this socket, whether it is the first one or a retry: the
-      // rejection carries the reason, and the caller decides whether to retry.
+      // rejection carries the reason, and the caller decides whether to retry. Every
+      // 4000 close means a different fault (§11), so the code the server named wins
+      // over the close code, and an unmapped close is a handshake that did not finish.
       this.rejectSeat(
         new ProtocolError(
-          closeCodeName(code) ?? errCode.badMessage,
+          this.refusal?.code ?? closeCodeName(code) ?? errCode.helloRequired,
           reason === '' ? `the connection closed with ${code}` : reason,
         ),
       );
@@ -1066,14 +1071,25 @@ export class SelvageEngine {
   }
 }
 
-/** The session error code a close code stands for, where it has one. */
+/** The session error code a close code stands for, where it stands for one. */
 function closeCodeName(code: number): string | undefined {
-  for (const name of Object.values(errCode)) {
-    if (closeCodeFor(name) === code) {
-      return name;
-    }
+  switch (code) {
+    case close.roomUnknown:
+      return errCode.roomUnknown;
+    case close.tokenInvalid:
+      return errCode.tokenInvalid;
+    case close.roomGone:
+      return errCode.roomGone;
+    case close.hostPresent:
+      return errCode.hostPresent;
+    case close.unsupportedVersion:
+      return errCode.unsupportedVersion;
+    // 4000 is protocol_error, the general refusal, which §11 spells `bad_message`.
+    case close.protocolError:
+      return errCode.badMessage;
+    default:
+      return undefined;
   }
-  return undefined;
 }
 
 function textParam(params: unknown, key: string): string | undefined {

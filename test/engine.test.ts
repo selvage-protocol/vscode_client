@@ -10,6 +10,7 @@ import { SelvageEngine } from '../src/engine/engine.ts';
 import { ProtocolError, isProtocolError } from '../src/engine/errors.ts';
 import { caret } from '../src/engine/presence.ts';
 import { FakeServer } from './helpers/fake-server.ts';
+import { ControlledSocket } from './helpers/controlled-socket.ts';
 import { fakeSession, options } from './helpers/session.ts';
 import {
   converge,
@@ -107,6 +108,49 @@ test('a refusal is reported with its session error code', async (t) => {
       displayName: 'Eve',
     })),
     (error: unknown) => isProtocolError(error, 'bad_params'),
+  );
+});
+
+test('a handshake refused with close 4000 keeps the code the server named', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  // §11: bad_params, bad_message and hello_required all close with 4000, so the close
+  // code alone names none of them. The session.error before it is what names the fault.
+  await assert.rejects(
+    SelvageEngine.host(server.wsBase, '', { meta: 'skip' }),
+    (error: unknown) => isProtocolError(error, 'bad_params'),
+  );
+});
+
+test('a close with no recorded reason is read from its close code', async () => {
+  const protocolError = new ControlledSocket();
+  const refused = SelvageEngine.host('ws://controlled.test', 'Ada', {
+    meta: 'skip',
+    reconnect: false,
+    webSocketFactory: () => protocolError,
+  });
+  await waitFor('the engine to attach its handlers', () => protocolError.onopen !== null);
+  protocolError.open();
+  // 4000 is protocol_error; with no session.error before it, §11 calls it bad_message.
+  protocolError.fromPeer(4000, 'protocol_error');
+  await assert.rejects(refused, (error: unknown) =>
+    isProtocolError(error, 'bad_message'),
+  );
+
+  const wentAway = new ControlledSocket();
+  const abandoned = SelvageEngine.host('ws://controlled.test', 'Ada', {
+    meta: 'skip',
+    reconnect: false,
+    webSocketFactory: () => wentAway,
+  });
+  await waitFor('the engine to attach its handlers', () => wentAway.onopen !== null);
+  wentAway.open();
+  // A clean close reports no fault: what happened is that the handshake never completed.
+  wentAway.fromPeer(1000, '');
+  await assert.rejects(abandoned, (error: unknown) =>
+    isProtocolError(error, 'hello_required'),
   );
 });
 
