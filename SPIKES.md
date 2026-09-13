@@ -26,9 +26,10 @@ Source: `test/spikes/cursor-drift.test.ts`, `test/spikes/echo-guard.test.ts`,
 
 ## Spike 1 — does a cursor survive a concurrent edit, and in what unit?
 
-**Question (§7 #1).** The awareness state carries `{ anchor, head }` as integers
-(`spec/PROTOCOL.md` §8.1), `DESIGN.md` §4.3 asks for CRDT-relative positions, §12.4 of the
-spec records the gap as *known*, and the unit is not stated anywhere.
+**Question (§7 #1).** Does a cursor survive a concurrent edit at all, and in what unit does an
+editor speak — bytes, UTF-16 code units, or code points? `DESIGN.md` §4.3 asks for CRDT-relative
+positions rather than offsets; §8.1 of the spec has made them the wire shape and named the unit
+(see *Decision* below).
 
 **Experiment.** Two `Y.Doc`s exchanging y-protocols frames, the way the server relays them;
 Ada publishes her caret in a `message_type = 1` awareness frame; Bob inserts 157 characters

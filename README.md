@@ -42,7 +42,7 @@ CI should not depend on the hooks.
 Then:
 
 ```console
-$ npm test                    # everything: 49 tests, of which 4 need the Rust build
+$ npm test                    # everything: 69 tests, of which 4 need the Rust build
 $ npm run test:engine         # wire layer + engine + reconnect, no Rust build needed
 $ npm run test:spikes         # the three pre-adapter experiments
 $ npm run test:selvaged       # the conformance gate, needs impl/target/*/selvaged
@@ -163,12 +163,13 @@ endpoint that does not resolve means *no selection* — never a clamp or an offs
 |---|---|
 | `test/envelope.test.ts` | version compatibility (same-major, minor decisive only at 0.x), error/close codes, URL round-trips, permissive envelope parsing |
 | `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, convergence, presence attribution and expiry, the room lifecycle, hostile frames |
+| `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again (a fresh `join()`, not the reconnect path), close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 | `test/boundary.test.ts` | no `vscode` import, no undeclared dependency, the public surface exists |
 
-`npm test` runs them all: **49 tests, 0 failures**, of which 4 need a built `selvaged`
+`npm test` runs them all: **69 tests, 0 failures**, of which 4 need a built `selvaged`
 and run against nothing else. Waits are bounded polls of a real predicate that report the
 state they observed on failure (`test/helpers/wait.ts`), not `sleep`-and-hope. The one
 assertion that used to sample an asynchronous count is the abandoned-connection count in
