@@ -42,7 +42,7 @@ CI should not depend on the hooks.
 Then:
 
 ```console
-$ npm test                    # everything: 40 tests, ~1 s
+$ npm test                    # everything: 48 tests, of which 4 need the Rust build
 $ npm run test:engine         # wire layer + engine + reconnect, no Rust build needed
 $ npm run test:spikes         # the three pre-adapter experiments
 $ npm run test:selvaged       # the conformance gate, needs impl/target/*/selvaged
@@ -55,7 +55,9 @@ rather than skipping: the point of that suite is the real server. The rest of th
 against a fake `selvaged` (`test/helpers/fake-server.ts`) that implements the handshake, the
 document-set semantics, the grace period and payload-opaque relay — it exists for the faults
 the real server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta`
-naming a version this client cannot speak), not as a substitute for it.
+naming a version this client cannot speak), not as a substitute for it. It **shares
+`src/engine/envelope.ts` with the engine**, so it can never catch a constant that disagrees
+with the spec: both sides would be wrong the same way. Only `test:selvaged` can.
 
 ## Modules
 
@@ -76,6 +78,22 @@ produced, and events are delivered to listeners in the order frames arrived, so 
 reacts to `documentChanged` instead of polling. There is no worker, no native module and no
 second process: `DESIGN.md` §6 has VS Code embed both halves, and the module seam is what
 keeps a sidecar a later *move* rather than a rewrite.
+
+Two bounds, and one that is not there. `connect()` is bounded by `handshakeTimeoutMs` (10 s
+by default), which covers the upgrade *and* the handshake: if it expires the socket is closed
+and the attempt rejects. `open()` and `close()` have no client-side deadline of their own —
+they resolve when the server answers, and are failed with `EngineClosedError` when the socket
+their request went out on dies, or when there is no seated connection to send on at all. A
+request issued mid-reconnect is refused rather than queued for the next connection, where it
+would be replayed under an id that connection had already reissued. A server that keeps the
+socket up and never answers leaves a request pending, and there is no per-request timer to
+stop it. A deadline that abandons a non-idempotent request is a design decision rather than
+an oversight — it can diverge the client's holds from the room's set, which is the failure a
+reconnect is meant to repair — and it is left to the spec rather than invented here.
+
+A reconnect announces itself last: the engine re-opens the documents this client still holds
+*before* it emits `documentsChanged` and `peersChanged`, so an adapter that opens a document
+in answer to those events is ordered after the engine's own re-opens instead of racing them.
 
 ## Where the adapter attaches
 
@@ -127,8 +145,8 @@ Three contracts the adapter has to keep, each settled by a spike (`SPIKES.md`):
 3. **Do not impose a trailing-newline invariant in the sync layer.** Content is content; if
    the editor wants the invariant, it owns it in one place.
 
-Presence offsets are UTF-16 code units (`anchor`/`head`), which is what `Y.Text` indices, VS
-Code's `offsetAt` and `yrs`'s default all use. They are **not** CRDT-relative positions:
+Presence offsets are UTF-16 code units (`anchor`/`head`), which is what `Y.Text` indices and
+VS Code's `offsetAt` both use. They are **not** CRDT-relative positions:
 `DESIGN.md` §4.3 asks for those and `spec/PROTOCOL.md` §12.4 records the gap. An adapter that
 wants a cursor which survives a concurrent paste can compute relative positions from
 `engine.getText(path)` and publish them inside its own `setAwareness` state — the awareness
@@ -142,13 +160,21 @@ the *specified* shape is a spec decision, and the first one this work raises.
 | `test/envelope.test.ts` | version compatibility (same-major, minor decisive only at 0.x), error/close codes, URL round-trips, permissive envelope parsing |
 | `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, convergence, presence attribution and expiry, the room lifecycle, hostile frames |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
-| `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a rejoining guest, close semantics |
+| `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again (a fresh `join()`, not the reconnect path), close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 | `test/boundary.test.ts` | no `vscode` import, no undeclared dependency, the public surface exists |
 
-`npm test` runs them all: **40 tests, 0 failures, ~1 s**, of which 4 run against the real
-server. Nothing sleeps and hopes: every wait is a bounded poll of a real predicate that
-reports the state it observed when it fails (`test/helpers/wait.ts`).
+`npm test` runs them all: **48 tests, 0 failures**, of which 4 need a built `selvaged`
+and run against nothing else. Waits are bounded polls of a real predicate that report the
+state they observed on failure (`test/helpers/wait.ts`), not `sleep`-and-hope. The one
+assertion that used to sample an asynchronous count is the abandoned-connection count in
+`test/reconnect.test.ts`, which now waits for it.
+
+The seam check is two halves. `test/boundary.test.ts` scans the engine's source for
+`vscode`, `vscode-*` and `@types/vscode` specifiers — static or dynamic, in either quote
+style — which is what catches an `import type`, erased before Node ever runs it. `npm run
+typecheck` is the other half, and `ci.yml` runs it before `test:fast`; `test:fast` itself
+does not compile.
 
 ## Not here
 

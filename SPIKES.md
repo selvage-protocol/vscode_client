@@ -52,16 +52,25 @@ at offset 0; Ada merges Bob's update and the caret is resolved again.
    wire has to change: `§8.1` makes the state opaque and this is a shape *inside* it.
 2. **The unit is UTF-16 code units.** For `"😀x"`, `Y.Text.length` is 3 — the emoji is a
    surrogate pair — while the code points are 2 and the UTF-8 bytes are 5. Index 1 is the
-   low surrogate, not `x`. That is the same unit as VS Code's `TextDocument.offsetAt` and
-   as `yrs`'s default `OffsetKind::Utf16` (`impl/crates/client/src/presence.rs` carries
-   `u32` offsets), so **the Rust client and this engine already agree**, and neither
-   `PROTOCOL.md` §8.1 nor `DESIGN.md` §4.3 says so. An offset in code points or bytes is a
-   silent off-by-one per emoji, and a selection inside a surrogate pair is a state a peer
-   must tolerate rather than reject.
+   low surrogate, not `x`. That is VS Code's unit (`TextDocument.offsetAt`) and yjs's, so
+   this engine and its adapter agree, and an offset in code points or bytes is a silent
+   off-by-one per emoji. A selection inside a surrogate pair is a state a peer must
+   tolerate rather than reject.
+3. **The Rust client does not agree, and that is the finding.** `yrs` 0.27.4's
+   `Doc::new()` defaults to `OffsetKind::Bytes`
+   (`~/.cargo/registry/src/*/yrs-0.27.4/src/doc.rs`), `impl/crates/client/src/engine.rs`
+   takes that default, and `impl/crates/client/src/presence.rs` renders the resulting
+   `u32` as a selection — verified, and already recorded as finding **B** in
+   `docs/studies/awareness-and-reconnect.md`. On non-ASCII text the two clients therefore
+   name *different* positions for the same cursor: the opposite of what an earlier version
+   of this spike asserted from "the Rust client carries `u32` offsets", which says nothing
+   about the unit those integers are counted in. The engine's unit is not the open
+   question — VS Code and yjs are both UTF-16 — the Rust client has to be moved to
+   `OffsetKind::Utf16`. That is a change on the Rust side, tracked separately.
 
 **Decision for this engine.** The wire shape stays as the spec has it — `{ anchor, head }`
-offsets, in UTF-16 code units — because the Rust client and the spec are the authority and
-the engine does not get to unilaterally change a wire shape. The engine gives the adapter
+offsets, in UTF-16 code units — because the spec's shape is what every client reads and the
+engine does not get to unilaterally change a wire shape. The engine gives the adapter
 what it needs to move to relative positions *without* a protocol change:
 
 - `engine.getText(path)` returns the `Y.Text`, so an adapter can do
