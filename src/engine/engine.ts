@@ -487,16 +487,19 @@ export class SelvageEngine {
     return this.request('close', path);
   }
 
-  /** The current text of a document. Empty for a document this replica does not hold. */
+  /**
+   * The current text of a document: relayed content if there is any, even for a path this
+   * connection never opened. Empty when this replica has received nothing for it.
+   */
   text(path: string): string {
     return this.textIfPresent(path)?.toString() ?? '';
   }
 
   /**
    * The `Y.Text` behind a path, for an adapter that needs CRDT-relative positions. Creates
-   * it when it is not there yet, so an anchor taken from a document that has not arrived
-   * names nothing but the scope — a caller that publishes one publishes a position with no
-   * element in it (§8.1).
+   * it when it is not there yet, which only a local edit otherwise does: an anchor taken
+   * from a document that has not arrived names nothing but the scope, and a caller that
+   * publishes one publishes a position with no element in it (§8.1).
    */
   getText(path: string): Y.Text {
     return this.doc.getText(path);
@@ -561,8 +564,8 @@ export class SelvageEngine {
     this.setAwareness({
       path,
       selection: {
-        anchor: this.anchorAt(path, selection.anchor),
-        head: this.anchorAt(path, selection.head),
+        anchor: this.anchorIn(text, selection.anchor),
+        head: this.anchorIn(text, selection.head),
       },
     });
   }
@@ -576,20 +579,34 @@ export class SelvageEngine {
     return this.doc.share.has(path) ? this.doc.getText(path) : undefined;
   }
 
-  /** The anchor for an offset into `path`, with `assoc` as §8.1 defines it. */
-  anchorAt(path: string, index: number, assoc = 0): Anchor {
-    return toAnchor(
-      Y.createRelativePositionFromTypeIndex(this.doc.getText(path), index, assoc),
-    );
+  /**
+   * The anchor for an offset into `path`, with `assoc` as §8.1 defines it, or `undefined`
+   * when this replica has received nothing for it. Reading a path must not bring a text
+   * into being: an anchor for a document that has not arrived names nothing but the scope,
+   * and §8.1 forbids publishing one.
+   */
+  anchorAt(path: string, index: number, assoc = 0): Anchor | undefined {
+    const text = this.textIfPresent(path);
+    return text === undefined ? undefined : this.anchorIn(text, index, assoc);
+  }
+
+  /** The anchor for an offset into a text this replica already has. */
+  private anchorIn(text: Y.Text, index: number, assoc = 0): Anchor {
+    return toAnchor(Y.createRelativePositionFromTypeIndex(text, index, assoc));
   }
 
   /**
    * Resolves a peer's selection to offsets in this replica, or `undefined` when either
    * endpoint does not resolve — a document that has not arrived yet resolves later, which
-   * is why a caller resolves on demand rather than the parser resolving once (§8.1).
+   * is why a caller resolves on demand rather than the parser resolving once (§8.1). A
+   * path this replica has received nothing for is one of those refusals: resolving it
+   * against an empty text would put the peer's cursor at 0 in a document nobody has seen.
    */
   resolveSelection(path: string, selection: Selection): OffsetSelection | undefined {
-    const text = this.doc.getText(path);
+    const text = this.textIfPresent(path);
+    if (text === undefined) {
+      return undefined;
+    }
     const anchor = this.resolveAnchor(path, text, selection.anchor);
     const head = this.resolveAnchor(path, text, selection.head);
     if (anchor === undefined || head === undefined) {

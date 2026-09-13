@@ -126,9 +126,9 @@ host.on((event) => {
 | read a document | `engine.text(path)`, or `engine.getText(path)` for the `Y.Text` itself |
 | apply a local edit | `engine.insert(path, index, text)` / `engine.delete(path, index, length)` — deltas, not whole-buffer writes |
 | publish a caret | `engine.setSelection(path, { anchor, head })` — editor offsets, converted to the anchors the wire carries; or `engine.setAwareness(state)` with any shape |
-| build one anchor | `engine.anchorAt(path, index, assoc)` — for a state assembled by hand |
+| build one anchor | `engine.anchorAt(path, index, assoc)` — for a state assembled by hand, or `undefined` when this replica has received nothing for `path` |
 | read remote cursors | `engine.presence()` — `{ clientId, peer, state }`, so `presence.peer?.display_name` is who it is |
-| resolve a remote caret | `engine.resolveSelection(path, selection)` → offsets, or `undefined` while an endpoint does not resolve |
+| resolve a remote caret | `engine.resolveSelection(path, selection)` → offsets, or `undefined` when an endpoint does not resolve or the document has not arrived |
 | membership | `engine.peers()`, `engine.session()` |
 | convergence checks | `engine.stateVector()`, `engine.documents()`, `engine.openDocuments()` |
 | concurrency in tests | `engine.pauseOutbound(true)` — held frames make two edits genuinely concurrent |

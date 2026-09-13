@@ -26,6 +26,13 @@ import {
 
 const PATH = 'src/main.rs';
 
+/** `anchorAt` for a document the test has already put a text behind. */
+function anchored(engine: SelvageEngine, path: string, index: number): Anchor {
+  const anchor = engine.anchorAt(path, index);
+  assert.ok(anchor !== undefined, `no text for ${path}: the replica received nothing`);
+  return anchor;
+}
+
 test('a host mints a room and gets an invite URL it can be joined through', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
@@ -535,9 +542,17 @@ test('setAwareness(null) clears presence rather than publishing an empty state',
   const { host, guest } = session;
   await waitForPeer(host, 'Bob');
 
-  // Nobody has written to this document, so the only encoding for the position is the
-  // `tname` scope — §8.1 requires it rather than treating it as a degenerate case.
-  guest.setAwareness({ path: PATH, selection: caret(guest.anchorAt(PATH, 0)) });
+  // The document is here and genuinely empty — written and then deleted away, so both
+  // replicas have the text and neither has a character. This is what §8.1's scope-only
+  // form encodes; a document that never arrived is a different thing.
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'x');
+  await converge(host, guest, PATH);
+  host.delete(PATH, 0, 1);
+  await converge(host, guest, PATH);
+
+  guest.setAwareness({ path: PATH, selection: caret(anchored(guest, PATH, 0)) });
   const shown = await waitForSelection(host, 'Bob', PATH);
   assert.equal(shown.presence.state?.path, PATH);
   assert.deepEqual(shown.selection, { anchor: 0, head: 0 });
@@ -614,6 +629,83 @@ test('a sender publishes no selection it cannot anchor', async (t) => {
   assert.deepEqual(held.selection, { anchor: 1, head: 1 });
 });
 
+test('reading a path this replica has not received does not make it anchorable', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const other = 'src/other.rs';
+  /** Ada's state as Bob sees it: the wire, not this engine's own view. */
+  const asSeenByBob = (): AwarenessState | undefined =>
+    guest.presence().find((presence) => presence.peer?.display_name === 'Ada')?.state;
+
+  // In the room's open set, and received by nobody: no replica has a text for it.
+  await host.open(other);
+
+  // The two reads an adapter makes while rendering — a peer's cursor, and an anchor for a
+  // state assembled by hand. Each of them used to hand back a freshly created empty text,
+  // which is a document arriving by the act of reading it.
+  const resolved = host.resolveSelection(other, caret({ tname: other, assoc: 0 }));
+  const anchor = host.anchorAt(other, 0);
+
+  // §8.1: the path travels and the selection does not, exactly as if nothing were read.
+  host.setSelection(other, { anchor: 0, head: 0 });
+  const unwritten = await waitFor(
+    "Ada's state for a document she has not received",
+    () => {
+      const state = asSeenByBob();
+      return state?.path === other ? state : false;
+    },
+    { describe: () => guest.presence() },
+  );
+  assert.equal(unwritten.selection, undefined, 'a read is not a local edit');
+
+  // And each read reports the absence rather than inventing a position to resolve to.
+  assert.equal(resolved, undefined, 'nothing has arrived, so nothing resolves');
+  assert.equal(anchor, undefined, 'nothing has arrived, so no anchor points into it');
+});
+
+test("a peer's scope-only anchor for a document that has not arrived resolves to nothing", async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const other = 'src/other.rs';
+  await host.open(other);
+
+  // What the wire carries for a caret in an empty text: the scope alone, published through
+  // `setAwareness`, which ships a state verbatim. Ada has received nothing for the path, and
+  // the receiver's rule matches the sender's — there is no position to resolve rather than
+  // one at 0 in a document she has never seen.
+  guest.setAwareness({ path: other, selection: caret({ tname: other, assoc: 0 }) });
+  const held = await waitFor(
+    "Ada to hold Bob's scope-only anchor",
+    () =>
+      host
+        .presence()
+        .find(
+          (candidate) =>
+            candidate.peer?.display_name === 'Bob' &&
+            candidate.state?.path === other &&
+            candidate.state.selection !== undefined,
+        ) ?? false,
+    { describe: () => host.presence() },
+  );
+  const selection = held.state?.selection;
+  assert.ok(selection !== undefined, 'the state carries the scope alone');
+  assert.equal(
+    host.resolveSelection(other, selection),
+    undefined,
+    'an unarrived document is not a document at offset 0',
+  );
+});
+
 test('a remote state that stops renewing is forgotten on the server-advertised clock', async (t) => {
   // The reader runs a compressed clock; the silent peer runs a long one, so it publishes
   // once and never renews. §8.2: expiry is the reader's, at the advertised scale.
@@ -624,7 +716,9 @@ test('a remote state that stops renewing is forgotten on the server-advertised c
     await session.server.stop();
   });
   const { host, guest } = session;
-  host.setAwareness({ path: PATH, selection: caret(host.anchorAt(PATH, 0)) });
+  // A path and nothing else: this test is about the clock, and no document exists here
+  // for a selection to point into.
+  host.setAwareness({ path: PATH });
 
   const bob = guest.session().peer.awareness_client_id;
   assert.equal(typeof bob, 'number');
@@ -642,7 +736,7 @@ test('a remote state that stops renewing is forgotten on the server-advertised c
   await waitForPresence(reader, 'Ada');
 
   // The guest's clock is long enough that it does not renew inside the reader's window.
-  guest.setAwareness({ path: PATH, selection: caret(guest.anchorAt(PATH, 0)) });
+  guest.setAwareness({ path: PATH });
   await waitForPresence(reader, 'Bob');
   await waitFor(
     "the reader to forget a state that stopped renewing",
@@ -958,7 +1052,7 @@ test('an endpoint that does not resolve is no selection, and the state is kept',
   );
 
   // And the contrast: unknown keys on a sound anchor still resolve (§8.1).
-  const anchor = guest.anchorAt(PATH, 4);
+  const anchor = anchored(guest, PATH, 4);
   guest.setAwareness({
     path: PATH,
     selection: { anchor: { ...anchor, mystery: 'ignored' }, head: anchor },
@@ -991,7 +1085,7 @@ test('an element is a position only in the text its state names', async (t) => {
   // The element exists and resolves — in the other text. `item` is the element, `path` is
   // where the state puts it, and the branch check is the only thing that catches the two
   // disagreeing: a `yrs` anchor carries no `tname` for the scope test to reject.
-  const elsewhere = host.anchorAt(other, 0);
+  const elsewhere = anchored(host, other, 0);
   assert.ok(elsewhere.item !== undefined);
   const itemOnly: Anchor = { item: elsewhere.item, assoc: 0 };
   guest.setAwareness({ path: PATH, selection: caret(itemOnly) });
