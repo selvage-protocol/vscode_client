@@ -73,8 +73,8 @@ at offset 0; Ada merges Bob's update and the caret is resolved again.
 **Decision for this engine — made, and implemented.** This was the one item the spike
 could not settle on its own: a wire shape is a spec decision, not an engine one. `spec/PROTOCOL.md`
 §8.1 has since made it. **A selection is two CRDT anchors and no index reaches the wire.**
-Each endpoint is a yjs `RelativePosition` as JSON: one scope — `item`, or `tname` for a
-position with no element to name — plus `assoc`. The engine conforms:
+Each endpoint is a yjs `RelativePosition` as JSON: a scope (`tname`, the document path),
+an optional `item` naming an element inside it, and `assoc`. The engine conforms:
 
 - `engine.setSelection(path, { anchor, head })` still takes editor **offsets** and anchors
   them, so the adapter seam goes on speaking the unit the editor speaks (UTF-16 code units);
@@ -85,12 +85,15 @@ position with no element to name — plus `assoc`. The engine conforms:
   and sync frames travel on independent queues. A state whose document has not arrived is
   kept and resolves on a later call rather than being discarded.
 
-One thing §8.1 says that yjs does not do natively: it carries **exactly one** non-null
-scope, while `Y.createRelativePositionFromTypeIndex` sets `tname` *and* `item` together for
-a root type — `tname` names the scope, `item` the element inside it. This engine emits
-`item` alone where there is one, which resolves identically, and verifies the branch it
-resolved into is the `Y.Text` for `path`. A strict receiver reading §8.1 literally rejects
-the shape yjs produces unedited, which is worth a spec clarification.
+**The shape is the library's, not a reading of it.** An earlier draft of §8.1 called
+`item`, `tname` and `type` three alternatives, of which exactly one could be non-null.
+yjs does not work that way: `Y.createRelativePositionFromTypeIndex` sets `tname` *and*
+`item` together for a root type, because `tname`/`type` name the **scope** and `item` the
+**element** within it. Implementing the "exactly one" reading made this engine reject the
+shape every yjs peer publishes — a cursor that silently never renders, which is the exact
+interop failure anchors exist to prevent. §8.1 has been amended, and the engine now ships
+`Y.relativePositionToJSON` output unedited and accepts the pair: `item` is authoritative
+for the position, and the scope is a check that it belongs to `path`.
 
 ---
 

@@ -8,7 +8,10 @@ import assert from 'node:assert/strict';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { EngineClosedError, ProtocolError, isProtocolError } from '../src/engine/errors.ts';
+import * as Y from 'yjs';
+
 import { caret } from '../src/engine/presence.ts';
+import type { Anchor } from '../src/engine/presence.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
 import { fakeSession, options } from './helpers/session.ts';
@@ -863,7 +866,7 @@ test('an endpoint that does not resolve is no selection, and the state is kept',
   // An element no replica has ever seen: unresolvable, and not an exception.
   guest.setAwareness({
     path: PATH,
-    selection: caret({ item: { client: 987_654_321, clock: 42 }, assoc: 0 }),
+    selection: caret({ item: { client: 987_654_321, clock: 42 }, tname: PATH, assoc: 0 }),
   });
   const unknown = await held(
     "the host to hold Bob's anchor into an unknown client",
@@ -910,4 +913,46 @@ test('an endpoint that does not resolve is no selection, and the state is kept',
     (selection) => selection.anchor === 4,
   );
   assert.deepEqual(tolerated.selection, { anchor: 4, head: 4 });
+});
+
+test('a yjs-native anchor, scope and element together, resolves as published', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'fn main() {}\n');
+  await converge(host, guest, PATH);
+
+  // Exactly what the library emits, shipped unedited: `tname` is the scope and `item` the
+  // element inside it. Built through yjs so this keeps tracking the library's own shape.
+  const native = Y.relativePositionToJSON(
+    Y.createRelativePositionFromTypeIndex(guest.getText(PATH), 4),
+  ) as Record<string, unknown>;
+  assert.equal(native.tname, PATH, 'the scope is the document path');
+  assert.equal(typeof native.item, 'object', 'and the element travels with it');
+
+  const shipped = JSON.parse(JSON.stringify(native)) as Anchor;
+  guest.setAwareness({ path: PATH, selection: { anchor: shipped, head: shipped } });
+  const seen = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.anchor === 4,
+  );
+  assert.deepEqual(seen.selection, { anchor: 4, head: 4 });
+  assert.equal(seen.presence.state?.selection?.anchor.tname, PATH);
+
+  // The scope is a check on the element: a tname naming another document fails even
+  // though the item it carries is perfectly sound.
+  const wrongScope: Anchor = { ...shipped, tname: 'docs/notes.md' };
+  assert.equal(
+    host.resolveSelection(PATH, { anchor: wrongScope, head: wrongScope }),
+    undefined,
+    'tname must equal the path the selection is resolved against',
+  );
 });

@@ -28,10 +28,12 @@ export interface AnchorId {
 }
 
 /**
- * A selection endpoint, in the format of a yjs `RelativePosition` (§8.1): exactly one
- * non-null scope — `item`, `tname` (for Selvage, the document path), or `type` (nested,
- * never produced by this version) — plus `assoc`, `0` for the element after the position
- * and `-1` for the one before. No index is ever carried on the wire.
+ * A selection endpoint, in the format of a yjs `RelativePosition` (§8.1): a scope —
+ * `tname` (for Selvage, the document path) or `type` (nested, never produced by this
+ * version) — an optional `item` naming an element inside that scope, and `assoc`, `0` for
+ * the element after the position and `-1` for the one before. Scope and element are not
+ * alternatives: where `item` is present it is authoritative and the scope checks it. No
+ * index is ever carried on the wire.
  */
 export interface Anchor {
   item?: AnchorId;
@@ -69,20 +71,20 @@ function normaliseAssoc(assoc: unknown): number {
 }
 
 /**
- * The wire form of a relative position, as plain JSON with `assoc` normalised.
- *
- * yjs names both the scope and the element: for a root type it sets `tname` *and*, when
- * the position has an element to name, `item`. §8.1 carries exactly one non-null scope,
- * so `item` wins where there is one — it is the stronger statement, and a receiver checks
- * the branch it resolves into rather than the name it travelled under.
+ * The wire form of a relative position: what the library produces, shipped unedited
+ * (§8.1). For a root type yjs sets `tname` — the scope — and, where the position has an
+ * element to name, `item` as well. A conforming client does not hand-edit that pair
+ * apart, because a peer reading the halves as alternatives renders no cursor at all.
  */
 export function toAnchor(position: Y.RelativePosition): Anchor {
   const anchor: Anchor = { assoc: normaliseAssoc(position.assoc) };
   if (position.item !== null) {
     anchor.item = { client: position.item.client, clock: position.item.clock };
-  } else if (position.tname !== null) {
+  }
+  if (position.tname !== null) {
     anchor.tname = position.tname;
-  } else if (position.type !== null) {
+  }
+  if (position.type !== null) {
     anchor.type = { client: position.type.client, clock: position.type.clock };
   }
   return anchor;
@@ -104,9 +106,12 @@ function parseAnchorId(raw: unknown): AnchorId | undefined {
 }
 
 /**
- * Reads one endpoint, ignoring keys it does not know. A scope that is present but
- * malformed, or a count of non-null scopes other than one, is a rejection: §8.1 leaves a
- * receiver no position to fall back to.
+ * Reads one endpoint, ignoring keys it does not know.
+ *
+ * §8.1: a scope (`tname` XOR `type`), an optional `item` within it, and `assoc`. Only a
+ * genuinely malformed anchor is rejected — no scope at all, both scopes at once, or a
+ * member in a shape that cannot be read — because a receiver that rejects the scope and
+ * element together, as yjs publishes them, silently never renders that peer's cursor.
  */
 export function parseAnchor(raw: unknown): Anchor | undefined {
   if (typeof raw !== 'object' || raw === null) {
@@ -114,7 +119,6 @@ export function parseAnchor(raw: unknown): Anchor | undefined {
   }
   const record = raw as Record<string, unknown>;
   const anchor: Anchor = { assoc: normaliseAssoc(record.assoc) };
-  let scopes = 0;
   for (const key of ['item', 'type'] as const) {
     const value = record[key];
     if (value === undefined || value === null) {
@@ -125,16 +129,16 @@ export function parseAnchor(raw: unknown): Anchor | undefined {
       return undefined;
     }
     anchor[key] = id;
-    scopes += 1;
   }
   if (record.tname !== undefined && record.tname !== null) {
     if (typeof record.tname !== 'string') {
       return undefined;
     }
     anchor.tname = record.tname;
-    scopes += 1;
   }
-  return scopes === 1 ? anchor : undefined;
+  return (anchor.tname !== undefined) === (anchor.type !== undefined)
+    ? undefined
+    : anchor;
 }
 
 /** A remote participant's awareness, attributed to a session peer where possible. */

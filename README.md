@@ -146,9 +146,9 @@ Three contracts the adapter has to keep, each settled by a spike (`SPIKES.md`):
    the editor wants the invariant, it owns it in one place.
 
 **A selection on the wire is two CRDT anchors, never offsets** (`spec/PROTOCOL.md` §8.1).
-Each endpoint is a yjs `RelativePosition` as JSON — one scope, `item` or `tname`, plus
-`assoc` — and no index is carried, so a peer's caret survives a paste above it instead of
-drifting by the length of that paste.
+Each endpoint is a yjs `RelativePosition` as JSON — a scope (`tname`, the document path),
+an optional `item` naming an element inside it, and `assoc` — and no index is carried, so a
+peer's caret survives a paste above it instead of drifting by the length of that paste.
 
 Offsets stop at the editor-adapter seam, where they are UTF-16 code units, the unit
 `Y.Text` indices and VS Code's `offsetAt` both count. `setSelection` takes offsets and
