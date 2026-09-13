@@ -99,6 +99,11 @@ test('the invite URL is the connection URL, and is taken apart again', () => {
   assert.equal(percentDecode('%E2%9C%93'), '✓');
   assert.equal(percentDecode('100%'), '100%');
   assert.equal(percentDecode('%2'), '%2');
+  // A URL is bytes: what is not escaped is UTF-8 too, so a literal non-ASCII character
+  // survives rather than being read as one byte per UTF-16 code unit.
+  assert.equal(percentDecode('r%C3%A4um'), 'räum');
+  assert.equal(percentDecode('räum'), 'räum');
+  assert.equal(percentDecode('😀'), '😀');
   assert.equal(percentEncode('a b/c~d'), 'a%20b%2Fc~d');
   assert.equal(percentDecode(percentEncode('üñî ✓')), 'üñî ✓');
 

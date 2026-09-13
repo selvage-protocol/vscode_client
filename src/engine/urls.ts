@@ -33,10 +33,11 @@ function isUnreserved(byte: number): boolean {
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: false });
+const encoder = new TextEncoder();
 
 export function percentEncode(text: string): string {
   let out = '';
-  for (const byte of new TextEncoder().encode(text)) {
+  for (const byte of encoder.encode(text)) {
     out = isUnreserved(byte)
       ? `${out}${String.fromCharCode(byte)}`
       : `${out}%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
@@ -46,19 +47,30 @@ export function percentEncode(text: string): string {
 
 export function percentDecode(text: string): string {
   const bytes: number[] = [];
+  let literal = '';
+  // What is not escaped is still bytes: a run of literal characters is encoded as UTF-8
+  // as a whole, so a surrogate pair is not read as two code units and lost.
+  const flush = (): void => {
+    if (literal !== '') {
+      bytes.push(...encoder.encode(literal));
+      literal = '';
+    }
+  };
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
-    if (char === '%' && index + 3 <= text.length) {
-      const hex = text.slice(index + 1, index + 3);
-      const byte = /^[0-9a-fA-F]{2}$/.test(hex) ? parseInt(hex, 16) : NaN;
-      if (!Number.isNaN(byte)) {
-        bytes.push(byte);
-        index += 2;
-        continue;
-      }
+    if (
+      char === '%' &&
+      index + 3 <= text.length &&
+      /^[0-9a-fA-F]{2}$/.test(text.slice(index + 1, index + 3))
+    ) {
+      flush();
+      bytes.push(parseInt(text.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
     }
-    bytes.push(char === '+' ? 0x20 : char.charCodeAt(0));
+    literal += char === '+' ? ' ' : char;
   }
+  flush();
   return decoder.decode(new Uint8Array(bytes));
 }
 
