@@ -42,7 +42,7 @@ CI should not depend on the hooks.
 Then:
 
 ```console
-$ npm test                    # everything: 48 tests, of which 4 need the Rust build
+$ npm test                    # everything: 49 tests, of which 4 need the Rust build
 $ npm run test:engine         # wire layer + engine + reconnect, no Rust build needed
 $ npm run test:spikes         # the three pre-adapter experiments
 $ npm run test:selvaged       # the conformance gate, needs impl/target/*/selvaged
@@ -79,17 +79,15 @@ reacts to `documentChanged` instead of polling. There is no worker, no native mo
 second process: `DESIGN.md` §6 has VS Code embed both halves, and the module seam is what
 keeps a sidecar a later *move* rather than a rewrite.
 
-Two bounds, and one that is not there. `connect()` is bounded by `handshakeTimeoutMs` (10 s
-by default), which covers the upgrade *and* the handshake: if it expires the socket is closed
-and the attempt rejects. `open()` and `close()` have no client-side deadline of their own —
-they resolve when the server answers, and are failed with `EngineClosedError` when the socket
-their request went out on dies, or when there is no seated connection to send on at all. A
-request issued mid-reconnect is refused rather than queued for the next connection, where it
-would be replayed under an id that connection had already reissued. A server that keeps the
-socket up and never answers leaves a request pending, and there is no per-request timer to
-stop it. A deadline that abandons a non-idempotent request is a design decision rather than
-an oversight — it can diverge the client's holds from the room's set, which is the failure a
-reconnect is meant to repair — and it is left to the spec rather than invented here.
+Two bounds, and what each one covers. `connect()` is bounded by `handshakeTimeoutMs` (10 s by
+default), which covers the upgrade *and* the handshake: if it expires the socket is closed and
+the attempt rejects. `open()` and `close()` are bounded by `requestTimeoutMs` (10 s by
+default), because the bound belongs to the client and not to the wire — a server that holds the
+socket up and never answers fails the caller with `EngineClosedError` instead of leaving it
+pending. Neither bound guesses: an unanswered `doc.open` records no hold, and both methods are
+idempotent, so re-asking is how the caller settles what the server did. A request issued with
+no seated connection to carry it is refused at once rather than queued for the next connection,
+where it would be replayed under an id that connection had already reissued.
 
 A reconnect announces itself last: the engine re-opens the documents this client still holds
 *before* it emits `documentsChanged` and `peersChanged`, so an adapter that opens a document
@@ -164,7 +162,7 @@ the *specified* shape is a spec decision, and the first one this work raises.
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 | `test/boundary.test.ts` | no `vscode` import, no undeclared dependency, the public surface exists |
 
-`npm test` runs them all: **48 tests, 0 failures**, of which 4 need a built `selvaged`
+`npm test` runs them all: **49 tests, 0 failures**, of which 4 need a built `selvaged`
 and run against nothing else. Waits are bounded polls of a real predicate that report the
 state they observed on failure (`test/helpers/wait.ts`), not `sleep`-and-hope. The one
 assertion that used to sample an asynchronous count is the abandoned-connection count in

@@ -15,7 +15,11 @@ export class ProtocolError extends Error {
   }
 }
 
-/** The session ended, or the engine was disconnected, before a call could be answered. */
+/**
+ * A call that will not be answered: the session ended, the connection it went out on died,
+ * or the server did not answer it in time. Nothing was refused — a refusal is a
+ * `ProtocolError` — so there is no code, only the fact that this call is over.
+ */
 export class EngineClosedError extends Error {
   constructor(message = 'the session is closed') {
     super(message);

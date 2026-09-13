@@ -55,6 +55,9 @@ import { inviteUrl, parseSessionUrl, sessionUrl } from './urls.ts';
 /** How long the session handshake may take before the connection is abandoned. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
+/** How long a request may wait for its answer before the caller is told it will not come. */
+const REQUEST_TIMEOUT_MS = 10_000;
+
 /** Marks a transaction as this client's own edit: an adapter already has it. */
 const LOCAL_ORIGIN = Symbol('selvage:local');
 
@@ -116,6 +119,12 @@ export interface ConnectOptions {
   webSocketFactory?: WebSocketFactory;
   fetchImpl?: typeof fetch;
   handshakeTimeoutMs?: number;
+  /**
+   * How long `open()` and `close()` wait for the server's answer (10 s by default).
+   * The bound belongs to the client, not the wire: a server that holds the socket open
+   * and never answers would otherwise leave the caller waiting for ever.
+   */
+  requestTimeoutMs?: number;
 }
 
 /** What the server said at the end of the handshake. */
@@ -147,6 +156,8 @@ interface PendingRequest {
   path: string;
   resolve: () => void;
   reject: (error: Error) => void;
+  /** The request's own deadline, cleared when its answer arrives. */
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface SeatWaiter {
@@ -833,7 +844,18 @@ export class SelvageEngine {
       params: { path },
     };
     return new Promise<void>((resolve, reject) => {
-      this.pending.set(id, { kind, path, resolve, reject });
+      const timer = setTimeout(() => {
+        // The server took the request and did not answer it. Whether it applied it is
+        // unknowable and must not be guessed, so nothing moves: the caller is told, and
+        // both methods are idempotent, so re-asking is how it is settled.
+        if (this.pending.delete(id)) {
+          this.dropQueuedRequest(id);
+          reject(
+            new EngineClosedError(`the server did not answer ${message.method} in time`),
+          );
+        }
+      }, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { kind, path, resolve, reject, timer });
       this.enqueueText(JSON.stringify(message), id);
     });
   }
@@ -852,6 +874,7 @@ export class SelvageEngine {
       return;
     }
     this.pending.delete(id);
+    clearTimeout(pending.timer);
     if (message.error !== undefined) {
       pending.reject(
         new ProtocolError(message.error.code, message.error.message),
@@ -890,10 +913,16 @@ export class SelvageEngine {
    */
   private failPending(): void {
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
       pending.reject(new EngineClosedError());
     }
     this.pending.clear();
     this.queue = this.queue.filter((frame) => frame.requestId === undefined);
+  }
+
+  /** Removes a request's frame if it was never written to a socket. */
+  private dropQueuedRequest(id: number): void {
+    this.queue = this.queue.filter((frame) => frame.requestId !== id);
   }
 
   // -- inbound ---------------------------------------------------------------

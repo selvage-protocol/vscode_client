@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
-import { ProtocolError, isProtocolError } from '../src/engine/errors.ts';
+import { EngineClosedError, ProtocolError, isProtocolError } from '../src/engine/errors.ts';
 import { caret } from '../src/engine/presence.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
@@ -178,6 +178,53 @@ test('a close with no recorded reason is read from its close code', async () => 
   await assert.rejects(abandoned, (error: unknown) =>
     isProtocolError(error, 'hello_required'),
   );
+});
+
+test('a request the server never answers fails the caller by its deadline', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const reader = await SelvageEngine.join(
+    session.invite,
+    'Cleo',
+    options({
+      baseUrl: session.server.wsBase,
+      displayName: 'Cleo',
+      requestTimeoutMs: 100,
+    }),
+  );
+  t.after(async () => {
+    await reader.disconnect();
+  });
+
+  // The server takes the request and never answers it: a wedged peer, not a slow one.
+  session.server.unansweredOpens.add('wedged.txt');
+  let failure: unknown;
+  void reader.open('wedged.txt').then(
+    () => {
+      failure = 'resolved';
+    },
+    (error: unknown) => {
+      failure = error;
+    },
+  );
+  await waitFor('the request to be failed by its deadline', () => failure, {
+    timeoutMs: 3000,
+  });
+  assert.ok(
+    failure instanceof EngineClosedError,
+    `expected EngineClosedError, got ${String(failure)}`,
+  );
+
+  // The connection is not what failed, and the outcome is not guessed: whether the
+  // server applied the request is unknowable (spec §5), so the hold is not recorded.
+  assert.equal(reader.isOpen, true);
+  assert.equal(reader.openDocuments().includes('wedged.txt'), false);
+  await reader.open('after.txt');
+  assert.ok(reader.openDocuments().includes('after.txt'));
 });
 
 test('a session reply with no room id is refused, not seated in a room named ""', async (t) => {

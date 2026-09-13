@@ -87,6 +87,8 @@ export class FakeServer {
   readonly requests: Array<{ client: string; method: string; path: string }> = [];
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
+  /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
+  readonly unansweredOpens = new Set<string>();
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -420,6 +422,10 @@ export class FakeServer {
             code: code.badParams,
             message: 'this path is refused',
           });
+          return;
+        }
+        if (message.method === method.docOpen && this.unansweredOpens.has(path)) {
+          // A wedged server: the request was received and no answer is coming.
           return;
         }
         if (path.trim() === '') {
