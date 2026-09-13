@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.18.0"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # The four server-backed tests in `test/selvaged.test.ts` need a built `selvaged` from the
+      # sibling `reference_server`; that repository is private, so the default token cannot clone
+      # it here and CI runs the server-free suite. Run `npm test` locally for the real server.
+      - run: npm run test:fast
