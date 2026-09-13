@@ -1,0 +1,29 @@
+{
+  "name": "selvage-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Selvage session protocol engine for editor clients",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/",
+    "test:engine": "node --test test/envelope.test.ts test/engine.test.ts test/reconnect.test.ts",
+    "test:selvaged": "node --test test/selvaged.test.ts",
+    "test:spikes": "node --test test/spikes/"
+  },
+  "dependencies": {
+    "lib0": "0.2.117",
+    "ws": "8.21.3",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.32"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3"
+  }
+}
