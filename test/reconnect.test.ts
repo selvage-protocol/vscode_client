@@ -218,10 +218,12 @@ test('a handshake that is never answered is abandoned, closed and retried', asyn
     3,
     'the seated connection and two retries',
   );
-  // The two abandoned attempts were closed rather than left open. This is asserted at the
-  // end, not during the retries: the server learns of a close a tick after the client sends
-  // it, so "how many were open at once" is not a fact this test can pin down.
-  assert.equal(server.connectionCount, 0, 'nothing was left open');
+  // The two abandoned attempts were closed rather than left open. Waited for, not asserted
+  // instantly: the server learns of a close a tick after the client sends it, so sampling the
+  // count the moment the last retry gives up is a race — it failed roughly one run in five.
+  await waitFor('the abandoned connections to be closed', () =>
+    server.connectionCount === 0,
+  );
 });
 
 test('a reconnect that is refused as host_present does not become a second host', async (t) => {
