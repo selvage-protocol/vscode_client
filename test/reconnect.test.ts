@@ -187,6 +187,45 @@ test('a room destroyed under a client ends the session, and nothing retries it',
   assert.deepEqual(guest.session().roomId, roomId);
 });
 
+test('a handshake that is never answered is abandoned, closed and retried', async (t) => {
+  // The connection is seated, then every later one takes the upgrade and goes quiet, so the
+  // reconnection's handshakes time out. This is the path that used to leave the abandoned
+  // socket open and read its later close as the session ending.
+  const server = await FakeServer.start({ silentAfter: 1 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', {
+    meta: 'skip',
+    handshakeTimeoutMs: 80,
+    reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 },
+  });
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const events = record(host);
+  await host.open(PATH);
+  server.drop('Ada');
+
+  await events.waitForEvent(
+    'the host to give up after its attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 3000 },
+  );
+  assert.equal(host.isOpen, false);
+  assert.equal(
+    server.acceptedConnections,
+    3,
+    'the seated connection and two retries',
+  );
+  assert.equal(
+    server.peakConnections,
+    1,
+    'an abandoned socket is closed before the next attempt, not left open',
+  );
+  assert.equal(server.connectionCount, 0, 'nothing was left open');
+});
+
 test('a reconnect that is refused as host_present does not become a second host', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {

@@ -199,6 +199,11 @@ export class SelvageEngine {
   private refusal?: Refusal;
   private seatWaiter?: SeatWaiter;
   private handshaking = false;
+  /**
+   * Which connection's events are still this engine's. A socket that a handshake gave up on
+   * is closed, and its close event must not be read as the session ending.
+   */
+  private generation = 0;
   private requestId = 0;
   private localState: AwarenessState | null;
   private roomDocuments: string[] = [];
@@ -324,6 +329,7 @@ export class SelvageEngine {
   /** Opens a socket, sends `session.hello`, and waits to be seated or refused. */
   private async hello(): Promise<SessionInfo> {
     this.handshaking = true;
+    const generation = (this.generation += 1);
     // Request ids are unique per connection, so a new connection starts counting again.
     this.requestId = 0;
     const url = sessionUrl(
@@ -348,18 +354,25 @@ export class SelvageEngine {
     // A socket that fails before it opens rejects this too, and that rejection is
     // reported by whichever `await` gets there first.
     void waiting.catch(() => undefined);
+    const current = (): boolean => this.generation === generation;
     try {
       this.socket = await openSocket(
         url,
         {
           onText: (text) => {
-            this.handleText(text);
+            if (current()) {
+              this.handleText(text);
+            }
           },
           onBinary: (bytes) => {
-            this.handleBinary(bytes);
+            if (current()) {
+              this.handleBinary(bytes);
+            }
           },
           onClose: (code, reason) => {
-            this.onSocketClosed(code, reason);
+            if (current()) {
+              this.onSocketClosed(code, reason);
+            }
           },
           onError: () => {
             // The close handler reports it; an error alone does not end a session.
@@ -387,6 +400,13 @@ export class SelvageEngine {
       };
       this.socket.sendText(JSON.stringify(hello));
       return await waiting;
+    } catch (error) {
+      // This socket belongs to a connection attempt that gave up: nothing it says counts
+      // any more, and it must not be left open while the next attempt is made.
+      this.generation += 1;
+      this.socket?.close();
+      this.socket = undefined;
+      throw error;
     } finally {
       this.handshaking = false;
     }
@@ -625,7 +645,7 @@ export class SelvageEngine {
     this.socket = undefined;
     const wasSeated = this.seated;
     this.seated = false;
-    if (this.disposed) {
+    if (this.disposed || this.finished) {
       return;
     }
     if (this.handshaking) {
@@ -665,6 +685,7 @@ export class SelvageEngine {
       return;
     }
     this.finished = true;
+    this.generation += 1;
     this.clearTimers();
     this.failPending();
     this.emit({ type: 'disconnected' });

@@ -38,6 +38,10 @@ export interface FakeServerOptions {
   roomGraceMs?: number;
   /** Answer `/meta` with this status instead of a body, for the unreachable-`/meta` path. */
   metaStatus?: number;
+  /** Accept the upgrade and then never answer a frame, for the handshake-timeout path. */
+  silent?: boolean;
+  /** Go silent once this many connections have been accepted, for a retry's timeout. */
+  silentAfter?: number;
 }
 
 interface Client {
@@ -78,6 +82,8 @@ export class FakeServer {
   private readonly wss: WebSocketServer;
   private readonly clients = new Map<string, Client>();
   private readonly rooms = new Map<string, Room>();
+  private accepted = 0;
+  private peak = 0;
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -140,6 +146,16 @@ export class FakeServer {
     return this.clients.size;
   }
 
+  /** How many connections have been accepted in total, open or already gone. */
+  get acceptedConnections(): number {
+    return this.accepted;
+  }
+
+  /** The most connections that were ever open at the same time. */
+  get peakConnections(): number {
+    return this.peak;
+  }
+
   roomOf(roomId: string): Room | undefined {
     return this.rooms.get(roomId);
   }
@@ -196,6 +212,7 @@ export class FakeServer {
   // -- session --------------------------------------------------------------
 
   private onConnection(socket: WebSocket, url: string): void {
+    this.accepted += 1;
     const query = new URLSearchParams(url.split('?')[1] ?? '');
     const room = query.get('room') ?? undefined;
     const token = query.get('token') ?? undefined;
@@ -208,8 +225,18 @@ export class FakeServer {
       seated: false,
     };
     this.clients.set(id, client);
+    this.peak = Math.max(this.peak, this.clients.size);
+
+    // A silent server takes the upgrade and never answers a frame: the handshake times out.
+    const silent =
+      this.options.silent === true ||
+      (this.options.silentAfter !== undefined &&
+        this.accepted > this.options.silentAfter);
 
     socket.on('message', (data: Buffer, isBinary: boolean) => {
+      if (silent) {
+        return;
+      }
       if (isBinary) {
         if (!client.seated) {
           this.refuse(client, code.badMessage, 'a binary frame before session.hello');
