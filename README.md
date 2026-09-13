@@ -2,9 +2,8 @@
 
 The `selvage/1` **sync engine** for the Selvage VS Code client: WebSocket transport, the JSON
 session envelope, the handshake, room join by invite URL, document sync and awareness over
-`y-protocols` with an in-process `yjs`. It is the half of
-`DESIGN.md` §6 that knows
-about CRDTs and sockets and nothing about editors.
+`y-protocols` with an in-process `yjs`. It is the half of `DESIGN.md` §6 that knows about CRDTs
+and sockets and nothing about editors.
 
 **`src/engine/` does not import `vscode`, and a test enforces it** (`test/boundary.test.ts`).
 The adapter — documents, decorations, the `FileSystemProvider`, commands — is a later change
@@ -76,9 +75,8 @@ Threading: everything is one event loop and synchronous. Frames are written as t
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
 reacts to `documentChanged` instead of polling. There is no worker, no native module and no
 second process:
-`DESIGN.md` §6 has VS Code
-embed both halves, and the module seam is what keeps a sidecar a later *move* rather than a
-rewrite.
+`DESIGN.md` §6 has VS Code embed both halves, and the module seam is what keeps a sidecar a
+later *move* rather than a rewrite.
 
 Two bounds, and what each one covers. `connect()` is bounded by `handshakeTimeoutMs` (10 s by
 default), which covers the upgrade *and* the handshake: if it expires the socket is closed and
@@ -186,9 +184,9 @@ does not compile.
 ## Not here
 
 `src/adapter/`, the extension manifest, presence rendering, packaging and publication
-(`DESIGN.md` §11). Also
-deliberately absent: a `y-websocket` provider (Selvage's envelope is not y-websocket's), any
-host-filesystem read, read-only guests (§12.3), per-user undo, and `terminal/1`.
+(`DESIGN.md` §11). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is
+not y-websocket's), any host-filesystem read, read-only guests (§12.3), per-user undo, and
+`terminal/1`.
 
 ## Licence
 

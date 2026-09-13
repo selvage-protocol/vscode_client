@@ -3,9 +3,8 @@
  * document sync and awareness, and the `selvage/1` session envelope over a WebSocket.
  *
  * This module deliberately imports no editor API. Everything an editor adapter needs is
- * an event (`on`) or a method on this class, which is the seam the design record draws
- * between a sync engine and an editor adapter
- * ( §6).
+ * an event (`on`) or a method on this class, which is the seam `DESIGN.md` §6 draws
+ * between a sync engine and an editor adapter.
  */
 
 import WebSocket from 'ws';
