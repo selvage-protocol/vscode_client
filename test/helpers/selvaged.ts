@@ -1,9 +1,9 @@
 /**
- * Runs the real `selvaged`, built from `impl/`.
+ * Runs the real `selvaged`, built from the sibling `reference_server` checkout.
  *
- * The binary is taken from `SELVAGED_BIN` when that is set, and otherwise from
- * `impl/target/{debug,release}/selvaged`. A missing binary fails the test with the command
- * that produces it rather than skipping: the point of this suite is the real server.
+ * The binary is taken from `SELVAGE_SELVAGED` when that is set, and otherwise from
+ * `../reference_server/target/{debug,release}/selvaged`. A missing binary fails the test with
+ * the command that produces it rather than skipping: the point of this suite is the real server.
  */
 
 import { spawn } from 'node:child_process';
@@ -12,24 +12,25 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 
-const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..', '..');
+const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
+const REFERENCE_SERVER = resolve(REPO_ROOT, '..', 'reference_server');
 
 export const BUILD_HINT =
-  'nix develop ./impl --command sh -c "cd impl && cargo build -p selvaged"';
+  "nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'";
 
 export function selvagedBinary(): string {
-  const fromEnv = process.env.SELVAGED_BIN;
+  const fromEnv = process.env.SELVAGE_SELVAGED;
   if (fromEnv !== undefined && fromEnv !== '') {
     return fromEnv;
   }
   for (const profile of ['debug', 'release']) {
-    const candidate = resolve(REPO_ROOT, 'impl', 'target', profile, 'selvaged');
+    const candidate = resolve(REFERENCE_SERVER, 'target', profile, 'selvaged');
     if (existsSync(candidate)) {
       return candidate;
     }
   }
   throw new Error(
-    `no selvaged binary under ${REPO_ROOT}/impl/target; build one with:\n  ${BUILD_HINT}\nor point SELVAGED_BIN at one`,
+    `no selvaged binary under ${REFERENCE_SERVER}/target; build one from ${REPO_ROOT} with:\n  ${BUILD_HINT}\nor point SELVAGE_SELVAGED at one`,
   );
 }
 
