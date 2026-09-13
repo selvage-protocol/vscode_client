@@ -116,7 +116,13 @@ export interface ConnectOptions {
   client?: string;
   /** Overrides the clock the server advertises. The server's numbers are the session's. */
   keepalive?: KeepaliveClock;
-  /** The awareness state to publish once seated. */
+  /**
+   * The awareness state to publish once seated, **verbatim**: its anchors are not checked
+   * against this replica and not converted from offsets, which is what resuming a previously
+   * published state needs. `setSelection` is the path that anchors offsets and withholds what
+   * this replica cannot anchor (§8.1); a caller using this one is responsible for the replica
+   * holding the documents the anchors name.
+   */
   awareness?: AwarenessState;
   /** Read `GET /meta` first (`'check'`, the default) or skip it (`'skip'`). */
   meta?: 'check' | 'skip';
