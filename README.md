@@ -128,7 +128,9 @@ The name other participants see is resolved when a session starts, in this order
 UTF-16 code units** — the protocol's unit, so an emoji costs two — and a longer name is
 *refused* wherever it comes from, never shortened, because a name must be the one its owner
 chose: the setting is checked before it is sent, the question refuses an answer as it is typed
-and says how many units it used, and the command refuses to write one. The name travels in the
+and says how many units it used, and the command refuses to write one. A settings file the
+editor will not write — one a configuration manager owns and leaves read-only — is reported
+rather than left to look as though the name had changed. The name travels in the
 `host`/`join` handshake and nothing carries it afterwards, so a change made while a session is
 live applies to the next host or join, not the current one; `Selvage: Set the name other
 participants see` says so when it sets it.
@@ -324,7 +326,9 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   is sent, the question refuses an answer while it is typed and says how many units it used, and
   reaching for a shorter name is the question that then appears, pre-filled with the one that was
   refused. The count is `String.prototype.length` — an emoji costs two — and not the code-point
-  count `[...name].length` would give.
+  count `[...name].length` would give. The write is what makes the name the next session's, so a
+  settings file that will not take it — one a configuration manager owns and leaves read-only —
+  is reported rather than swallowed.
 - **A peer is drawn as a caret and a selection, and their name is not drawn over the
   document** (`selvage.cursorLabel`, default `none`). The caret is a two-pixel bar on the left
   edge of the peer's position in their colour, the selection a quarter-alpha fill of the same

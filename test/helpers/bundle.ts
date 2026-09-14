@@ -55,6 +55,7 @@ export interface EditorStub {
     quickPicks: Array<{ items: unknown[]; options: unknown }>;
     inputs: Array<Record<string, unknown>>;
     settingWrites: Array<{ key: string; value: unknown; target: number }>;
+    settingWriteFails: boolean;
     opened: string[];
     shown: string[];
     informationReply: unknown;

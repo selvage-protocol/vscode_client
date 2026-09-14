@@ -27,6 +27,8 @@ const registered = {
   inputs: [],
   /** Every configuration write: `{ key, value, target }`, in order. */
   settingWrites: [],
+  /** `true` models a settings file the editor will not write — one a config manager owns. */
+  settingWriteFails: false,
   /** The URI strings `workspace.openTextDocument` was asked for, in order. */
   opened: [],
   /** The URI strings `window.showTextDocument` was given, in order. */
@@ -55,6 +57,7 @@ function reset() {
   registered.quickPicks.length = 0;
   registered.inputs.length = 0;
   registered.settingWrites.length = 0;
+  registered.settingWriteFails = false;
   registered.opened.length = 0;
   registered.shown.length = 0;
   registered.informationReply = undefined;
@@ -185,6 +188,9 @@ module.exports = {
     getConfiguration: () => ({
       get: (key, fallback) => (configured.has(key) ? configured.get(key) : fallback),
       update: (key, value, target) => {
+        if (registered.settingWriteFails) {
+          return Promise.reject(new Error('the settings file is read-only'));
+        }
         configured.set(key, value);
         registered.settingWrites.push({ key, value, target });
         return Promise.resolve();
