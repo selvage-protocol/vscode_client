@@ -34,3 +34,44 @@ jobs:
       # sibling `reference_server` repository, which this workflow does not check out, so CI runs
       # the server-free suite. Run `npm test` locally, with a server built, for the real thing.
       - run: npm run test:fast
+
+  # Actions results are not readable where the maintainer works; an issue is the only signal.
+  report:
+    needs: [checks]
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "ci: ${{ github.workflow }} is failing on ${{ github.ref_name }}"
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Failing run: $RUN"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "Failing run: $RUN"
+          fi
+
+  clear:
+    needs: [checks]
+    if: success()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "ci: ${{ github.workflow }} is failing on ${{ github.ref_name }}"
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number --jq '.[0].number // ""')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Green again: $RUN"
+          fi
