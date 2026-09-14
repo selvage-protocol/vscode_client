@@ -28,7 +28,7 @@ Requirements, as found on this host:
 |---|---|---|
 | Node | `v26.8.1` (`/etc/profiles/per-user/user/bin/node`) | **≥ 22.18** is required: the tests are `.ts` run directly by `node --test`, which needs type stripping |
 | npm | `11.19.0` | `npm ci` reaches the registry |
-| nix | `2.34.8` | only for building `selvaged` out of the sibling [`reference_server`](https://github.com/selvage-protocol/reference_server) checkout, which the four server-backed tests need |
+| nix | `2.34.8` | `nix develop` gives the Node above, `nix flake check` runs the server-free half in a sandbox, and `nix develop ../reference_server` builds `selvaged` out of the sibling checkout, which the four server-backed tests need |
 
 ```console
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
@@ -54,6 +54,14 @@ $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo buil
 rather than skipping. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server`
 runs its command with the *current* directory, hence the `cd`. That flake's shellHook installs
 Rust git hooks into this checkout; they are harmless and ignored, and CI does not use them.
+
+`SELVAGE_SELVAGED` is also the seam the flake stops at. `nix flake check` runs the server-free
+half (`typecheck` and `test:fast`) in a sandbox, and `nix develop` gives the same Node — but a
+check cannot build a sibling checkout, so the four server-backed tests stay a local run: build
+`selvaged`, point `SELVAGE_SELVAGED` at it, run `npm run test:selvaged`.
+
+This repository's own flake has no git hooks: the shell that installs them is
+`../reference_server`'s, and it writes them into whatever repository it is started in.
 
 Most of the suite runs against a fake `selvaged` (`test/helpers/fake-server.ts`) that
 implements the handshake, the document-set semantics, the grace period and payload-opaque
