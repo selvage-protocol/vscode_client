@@ -35,17 +35,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand('selvage.host', () => {
-      void host(files);
+    vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
+      void host(files, args);
     }),
-    vscode.commands.registerCommand('selvage.join', () => {
-      void join(files);
+    vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
+      void join(files, args);
     }),
     vscode.commands.registerCommand('selvage.copyInvite', () => {
       void copyInvite();
     }),
-    vscode.commands.registerCommand('selvage.openDocument', () => {
-      void openDocument();
+    vscode.commands.registerCommand('selvage.openDocument', (args?: OpenDocumentArgs) => {
+      void openDocument(args);
     }),
     vscode.commands.registerCommand('selvage.leave', () => {
       leave();
@@ -294,21 +294,34 @@ class Session {
   }
 }
 
-async function host(files: GuestFileSystem): Promise<void> {
+/**
+ * Arguments a caller of `vscode.commands.executeCommand` can pass to `selvage.host` instead
+ * of the interactive prompts — the same commands, driven programmatically. Used by
+ * `test/e2e/`, which cannot click through a `showInputBox`; there is no other consumer today.
+ */
+export interface HostArgs {
+  serverUrl?: string;
+  displayName?: string;
+}
+
+async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
   if (alreadyInASession()) {
     return;
   }
-  const baseUrl = await ask(
-    'serverUrl',
-    'The Selvage server to host on',
-    'ws://127.0.0.1:8080 — the address a selvaged prints',
-    lastServer,
-  );
+  const baseUrl =
+    args?.serverUrl ??
+    (await ask(
+      'serverUrl',
+      'The Selvage server to host on',
+      'ws://127.0.0.1:8080 — the address a selvaged prints',
+      lastServer,
+    ));
   if (baseUrl === undefined) {
     return;
   }
   lastServer = baseUrl;
-  const displayName = await ask('displayName', 'The name the others see', '', userName());
+  const displayName =
+    args?.displayName ?? (await ask('displayName', 'The name the others see', '', userName()));
   if (displayName === undefined) {
     return;
   }
@@ -334,22 +347,34 @@ async function host(files: GuestFileSystem): Promise<void> {
   }
 }
 
-async function join(files: GuestFileSystem): Promise<void> {
+/** See `HostArgs`: the same programmatic seam for `selvage.join`. */
+export interface JoinArgs {
+  invite?: string;
+  displayName?: string;
+}
+
+async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   if (alreadyInASession()) {
     return;
   }
-  const clipboard = await vscode.env.clipboard.readText();
-  const invite = await vscode.window.showInputBox({
-    title: 'Join a Selvage session',
-    prompt: 'Paste the invite link the host sent you.',
-    placeHolder: 'ws://host:8080/session?room=…&token=…',
-    value: parseSessionUrl(clipboard) === undefined ? '' : clipboard,
-    ignoreFocusOut: true,
-  });
+  let invite: string | undefined;
+  if (args?.invite !== undefined) {
+    invite = args.invite;
+  } else {
+    const clipboard = await vscode.env.clipboard.readText();
+    invite = await vscode.window.showInputBox({
+      title: 'Join a Selvage session',
+      prompt: 'Paste the invite link the host sent you.',
+      placeHolder: 'ws://host:8080/session?room=…&token=…',
+      value: parseSessionUrl(clipboard) === undefined ? '' : clipboard,
+      ignoreFocusOut: true,
+    });
+  }
   if (invite === undefined) {
     return;
   }
-  const displayName = await ask('displayName', 'The name the others see', '', userName());
+  const displayName =
+    args?.displayName ?? (await ask('displayName', 'The name the others see', '', userName()));
   if (displayName === undefined) {
     return;
   }
@@ -378,12 +403,17 @@ async function copyInvite(): Promise<void> {
   void vscode.window.showInformationMessage('Selvage: invite link copied.');
 }
 
+/** See `HostArgs`: the same programmatic seam for `selvage.openDocument`. */
+export interface OpenDocumentArgs {
+  path?: string;
+}
+
 /**
  * A guest's documents are virtual and only a guest has them: a host edits its own files,
  * and opening the room's copy of a file it is already editing would be two buffers for one
  * path.
  */
-async function openDocument(): Promise<void> {
+async function openDocument(args?: OpenDocumentArgs): Promise<void> {
   const session = current;
   if (session === undefined) {
     void vscode.window.showWarningMessage('Selvage: host or join a session first.');
@@ -402,10 +432,15 @@ async function openDocument(): Promise<void> {
     );
     return;
   }
-  const picked = await vscode.window.showQuickPick(paths, {
-    title: 'Open a document from the room',
-    placeHolder: `${paths.length} open in this room`,
-  });
+  let picked: string | undefined;
+  if (args?.path !== undefined) {
+    picked = paths.includes(args.path) ? args.path : undefined;
+  } else {
+    picked = await vscode.window.showQuickPick(paths, {
+      title: 'Open a document from the room',
+      placeHolder: `${paths.length} open in this room`,
+    });
+  }
   if (picked === undefined) {
     return;
   }
