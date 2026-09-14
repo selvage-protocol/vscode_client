@@ -4,16 +4,24 @@
  * The attachment is the only place a name can live. `TextEditorDecorationType` is an opaque
  * handle and `DecorationOptions` has just `before` and `after`, so a zero-width caret range
  * with an `after` attachment is the whole vocabulary, and everything about how the name *looks*
- * has to be said in that attachment. There are two answers:
+ * has to be said in that attachment. There are three answers, and the default draws nothing:
  *
+ * - `none` — the name is not drawn in the document at all. The peer is still visible: their
+ *   caret is a bar in their colour, their selection a tint of it, the overview ruler carries a
+ *   tick where they are, the caret's `hoverMessage` names them, and the status bar lists the
+ *   room. This is the default, because any label in the line reads as the document's own text
+ *   and one above it covers the line — the complaint the floating label was drawn to answer.
  * - `floating` — a small coloured box above the caret, out of the line's flow. The public API
  *   has no position, layer or overlay, so this is done by writing declarations into
- *   `textDecoration`; see `FLOATING_DECLARATIONS`. It is the default, because a label drawn in
- *   the line, in the document's own font and size, is *designed* to read as the document's own
- *   text, which is how it was reported.
+ *   `textDecoration`; see `FLOATING_DECLARATIONS`. It is an explicit opt-in and it *does*
+ *   cover the line above the caret, which is the trade.
  * - `chip` — the same attachment in documented fields only: background, colour, bold, a border.
- *   It draws in the line, and it is the fallback. If the floating declarations ever stop being
- *   drawn, `selvage.cursorLabel` is the one setting that puts the name back inside the line.
+ *   It draws in the line, so it covers the text it sits against; it is the documented fallback
+ *   if the floating declarations ever stop being drawn.
+ *
+ * Whatever a mode draws is bounded: a name is peer-controlled and unbounded, so `boundedLabel`
+ * clips it before it becomes text the editor measures. The full name is never lost — the caret
+ * keeps its `hoverMessage` and the status bar lists the room — only the drawn copy is clipped.
  *
  * The option objects below are a value rather than an editor-only effect: this module imports
  * `vscode` for its types alone, so the tests can build them without an editor — and it sits in
@@ -26,14 +34,43 @@ import type { ThemableDecorationAttachmentRenderOptions } from 'vscode';
 import type { Cursor } from '../bridge/index.ts';
 
 /** How a peer's name is drawn. The values are the `selvage.cursorLabel` setting's values. */
-export type LabelMode = 'floating' | 'chip';
+export type LabelMode = 'none' | 'floating' | 'chip';
 
-/** The mode a window gets with nothing configured — the floating label. */
-export const DEFAULT_LABEL_MODE: LabelMode = 'floating';
+/** The mode a window gets with nothing configured: no name over the document. */
+export const DEFAULT_LABEL_MODE: LabelMode = 'none';
 
 /** Reads the `selvage.cursorLabel` setting. Anything unrecognised is the default. */
 export function labelMode(value: unknown): LabelMode {
-  return value === 'chip' ? 'chip' : DEFAULT_LABEL_MODE;
+  if (value === 'floating' || value === 'chip') {
+    return value;
+  }
+  return DEFAULT_LABEL_MODE;
+}
+
+/**
+ * The longest name a label draws, in code points.
+ *
+ * The decoration API measures nothing, so a width here can only be a guess; what the bound
+ * buys is that the guess cannot be defeated by the length of a name the peer chose. Twenty-four
+ * code points is a few words at the editor's own font size, which is what a name is.
+ */
+export const LABEL_LIMIT = 24;
+
+/**
+ * A name clipped to `LABEL_LIMIT` code points with a trailing ellipsis, or the name itself when
+ * it already fits.
+ *
+ * The clip is by code point, not by UTF-16 unit: a name may hold an astral character, and
+ * cutting between the halves of a surrogate pair would leave a lone surrogate in the string —
+ * text the editor cannot draw and a strict JSON consumer refuses. Iterating the string yields
+ * whole code points, so a pair is never split.
+ */
+export function boundedLabel(label: string): string {
+  const characters = [...label];
+  if (characters.length <= LABEL_LIMIT) {
+    return label;
+  }
+  return `${characters.slice(0, LABEL_LIMIT - 1).join('')}\u2026`;
 }
 
 /**
@@ -71,18 +108,31 @@ const FLOATING_DECLARATIONS =
   'top: -1.3em;';
 
 /**
- * The attachment for one cursor's label. Both modes draw the name in the peer's own colour with
- * black text, which the palette is chosen to be legible against; the difference is whether the
- * box is in the line or above it.
+ * The attachment for one cursor's label, or `undefined` when the mode draws none. Both drawn
+ * modes use the peer's own colour with black text, which the palette is chosen to be legible
+ * against; the difference is whether the box is in the line or above it. The name is clipped by
+ * `boundedLabel`, so no caller can put an unbounded peer string in the document.
  */
 export function labelAttachment(
   cursor: Pick<Cursor, 'label' | 'colour'>,
+  mode: 'floating' | 'chip',
+): ThemableDecorationAttachmentRenderOptions;
+export function labelAttachment(
+  cursor: Pick<Cursor, 'label' | 'colour'>,
   mode: LabelMode,
-): ThemableDecorationAttachmentRenderOptions {
+): ThemableDecorationAttachmentRenderOptions | undefined;
+export function labelAttachment(
+  cursor: Pick<Cursor, 'label' | 'colour'>,
+  mode: LabelMode,
+): ThemableDecorationAttachmentRenderOptions | undefined {
+  if (mode === 'none') {
+    return undefined;
+  }
+  const label = boundedLabel(cursor.label);
   if (mode === 'chip') {
     return {
       // An attachment has no `padding` field, so the spaces are the only padding a chip has.
-      contentText: ` ${cursor.label} `,
+      contentText: ` ${label} `,
       backgroundColor: cursor.colour,
       color: '#000000',
       fontWeight: 'bold',
@@ -92,7 +142,7 @@ export function labelAttachment(
   }
   return {
     // No spaces around it: the CSS padding is the padding.
-    contentText: cursor.label,
+    contentText: label,
     backgroundColor: cursor.colour,
     color: '#000000',
     textDecoration: FLOATING_DECLARATIONS,
