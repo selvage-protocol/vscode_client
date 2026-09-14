@@ -32,10 +32,10 @@ Requirements, as found on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
-$ npm run build                        # → dist/extension.js, 424 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 438 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 129 tests, no server, no editor
-$ npm test                             # 133 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 133 tests, no server, no editor
+$ npm test                             # 137 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -95,9 +95,11 @@ Then, in the two windows:
 4. **Window two** — `Selvage: Join a session from an invite link`, paste the link (it is
    pre-filled from the clipboard when the clipboard holds one), enter a display name.
 5. **Window two** — the room's document opens by itself as `selvage:/<path>?room=<room id>`,
-   editable; both windows now type into the same text and see each other's cursor with a name
-   label. With several documents in the room only the first opens; run *Selvage: Open a
-   document from the room* to reach any of the others.
+   editable; both windows now type into the same text and see each other's caret as a bar in
+   the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
+   drawn over the text unless `selvage.cursorLabel` asks for it. With several documents in the
+   room only the first opens; run *Selvage: Open a document from the room* to reach any of the
+   others.
 6. `Selvage: Leave session` on either side. Closing window one — the host — ends the room
    after the server's grace period, and window two is told.
 
@@ -146,8 +148,8 @@ files ship in the `.vsix` regardless.
 | `src/adapter/extension.ts` | `activate`, the five commands, the status bar, the window's listeners |
 | `src/adapter/documents.ts` | `WorkspaceEditor`: which documents are shared, `applyEdit`, save, line endings |
 | `src/adapter/guest-fs.ts` | the `selvage:` `FileSystemProvider`: the replica's text in, writes out |
-| `src/adapter/decorations.ts` | remote carets, selections and name labels |
-| `src/adapter/labels.ts` | what a peer's name is drawn as: the floating box and the documented chip, and the declarations the box rides |
+| `src/adapter/decorations.ts` | remote carets, selections and the overview-ruler lane; the name label when one is opted into |
+| `src/adapter/labels.ts` | what a peer's name is drawn as: nothing by default, the floating box and the documented chip as opt-ins, the bound on a drawn name, and the declarations the box rides |
 
 Threading: everything is one event loop and synchronous. Frames are written as they are
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
@@ -269,24 +271,35 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   never types a path, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order.
-- **A peer's name is a floating label above their caret** (`selvage.cursorLabel`, default
-  `floating`): a small box in the peer's colour, out of the line's flow, so it reads as an
-  annotation rather than as the document's own text. The decoration API has no position, layer
+- **A peer is drawn as a caret and a selection, and their name is not drawn over the
+  document** (`selvage.cursorLabel`, default `none`). The caret is a two-pixel bar on the left
+  edge of the peer's position in their colour, the selection a quarter-alpha fill of the same
+  colour, and the overview ruler carries a tick of it on the right. The name is available
+  without covering anything: the caret's `hoverMessage` reads "name · role", and the status
+  bar's tooltip lists *In the room: …*. The glyph margin was considered and dropped — a
+  `gutterIconPath` is an image, the API has no colour for the margin, and the overview ruler
+  already carries the colour to the same lane.
+- **A drawn name is bounded.** The decoration API measures nothing, so any width in a label is
+  a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
+  clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
+  holding an astral character is never cut through a surrogate pair. The clip is only on what
+  is *drawn*: the caret's hover and the status bar always carry the whole name.
+- **`selvage.cursorLabel: "floating"` is an explicit opt-in** — a small box in the peer's
+  colour above their caret, out of the line's flow. The decoration API has no position, layer
   or overlay, so the box is drawn by writing declarations — `position: absolute; top: -1.3em;
   pointer-events: none; …` — into a field documented as *one CSS declaration*, which the editor
   substitutes into the rule it generates. **That is undocumented behaviour**, taken deliberately
   rather than smuggled in as ordinary styling: it was read out of a shipped editor, it can
   change in a release with no change to the API or the protocol, and nothing in the suite can see
   a pixel — `test/labels.test.ts` pins the option object, and the rendering itself has only been
-  looked at by eye (VS Code 1.137.0). What it cannot do: the
-  vertical offset is a constant against a line height the extension cannot read, so
-  `editor.lineHeight: 34` moves the box inside the caret's own line instead of above it; it
-  cannot leave the editor's top edge, so
-  on one of the first visible lines it is cut off; two peers at one offset draw two boxes on top
-  of each other; and as a pseudo-element it is invisible to screen readers, which is why the
-  caret keeps its `hoverMessage` (name · role). `selvage.cursorLabel: "chip"` is the documented
-  fallback — the same name inside the line behind a coloured border, in documented fields only —
-  and it reads as the document's own text, which is the complaint the floating label answers.
+  looked at by eye (VS Code 1.137.0). It covers the line above the caret: the vertical offset is
+  a constant against a line height the extension cannot read, so `editor.lineHeight: 34` moves
+  the box inside the caret's own line instead; it cannot leave the editor's top edge, so on one
+  of the first visible lines it is cut off; two peers at one offset draw two boxes on top of each
+  other; and as a pseudo-element it is invisible to screen readers.
+- **`selvage.cursorLabel: "chip"` is the documented opt-in** — the same clipped name inside the
+  line behind a coloured border, in documented fields only. It covers the text it sits against,
+  which is why it is not the default either.
 - **The invite is a `ws://` URL and stays one.** Joining is a paste-the-link command; there is
   no `vscode://` wrapper, because that would be a convention the protocol does not have.
 - **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
@@ -319,15 +332,15 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
-| `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, `@types/vscode` fits `engines.vscode` |
+| `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, and the leave-first questions |
-| `test/labels.test.ts` | the label attachment for each mode: the exact declarations the floating box rides, that the chip carries none of them, and which setting value selects which — the pixels are not covered by anything |
+| `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**133 tests, 0 failures**: 129 server-free and 4 that need a built `selvaged`. Waits are bounded
+**137 tests, 0 failures**: 133 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
