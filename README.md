@@ -197,11 +197,20 @@ clamp or an offset fallback.
 
 ## What the adapter decided
 
-The points `docs/studies/vscode-plugin.md` §9 leaves open, as implemented:
+The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client does about each:
 
 - **A host shares the `file:` documents open under its workspace folder**, on open and for
   those already open when the session starts; that folder is the grant. A guest shares nothing
-  from disk — only the `selvage:` documents the room gave it.
+  from disk — only the `selvage:` documents the room gave it. There are no exclude globs in
+  v1: what a host shares is what it has open, which is visible in its own window.
+- **Reconnection is the engine's; the adapter reports it.** `PROTOCOL.md` §9.1's bounded
+  backoff lives in `SelvageEngine`, and the window is told when the host detaches and comes
+  back, when the room is gone and when the connection ends. A session whose connection is
+  finished is ended rather than left half-alive: the message says why, and nothing retries
+  behind the user's back.
+- **`GET /meta` is checked before the first connect** (the engine's default). An unreachable
+  `/meta` decides nothing; one that names a version this client cannot speak fails the command
+  with a message instead of opening a session that half works.
 - **Closing a document releases this client's hold** on it, so the room's set is the union of
   what its connected clients have open. A guest that opens it again re-offers the path.
 - **A remote edit is saved once the room settles** (500 ms after the last one, one write per
@@ -226,6 +235,11 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, as implemented:
 - **Format-on-save is not fought.** A formatter's edit is an ordinary change event and is
   published; with peers running formatters this can echo (`SPIKES.md`, spike 3), so turn
   format-on-type off while collaborating.
+- **The adapter ↔ engine transport stays a module interface, not a wire protocol.**
+  `DESIGN.md` §4.4 makes one optional; the study's §6 puts both halves in one process behind a
+  hard seam, which is what `src/bridge/` is. Its `EditorHost` — six methods, no editor in
+  scope — is the shape a transport would have to carry, and no format is invented until
+  something needs one.
 
 ## Tests
 
