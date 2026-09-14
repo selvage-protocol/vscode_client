@@ -32,7 +32,7 @@ Requirements, as found on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
-$ npm run build                        # → dist/extension.js, 438 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 443 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then 146 tests, no server, no editor
 $ npm test                             # 150 tests: the same plus 4 against a real selvaged
@@ -307,8 +307,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   (a `TextDocumentContentProvider` is read-only by contract, and guests edit). Its provider
   refuses `delete`, `rename` and `createDirectory` and returns nothing from `readDirectory`:
   `DESIGN.md` §4.2 has no file tree. The quick-pick in *Open a document from the room* is the
-  only place a room path is named, and it offers the room's own open-document set — a guest
-  never types a path, so it cannot mistype the host's workspace-folder prefix.
+  only place a room path is offered to open, and it offers the room's own open-document set — a
+  guest never types a path, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order. *Selvage: List the room's participants*
   prints that same colour beside each peer — the value is `peerColour(peer_id)`, the one the
