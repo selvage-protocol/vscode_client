@@ -81,15 +81,17 @@
         "selvage.cursorLabel": {
           "type": "string",
           "enum": [
+            "none",
             "floating",
             "chip"
           ],
           "enumDescriptions": [
-            "A small name box above the peer's caret, out of the line's flow. It leans on undocumented editor behaviour, so it is cosmetic and not guaranteed.",
-            "The peer's name inside the line, behind a coloured border, built from documented decoration fields only."
+            "Draw no name over the document. A peer is shown by their coloured caret bar, their selection fill, a tick in the overview ruler and the name in the caret's hover, and the status bar lists the room.",
+            "A small name box above the peer's caret, out of the line's flow. It covers the line above the caret and leans on undocumented editor behaviour, so it is cosmetic and not guaranteed.",
+            "The peer's name inside the line, behind a coloured border, built from documented decoration fields only. It covers the text it sits against."
           ],
-          "default": "floating",
-          "description": "How a remote peer's name is drawn at their cursor. \"floating\" reads as an annotation and \"chip\" reads as text; switch to \"chip\" if the floating label is ever drawn wrongly, and see the README for what the floating label cannot do. Applies to an open session at once."
+          "default": "none",
+          "description": "How a remote peer's name is drawn at their cursor. The default draws no name over the document; \"floating\" and \"chip\" opt into one and each covers some of the text. The full name is always in the caret's hover and the status bar. Applies to an open session at once."
         }
       }
     }

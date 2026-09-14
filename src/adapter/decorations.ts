@@ -5,15 +5,20 @@
  * first time that colour appears and disposed with the session, because a decoration type
  * is a handle the editor keeps for the life of the window. The name label is a single type
  * carrying its text and colour per instance, which is what keeps the type count a function
- * of the palette rather than of the peer list.
+ * of the palette rather than of the peer list. With the default `selvage.cursorLabel: none`
+ * it carries nothing.
  *
  * A caret is a zero-width range with an `after` attachment. `DecorationOptions` says the
  * range must not be empty; both extensions the study read use one anyway and it renders, so
  * this follows them rather than the comment (`docs/studies/vscode-plugin.md` §3).
  *
- * What that attachment looks like — a floating box above the caret, or a chip inside the line —
- * is `labels.ts`'s, and `selvage.cursorLabel` chooses. The label's `hoverMessage` stays on the
- * caret, because a floating label is a pseudo-element no screen reader can reach.
+ * What that attachment looks like — nothing, a floating box above the caret, or a chip inside
+ * the line — is `labels.ts`'s, and `selvage.cursorLabel` chooses. Nothing is the default: a
+ * name drawn in the document reads as the document's own text and one above the caret covers
+ * the line, so a peer is shown by their caret bar, their selection fill, the overview ruler
+ * tick and the caret's `hoverMessage` (name · role) until the user opts into a label. The
+ * `hoverMessage` stays on the caret whatever the mode, because a label is a pseudo-element no
+ * screen reader can reach.
  */
 
 import * as vscode from 'vscode';
@@ -82,10 +87,13 @@ export class Cursors {
         hoverMessage: `${cursor.label} · ${cursor.role}`,
       });
       carets.set(caret, options);
-      labels.push({
-        range: new vscode.Range(head, head),
-        renderOptions: { after: labelAttachment(cursor, mode) },
-      });
+      const attachment = labelAttachment(cursor, mode);
+      if (attachment !== undefined) {
+        labels.push({
+          range: new vscode.Range(head, head),
+          renderOptions: { after: attachment },
+        });
+      }
     }
 
     for (const type of this.carets.values()) {
