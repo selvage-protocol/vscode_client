@@ -985,6 +985,29 @@ test('offsets either side of a non-BMP character are UTF-16 code units', async (
   assert.equal(half.selection.head, 1);
 });
 
+test('half a character does not cross the wire, so only this replica can hold one', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'ab\n');
+  await converge(host, guest, PATH);
+
+  // yjs writes a text update with the UTF-8 encoder, which has no encoding for half a
+  // character: the writer keeps its lone surrogate and every peer's replica holds U+FFFD in
+  // its place. Nothing a peer sends can put half a character in this replica, so a change
+  // that holds one can only come from this client's own text — which is what makes the
+  // diff's output the place to keep it out of (`test/editing.test.ts`, `test/bridge.test.ts`).
+  guest.insert(PATH, 1, '\ud83d');
+  await waitFor('the replacement character to arrive', () => host.text(PATH) === 'a\ufffdb\n');
+  assert.equal(guest.text(PATH), 'a\ud83db\n');
+});
+
 test('an endpoint that does not resolve is no selection, and the state is kept', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
