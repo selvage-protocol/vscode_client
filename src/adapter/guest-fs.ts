@@ -21,8 +21,9 @@ export interface VirtualSource {
   text(path: string): string;
 }
 
-export class GuestFileSystem implements vscode.FileSystemProvider {
-  readonly onDidChangeFile = new vscode.EventEmitter<vscode.FileChangeEvent[]>().event;
+export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
+  private readonly changes = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  readonly onDidChangeFile = this.changes.event;
 
   private live?: VirtualSource;
   /**
@@ -49,7 +50,14 @@ export class GuestFileSystem implements vscode.FileSystemProvider {
   }
 
   stat(uri: vscode.Uri): vscode.FileStat {
+    // `mtime: 0` is VS Code's "no information": the room, not the filesystem, decides when a
+    // guest document changes, so a real timestamp would only invite a reload that does not help.
     return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: this.bytes(uri).length };
+  }
+
+  /** Releases the change event, which nothing fires. */
+  dispose(): void {
+    this.changes.dispose();
   }
 
   readFile(uri: vscode.Uri): Uint8Array {
