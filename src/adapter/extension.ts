@@ -331,8 +331,24 @@ export interface HostArgs {
 }
 
 async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
-  if (alreadyInASession()) {
-    return;
+  const inSession = current;
+  if (inSession !== undefined) {
+    if (inSession.role() === 'host') {
+      // Hosting again is reaching for the invite, not asking for a second room.
+      await copyInvite();
+      return;
+    }
+    // A guest cannot host without leaving the room it is in, and leaving is the user's call.
+    const leave = 'Leave and host';
+    const choice = await vscode.window.showWarningMessage(
+      `Selvage: you are a guest in room ${inSession.roomId()}. Hosting a session means leaving it first.`,
+      { modal: true },
+      leave,
+    );
+    if (choice !== leave) {
+      return;
+    }
+    inSession.dispose();
   }
   const baseUrl =
     args?.serverUrl ??
@@ -380,8 +396,21 @@ export interface JoinArgs {
 }
 
 async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
-  if (alreadyInASession()) {
-    return;
+  const inSession = current;
+  if (inSession !== undefined) {
+    const hosting = inSession.role() === 'host';
+    const leave = 'Leave and join';
+    const choice = await vscode.window.showWarningMessage(
+      hosting
+        ? `Selvage: you are hosting room ${inSession.roomId()}. Joining another session ends this room for everyone in it.`
+        : `Selvage: you are in room ${inSession.roomId()}. Joining another session leaves it.`,
+      { modal: true },
+      leave,
+    );
+    if (choice !== leave) {
+      return;
+    }
+    inSession.dispose();
   }
   let invite: string | undefined;
   if (args?.invite !== undefined) {
@@ -500,16 +529,6 @@ function leave(): void {
   }
   session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
-}
-
-function alreadyInASession(): boolean {
-  if (current === undefined) {
-    return false;
-  }
-  void vscode.window.showWarningMessage(
-    'Selvage: this window is already in a session. Run "Selvage: Leave session" first.',
-  );
-  return true;
 }
 
 /**
