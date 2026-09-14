@@ -27,6 +27,7 @@ let lastServer: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const files = new GuestFileSystem();
+  context.subscriptions.push(files);
   context.subscriptions.push(
     vscode.workspace.registerFileSystemProvider(SCHEME, files, {
       isCaseSensitive: true,
@@ -82,9 +83,6 @@ class Session {
       role: engine.session().role,
       report: (report) => {
         this.onReport(report);
-      },
-      reconcile: (path) => {
-        this.bridge.reconcile(path);
       },
     });
     this.bridge = new SessionBridge({
@@ -246,6 +244,24 @@ class Session {
         );
         break;
       }
+      case 'applyRefused': {
+        void vscode.window.showErrorMessage(
+          `Selvage: the editor would not apply the room's change to ${report.path}. The file is not in step with the room; it may be read-only.`,
+        );
+        break;
+      }
+      case 'divergence': {
+        void vscode.window.showWarningMessage(
+          `Selvage: ${report.path} was out of step with the room; the room's copy has been put back.`,
+        );
+        break;
+      }
+      case 'saveFailed': {
+        void vscode.window.showErrorMessage(
+          `Selvage: could not save ${report.path}; the file on disk is behind the room${report.message === undefined ? '' : ` (${report.message})`}.`,
+        );
+        break;
+      }
       case 'disconnected': {
         void vscode.window.showWarningMessage('Selvage: the session ended.');
         this.dispose();
@@ -394,7 +410,13 @@ async function openDocument(): Promise<void> {
     return;
   }
   const uri = vscode.Uri.parse(virtualUri(session.roomId(), picked));
-  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+  try {
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Selvage: could not open ${picked} from the room: ${message(error)}`,
+    );
+  }
 }
 
 function leave(): void {
