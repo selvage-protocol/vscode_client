@@ -118,6 +118,13 @@ class Session {
       vscode.window.onDidChangeVisibleTextEditors(() => {
         this.editor.renderCursors(this.bridge.cursors());
       }),
+      // The label is chosen per draw, so a window that is told the setting changed only has to
+      // draw again. Without this the choice would appear to do nothing until a peer moved.
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('selvage.cursorLabel')) {
+          this.editor.renderCursors(this.bridge.cursors());
+        }
+      }),
     );
     this.status.show();
     this.refreshStatus();

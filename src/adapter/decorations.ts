@@ -10,11 +10,17 @@
  * A caret is a zero-width range with an `after` attachment. `DecorationOptions` says the
  * range must not be empty; both extensions the study read use one anyway and it renders, so
  * this follows them rather than the comment (`docs/studies/vscode-plugin.md` §3).
+ *
+ * What that attachment looks like — a floating box above the caret, or a chip inside the line —
+ * is `labels.ts`'s, and `selvage.cursorLabel` chooses. The label's `hoverMessage` stays on the
+ * caret, because a floating label is a pseudo-element no screen reader can reach.
  */
 
 import * as vscode from 'vscode';
 
 import type { Cursor } from '../bridge/index.ts';
+
+import { labelAttachment, labelMode } from './labels.ts';
 
 export class Cursors {
   private readonly carets = new Map<string, vscode.TextEditorDecorationType>();
@@ -55,6 +61,7 @@ export class Cursors {
   }
 
   private draw(editor: vscode.TextEditor, cursors: readonly Cursor[]): void {
+    const mode = labelMode(vscode.workspace.getConfiguration('selvage').get('cursorLabel'));
     const carets = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
     const selections = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
     const labels: vscode.DecorationOptions[] = [];
@@ -77,14 +84,7 @@ export class Cursors {
       carets.set(caret, options);
       labels.push({
         range: new vscode.Range(head, head),
-        renderOptions: {
-          after: {
-            contentText: ` ${cursor.label} `,
-            backgroundColor: cursor.colour,
-            color: '#000000',
-            margin: '0 0 0 0.4ch',
-          },
-        },
+        renderOptions: { after: labelAttachment(cursor, mode) },
       });
     }
 
