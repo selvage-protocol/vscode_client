@@ -7,7 +7,7 @@
  * reaches for that is not here fails loudly, which is the point.
  */
 
-const registered = { commands: [], schemes: [] };
+const registered = { commands: [], schemes: [], files: undefined };
 
 function disposable() {
   return { dispose() {} };
@@ -23,6 +23,12 @@ module.exports = {
     }
 
     dispose() {}
+  },
+
+  Disposable: class {
+    constructor(callOnDispose) {
+      this.dispose = typeof callOnDispose === 'function' ? callOnDispose : () => {};
+    }
   },
 
   StatusBarAlignment: { Left: 1, Right: 2 },
@@ -50,8 +56,9 @@ module.exports = {
     getConfiguration: () => ({ get: (_key, fallback) => fallback }),
     getWorkspaceFolder: () => undefined,
     asRelativePath: (uri) => String(uri),
-    registerFileSystemProvider(scheme) {
+    registerFileSystemProvider(scheme, provider) {
       registered.schemes.push(scheme);
+      registered.files = provider;
       return disposable();
     },
     onDidOpenTextDocument: () => disposable(),

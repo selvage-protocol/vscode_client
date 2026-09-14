@@ -11,15 +11,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
+import { loadBundle } from './helpers/bundle.ts';
+
 const here = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(here, '..');
-const BUNDLE = resolve(ROOT, 'dist', 'extension.js');
-const STUB = resolve(here, 'helpers', 'vscode-stub.cjs');
 const ADAPTER = resolve(ROOT, 'src', 'adapter');
 
 interface Manifest {
@@ -35,37 +34,8 @@ interface Manifest {
 
 const manifest = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as Manifest;
 
-/** The bundle as Node sees it: `require('vscode')` answered by the stub. */
-function loadBundle(): {
-  activate: (context: unknown) => void;
-  deactivate: () => void;
-  stub: { registered: { commands: string[]; schemes: string[] } };
-} {
-  const require = createRequire(import.meta.url);
-  const Module = require('node:module') as any;
-  const resolveFilename = Module._resolveFilename;
-  Module._resolveFilename = (request: string, parent: unknown, isMain: boolean, options: unknown) =>
-    request === 'vscode'
-      ? STUB
-      : resolveFilename(request, parent, isMain, options);
-  try {
-    const stub = require(STUB) as { registered: { commands: string[]; schemes: string[] } };
-    const bundle = require(BUNDLE) as {
-      activate: (context: unknown) => void;
-      deactivate: () => void;
-    };
-    return { ...bundle, stub };
-  } finally {
-    Module._resolveFilename = resolveFilename;
-  }
-}
-
 test('the manifest points at a bundle that exists and loads', () => {
   assert.equal(manifest.main, './dist/extension.js');
-  assert.ok(
-    existsSync(BUNDLE),
-    `${BUNDLE} is missing: run \`npm run build\` (npm test and npm run test:fast do it first)`,
-  );
   const bundle = loadBundle();
   assert.equal(typeof bundle.activate, 'function');
   assert.equal(typeof bundle.deactivate, 'function');
@@ -76,7 +46,7 @@ test('activating registers exactly the commands the manifest contributes', () =>
   bundle.activate({ subscriptions: [] });
   bundle.deactivate();
 
-  const registered = [...bundle.stub.registered.commands].sort();
+  const registered = [...bundle.registered.commands].sort();
   const contributed = (manifest.contributes?.commands ?? [])
     .map((entry) => entry.command)
     .sort();
@@ -92,7 +62,7 @@ test('activating registers exactly the commands the manifest contributes', () =>
   }
 
   assert.deepEqual(
-    bundle.stub.registered.schemes,
+    bundle.registered.schemes,
     ['selvage'],
     'the guest document scheme is registered once, under the name the bridge builds',
   );

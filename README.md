@@ -34,13 +34,14 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 424 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 94 tests, no server, no editor
-$ npm test                             # 98 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 99 tests, no server, no editor
+$ npm test                             # 103 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
 source and not a stale one (`test/manifest.test.ts` loads it and activates it against a stub
-`vscode`, which is how CI checks the manifest without an editor).
+`vscode`, which is how CI checks the manifest — and the guest's `FileSystemProvider` — without
+an editor).
 
 The four server-backed tests in `test/selvaged.test.ts` need a `selvaged` binary:
 
@@ -237,11 +238,12 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, as implemented:
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, `@types/vscode` fits `engines.vscode` |
+| `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**98 tests, 0 failures**: 94 server-free and 4 that need a built `selvaged`. Waits are bounded
+**103 tests, 0 failures**: 99 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
