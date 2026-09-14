@@ -377,9 +377,18 @@ test('a peer cursor resolves to offsets here, in a colour every client agrees on
   assert.equal(host.editor.cursors.length, 1);
 
   // A peer in a document this replica has received nothing for renders no cursor at all,
-  // rather than a caret at offset 0 (§8.1: an anchor that does not resolve is not clamped).
+  // rather than a caret at offset 0. The sender is the one that withholds here — it cannot
+  // anchor an endpoint in a text it does not have (§8.1), so it publishes the path alone —
+  // and the receiver draws nothing rather than guessing.
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
   guest.bridge.selectionChanged(OTHER, { anchor: 0, head: 1 });
   await waitFor('the cursor to be withdrawn', () => host.editor.cursors.length === 0);
+
+  // And a peer that clears its state — the adapter does that when the user leaves the
+  // session's documents, which is any editor that is not a shared one — draws nothing too.
+  guest.bridge.selectionCleared();
+  await waitFor('the peer to leave with its cursor', () => host.editor.cursors.length === 0);
 });
 
 test('a leaving host, a destroyed room and a dead connection are reported in order', async (t) => {

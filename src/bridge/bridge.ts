@@ -220,16 +220,23 @@ export class SessionBridge {
     this.release(path);
   }
 
-  /** The user's cursor moved, or left the session's documents (`null`). */
-  selectionChanged(path: string, selection: OffsetSelection | null): void {
-    if (this.disposed) {
-      return;
-    }
-    if (selection === null || !this.documents.has(path)) {
-      this.engine.setAwareness(null);
+  /** The user's cursor moved inside a document this session shares. */
+  selectionChanged(path: string, selection: OffsetSelection): void {
+    if (this.disposed || !this.documents.has(path)) {
       return;
     }
     this.engine.setSelection(path, selection);
+  }
+
+  /**
+   * The user left the session's documents, or the window lost focus. No cursor is published
+   * rather than a stale one; a reader that comes back republishes as it moves.
+   */
+  selectionCleared(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.engine.setAwareness(null);
   }
 
   // -- from the replica ------------------------------------------------------
