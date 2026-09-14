@@ -130,7 +130,7 @@ files ship in the `.vsix` regardless.
 | `src/engine/presence.ts` | the awareness state's shape, and the join from `awareness_client_id` to `PeerInfo` (§8.4) |
 | `src/engine/events.ts` | the nine `EngineEvent`s, mirroring [`crates/client/src/editor.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/editor.rs) |
 | `src/engine/engine.ts` | `SelvageEngine`: handshake, request/response correlation, the sync handshake, awareness renewal and expiry, reconnect |
-| `src/bridge/editing.ts` | LF in the replica, the document's own line endings on render, the smallest change between two texts, and the content comparison that stands in for an echo guard |
+| `src/bridge/editing.ts` | LF in the replica, the document's own line endings on render, the smallest change between two texts that never cuts a surrogate pair, and the content comparison that stands in for an echo guard |
 | `src/bridge/bridge.ts` | `SessionBridge`: seeding, both directions of the buffer/replica loop, the save policy, the `EditorHost` interface an adapter implements |
 | `src/bridge/cursors.ts` | the remote-cursor model, and the palette a peer's colour is derived from |
 | `src/bridge/virtual.ts` | the guest's `selvage:` URIs: build, parse, refuse |
@@ -252,6 +252,12 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   no `vscode://` wrapper, because that would be a convention the protocol does not have.
 - **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
   asks the bridge to work the change out again against the buffer's current text.
+- **A change never ends inside a character.** Two astral characters that share a surrogate
+  half — any two emoji — leave the difference between the halves, and a change cut there is
+  half a character in `text`: an edit no editor can make, and a `\ud83d` escape a strict JSON
+  decoder refuses, which is how a front-end that cannot read the line leaves the apply
+  unanswered for ever. `diff` widens its range to whole characters instead, which costs at
+  most one UTF-16 code unit at each end of it.
 - **Undo is not made CRDT-aware.** A remote edit lands on the buffer's undo stack, so `Ctrl+Z`
   can undo a peer's edit; the resulting change event is published like any other and the room
   reconverges. Per-user undo is explicitly out of scope (`docs/studies/vscode-plugin.md` §2.2).

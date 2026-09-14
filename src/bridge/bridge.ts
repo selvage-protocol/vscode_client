@@ -564,6 +564,9 @@ export class SessionBridge {
       return;
     }
     this.host.report({ kind: 'divergence', path });
+    // The whole document, and the only change in the bridge that `diff` did not work out: zero
+    // and the buffer's own end are not positions inside a character, so unlike a change from
+    // the diff this range needs no widening to stay out of a surrogate pair.
     this.issue(path, { start: 0, end: buffer.length, text: rendered }, rendered);
     this.scheduleSave(path);
   }

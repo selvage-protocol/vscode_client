@@ -43,8 +43,21 @@ export interface TextChange {
 }
 
 /**
+ * Whether `offset` falls between the two code units of one astral character — the state a
+ * change boundary must never be in.
+ */
+function splitsPair(text: string, offset: number): boolean {
+  if (offset <= 0 || offset >= text.length) {
+    return false;
+  }
+  const high = text.charCodeAt(offset - 1);
+  const low = text.charCodeAt(offset);
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+}
+
+/**
  * The smallest replacement that turns `from` into `to`: the common prefix and suffix are
- * left alone.
+ * left alone, and no end of the range is left between the two halves of a surrogate pair.
  *
  * A whole-document replacement is the same edit with `start = 0`, and it is what the
  * cheapest implementation does. It is worth the extra scan to avoid: it collapses undo
@@ -66,6 +79,23 @@ export function diff(from: string, to: string): TextChange {
   while (endFrom > start && endTo > start && from[endFrom - 1] === to[endTo - 1]) {
     endFrom -= 1;
     endTo -= 1;
+  }
+  // The scans compare one code unit at a time and cannot see a pair, so a boundary can land
+  // between a high and a low half — any two astral characters that share a high surrogate
+  // will do, which is every emoji replacement. A change whose range does that describes an
+  // edit no editor can make, and its `text` begins or ends with half a character; a lone
+  // surrogate is not a string a peer's decoder can be handed (`vim.json.decode` refuses the
+  // escape, drops the line and never answers the apply). The range is widened to whole
+  // characters instead — outward, so the change still reproduces `to` exactly — at a cost of
+  // at most one code unit at each end: the change is no longer the strictly smallest one.
+  // The two indices move together: the suffix scan left `from[endFrom]` equal to `to[endTo]`,
+  // so giving up one on each side keeps that equality, and `text` is what `to` holds there.
+  if (splitsPair(from, start) || splitsPair(to, start)) {
+    start -= 1;
+  }
+  if (splitsPair(from, endFrom) || splitsPair(to, endTo)) {
+    endFrom += 1;
+    endTo += 1;
   }
   return { start, end: endFrom, text: to.slice(start, endTo) };
 }
