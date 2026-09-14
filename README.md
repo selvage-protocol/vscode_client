@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 438 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 133 tests, no server, no editor
-$ npm test                             # 137 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 146 tests, no server, no editor
+$ npm test                             # 150 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -106,6 +106,43 @@ Then, in the two windows:
 Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. There is
 **no default server**: a baked-in endpoint would be one someone else chose.
 
+## Commands
+
+Seven, the same seven the Neovim client has with `:SelvageHost`, `:SelvageJoin`,
+`:SelvageDisplayName`, `:SelvageOpen`, `:SelvageCopyInvite`, `:SelvageLeave` and
+`:SelvagePeers`. Only the presentation differs: an editor command is a palette entry here and a
+`:command` there.
+
+| | |
+|---|---|
+| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
+| `Selvage: Join a session from an invite link` | Join the room the invite link names, pre-filled from the clipboard when the clipboard holds one. |
+| `Selvage: Set the name other participants see` | Report the name in force, and set the one the next host or join will use. |
+| `Selvage: Open a document from the room` | Put one of the room's documents in an editor. Only a guest has virtual documents to open; a host's open files are the room's. |
+| `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
+| `Selvage: Leave session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
+| `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
+
+The name other participants see is resolved when a session starts, in this order:
+`selvage.displayName`, then a question pre-filled with the login name. **It is bounded at 32
+UTF-16 code units** — the protocol's unit, so an emoji costs two — and a longer name is
+*refused* wherever it comes from, never shortened, because a name must be the one its owner
+chose: the setting is checked before it is sent, the question refuses an answer as it is typed
+and says how many units it used, and the command refuses to write one. The name travels in the
+`host`/`join` handshake and nothing carries it afterwards, so a change made while a session is
+live applies to the next host or join, not the current one; `Selvage: Set the name other
+participants see` says so when it sets it.
+
+`Selvage: List the room's participants` is the key to the carets. A peer is drawn as a bar in
+their own colour with their name in the caret's hover, and this is where a colour is turned back
+into a person. It lists every peer the room names, including one in a document this window does
+not hold — a colour is derived from a peer id, so it is known before the caret is drawn. The
+colour is not chosen here: it is `peerColour(peer_id)` from `src/bridge/cursors.ts`, the same
+value the caret bar, the selection fill, the overview-ruler tick and the hover are built from, so
+the list cannot disagree with what it explains. The list is drawn as a quick pick with a
+coloured dot per row, because `QuickPickItem.iconPath` is the only field an editor renders a
+colour from — and nothing in this repository can see that dot.
+
 ## Packaging it
 
 The extension is not published to the Marketplace; installing a built `.vsix` is the path for
@@ -145,11 +182,12 @@ files ship in the `.vsix` regardless.
 | `src/bridge/bridge.ts` | `SessionBridge`: seeding, both directions of the buffer/replica loop, the save policy, the `EditorHost` interface an adapter implements |
 | `src/bridge/cursors.ts` | the remote-cursor model, and the palette a peer's colour is derived from |
 | `src/bridge/virtual.ts` | the guest's `selvage:` URIs: build, parse, refuse |
-| `src/adapter/extension.ts` | `activate`, the five commands, the status bar, the window's listeners |
+| `src/adapter/extension.ts` | `activate`, the seven commands, the status bar, the window's listeners |
 | `src/adapter/documents.ts` | `WorkspaceEditor`: which documents are shared, `applyEdit`, save, line endings |
 | `src/adapter/guest-fs.ts` | the `selvage:` `FileSystemProvider`: the replica's text in, writes out |
 | `src/adapter/decorations.ts` | remote carets, selections and the overview-ruler lane; the name label when one is opted into |
 | `src/adapter/labels.ts` | what a peer's name is drawn as: nothing by default, the floating box and the documented chip as opt-ins, the bound on a drawn name, and the declarations the box rides |
+| `src/adapter/display-name.ts` | the protocol's bound on a display name, the count in UTF-16 code units, and the question that asks for one |
 
 Threading: everything is one event loop and synchronous. Frames are written as they are
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
@@ -270,7 +308,23 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   only place a room path is named, and it offers the room's own open-document set — a guest
   never types a path, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
-  peer alike instead of agreeing only by join order.
+  peer alike instead of agreeing only by join order. *Selvage: List the room's participants*
+  prints that same colour beside each peer — the value is `peerColour(peer_id)`, the one the
+  caret bar, the selection fill and the overview-ruler tick are built from, so the key cannot
+  disagree with what it explains. It is drawn as a quick pick with a coloured dot per row,
+  because `QuickPickItem.iconPath` is the only field an editor renders a colour from; nothing in
+  this repository can see the dot, only the URI.
+- **The name other participants see is set by a command as well as a setting.** *Selvage: Set the
+  name other participants see* reports the name in force — the live session's, else the setting's
+  — and writes `selvage.displayName` at the global scope, which is the analogue of the Neovim
+  client's `vim.g.selvage_display_name`; a workspace is not a place a person's name belongs. The
+  name travels in the `host`/`join` handshake and nothing carries it afterwards, so the command
+  says that a session already live keeps the name it started with. **A name is at most 32 UTF-16
+  code units and an over-long one is refused, never shortened**: the setting is checked before it
+  is sent, the question refuses an answer while it is typed and says how many units it used, and
+  reaching for a shorter name is the question that then appears, pre-filled with the one that was
+  refused. The count is `String.prototype.length` — an emoji costs two — and not the code-point
+  count `[...name].length` would give.
 - **A peer is drawn as a caret and a selection, and their name is not drawn over the
   document** (`selvage.cursorLabel`, default `none`). The caret is a two-pixel bar on the left
   edge of the peer's position in their colour, the selection a quarter-alpha fill of the same
@@ -333,7 +387,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, and the leave-first questions |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, the leave-first questions, the display name reported, set, refused over the bound and never sent, the participant list and its colours |
+| `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
