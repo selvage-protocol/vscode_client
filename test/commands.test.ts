@@ -196,6 +196,92 @@ test('joining while hosting asks before ending the room', async (t) => {
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 });
 
+test('the display-name command reports the name in force and offers to change it', async (t) => {
+  const bundle = activated(t);
+
+  // With nothing set there is no name to report, and the report is the first thing the
+  // command says: a palette entry takes no argument, so reading and setting share one
+  // command where a Neovim one takes `:SelvageDisplayName [name]`.
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const reported = await waitFor('the report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('display name')) ??
+      false,
+  );
+  assert.match(reported, /no display name is set/);
+  assert.deepEqual(
+    bundle.stub.registered.informationItems[0],
+    ['Change the name'],
+    'the report offered no way to change the name',
+  );
+
+  bundle.stub.registered.informationReply = 'Change the name';
+  bundle.stub.registered.inputReply = 'Ada';
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const asked = await waitFor('the question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.match(String(asked.prompt), /At most 32 UTF-16 code units/);
+
+  const write = await waitFor('the setting to be written', () =>
+    bundle.stub.registered.settingWrites[0] ?? false,
+  );
+  assert.equal(write.key, 'displayName');
+  assert.equal(write.value, 'Ada');
+  assert.equal(
+    write.target,
+    bundle.stub.ConfigurationTarget.Global,
+    'the name belongs to the person, not to the workspace it happens to be open in',
+  );
+  const said = await waitFor('the confirmation', () =>
+    bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
+      false,
+  );
+  assert.match(said, /display name set to "Ada"/);
+  assert.match(said, /the next session will use it/);
+});
+
+test('a name set during a session says the session keeps the one it started with', async (t) => {
+  const { bundle } = await guest(t, ['workspace/README.md']);
+
+  // The name in force is the room's own: it travelled in the handshake and nothing carries
+  // it afterwards, so the report names the session, not the setting.
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const reported = await waitFor('the report', () =>
+    bundle.stub.registered.information.find((message) =>
+      message.includes('the name others see'),
+    ) ?? false,
+  );
+  assert.match(reported, /the name others see is "Bob"/);
+
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Ada again' });
+  const said = await waitFor('the confirmation', () =>
+    bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
+      false,
+  );
+  assert.match(said, /this session keeps the name it started with/);
+  assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Ada again');
+});
+
+test('a name over the bound is refused with both counts and never written', async (t) => {
+  const bundle = activated(t);
+  // Thirty-two code points and thirty-three UTF-16 code units: the emoji is the case that
+  // tells the room's unit apart from the number of characters typed.
+  const name = `${'a'.repeat(31)}\u{1f600}`;
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name });
+
+  const refusal = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
+  );
+  assert.match(refusal, /33 UTF-16 code units/);
+  assert.match(refusal, /limit is 32/);
+  assert.equal(bundle.stub.registered.settingWrites.length, 0, 'a refused name was written');
+  assert.equal(
+    bundle.stub.registered.information.length,
+    0,
+    'a refused name was reported as set',
+  );
+});
+
 test('an over-long name never reaches the server', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
