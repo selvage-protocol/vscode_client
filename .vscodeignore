@@ -1,0 +1,19 @@
+# Everything the extension needs at runtime is bundled into dist/extension.js by
+# scripts/build.mjs (vscode itself is left external, resolved by the host) — so none of the
+# following ever needs to ship in the .vsix.
+.vscode/**
+.worktrees/**
+.tmp/**
+.github/**
+node_modules/**
+src/**
+test/**
+scripts/**
+.pre-commit-config.yaml
+.gitignore
+.vscodeignore
+tsconfig.json
+package-lock.json
+SPIKES.md
+*.tgz
+**/*.map
