@@ -289,6 +289,21 @@ The seam check is two halves. `test/boundary.test.ts` scans the sources for `vsc
 what catches an `import type`, erased before Node ever runs it. `npm run typecheck` is the
 other half, and `ci.yml` runs it before `test:fast`.
 
+## The two-instance proof (`test/e2e/`)
+
+Everything above stubs the editor or runs one process. `test/e2e/run.ts` does neither: it
+starts a real `selvaged`, downloads a real VS Code build, and launches **two independent, real
+Extension Development Host processes** (`@vscode/test-electron`, headless under Xvfb) with the
+real built extension loaded — one hosting a real file, one joining by invite, both editing
+concurrently — and asserts their documents converge. Left running, it also cuts the guest's
+connection through a small relay and checks it reconnects and re-converges.
+
+Run it with `scripts/e2e/run-two-instance.sh` from the repository root. It has heavier
+prerequisites than everything else here — a network, Xvfb, an internet download the first time,
+and `nix` to work out the shared-library path a VS Code build downloaded outside `nix` needs on
+NixOS — so it is a manual verification step, not part of `npm test`/`test:fast`, and not wired
+into `ci.yml`.
+
 ## Not here
 
 A sidecar or second process, a file tree and create/rename/delete, read-only guests
