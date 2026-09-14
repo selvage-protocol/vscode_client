@@ -195,3 +195,59 @@ test('joining while hosting asks before ending the room', async (t) => {
   assert.match(asked, /hosting room/);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 });
+
+test('an over-long name never reaches the server', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: `${'a'.repeat(31)}\u{1f600}`
+  });
+  const refusal = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
+  );
+  assert.match(refusal, /33 UTF-16 code units/);
+  assert.equal(
+    server.acceptedConnections,
+    0,
+    'the handshake went out with a name the server refuses',
+  );
+});
+
+test('the setting is checked before it is sent, and the question asks for a shorter name', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  // A hand-edited settings.json, which no command here would write: this is the path a
+  // settings UI takes, and the client has to catch it before the handshake.
+  bundle.stub.configure({ displayName: 'a'.repeat(33) });
+  bundle.stub.registered.inputReply = 'Ada';
+
+  await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
+  const refusal = await waitFor('the setting to be refused', () =>
+    bundle.stub.registered.errors.find((message) =>
+      message.includes('selvage.displayName'),
+    ) ?? false,
+  );
+  assert.match(refusal, /33 UTF-16 code units/);
+
+  const asked = await waitFor('the question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(
+    asked.value,
+    'a'.repeat(33),
+    'the box must start from the refused name so it can be shortened',
+  );
+  await waitFor('the host to be seated with the shorter name', () =>
+    server.displayNames().includes('Ada') ? true : false,
+  );
+  assert.deepEqual(server.displayNames(), ['Ada'], 'the refused setting reached the server');
+});
+

@@ -13,6 +13,7 @@ import { SCHEME, SessionBridge, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import { SelvageEngine, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
+import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { GuestFileSystem } from './guest-fs.ts';
 
@@ -362,8 +363,7 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
     return;
   }
   lastServer = baseUrl;
-  const displayName =
-    args?.displayName ?? (await ask('displayName', 'The name the others see', '', userName()));
+  const displayName = await resolveDisplayName(args?.displayName);
   if (displayName === undefined) {
     return;
   }
@@ -428,8 +428,7 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   if (invite === undefined) {
     return;
   }
-  const displayName =
-    args?.displayName ?? (await ask('displayName', 'The name the others see', '', userName()));
+  const displayName = await resolveDisplayName(args?.displayName);
   if (displayName === undefined) {
     return;
   }
@@ -529,6 +528,53 @@ function leave(): void {
   }
   session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
+}
+
+/**
+ * A name inside the protocol's bound, or `undefined` with the reason reported. `where` names
+ * the source in the refusal, so a person knows which of the three to fix.
+ */
+function withinBound(raw: string, where: string): string | undefined {
+  const name = raw.trim();
+  const refusal = displayNameRefusal(name);
+  if (refusal !== undefined) {
+    void vscode.window.showErrorMessage(`Selvage: the ${where} was not sent: ${refusal}`);
+    return undefined;
+  }
+  return name;
+}
+
+/**
+ * The name this window will be seated with: the one a caller named, else the
+ * `selvage.displayName` setting, else the answer to a question that states the bound.
+ *
+ * A name over the bound is refused wherever it came from — a server refuses the
+ * `session.hello` it would arrive in, and being asked for a shorter name is better than being
+ * refused one. A configured name that is refused falls through to the question rather than
+ * failing the command: the box starts from the name that was refused, so it can be shortened
+ * instead of retyped.
+ */
+async function resolveDisplayName(given?: string): Promise<string | undefined> {
+  if (given !== undefined) {
+    return withinBound(given, 'name you gave');
+  }
+  const configured = config().get<string>('displayName', '').trim();
+  if (configured !== '') {
+    const name = withinBound(configured, '"selvage.displayName" setting');
+    if (name !== undefined) {
+      return name;
+    }
+  }
+  const answer = await vscode.window.showInputBox(
+    displayNameInput({
+      title: 'The name other participants see',
+      value: configured === '' ? userName() : configured,
+    }),
+  );
+  if (answer === undefined) {
+    return undefined;
+  }
+  return withinBound(answer, 'name you typed');
 }
 
 /**
