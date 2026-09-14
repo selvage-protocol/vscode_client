@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 424 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 123 tests, no server, no editor
-$ npm test                             # 127 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 129 tests, no server, no editor
+$ npm test                             # 133 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -86,9 +86,10 @@ Then, in the two windows:
    path appears in the room's open-document set.
 4. **Window two** — `Selvage: Join a session from an invite link`, paste the link (it is
    pre-filled from the clipboard when the clipboard holds one), enter a display name.
-5. **Window two** — `Selvage: Open a document from the room`, pick the path. It opens as
-   `selvage:/<path>?room=<room id>`, editable; both windows now type into the same text and
-   see each other's cursor with a name label.
+5. **Window two** — the room's document opens by itself as `selvage:/<path>?room=<room id>`,
+   editable; both windows now type into the same text and see each other's cursor with a name
+   label. With several documents in the room only the first opens; run *Selvage: Open a
+   document from the room* to reach any of the others.
 6. `Selvage: Leave session` on either side. Closing window one — the host — ends the room
    after the server's grace period, and window two is told.
 
@@ -227,6 +228,15 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   those already open when the session starts; that folder is the grant. A guest shares nothing
   from disk — only the `selvage:` documents the room gave it. There are no exclude globs in
   v1: what a host shares is what it has open, which is visible in its own window.
+- **A guest opens the room's first document as it joins**, once and with no input: joining a
+  room that already has files should land in the work, not in a quick-pick. Only the first — a
+  host with five files open must not open five editors — and *Open a document from the room*
+  still lists every path. The adapter opens nothing later in the session, so it never pulls
+  focus from a document the user is editing.
+- **Hosting while already hosting copies the invite**, the same thing *Copy the invite link*
+  does, rather than telling the user to run it; no second room is minted. A guest that runs
+  *Host*, or anyone that runs *Join* while in a session, is asked to confirm leaving first —
+  leaving a hosted room ends it for everyone in it — and nothing happens if they decline.
 - **Reconnection is the engine's; the adapter reports it.** `PROTOCOL.md` §9.1's bounded
   backoff lives in `SelvageEngine`, and the window is told when the host detaches and comes
   back, when the room is gone and when the connection ends. A session whose connection is
@@ -246,7 +256,9 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 - **A guest's document is `selvage:/<path>?room=<room id>`**, behind a `FileSystemProvider`
   (a `TextDocumentContentProvider` is read-only by contract, and guests edit). Its provider
   refuses `delete`, `rename` and `createDirectory` and returns nothing from `readDirectory`:
-  `DESIGN.md` §4.2 has no file tree.
+  `DESIGN.md` §4.2 has no file tree. The quick-pick in *Open a document from the room* is the
+  only place a room path is named, and it offers the room's own open-document set — a guest
+  never types a path, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order.
 - **A peer's name is a floating label above their caret** (`selvage.cursorLabel`, default
@@ -300,13 +312,14 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, `@types/vscode` fits `engines.vscode` |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, and the leave-first questions |
 | `test/labels.test.ts` | the label attachment for each mode: the exact declarations the floating box rides, that the chip carries none of them, and which setting value selects which — the pixels are not covered by anything |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**127 tests, 0 failures**: 123 server-free and 4 that need a built `selvaged`. Waits are bounded
+**133 tests, 0 failures**: 129 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
