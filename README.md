@@ -138,6 +138,7 @@ files ship in the `.vsix` regardless.
 | `src/adapter/documents.ts` | `WorkspaceEditor`: which documents are shared, `applyEdit`, save, line endings |
 | `src/adapter/guest-fs.ts` | the `selvage:` `FileSystemProvider`: the replica's text in, writes out |
 | `src/adapter/decorations.ts` | remote carets, selections and name labels |
+| `src/adapter/labels.ts` | what a peer's name is drawn as: the floating box and the documented chip, and the declarations the box rides |
 
 Threading: everything is one event loop and synchronous. Frames are written as they are
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
@@ -248,6 +249,23 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   `DESIGN.md` §4.2 has no file tree.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order.
+- **A peer's name is a floating label above their caret** (`selvage.cursorLabel`, default
+  `floating`): a small box in the peer's colour, out of the line's flow, so it reads as an
+  annotation rather than as the document's own text. The decoration API has no position, layer
+  or overlay, so the box is drawn by writing declarations — `position: absolute; top: -1.3em;
+  pointer-events: none; …` — into a field documented as *one CSS declaration*, which the editor
+  substitutes into the rule it generates. **That is undocumented behaviour**, taken deliberately
+  rather than smuggled in as ordinary styling: it was read out of a shipped editor, it can
+  change in a release with no change to the API or the protocol, and nothing in the suite can see
+  a pixel — `test/labels.test.ts` pins the option object, and the rendering itself has only been
+  looked at by eye (VS Code 1.137.0). What it cannot do: the
+  vertical offset is a constant against a line height the extension cannot read, so a
+  non-default `editor.lineHeight` makes the box drift; it cannot leave the editor's top edge, so
+  on one of the first visible lines it is cut off; two peers at one offset draw two boxes on top
+  of each other; and as a pseudo-element it is invisible to screen readers, which is why the
+  caret keeps its `hoverMessage` (name · role). `selvage.cursorLabel: "chip"` is the documented
+  fallback — the same name inside the line behind a coloured border, in documented fields only —
+  and it reads as the document's own text, which is the complaint the floating label answers.
 - **The invite is a `ws://` URL and stays one.** Joining is a paste-the-link command; there is
   no `vscode://` wrapper, because that would be a convention the protocol does not have.
 - **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
@@ -281,12 +299,13 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, `@types/vscode` fits `engines.vscode` |
+| `test/labels.test.ts` | the label attachment for each mode: the exact declarations the floating box rides, that the chip carries none of them, and which setting value selects which — the pixels are not covered by anything |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**122 tests, 0 failures**: 118 server-free and 4 that need a built `selvaged`. Waits are bounded
+**126 tests, 0 failures**: 122 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
