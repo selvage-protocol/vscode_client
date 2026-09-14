@@ -51,6 +51,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.leave', () => {
       leave();
     }),
+    vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
+      void displayName(args);
+    }),
   );
 }
 
@@ -173,6 +176,10 @@ class Session {
     return this.peers.map((peer) => peer.display_name);
   }
 
+  /** The name this session was seated with. It travelled in the handshake and never moves. */
+  displayName(): string {
+    return this.engine.session().peer.display_name;
+  }
   dispose(): void {
     if (this.finished) {
       return;
@@ -531,6 +538,19 @@ function leave(): void {
 }
 
 /**
+ * The name others see, as the room has it or as the setting has it. Undefined when neither
+ * has one, because that is the case that asks.
+ */
+function nameInForce(): string | undefined {
+  const live = current?.displayName();
+  if (live !== undefined && live !== '') {
+    return live;
+  }
+  const configured = config().get<string>('displayName', '').trim();
+  return configured === '' ? undefined : configured;
+}
+
+/**
  * A name inside the protocol's bound, or `undefined` with the reason reported. `where` names
  * the source in the refusal, so a person knows which of the three to fix.
  */
@@ -575,6 +595,67 @@ async function resolveDisplayName(given?: string): Promise<string | undefined> {
     return undefined;
   }
   return withinBound(answer, 'name you typed');
+}
+
+/** See `HostArgs`: the same programmatic seam for `selvage.displayName`. */
+export interface DisplayNameArgs {
+  name?: string;
+}
+
+/**
+ * The name other participants see, and when a change to it takes effect.
+ *
+ * With no name it reports the one in force and offers the question, which is how a palette
+ * command can both read and set: a Neovim command takes `:SelvageDisplayName [name]` and a
+ * palette entry takes nothing, so the report is the first thing the user sees either way.
+ *
+ * The name travels in the `host`/`join` handshake and nothing carries it afterwards, so a
+ * session already live keeps the name it started with; the change is for the next one. The
+ * setting is written at the global scope, so a later window is not asked again.
+ */
+async function displayName(args?: DisplayNameArgs): Promise<void> {
+  if (args?.name !== undefined) {
+    await acceptDisplayName(args.name);
+    return;
+  }
+  const currentName = nameInForce();
+  const reported =
+    currentName === undefined
+      ? 'Selvage: no display name is set, so the next host or join will ask for one.'
+      : `Selvage: the name others see is "${currentName}".`;
+  const change = 'Change the name';
+  const choice = await vscode.window.showInformationMessage(reported, change);
+  if (choice !== change) {
+    return;
+  }
+  const answer = await vscode.window.showInputBox(
+    displayNameInput({
+      title: 'Set the name other participants see',
+      value: currentName ?? userName(),
+      current: currentName,
+    }),
+  );
+  if (answer === undefined) {
+    return;
+  }
+  await acceptDisplayName(answer);
+}
+
+/**
+ * Writes a name that is inside the bound and says when it takes effect. A refusal changes
+ * nothing: the name in force stays the one that was in force.
+ */
+async function acceptDisplayName(raw: string): Promise<void> {
+  const name = withinBound(raw, 'name you gave');
+  if (name === undefined) {
+    return;
+  }
+  await config().update('displayName', name, vscode.ConfigurationTarget.Global);
+  void vscode.window.showInformationMessage(
+    current === undefined
+      ? `Selvage: display name set to "${name}"; the next session will use it.`
+      : `Selvage: display name set to "${name}"; this session keeps the name it started with, the change applies to the next host or join.`
+  );
 }
 
 /**

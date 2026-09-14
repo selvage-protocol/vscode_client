@@ -60,6 +60,11 @@
         "command": "selvage.leave",
         "category": "Selvage",
         "title": "Leave session"
+      },
+      {
+        "command": "selvage.displayName",
+        "category": "Selvage",
+        "title": "Set the name other participants see"
       }
     ],
     "configuration": {
