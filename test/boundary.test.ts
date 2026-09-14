@@ -91,6 +91,13 @@ function isEditorPackage(specifier: string): boolean {
   );
 }
 
+/**
+ * A module reached through something other than a quoted literal — `` import(`${name}`) `` —
+ * which the literal scan above cannot see and which could therefore name `vscode`. Nothing
+ * in either half does it; if something starts, it belongs in the adapter where it is read.
+ */
+const COMPUTED_SPECIFIER = /\b(?:import|require)\s*\(\s*(?!['"])/;
+
 test('the engine and the bridge import no editor API and no editor runtime', () => {
   const files = editorIndependentFiles();
   assert.ok(files.length >= 12, `expected both halves, found ${files.length} modules`);
@@ -108,6 +115,11 @@ test('the engine and the bridge import no editor API and no editor runtime', () 
       /\brequire\s*\(\s*['"](?:vscode|vscode-[^'"]*|@types\/vscode)['"]\s*\)/,
       `${file} requires a VS Code package`,
     );
+    assert.doesNotMatch(
+      source,
+      COMPUTED_SPECIFIER,
+      `${file} reaches a module through a specifier the scan cannot read`,
+    );
   }
 });
 
@@ -117,12 +129,18 @@ test('the editor API is imported in src/adapter and nowhere else', () => {
   );
   assert.ok(outside.length >= 12, `expected to scan the tree, found ${outside.length}`);
   for (const file of outside) {
-    for (const specifier of specifiers(readFileSync(file, 'utf8'))) {
+    const source = readFileSync(file, 'utf8');
+    for (const specifier of specifiers(source)) {
       assert.ok(
         !isEditorPackage(specifier),
         `${relative(SRC, file)} imports ${specifier}: that belongs in src/adapter/`,
       );
     }
+    assert.doesNotMatch(
+      source,
+      COMPUTED_SPECIFIER,
+      `${relative(SRC, file)} reaches a module through a specifier the scan cannot read`,
+    );
   }
 });
 
