@@ -31,6 +31,6 @@ jobs:
       - run: npm run typecheck
 
       # The four server-backed tests in `test/selvaged.test.ts` need a built `selvaged` from the
-      # sibling `reference_server`; that repository is private, so the default token cannot clone
-      # it here and CI runs the server-free suite. Run `npm test` locally for the real server.
+      # sibling `reference_server` repository, which this workflow does not check out, so CI runs
+      # the server-free suite. Run `npm test` locally, with a server built, for the real thing.
       - run: npm run test:fast
