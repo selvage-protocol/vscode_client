@@ -687,13 +687,24 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
 /**
  * Writes a name that is inside the bound and says when it takes effect. A refusal changes
  * nothing: the name in force stays the one that was in force.
+ *
+ * The write is what makes the name the next session's, so a settings file that will not take it
+ * — one a configuration manager owns and leaves read-only — is reported rather than swallowed,
+ * and the confirmation is not sent.
  */
 async function acceptDisplayName(raw: string): Promise<void> {
   const name = withinBound(raw, 'name you gave');
   if (name === undefined) {
     return;
   }
-  await config().update('displayName', name, vscode.ConfigurationTarget.Global);
+  try {
+    await config().update('displayName', name, vscode.ConfigurationTarget.Global);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${message(error)}).`,
+    );
+    return;
+  }
   void vscode.window.showInformationMessage(
     current === undefined
       ? `Selvage: display name set to "${name}"; the next session will use it.`

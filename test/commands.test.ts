@@ -240,6 +240,22 @@ test('the display-name command reports the name in force and offers to change it
   assert.match(said, /the next session will use it/);
 });
 
+test('a settings file that will not take the name is reported, not swallowed', async (t) => {
+  const bundle = activated(t);
+  bundle.stub.registered.settingWriteFails = true;
+
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Ada' });
+  const refusal = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('setting')) ?? false,
+  );
+  assert.match(refusal, /could not write the "selvage.displayName" setting/);
+  assert.equal(
+    bundle.stub.registered.information.length,
+    0,
+    'a name that was not written was reported as set',
+  );
+});
+
 test('a name set during a session says the session keeps the one it started with', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
 
