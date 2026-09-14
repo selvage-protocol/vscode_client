@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, SessionBridge, virtualUri } from '../bridge/index.ts';
+import { SCHEME, SessionBridge, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import { SelvageEngine, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
@@ -54,6 +54,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
       void displayName(args);
     }),
+    vscode.commands.registerCommand('selvage.peers', () => {
+      void listPeers();
+    }),
   );
 }
 
@@ -62,6 +65,20 @@ export function deactivate(): void {
   current = undefined;
 }
 
+/**
+ * One other participant, as the participant list needs them: who the room says they are, and
+ * the colour their caret is drawn in. The colour is `peerColour`'s — the same value the caret
+ * bar, the selection fill and the overview-ruler tick are built from — so a row in the list
+ * and the caret in the document cannot disagree.
+ */
+interface Participant {
+  peerId: string;
+  displayName: string;
+  role: Role;
+  colour: string;
+  /** The document the peer says it is in, when this client knows of one. */
+  path?: string;
+}
 /**
  * One session in one window: the engine, the bridge, this window's editor, and the status
  * the user watches.
@@ -180,6 +197,32 @@ class Session {
   displayName(): string {
     return this.engine.session().peer.display_name;
   }
+
+  /**
+   * The room's other participants, for the list. Read at the moment it is asked for rather
+   * than cached, so a row is as fresh as the presence behind it. A peer whose name the room
+   * left blank is shown by id, which is the rule the caret's own label follows
+   * (`cursors.ts`), and a peer with no document is still listed: its colour is derived from
+   * its id, so there is always a caret colour to look it up by.
+   */
+  participants(): Participant[] {
+    const paths = new Map<string, string>();
+    for (const presence of this.engine.presence()) {
+      const peer = presence.peer;
+      const path = presence.state?.path;
+      if (peer !== undefined && path !== undefined) {
+        paths.set(peer.peer_id, path);
+      }
+    }
+    return this.engine.peers().map((peer) => ({
+      peerId: peer.peer_id,
+      displayName: peer.display_name,
+      role: peer.role,
+      colour: peerColour(peer.peer_id),
+      path: paths.get(peer.peer_id),
+    }));
+  }
+
   dispose(): void {
     if (this.finished) {
       return;
@@ -655,6 +698,58 @@ async function acceptDisplayName(raw: string): Promise<void> {
     current === undefined
       ? `Selvage: display name set to "${name}"; the next session will use it.`
       : `Selvage: display name set to "${name}"; this session keeps the name it started with, the change applies to the next host or join.`
+  );
+}
+
+/**
+ * A peer's caret colour as a dot, for the list.
+ *
+ * The colour is `peerColour`'s — the very value the caret bar, the selection fill, the
+ * overview-ruler tick and the caret's hover are built from, so the key cannot disagree with
+ * the thing it explains. A data-URI SVG is the only shape `QuickPickItem.iconPath` carries a
+ * colour in; nothing in this suite can see the dot, only the URI.
+ */
+function swatch(colour: string): vscode.Uri {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">' +
+    `<circle cx="6" cy="6" r="6" fill="${colour}"/></svg>`;
+  return vscode.Uri.parse(`data:image/svg+xml,${encodeURIComponent(svg)}`);
+}
+
+/**
+ * Lists the room's other participants: each one's colour, name, role and document.
+ *
+ * This is the lookup `:SelvagePeers` exists to be: a caret is a coloured bar with a name in
+ * its hover, and the list is where a colour is turned back into a person. The list is every
+ * peer the room names, including one in a document this window does not hold — a colour is
+ * derived from a peer id, so it is known before the caret is drawn.
+ */
+async function listPeers(): Promise<void> {
+  const session = current;
+  if (session === undefined) {
+    void vscode.window.showWarningMessage('Selvage: host or join a session first.');
+    return;
+  }
+  const participants = session.participants();
+  if (participants.length === 0) {
+    void vscode.window.showWarningMessage(
+      'Selvage: no other participants to name; a session names them as they arrive.',
+    );
+    return;
+  }
+  await vscode.window.showQuickPick(
+    participants.map((participant) => ({
+      label: participant.displayName === '' ? participant.peerId : participant.displayName,
+      description: participant.role,
+      detail: participant.path ?? 'no shared document open',
+      iconPath: swatch(participant.colour),
+    })),
+    {
+      title: `Selvage: room ${session.roomId()}`,
+      placeHolder: 'Who is here, and the colour their caret is drawn in',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    },
   );
 }
 
