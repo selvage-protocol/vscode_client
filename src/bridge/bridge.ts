@@ -185,8 +185,10 @@ export class SessionBridge {
   }
 
   /**
-   * The editor's buffer changed: the user typed, a formatter ran, or this adapter's own
-   * application of a peer's edit landed. Only the first two produce a change here.
+   * The editor's buffer changed. A keystroke and a formatter's edit reach the replica from
+   * here; the change event this adapter's own application of a peer's edit produces does not,
+   * because the buffer then already holds what the replica holds — that comparison is the
+   * guard, and it is the whole of it.
    */
   documentChanged(path: string): void {
     if (this.disposed || !this.documents.has(path)) {
