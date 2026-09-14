@@ -1,21 +1,84 @@
 {
   "name": "selvage-client",
+  "displayName": "Selvage",
   "version": "0.1.0",
   "private": true,
-  "description": "Selvage session protocol engine for editor clients",
+  "description": "Live collaborative editing over the Selvage session protocol",
   "license": "MIT OR Apache-2.0",
+  "publisher": "selvage-protocol",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/selvage-protocol/vscode_client.git"
   },
+  "categories": ["Other"],
+  "keywords": ["collaboration", "crdt", "live-share", "pair-programming", "yjs"],
   "type": "module",
+  "main": "./dist/extension.js",
   "engines": {
+    "vscode": "^1.85.0",
     "node": ">=22.18"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "selvage.host",
+        "category": "Selvage",
+        "title": "Host a session"
+      },
+      {
+        "command": "selvage.join",
+        "category": "Selvage",
+        "title": "Join a session from an invite link"
+      },
+      {
+        "command": "selvage.copyInvite",
+        "category": "Selvage",
+        "title": "Copy the invite link"
+      },
+      {
+        "command": "selvage.openDocument",
+        "category": "Selvage",
+        "title": "Open a document from the room"
+      },
+      {
+        "command": "selvage.leave",
+        "category": "Selvage",
+        "title": "Leave session"
+      }
+    ],
+    "configuration": {
+      "title": "Selvage",
+      "properties": {
+        "selvage.serverUrl": {
+          "type": "string",
+          "description": "The server to host on, as a WebSocket address — the one a selvaged prints, e.g. ws://127.0.0.1:8080. Asked for when unset."
+        },
+        "selvage.displayName": {
+          "type": "string",
+          "description": "The name other participants see. Asked for when unset."
+        },
+        "selvage.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's document is virtual and its save writes nothing; the call is what clears the editor's unsaved marker."
+        }
+      }
+    }
+  },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "vscode:prepublish": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts test/spikes/*.test.ts",
     "test:engine": "node --test test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts",
+    "test:adapter": "node --test test/editing.test.ts test/bridge.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
     "test:fast": "node --test test/boundary.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
@@ -28,7 +91,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "1.85.0",
     "@types/ws": "8.18.1",
     "esbuild": "^0.28.2",
     "typescript": "5.9.3"

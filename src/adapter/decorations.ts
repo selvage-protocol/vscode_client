@@ -1,0 +1,131 @@
+/**
+ * Remote cursors, drawn.
+ *
+ * Two decoration types per peer colour — a caret bar and a selection's fill — created the
+ * first time that colour appears and disposed with the session, because a decoration type
+ * is a handle the editor keeps for the life of the window. The name label is a single type
+ * carrying its text and colour per instance, which is what keeps the type count a function
+ * of the palette rather than of the peer list.
+ *
+ * A caret is a zero-width range with an `after` attachment. `DecorationOptions` says the
+ * range must not be empty; both extensions the study read use one anyway and it renders, so
+ * this follows them rather than the comment (`docs/studies/vscode-plugin.md` §3).
+ */
+
+import * as vscode from 'vscode';
+
+import type { Cursor } from '../bridge/index.ts';
+
+export class Cursors {
+  private readonly carets = new Map<string, vscode.TextEditorDecorationType>();
+  private readonly selections = new Map<string, vscode.TextEditorDecorationType>();
+  private readonly labels: vscode.TextEditorDecorationType;
+
+  constructor() {
+    this.labels = vscode.window.createTextEditorDecorationType({
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+  }
+
+  /**
+   * Draws the cursors on every visible editor showing the document they are in, and clears
+   * every type on the editors that are not — which is how a cursor whose peer moved to
+   * another file, or left, is withdrawn.
+   */
+  render(
+    cursors: Map<string, Cursor[]>,
+    pathOf: (document: vscode.TextDocument) => string | undefined,
+  ): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      const path = pathOf(editor.document);
+      this.draw(editor, path === undefined ? [] : (cursors.get(path) ?? []));
+    }
+  }
+
+  dispose(): void {
+    for (const type of this.carets.values()) {
+      type.dispose();
+    }
+    for (const type of this.selections.values()) {
+      type.dispose();
+    }
+    this.carets.clear();
+    this.selections.clear();
+    this.labels.dispose();
+  }
+
+  private draw(editor: vscode.TextEditor, cursors: readonly Cursor[]): void {
+    const carets = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
+    const selections = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
+    const labels: vscode.DecorationOptions[] = [];
+
+    for (const cursor of cursors) {
+      const anchor = editor.document.positionAt(cursor.anchor);
+      const head = editor.document.positionAt(cursor.head);
+      if (cursor.anchor !== cursor.head) {
+        const fill = this.selectionType(cursor.fill);
+        const options = selections.get(fill) ?? [];
+        options.push({ range: new vscode.Range(anchor, head) });
+        selections.set(fill, options);
+      }
+      const caret = this.caretType(cursor.colour);
+      const options = carets.get(caret) ?? [];
+      options.push({
+        range: new vscode.Range(head, head),
+        hoverMessage: `${cursor.label} · ${cursor.role}`,
+      });
+      carets.set(caret, options);
+      labels.push({
+        range: new vscode.Range(head, head),
+        renderOptions: {
+          after: {
+            contentText: ` ${cursor.label} `,
+            backgroundColor: cursor.colour,
+            color: '#000000',
+            margin: '0 0 0 0.4ch',
+          },
+        },
+      });
+    }
+
+    for (const type of this.carets.values()) {
+      editor.setDecorations(type, carets.get(type) ?? []);
+    }
+    for (const type of this.selections.values()) {
+      editor.setDecorations(type, selections.get(type) ?? []);
+    }
+    editor.setDecorations(this.labels, labels);
+  }
+
+  private caretType(colour: string): vscode.TextEditorDecorationType {
+    const known = this.carets.get(colour);
+    if (known !== undefined) {
+      return known;
+    }
+    const type = vscode.window.createTextEditorDecorationType({
+      borderWidth: '0 0 0 2px',
+      borderStyle: 'solid',
+      borderColor: colour,
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+      // The overview ruler is a one-line answer to "where is the other person".
+      overviewRulerColor: colour,
+      overviewRulerLane: vscode.OverviewRulerLane.Right,
+    });
+    this.carets.set(colour, type);
+    return type;
+  }
+
+  /** Keyed by the fill the bridge computed, so the alpha lives in one place. */
+  private selectionType(fill: string): vscode.TextEditorDecorationType {
+    const known = this.selections.get(fill);
+    if (known !== undefined) {
+      return known;
+    }
+    const type = vscode.window.createTextEditorDecorationType({
+      backgroundColor: fill,
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    this.selections.set(fill, type);
+    return type;
+  }
+}

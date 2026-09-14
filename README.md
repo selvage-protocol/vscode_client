@@ -1,14 +1,24 @@
-# Selvage client for VS Code — the engine
+# Selvage for VS Code
 
-The `selvage/1` **sync engine** for the Selvage VS Code client: WebSocket transport, the JSON
-session envelope, the handshake, room join by invite URL, document sync and awareness over
-`y-protocols` with an in-process `yjs`. It is the half of `DESIGN.md` §6 that knows about CRDTs
-and sockets and nothing about editors.
+Live collaborative editing over the [Selvage `selvage/1` session protocol](https://github.com/selvage-protocol/specification):
+a WebSocket transport, the JSON session envelope, room join by invite URL, `y-protocols`
+document sync and awareness, and the editor integration that makes two windows edit one file.
 
-**`src/engine/` does not import `vscode`, and a test enforces it** (`test/boundary.test.ts`).
-The adapter — documents, decorations, the `FileSystemProvider`, commands — is a later change
-and attaches at the interface described below. `package.json` is here so the engine can be
-built and tested on its own; the extension manifest arrives with the adapter.
+It is a from-scratch TypeScript client. The sync engine and the CRDT live in the extension
+host next to the editor — `DESIGN.md` §6, and `docs/studies/vscode-plugin.md` §6 for why the
+sidecar comes later — and the code is layered so that each layer can be tested with less than
+the one below it:
+
+| Layer | What it is | What it needs to be tested |
+|---|---|---|
+| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect | a socket |
+| `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution | a replica and an editor interface |
+| `src/adapter/` | the `vscode` half: documents, `applyEdit`, the `FileSystemProvider`, decorations, commands, status | an editor |
+
+**No `vscode` import outside `src/adapter/`, and `test/boundary.test.ts` enforces it** — along
+with "no undeclared dependency", "every module of the editor-independent half is reachable
+from a test", and "every module in `src/adapter/` is one that imports `vscode`". A rule that
+could have been tested belongs in `src/bridge/`.
 
 ## Running it
 
@@ -17,45 +27,72 @@ Requirements, as found on this host:
 | Tool | Version here | Notes |
 |---|---|---|
 | Node | `v26.8.1` (`/etc/profiles/per-user/user/bin/node`) | **≥ 22.18** is required: the tests are `.ts` run directly by `node --test`, which needs type stripping |
-| npm | `11.19.0` | `npm ci` reaches the registry (verified: `npm view yjs version` → `13.6.32`) |
-| nix | `2.34.8` | only for building `selvaged` out of the sibling [`reference_server`](https://github.com/selvage-protocol/reference_server) checkout |
-
-A fresh clone needs `npm ci` (9 packages, ~35 MB, no native builds) and, for the
-real-server test, a `selvaged` binary:
+| npm | `11.19.0` | `npm ci` reaches the registry |
+| nix | `2.34.8` | only for building `selvaged` out of the sibling [`reference_server`](https://github.com/selvage-protocol/reference_server) checkout, which the four server-backed tests need |
 
 ```console
-$ npm ci --no-audit --no-fund
-added 9 packages in 1s
+$ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
+$ npm run build                        # → dist/extension.js, 424 kB, and dist/package.json
+$ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
+$ npm run test:fast                    # builds, then 94 tests, no server, no editor
+$ npm test                             # 98 tests: the same plus 4 against a real selvaged
+```
 
+`test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
+source and not a stale one (`test/manifest.test.ts` loads it and activates it against a stub
+`vscode`, which is how CI checks the manifest without an editor).
+
+The four server-backed tests in `test/selvaged.test.ts` need a `selvaged` binary:
+
+```console
 $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.80s
 ```
 
-Two notes on that build. `cargo` is **not** on the ambient `PATH`, so it has to come from the
-devshell (`nix-shell -p cargo rustc --run …` also works) — and `nix develop ../reference_server`
-runs its command with the *current* directory as the working directory, not the flake's, hence
-the `cd`. The flake's shellHook installs its git hooks into this checkout's `.git/hooks` and
-writes `.pre-commit-config.yaml` here; the config is ignored, and CI does not depend on the hooks.
+`test:selvaged` finds it at `../reference_server/target/{debug,release}/selvaged`, or wherever
+`SELVAGE_SELVAGED` points. A missing binary **fails** the test with the command that builds it
+rather than skipping. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server`
+runs its command with the *current* directory, hence the `cd`. That flake's shellHook installs
+Rust git hooks into this checkout; they are harmless and ignored, and CI does not use them.
 
-Then:
+Most of the suite runs against a fake `selvaged` (`test/helpers/fake-server.ts`) that
+implements the handshake, the document-set semantics, the grace period and payload-opaque
+relay. It exists for the faults the real server will not produce on demand — a dropped socket,
+a hostile `x.` event, `/meta` naming a version this client cannot speak — not as a substitute
+for the real thing. It **shares `src/engine/envelope.ts` with the engine**, so it can never
+catch a constant that disagrees with the spec: only `test:selvaged` can.
+
+## Loading it in VS Code
+
+The extension is not published. Load it from a checkout:
 
 ```console
-$ npm test                    # everything: 69 tests, of which 4 need the built server
-$ npm run test:engine         # wire layer + engine + reconnect, no server build needed
-$ npm run test:spikes         # the three pre-adapter experiments
-$ npm run test:selvaged       # the conformance gate, needs a built ../reference_server/target/*/selvaged
-$ npm run typecheck           # tsc --noEmit, strict, erasableSyntaxOnly
+$ code --extensionDevelopmentPath=$PWD <a folder to work in>
 ```
 
-`test:selvaged` finds the binary at `../reference_server/target/{debug,release}/selvaged`, or
-wherever `SELVAGE_SELVAGED` points. A missing binary **fails** the test with the command that
-builds it rather than skipping: the point of that suite is the real server. The rest of the suite
-runs against a fake `selvaged` (`test/helpers/fake-server.ts`) that implements the handshake, the
-document-set semantics, the grace period and payload-opaque relay — it exists for the faults
-the real server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta`
-naming a version this client cannot speak), not as a substitute for it. It **shares
-`src/engine/envelope.ts` with the engine**, so it can never catch a constant that disagrees
-with the spec: both sides would be wrong the same way. Only `test:selvaged` can.
+or press **F5** in VS Code, which uses `.vscode/launch.json`. That file has **two**
+configurations, because a collaborative session needs two windows: `Selvage (first window)`
+and `Selvage (second window)`, each with its own `--user-data-dir` under `.tmp/`, so the two
+extension hosts do not share state. Launch the first, then the second (from the *same* window
+you launched the first from — the second debug session starts another host).
+
+Then, in the two windows:
+
+1. Run a server: `selvaged` from the sibling checkout prints the address to host on.
+2. **Window one** — `Selvage: Host a session` (the command palette; `F1`). Enter the server
+   address (`ws://127.0.0.1:8080`) and a display name. The invite link is shown and copied to
+   the clipboard, and the status bar shows the session.
+3. Open a file **inside the workspace folder** — it is shared as soon as it is open, and its
+   path appears in the room's open-document set.
+4. **Window two** — `Selvage: Join a session from an invite link`, paste the link (it is
+   pre-filled from the clipboard when the clipboard holds one), enter a display name.
+5. **Window two** — `Selvage: Open a document from the room`, pick the path. It opens as
+   `selvage:/<path>?room=<room id>`, editable; both windows now type into the same text and
+   see each other's cursor with a name label.
+6. `Selvage: Leave session` on either side. Closing window one — the host — ends the room
+   after the server's grace period, and window two is told.
+
+Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. There is
+**no default server**: a baked-in endpoint would be one someone else chose.
 
 ## Modules
 
@@ -69,14 +106,19 @@ with the spec: both sides would be wrong the same way. Only `test:selvaged` can.
 | `src/engine/presence.ts` | the awareness state's shape, and the join from `awareness_client_id` to `PeerInfo` (§8.4) |
 | `src/engine/events.ts` | the nine `EngineEvent`s, mirroring [`crates/client/src/editor.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/editor.rs) |
 | `src/engine/engine.ts` | `SelvageEngine`: handshake, request/response correlation, the sync handshake, awareness renewal and expiry, reconnect |
-| `src/engine/index.ts` | the public surface — import from here |
+| `src/bridge/editing.ts` | LF in the replica, the document's own line endings on render, the smallest change between two texts, and the content comparison that stands in for an echo guard |
+| `src/bridge/bridge.ts` | `SessionBridge`: seeding, both directions of the buffer/replica loop, the save policy, the `EditorHost` interface an adapter implements |
+| `src/bridge/cursors.ts` | the remote-cursor model, and the palette a peer's colour is derived from |
+| `src/bridge/virtual.ts` | the guest's `selvage:` URIs: build, parse, refuse |
+| `src/adapter/extension.ts` | `activate`, the five commands, the status bar, the window's listeners |
+| `src/adapter/documents.ts` | `WorkspaceEditor`: which documents are shared, `applyEdit`, save, line endings |
+| `src/adapter/guest-fs.ts` | the `selvage:` `FileSystemProvider`: the replica's text in, writes out |
+| `src/adapter/decorations.ts` | remote carets, selections and name labels |
 
 Threading: everything is one event loop and synchronous. Frames are written as they are
 produced, and events are delivered to listeners in the order frames arrived, so an adapter
 reacts to `documentChanged` instead of polling. There is no worker, no native module and no
-second process:
-`DESIGN.md` §6 has VS Code embed both halves, and the module seam is what keeps a sidecar a
-later *move* rather than a rewrite.
+second process.
 
 Two bounds, and what each one covers. `connect()` is bounded by `handshakeTimeoutMs` (10 s by
 default), which covers the upgrade *and* the handshake: if it expires the socket is closed and
@@ -84,18 +126,13 @@ the attempt rejects. `open()` and `close()` are bounded by `requestTimeoutMs` (1
 default), because the bound belongs to the client and not to the wire — a server that holds the
 socket up and never answers fails the caller with `EngineClosedError` instead of leaving it
 pending. Neither bound guesses: an unanswered `doc.open` records no hold, and both methods are
-idempotent, so re-asking is how the caller settles what the server did. A request issued with
-no seated connection to carry it is refused at once rather than queued for the next connection,
-where it would be replayed under an id that connection had already reissued.
+idempotent, so re-asking is how the caller settles what the server did.
 
-A reconnect announces itself last: the engine re-opens the documents this client still holds
-*before* it emits `documentsChanged` and `peersChanged`, so an adapter that opens a document
-in answer to those events is ordered after the engine's own re-opens instead of racing them.
-
-## Where the adapter attaches
+## The seam
 
 ```ts
 import { SelvageEngine } from './engine/index.ts';
+import { SessionBridge } from './bridge/index.ts';
 
 // Mint a room (the host) — the reply carries the token, so inviteUrl() is the share.
 const host = await SelvageEngine.host('ws://127.0.0.1:8080', 'Ada');
@@ -104,19 +141,14 @@ const invite = host.inviteUrl();               // ws://…/session?room=…&toke
 // Join the room the link names — the link itself, not a room id worked out of it.
 const guest = await SelvageEngine.join(invite, 'Bob');
 
-host.on((event) => {
-  switch (event.type) {
-    case 'documentChanged': /* reconcile event.path with host.text(event.path) */
-    case 'documentsChanged': /* the room's open-document set */
-    case 'peersChanged': /* membership, including awareness_client_id */
-    case 'presenceChanged': /* remote cursors, each with its peer attributed */
-    case 'hostDetached': /* grace countdown, event.graceMs */
-    case 'hostAttached': /* the host came back */
-    case 'roomGone': /* the session is over; do not retry */
-    case 'sessionError': /* a fault the server could not attach to a request */
-    case 'disconnected': /* the connection ended, or reconnection gave up */
-  }
-});
+// The editor half. Everything the bridge needs from an editor is these six methods.
+const bridge = new SessionBridge({ engine: host, host: editorHost });
+bridge.documentOpened('src/main.rs');   // the editor has a document in front of the user
+bridge.documentChanged('src/main.rs');  // its buffer changed
+bridge.documentClosed('src/main.rs');
+bridge.selectionChanged('src/main.rs', { anchor: 12, head: 12 });
+bridge.selectionCleared();
+bridge.reconcile('src/main.rs');        // the editor refused a change; ask again
 ```
 
 | Adapter need | Engine call |
@@ -132,30 +164,67 @@ host.on((event) => {
 | convergence checks | `engine.stateVector()`, `engine.documents()`, `engine.openDocuments()` |
 | concurrency in tests | `engine.pauseOutbound(true)` — held frames make two edits genuinely concurrent |
 
-Three contracts the adapter has to keep, each settled by a spike (`SPIKES.md`):
+Four contracts the adapter keeps, each settled by a spike (`SPIKES.md`):
 
 1. **Do not use a bare echo flag.** Compare the buffer's text against `engine.text(path)`
-   before writing a change event back into the CRDT: a flag loses or duplicates edits
+   before writing a change event back into the replica: a flag loses or duplicates edits
    depending on when the coalesced event lands. CRDT → buffer needs no guard at all, because
    `documentChanged` fires only for changes that did not come from the adapter.
-2. **Write LF into the CRDT** (`buffer.replace(/\r\n/g, '\n')`), remember the document's EOL,
-   and restore it when rendering — never write the rendered text back. Two editors with
-   different line endings otherwise rewrite each other forever.
-3. **Do not impose a trailing-newline invariant in the sync layer.** Content is content; if
-   the editor wants the invariant, it owns it in one place.
+2. **Write LF into the replica** (`buffer.replace(/\r\n/g, '\n')`), remember the document's
+   EOL, and restore it when rendering — never write the rendered text back. Two editors with
+   different line endings otherwise rewrite each other forever. The EOL is the editor's own
+   answer for the document (`TextDocument.eol`), which is CRLF for a CRLF file and the
+   `files.eol` setting for a new or empty one.
+3. **Do not impose a trailing-newline invariant.** Content is content; if the editor wants the
+   invariant, it owns it in one place.
+4. **Seeding is the host's, once, and never over content the room already has.** A `doc.open`
+   for a path the replica does not hold yet is seeded from the editor's buffer; one for a path
+   a peer has already edited is *rendered* into the buffer instead, so a stale file on disk
+   cannot be published over the room.
 
 **A selection on the wire is two CRDT anchors, never offsets** —
 [`PROTOCOL.md` §8.1](https://github.com/selvage-protocol/specification/blob/main/PROTOCOL.md).
-Each endpoint is a yjs `RelativePosition` as JSON — a scope (`tname`, the document path),
-an optional `item` naming an element inside it, and `assoc` — and no index is carried, so a
-peer's caret survives a paste above it instead of drifting by the length of that paste.
+Each endpoint is a yjs `RelativePosition` as JSON — a scope (`tname`, the document path), an
+optional `item` naming an element inside it, and `assoc` — and no index is carried, so a peer's
+caret survives a paste above it instead of drifting by the length of that paste.
 
-Offsets stop at the editor-adapter seam, where they are UTF-16 code units, the unit
-`Y.Text` indices and VS Code's `offsetAt` both count. `setSelection` takes offsets and
-anchors them; `resolveSelection` turns a peer's anchors back into offsets against this
-replica. Resolution is **deferred**: awareness and sync travel on independent queues, so a
-state whose document has not arrived yet is kept and resolves on a later call, and an
-endpoint that does not resolve means *no selection* — never a clamp or an offset fallback.
+Offsets stop at the editor-adapter seam, where they are UTF-16 code units, the unit `Y.Text`
+indices and VS Code's `offsetAt` both count. Resolution is **deferred**: awareness and sync
+travel on independent queues, so a state whose document has not arrived yet is kept and
+resolves on a later call, and an endpoint that does not resolve means *no selection* — never a
+clamp or an offset fallback.
+
+## What the adapter decided
+
+The points `docs/studies/vscode-plugin.md` §9 leaves open, as implemented:
+
+- **A host shares the `file:` documents open under its workspace folder**, on open and for
+  those already open when the session starts; that folder is the grant. A guest shares nothing
+  from disk — only the `selvage:` documents the room gave it.
+- **Closing a document releases this client's hold** on it, so the room's set is the union of
+  what its connected clients have open. A guest that opens it again re-offers the path.
+- **A remote edit is saved once the room settles** (500 ms after the last one, one write per
+  document), because the host's working copy is the room's truth and an unsaved buffer leaves
+  the file on disk stale. A local edit is the user's own and is never saved for them. Setting
+  `selvage.autoSave` to `false` leaves the buffer dirty and the file alone. A guest's virtual
+  document is saved too — its `writeFile` is a no-op, and the call is what clears the dirty
+  marker rather than leaving a save prompt at close.
+- **A guest's document is `selvage:/<path>?room=<room id>`**, behind a `FileSystemProvider`
+  (a `TextDocumentContentProvider` is read-only by contract, and guests edit). Its provider
+  refuses `delete`, `rename` and `createDirectory` and returns nothing from `readDirectory`:
+  `DESIGN.md` §4.2 has no file tree.
+- **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
+  peer alike instead of agreeing only by join order.
+- **The invite is a `ws://` URL and stays one.** Joining is a paste-the-link command; there is
+  no `vscode://` wrapper, because that would be a convention the protocol does not have.
+- **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
+  asks the bridge to work the change out again against the buffer's current text.
+- **Undo is not made CRDT-aware.** A remote edit lands on the buffer's undo stack, so `Ctrl+Z`
+  can undo a peer's edit; the resulting change event is published like any other and the room
+  reconverges. Per-user undo is explicitly out of scope (`docs/studies/vscode-plugin.md` §2.2).
+- **Format-on-save is not fought.** A formatter's edit is an ordinary change event and is
+  published; with peers running formatters this can echo (`SPIKES.md`, spike 3), so turn
+  format-on-type off while collaborating.
 
 ## Tests
 
@@ -165,32 +234,33 @@ endpoint that does not resolve means *no selection* — never a clamp or an offs
 | `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, convergence, presence attribution and expiry, the room lifecycle, hostile frames |
 | `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine; the fixture is vendored under `test/fixtures/`, or read from the `specification` checkout named by `SELVAGE_VECTORS` |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
-| `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again (a fresh `join()`, not the reconnect path), close semantics |
+| `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
+| `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
+| `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, `@types/vscode` fits `engines.vscode` |
+| `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
+| `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
-| `test/boundary.test.ts` | no `vscode` import, no undeclared dependency, the public surface exists |
 
-`npm test` runs them all: **69 tests, 0 failures**, of which 4 need a built `selvaged`
-and run against nothing else. Waits are bounded polls of a real predicate that report the
-state they observed on failure (`test/helpers/wait.ts`), not `sleep`-and-hope. The one
-assertion that used to sample an asynchronous count is the abandoned-connection count in
-`test/reconnect.test.ts`, which now waits for it.
+**98 tests, 0 failures**: 94 server-free and 4 that need a built `selvaged`. Waits are bounded
+polls of a real predicate that report the state they observed on failure
+(`test/helpers/wait.ts`), not `sleep`-and-hope.
 
-The seam check is two halves. `test/boundary.test.ts` scans the engine's source for
-`vscode`, `vscode-*` and `@types/vscode` specifiers — static or dynamic, in either quote
-style — which is what catches an `import type`, erased before Node ever runs it. `npm run
-typecheck` is the other half, and `ci.yml` runs it before `test:fast`; `test:fast` itself
-does not compile.
+The seam check is two halves. `test/boundary.test.ts` scans the sources for `vscode`,
+`vscode-*` and `@types/vscode` specifiers — static or dynamic, in either quote style — which is
+what catches an `import type`, erased before Node ever runs it. `npm run typecheck` is the
+other half, and `ci.yml` runs it before `test:fast`.
 
 ## Not here
 
-`src/adapter/`, the extension manifest, presence rendering, packaging and publication
-(`DESIGN.md` §11). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is
-not y-websocket's), any host-filesystem read, read-only guests (§12.3), per-user undo, and
-`terminal/1`.
+A sidecar or second process, a file tree and create/rename/delete, read-only guests
+(`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond the open workspace
+documents, multi-room windows, and publication (`vsce package`, a Marketplace publisher). Also
+deliberately absent: a `y-websocket` provider (Selvage's envelope is not y-websocket's),
+`terminal/1`, and any default server address.
 
 ## Licence
 
-The engine is `MIT OR Apache-2.0`, at your option: [`LICENSE-MIT`](LICENSE-MIT) and
+The client is `MIT OR Apache-2.0`, at your option: [`LICENSE-MIT`](LICENSE-MIT) and
 [`LICENSE-APACHE`](LICENSE-APACHE). The cross-library anchor fixture under `test/fixtures/` is
 vendored from the [`specification`](https://github.com/selvage-protocol/specification)
 repository, whose material is `CC-BY-4.0`.
