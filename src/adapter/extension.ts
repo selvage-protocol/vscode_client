@@ -129,6 +129,25 @@ class Session {
     this.status.show();
     this.refreshStatus();
     this.selection();
+    // A guest joins a room that already has documents. Landing in one of them is the whole
+    // point of "come edit my code with me"; the palette round trip is the chore this removes.
+    if (this.role() === 'guest') {
+      this.openFromRoom();
+    }
+  }
+
+  /**
+   * Opens one of the room's documents as the session is built, so a guest that just joined
+   * lands in the work. Only the first: a host with five files open must not open five
+   * editors here, and "Open a document from the room" still lists every path. Called from
+   * the constructor alone, so it can never pull focus from a document the user is editing
+   * mid-session.
+   */
+  private openFromRoom(): void {
+    const path = this.documents[0];
+    if (path !== undefined) {
+      void openRoomDocument(this, path);
+    }
   }
 
   role(): Role {
@@ -393,8 +412,15 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
     return;
   }
   current = new Session(files, engine);
+  const documents = engine.documents();
+  const howMany =
+    documents.length > 1
+      ? `; run "Selvage: Open a document from the room" for the other ${documents.length - 1}`
+      : '';
   void vscode.window.showInformationMessage(
-    `Selvage: joined room ${engine.session().roomId}. Run "Selvage: Open a document from the room" to see what it has (${engine.documents().length} open).`,
+    documents.length === 0
+      ? `Selvage: joined room ${engine.session().roomId}. This room has no open documents yet.`
+      : `Selvage: joined room ${engine.session().roomId}. Opening ${documents[0]}${howMany}.`,
   );
 }
 
@@ -451,12 +477,17 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
   if (picked === undefined) {
     return;
   }
-  const uri = vscode.Uri.parse(virtualUri(session.roomId(), picked));
+  await openRoomDocument(session, picked);
+}
+
+/** Opens a room path as a guest's virtual document: `selvage:/<path>?room=<room id>`. */
+async function openRoomDocument(session: Session, path: string): Promise<void> {
+  const uri = vscode.Uri.parse(virtualUri(session.roomId(), path));
   try {
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
   } catch (error) {
     void vscode.window.showErrorMessage(
-      `Selvage: could not open ${picked} from the room: ${message(error)}`,
+      `Selvage: could not open ${path} from the room: ${message(error)}`,
     );
   }
 }
