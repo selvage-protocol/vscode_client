@@ -76,12 +76,13 @@
     "watch": "node scripts/build.mjs --watch",
     "vscode:prepublish": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts test/spikes/*.test.ts",
+    "test": "npm run build && node --test test/*.test.ts test/spikes/*.test.ts",
     "test:engine": "node --test test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts",
     "test:adapter": "node --test test/editing.test.ts test/bridge.test.ts",
+    "test:extension": "npm run build && node --test test/manifest.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "node --test test/boundary.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
+    "test:fast": "npm run build && node --test test/boundary.test.ts test/manifest.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",
