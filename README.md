@@ -259,8 +259,9 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   change in a release with no change to the API or the protocol, and nothing in the suite can see
   a pixel — `test/labels.test.ts` pins the option object, and the rendering itself has only been
   looked at by eye (VS Code 1.137.0). What it cannot do: the
-  vertical offset is a constant against a line height the extension cannot read, so a
-  non-default `editor.lineHeight` makes the box drift; it cannot leave the editor's top edge, so
+  vertical offset is a constant against a line height the extension cannot read, so
+  `editor.lineHeight: 34` moves the box inside the caret's own line instead of above it; it
+  cannot leave the editor's top edge, so
   on one of the first visible lines it is cut off; two peers at one offset draw two boxes on top
   of each other; and as a pseudo-element it is invisible to screen readers, which is why the
   caret keeps its `hoverMessage` (name · role). `selvage.cursorLabel: "chip"` is the documented
