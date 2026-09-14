@@ -41,10 +41,55 @@ test('version compatibility is same-major, and the minor is decisive only at 0.x
   assert.equal(isCompatible('other/1'), false);
   assert.equal(isCompatible(''), false);
 
-  // The parse mirrors the reference server's `crates/protocol/src/lib.rs`: the minor defaults to 0.
+  // The parse is the grammar of §10: `selvage/` major [ "." minor ], the minor defaulting to 0.
   assert.deepEqual(parseVersion('selvage/1'), [1, 0]);
   assert.deepEqual(parseVersion('selvage/1.9'), [1, 9]);
   assert.equal(parseVersion('selvage/1.2.3'), undefined);
+});
+
+test('the wire version grammar is the one §10 and the schema fix', () => {
+  // `wireVersion` in `schema/negotiation.json`:
+  //   ^selvage/(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$
+  // CANONICAL.md §2.5 writes the numbers as §2.4 does, so a leading zero is not in the
+  // grammar — `selvage/1.0` is, and so is `selvage/0`, but `selvage/01` and `selvage/1.02`
+  // are strings §10 refuses alongside `selvage/2`.
+  assert.deepEqual(parseVersion('selvage/0'), [0, 0]);
+  assert.deepEqual(parseVersion('selvage/0.0'), [0, 0]);
+  assert.deepEqual(parseVersion('selvage/1.0'), [1, 0]);
+  assert.deepEqual(parseVersion('selvage/10.20'), [10, 20]);
+
+  const malformed = [
+    'selvage/01',
+    'selvage/00',
+    'selvage/1.01',
+    'selvage/1.00',
+    'selvage/1.2.3',
+    'selvage/1..2',
+    'selvage/1.',
+    'selvage/.1',
+    'selvage/-1',
+    'selvage/+1',
+    'selvage/1e2',
+    'selvage/ 1',
+    'selvage/1 ',
+    'selvage/1.0 ',
+    'SELVAGE/1',
+    'xselvage/1',
+    'selvage',
+    'selvage/',
+    'selvage//1',
+    '',
+  ];
+  for (const version of malformed) {
+    assert.equal(parseVersion(version), undefined, version);
+    assert.equal(isCompatible(version), false, version);
+  }
+
+  // `/meta` decides on the same grammar: an advertised string outside it is not a version
+  // the client can speak, so it decides nothing (§2.1, §10).
+  assert.equal(metaAccepts({ wire_versions: ['selvage/01'] }), false);
+  assert.equal(metaAccepts({ wire_versions: ['selvage/01', 'selvage/1'] }), true);
+  assert.equal(metaAccepts({ wire_versions: ['selvage/2', 'selvage/1.2.3'] }), false);
 });
 
 test('a fatal session error code pairs with the close code the server uses', () => {

@@ -153,16 +153,22 @@ export const DEFAULT_KEEPALIVE: Keepalive = {
   awareness_expire_ms: 30_000,
 };
 
+/**
+ * The wire version grammar §10 and `schema/negotiation.json` fix:
+ * `selvage/` major [ "." minor ], with both numbers written as §2.4 does, so neither
+ * carries a leading zero (CANONICAL.md §2.5).
+ */
+const WIRE_VERSION_GRAMMAR = /^selvage\/(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?$/;
+
 /** Parses `selvage/<major>[.<minor>]`, with the minor defaulting to 0. */
 export function parseVersion(version: string): [number, number] | undefined {
-  if (!version.startsWith('selvage/')) {
+  const grammar = WIRE_VERSION_GRAMMAR.exec(version);
+  if (grammar === null) {
     return undefined;
   }
-  const parts = version.slice('selvage/'.length).split('.');
-  if (parts.length > 2 || !parts.every((part) => /^\d+$/.test(part))) {
-    return undefined;
-  }
-  return [Number(parts[0]), parts[1] === undefined ? 0 : Number(parts[1])];
+  const major = grammar[1];
+  const minor = grammar[2];
+  return [Number(major), minor === undefined ? 0 : Number(minor)];
 }
 
 /**
