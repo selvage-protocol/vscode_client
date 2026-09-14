@@ -19,6 +19,7 @@ import type { BridgeOptions, Engine, Timers } from '../src/bridge/bridge.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import type { Cursor } from '../src/bridge/cursors.ts';
 import { render } from '../src/bridge/editing.ts';
+import type { TextChange } from '../src/bridge/editing.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from '../src/engine/presence.ts';
 import type { PeerInfo, Role } from '../src/engine/envelope.ts';
 import type { SessionInfo, SelvageEngine } from '../src/engine/engine.ts';
@@ -214,6 +215,20 @@ class EngineStub implements Engine {
   }
 }
 
+/**
+ * An editor that takes a change and never answers it, as a front-end that dropped the message
+ * does. `applyChange`'s promise is the only thing that settles a document's apply in the
+ * bridge, and nothing else ever fails it.
+ */
+class UnansweringEditor extends FakeEditor {
+  override applyChange(path: string, change: TextChange): Promise<boolean> {
+    const asked = this.changes.get(path) ?? [];
+    asked.push(change);
+    this.changes.set(path, asked);
+    return new Promise(() => undefined);
+  }
+}
+
 /** A peer presence record carrying a caret, for the cursor tests. */
 function peerCaret(path: string): Presence {
   const peer: PeerInfo = { peer_id: 'p-bob', display_name: 'Bob', role: 'guest' };
@@ -254,6 +269,22 @@ test('a local edit reaches the room, and the change event it raises is not publi
   // holds the replica, so nothing is written a second time.
   await host.editor.settle();
   assert.equal(session.host.text(PATH), 'base\ntyped\n');
+});
+
+test('an emoji replacement converges the room, and the buffer keeps what was typed', async (t) => {
+  const { session, host } = await twoWindows(t);
+  host.editor.open(PATH, 'a\u{1F600}b\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the guest to have the document', () => session.guest.text(PATH) === 'a\u{1F600}b\n');
+
+  // The publish this raised used to be a lone surrogate as a CRDT delta — a delete of one
+  // half of the pair and an insert of the other — and the codec that carries an update over
+  // the wire has no encoding for half a character: the room ended up holding U+FFFD where the
+  // emoji was, on both sides and differently on each, with the state vectors still agreeing.
+  host.editor.type(PATH, 'a\u{1F601}b\n');
+  assert.equal(session.host.text(PATH), 'a\u{1F601}b\n');
+  assert.equal(await converge(session.host, session.guest, PATH), 'a\u{1F601}b\n');
+  assert.equal(host.editor.text(PATH), 'a\u{1F601}b\n');
 });
 
 test("a peer's edit lands as the smallest change, and its change event publishes nothing", async (t) => {
@@ -710,6 +741,86 @@ test('a local keystroke is published as the smallest change', () => {
   host.type(PATH, 'base\ntyped\n');
   assert.deepEqual(engine.inserted, [[PATH, 5, 'typed\n']], 'a whole-document replacement was sent');
   assert.deepEqual(engine.deleted, []);
+  bridge.dispose();
+});
+
+test('a peer edit between two astral characters lands as whole characters', () => {
+  const engine = new EngineStub();
+  engine.texts.set(PATH, 'a\u{1F601}b\n');
+  const host = new FakeEditor();
+  host.open(PATH, 'a\u{1F601}b\n');
+  const bridge = new SessionBridge({ engine, host, autoSave: false, reconcileSettleMs: 0 });
+  host.attach(bridge);
+  bridge.documentOpened(PATH);
+
+  // The room replaces the emoji. A change cut through the pair carries the low surrogate on
+  // its own, which is an edit no editor has to accept and a string no JSON decoder has to
+  // read.
+  engine.texts.set(PATH, 'a\u{1F600}b\n');
+  bridge.reconcile(PATH);
+
+  assert.deepEqual(host.changes.get(PATH), [{ start: 1, end: 3, text: '\u{1F600}' }]);
+  assert.equal(host.text(PATH), 'a\u{1F600}b\n');
+  bridge.dispose();
+});
+
+test('a local edit between two astral characters is published as whole characters', () => {
+  const engine = new EngineStub();
+  engine.texts.set(PATH, 'a\u{1F600}b\n');
+  const host = new FakeEditor();
+  host.open(PATH, 'a\u{1F600}b\n');
+  const bridge = new SessionBridge({ engine, host, autoSave: false, reconcileSettleMs: 0 });
+  host.attach(bridge);
+  bridge.documentOpened(PATH);
+
+  // The user replaces the emoji. A change cut through the pair would write half a character
+  // into the room, where the replica of every peer that receives it holds it.
+  host.type(PATH, 'a\u{1F601}b\n');
+
+  assert.deepEqual(engine.deleted, [[PATH, 1, 2]]);
+  assert.deepEqual(engine.inserted, [[PATH, 1, '\u{1F601}']]);
+  assert.equal(engine.text(PATH), 'a\u{1F601}b\n');
+  bridge.dispose();
+});
+
+test('a document whose apply is never answered takes no edits, and says nothing', async () => {
+  // The other half of the same story, pinned so it is not rediscovered as a mystery: a
+  // document is in flight from `issue` until `settle` or the catch runs, and the editor's
+  // answer is the only thing that reaches either. An editor that never answers — a front-end
+  // that dropped the message it could not decode — leaves `inFlight` set for the rest of the
+  // session, and every later remote edit and local keystroke is parked in `pending` behind
+  // it without a report. The diff no longer produces a line a decoder must refuse
+  // (`test/editing.test.ts`), so what is left is the missing bound, not the message.
+  const engine = new EngineStub();
+  engine.texts.set(PATH, 'base\n');
+  const host = new UnansweringEditor();
+  host.open(PATH, 'base\n');
+  const timers = new ManualTimers();
+  const bridge = new SessionBridge({
+    engine,
+    host,
+    autoSave: false,
+    timers,
+    reconcileSettleMs: 100,
+  });
+  host.attach(bridge);
+  bridge.documentOpened(PATH);
+
+  engine.texts.set(PATH, 'REMOTE\nbase\n');
+  bridge.reconcile(PATH);
+  assert.deepEqual(host.changes.get(PATH), [{ start: 0, end: 0, text: 'REMOTE\n' }]);
+
+  // The user types, and the room edits again, while the apply is outstanding.
+  host.type(PATH, 'base\ntyped\n');
+  engine.texts.set(PATH, 'REMOTE\nbase\nMORE\n');
+  bridge.reconcile(PATH);
+  timers.fire();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(engine.inserted, [], 'the keystroke was published');
+  assert.deepEqual(host.changes.get(PATH), [{ start: 0, end: 0, text: 'REMOTE\n' }]);
+  assert.equal(host.text(PATH), 'base\ntyped\n', "the room's edit reached the buffer");
+  assert.deepEqual(host.reports, [], 'the wedge was reported');
   bridge.dispose();
 });
 
