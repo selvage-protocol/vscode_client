@@ -2,6 +2,7 @@ node_modules/
 dist/
 .tmp/
 .pre-commit-config.yaml
+*.vsix
 
 # Sibling checkouts for parallel work on this repository.
 .worktrees/

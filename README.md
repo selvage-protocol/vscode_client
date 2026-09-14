@@ -95,6 +95,29 @@ Then, in the two windows:
 Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. There is
 **no default server**: a baked-in endpoint would be one someone else chose.
 
+## Packaging it
+
+The extension is not published to the Marketplace; installing a built `.vsix` is the path for
+anyone who is not developing it from a checkout.
+
+```console
+$ npm run package                      # → selvage-client-<version>.vsix in the repo root
+$ code --install-extension selvage-client-<version>.vsix
+```
+
+`npm run package` runs `vsce package` (`@vscode/vsce`, a `devDependency`), which first runs
+`vscode:prepublish` — the same `npm run build` used everywhere else — so the `.vsix` always
+carries a fresh `dist/extension.js`. `vsce package -o <path>` sends the file somewhere other
+than the repo root, which is otherwise where an un-suffixed `vsce package` writes it.
+
+`dist/extension.js` bundles everything the extension needs — the engine, the bridge, `ws`,
+`yjs`, `y-protocols` — because `scripts/build.mjs` leaves only `vscode` external
+(`.vscodeignore`); the `.vsix` therefore has no `node_modules/`, `src/`, or `test/` in it,
+only `dist/`, the manifest, and the two licence files. `vsce package` warns that it found no
+`LICENSE`/`LICENSE.md`/`LICENSE.txt` — the project's dual `LICENSE-MIT`/`LICENSE-APACHE` naming
+(matching `reference_server` and `specification`) is not one of the names it looks for; both
+files ship in the `.vsix` regardless.
+
 ## Modules
 
 | File | What it is |
