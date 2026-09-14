@@ -3,25 +3,58 @@
  * and the editor adapter in one process but on opposite sides of an interface, and the
  * study's §6 makes "engine/ has no `vscode` import" the one thing that has to survive for
  * a sidecar or a second editor to be a move rather than a rewrite.
+ *
+ * The adapter landed on the same seam, one layer further out: `src/bridge/` is the half of
+ * the adapter that knows nothing about an editor, `src/adapter/` is the part that imports
+ * `vscode`. This file checks all three rules a reviewer would otherwise have to hold in
+ * their head — no editor import on either side of the seam, no undeclared dependency, and
+ * no module with logic that a test cannot reach.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 
-const ENGINE_DIR = resolve(import.meta.dirname, '..', 'src', 'engine');
+const SRC = resolve(import.meta.dirname, '..', 'src');
+const ENGINE_DIR = resolve(SRC, 'engine');
+const BRIDGE_DIR = resolve(SRC, 'bridge');
+const ADAPTER_DIR = resolve(SRC, 'adapter');
 const PACKAGE = resolve(import.meta.dirname, '..', 'package.json');
 
 /** A quoted module specifier, single or double quoted, as group 2. */
 const QUOTED = `(['"])([^'"]+)\\1`;
 
-/** Every engine module, so a new file cannot quietly opt out of the rules below. */
-function engineFiles(): string[] {
-  return readdirSync(ENGINE_DIR)
-    .filter((name) => name.endsWith('.ts'))
-    .sort()
-    .map((name) => resolve(ENGINE_DIR, name));
+/** Every TypeScript module under `dir`, at any depth, sorted. */
+function modulesUnder(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...modulesUnder(path));
+    } else if (entry.name.endsWith('.ts')) {
+      found.push(path);
+    }
+  }
+  return found.sort();
+}
+
+/** True when the directory exists, so the checks below are honest before it does. */
+function exists(dir: string): boolean {
+  try {
+    readdirSync(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Every module of the editor-independent half: the ones a test must be able to reach. */
+function editorIndependentFiles(): string[] {
+  return [
+    ...modulesUnder(ENGINE_DIR),
+    ...(exists(BRIDGE_DIR) ? modulesUnder(BRIDGE_DIR) : []),
+  ];
 }
 
 /**
@@ -58,9 +91,9 @@ function isEditorPackage(specifier: string): boolean {
   );
 }
 
-test('the engine imports no editor API and no editor runtime', () => {
-  const files = engineFiles();
-  assert.ok(files.length >= 8, `expected the engine modules, found ${files.length}`);
+test('the engine and the bridge import no editor API and no editor runtime', () => {
+  const files = editorIndependentFiles();
+  assert.ok(files.length >= 12, `expected both halves, found ${files.length} modules`);
   for (const file of files) {
     const source = readFileSync(file, 'utf8');
     for (const specifier of specifiers(source)) {
@@ -78,13 +111,45 @@ test('the engine imports no editor API and no editor runtime', () => {
   }
 });
 
-test('the engine depends on the four declared packages and on itself, nothing else', () => {
+test('the editor API is imported in src/adapter and nowhere else', () => {
+  const outside = modulesUnder(SRC).filter(
+    (file) => !file.startsWith(`${ADAPTER_DIR}${sep}`),
+  );
+  assert.ok(outside.length >= 12, `expected to scan the tree, found ${outside.length}`);
+  for (const file of outside) {
+    for (const specifier of specifiers(readFileSync(file, 'utf8'))) {
+      assert.ok(
+        !isEditorPackage(specifier),
+        `${relative(SRC, file)} imports ${specifier}: that belongs in src/adapter/`,
+      );
+    }
+  }
+});
+
+test('every adapter module is one that imports the editor API', () => {
+  // The adapter layer is meant to be a reading exercise. A file there that does not touch
+  // `vscode` is logic that could have been tested, so it belongs in the bridge instead.
+  if (!exists(ADAPTER_DIR)) {
+    return;
+  }
+  const files = modulesUnder(ADAPTER_DIR);
+  assert.ok(files.length >= 1, 'src/adapter/ exists but holds no modules');
+  for (const file of files) {
+    const source = readFileSync(file, 'utf8');
+    assert.ok(
+      specifiers(source).some(isEditorPackage),
+      `${relative(SRC, file)} does not import vscode: its logic belongs in src/bridge/`,
+    );
+  }
+});
+
+test('the editor-independent half depends on the declared packages and on itself, nothing else', () => {
   const manifest = JSON.parse(readFileSync(PACKAGE, 'utf8')) as {
     dependencies?: Record<string, string>;
   };
   const declared = Object.keys(manifest.dependencies ?? {});
   const allowed = new Set(declared);
-  for (const file of engineFiles()) {
+  for (const file of editorIndependentFiles()) {
     for (const specifier of specifiers(readFileSync(file, 'utf8'))) {
       if (specifier.startsWith('.')) {
         assert.match(
@@ -105,7 +170,32 @@ test('the engine depends on the four declared packages and on itself, nothing el
   }
 });
 
-test('the engine exports the vocabulary an adapter is written against', async () => {
+test('every module of the editor-independent half is reachable from a test', () => {
+  // The brief's rule, mechanised: if a module has logic and no test can reach it, either the
+  // logic belongs in `src/adapter/` (where reading is the only check) or the test is missing.
+  const seen = new Set<string>();
+  const queue = modulesUnder(import.meta.dirname);
+  while (queue.length > 0) {
+    const file = queue.pop();
+    if (file === undefined || seen.has(file)) {
+      continue;
+    }
+    seen.add(file);
+    for (const specifier of specifiers(readFileSync(file, 'utf8'))) {
+      if (specifier.startsWith('.')) {
+        queue.push(resolve(dirname(file), specifier));
+      }
+    }
+  }
+  for (const file of editorIndependentFiles()) {
+    assert.ok(
+      seen.has(file),
+      `${relative(SRC, file)} is not reachable from any test`,
+    );
+  }
+});
+
+test('the editor-independent half exports the vocabulary an adapter is written against', async () => {
   const engine = await import('../src/engine/index.ts');
   for (const name of [
     'SelvageEngine',
