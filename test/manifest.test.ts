@@ -99,8 +99,10 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
   );
 });
 
-test('activation stays lazy: no activation event starts the extension without a command', () => {
+test('activation stays lazy: a command starts the extension, a guest tab restores it', () => {
   // A command activation event is generated from `contributes.commands` since VS Code
-  // 1.74, so the extension starts when a user runs one of its commands and not before.
-  assert.deepEqual(manifest.activationEvents ?? [], []);
+  // 1.74, so the extension starts when a user runs one of its commands and not before. A
+  // `selvage:` tab restored in a new window is the one other way in: without the file-system
+  // event the tab is an unresolvable resource until a command happens to run.
+  assert.deepEqual(manifest.activationEvents ?? [], ['onFileSystem:selvage']);
 });
