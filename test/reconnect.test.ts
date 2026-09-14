@@ -73,6 +73,31 @@ test('a dropped guest re-hellos, re-opens its documents and reconverges', async 
   assert.ok(merged.includes('after the drop'), merged);
 });
 
+test('a dropped guest re-hellos under a fresh awareness client id', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { guest } = session;
+  await guest.open(PATH);
+  const firstPeerId = guest.session().peer.peer_id;
+  const firstAwarenessId = guest.session().peer.awareness_client_id;
+
+  session.server.drop('Bob');
+  await waitFor('the guest to be seated again', () => {
+    const peerId = guest.session().peer.peer_id;
+    return peerId !== firstPeerId ? peerId : false;
+  });
+
+  // Spec §9.1: a reconnect is a new peer, so its awareness client id must not be the one
+  // the previous connection used — reusing it is silently dropped by a peer that already
+  // tombstoned the old id.
+  const secondAwarenessId = guest.session().peer.awareness_client_id;
+  assert.notEqual(secondAwarenessId, firstAwarenessId);
+});
+
 test('a host that dropped reclaims its room rather than minting a second one', async (t) => {
   const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
   t.after(async () => {

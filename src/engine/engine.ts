@@ -7,6 +7,7 @@
  * between a sync engine and an editor adapter.
  */
 
+import * as random from 'lib0/random';
 import WebSocket from 'ws';
 import * as Y from 'yjs';
 import { Awareness, removeAwarenessStates } from 'y-protocols/awareness';
@@ -355,6 +356,14 @@ export class SelvageEngine {
   private async hello(): Promise<SessionInfo> {
     this.handshaking = true;
     const generation = (this.generation += 1);
+    if (generation > 1) {
+      // Spec §9.1: a reconnect is a new peer, not the one it replaces. `yrs` keeps a
+      // tombstone for a removed awareness client id, so reusing it here would have the
+      // first republish silently dropped and a restarted clock never recover (the gap
+      // the Rust reference client avoids by minting a fresh `Y.Doc` per attempt). The
+      // document's content carries over regardless — only the identity does not.
+      this.rotateIdentity();
+    }
     // Request ids are unique per connection, so a new connection starts counting again.
     this.requestId = 0;
     // A refusal belongs to the connection that received it: a close must report the
@@ -848,6 +857,24 @@ export class SelvageEngine {
   }
 
   // -- the awareness clock ---------------------------------------------------
+
+  /**
+   * Mints a fresh awareness client id for this replica, ahead of a reconnect's
+   * `session.hello`. `doc.clientID` and `awareness.clientID` are ordinary mutable fields —
+   * yjs itself reassigns `doc.clientID` this way on an id collision (`Transaction.js`) — so
+   * this changes only which id future local operations and awareness updates are attributed
+   * to; it does not touch the document content already held under the old id. The old id's
+   * own local-state entry is this connection's leftover, not a new peer's, so it is dropped
+   * here rather than left to linger until the awareness clock would otherwise expire it.
+   */
+  private rotateIdentity(): void {
+    const previousId = this.awareness.clientID;
+    const id = random.uint32();
+    this.doc.clientID = id;
+    this.awareness.clientID = id;
+    this.awareness.states.delete(previousId);
+    this.awareness.meta.delete(previousId);
+  }
 
   /** Publishes the local awareness state, unless the adapter cleared it. */
   private publishAwareness(): void {
