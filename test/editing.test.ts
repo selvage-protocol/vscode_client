@@ -12,7 +12,9 @@ import {
   diff,
   matchesReplica,
   render,
+  toBufferOffset,
   toCrdt,
+  toReplicaOffset,
 } from '../src/bridge/editing.ts';
 import { peerColour, translucent } from '../src/bridge/cursors.ts';
 import { roomFromQuery, virtualDocument, virtualUri } from '../src/bridge/virtual.ts';
@@ -77,6 +79,28 @@ test('a buffer that already holds the replica is not a change, in either line en
   assert.equal(matchesReplica('', ''), true);
 });
 
+test('a buffer offset maps onto the replica and back, CRLF included', () => {
+  const buffer = 'line one\r\nline two\r\n';
+  const replica = toCrdt(buffer);
+  assert.equal(replica.length, 18);
+  assert.equal(buffer.length, 20);
+
+  // Every replica offset round-trips, which is what a caret placed and then read back does.
+  for (let offset = 0; offset <= replica.length; offset += 1) {
+    assert.equal(toReplicaOffset(buffer, toBufferOffset(buffer, offset)), offset);
+  }
+  assert.equal(toReplicaOffset(buffer, 10), 9, 'the caret after the first line break');
+  assert.equal(toReplicaOffset(buffer, 20), 18, 'the caret at end of file is the replica end');
+  assert.equal(toBufferOffset(buffer, 9), 10);
+  assert.equal(toBufferOffset(buffer, 18), 20);
+
+  // LF is the identity, so an LF document is not taxed by the conversion.
+  assert.equal(toReplicaOffset('abc', 2), 2);
+  assert.equal(toBufferOffset('abc', 2), 2);
+  assert.equal(toReplicaOffset('', 0), 0);
+  assert.equal(toBufferOffset('', 0), 0);
+});
+
 test('a guest document URI round-trips, and its room is not case-folded', () => {
   assert.equal(virtualUri('r-0aF1', 'src/main.rs'), 'selvage:/src/main.rs?room=r-0aF1');
   assert.deepEqual(virtualDocument('selvage', '/src/main.rs', 'room=r-0aF1'), {
@@ -104,6 +128,10 @@ test('a guest document URI round-trips, and its room is not case-folded', () => 
   assert.equal(virtualDocument('selvage', '/a.ts', 'room='), undefined);
   assert.equal(virtualDocument('selvage', '/', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', 'a.ts', 'room=r-1'), undefined);
+  // A stray `%` is not valid percent-encoding, and a URI is untrusted input: the component
+  // is unreadable rather than a `URIError` thrown out of the change-event listener.
+  assert.equal(virtualDocument('selvage', '/a%2.ts', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/a.ts', 'room=%'), undefined);
   assert.equal(roomFromQuery('room=r-1&x=2'), 'r-1');
   assert.equal(roomFromQuery('x=2'), undefined);
 });

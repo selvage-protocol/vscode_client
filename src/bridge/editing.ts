@@ -80,6 +80,38 @@ export function applyChange(text: string, change: TextChange): string {
 }
 
 /**
+ * A buffer offset as a replica offset. The replica is LF-only and the buffer keeps the
+ * document's own endings, so the two count the same code units in different texts: every
+ * `\r\n` before the offset is one code unit the replica does not have. Offsets stop at the
+ * seam, and this is the seam.
+ */
+export function toReplicaOffset(bufferText: string, bufferOffset: number): number {
+  let replica = 0;
+  for (let index = 0; index < bufferOffset && index < bufferText.length; index += 1) {
+    if (bufferText[index] === '\r' && bufferText[index + 1] === '\n') {
+      index += 1;
+    }
+    replica += 1;
+  }
+  return replica;
+}
+
+/** The inverse of `toReplicaOffset`: the buffer offset a replica offset lands on. */
+export function toBufferOffset(bufferText: string, replicaOffset: number): number {
+  let replica = 0;
+  let buffer = 0;
+  while (replica < replicaOffset && buffer < bufferText.length) {
+    if (bufferText[buffer] === '\r' && bufferText[buffer + 1] === '\n') {
+      buffer += 2;
+    } else {
+      buffer += 1;
+    }
+    replica += 1;
+  }
+  return buffer;
+}
+
+/**
  * Whether a buffer already holds what this replica holds — the echo guard.
  *
  * An editor gives no way to tell a keystroke from this adapter's own application of a peer's

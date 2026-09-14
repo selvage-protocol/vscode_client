@@ -19,14 +19,11 @@ export interface WorkspaceEditorOptions {
   role: Role;
   /** Something the user has to see. */
   report: (report: Report) => void;
-  /** Asked again when the editor refuses a change (`workspace.applyEdit` answers `false`). */
-  reconcile: (path: string) => void;
 }
 
 export class WorkspaceEditor implements EditorHost {
   private readonly role: Role;
   private readonly onReport: (report: Report) => void;
-  private readonly onRefused: (path: string) => void;
   private readonly cursors = new Cursors();
   /** The documents this window shares, by room path, and the same back again by URI. */
   private readonly documents = new Map<string, vscode.TextDocument>();
@@ -35,7 +32,6 @@ export class WorkspaceEditor implements EditorHost {
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
     this.onReport = options.report;
-    this.onRefused = options.reconcile;
   }
 
   /**
@@ -47,7 +43,11 @@ export class WorkspaceEditor implements EditorHost {
    */
   register(document: vscode.TextDocument): string | undefined {
     const path = this.roomPath(document.uri);
-    if (path === undefined || this.paths.has(document.uri.toString())) {
+    if (
+      path === undefined ||
+      this.paths.has(document.uri.toString()) ||
+      this.documents.has(path)
+    ) {
       return undefined;
     }
     this.documents.set(path, document);
@@ -87,10 +87,10 @@ export class WorkspaceEditor implements EditorHost {
     return this.documents.get(path)?.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
   }
 
-  applyChange(path: string, change: TextChange): void {
+  async applyChange(path: string, change: TextChange): Promise<boolean> {
     const document = this.documents.get(path);
     if (document === undefined) {
-      return;
+      return false;
     }
     const edit = new vscode.WorkspaceEdit();
     edit.replace(
@@ -101,24 +101,22 @@ export class WorkspaceEditor implements EditorHost {
       ),
       change.text,
     );
-    // A refused edit leaves the buffer behind; the range is stale, so the bridge works out
-    // the change again rather than replaying this one.
-    void vscode.workspace.applyEdit(edit).then((applied) => {
-      if (!applied) {
-        this.onRefused(path);
-      }
-    });
+    // `false` means the editor refused it and the buffer is unchanged; the bridge works the
+    // change out again from the buffer rather than replaying the range. A rejection is
+    // `applyEdit` failing outright, and it reaches the bridge's catch with the message.
+    return vscode.workspace.applyEdit(edit);
   }
 
-  save(path: string): void {
+  async save(path: string): Promise<boolean> {
     const document = this.documents.get(path);
     if (document === undefined || !document.isDirty) {
-      return;
+      return true;
     }
     // A guest's virtual document has nowhere to be written, so its provider's `writeFile` is
     // a no-op. The call is made all the same: it is what clears the dirty marker. A host's
-    // save is an ordinary write, and the room's content is what it writes.
-    void document.save();
+    // save is an ordinary write, and the room's content is what it writes. `false` means the
+    // write failed and the file is stale; the bridge reports it rather than swallowing it.
+    return document.save();
   }
 
   renderCursors(cursors: Cursor[]): void {
@@ -152,7 +150,10 @@ export class WorkspaceEditor implements EditorHost {
     if (vscode.workspace.getWorkspaceFolder(uri) === undefined) {
       return undefined;
     }
-    const path = vscode.workspace.asRelativePath(uri, false).replaceAll('\\', '/');
+    // `true` qualifies the path by its workspace folder when there is more than one, so two
+    // `main.rs`s in two folders are two room paths rather than one document. With one folder
+    // the name is left off, as before.
+    const path = vscode.workspace.asRelativePath(uri, true).replaceAll('\\', '/');
     return path === '' ? undefined : path;
   }
 }

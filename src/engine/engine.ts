@@ -496,6 +496,15 @@ export class SelvageEngine {
   }
 
   /**
+   * Whether this replica has received anything at all for a path. A document that has
+   * arrived and been emptied is not the same as one that has never been seen, and a seeder
+   * deciding from `text` alone would put a disk copy back over the former.
+   */
+  has(path: string): boolean {
+    return this.textIfPresent(path) !== undefined;
+  }
+
+  /**
    * The `Y.Text` behind a path, for an adapter that needs CRDT-relative positions. Creates
    * it when it is not there yet, which only a local edit otherwise does: an anchor taken
    * from a document that has not arrived names nothing but the scope, and a caller that

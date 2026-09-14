@@ -30,6 +30,8 @@ export class FakeEditor implements EditorHost {
   eventDelayTicks = 1;
   /** `false` models `workspace.applyEdit` answering `false` and leaving the buffer alone. */
   accepts = true;
+  /** `false` models `document.save()` resolving `false`: the write failed and the file is stale. */
+  saveFails = false;
   /** Paths whose change this editor refused, for the reconcile-again path. */
   readonly refused: string[] = [];
 
@@ -67,24 +69,26 @@ export class FakeEditor implements EditorHost {
     return this.documents.get(path)?.eol ?? '\n';
   }
 
-  applyChange(path: string, change: TextChange): void {
+  applyChange(path: string, change: TextChange): Promise<boolean> {
     const document = this.documents.get(path);
     if (document === undefined) {
-      return;
+      return Promise.resolve(false);
     }
     if (!this.accepts) {
       this.refused.push(path);
-      return;
+      return Promise.resolve(false);
     }
     document.text = applyToText(document.text, change);
     const applied = this.changes.get(path) ?? [];
     applied.push(change);
     this.changes.set(path, applied);
     this.notify(path);
+    return Promise.resolve(true);
   }
 
-  save(path: string): void {
+  save(path: string): Promise<boolean> {
     this.saves.push(path);
+    return Promise.resolve(!this.saveFails);
   }
 
   renderCursors(cursors: Cursor[]): void {
@@ -120,5 +124,101 @@ export class FakeEditor implements EditorHost {
       }, 0);
     };
     land(this.eventDelayTicks);
+  }
+}
+
+/**
+ * An editor whose `applyEdit` is a macrotask behind the typing, as VS Code's is.
+ *
+ * The change is queued and lands when `pump` runs, and the change event fires before the
+ * promise resolves — which is the ordering the bridge's serialisation is written against.
+ * `FakeEditor` applies synchronously and models only the delayed echo.
+ */
+export class QueuedEditor implements EditorHost {
+  readonly documents = new Map<string, FakeDocument>();
+  readonly saves: string[] = [];
+  readonly savedText: string[] = [];
+  readonly reports: Report[] = [];
+  readonly refused: string[] = [];
+  cursors: Cursor[] = [];
+  accepts = true;
+
+  private queue: Array<() => void> = [];
+  private bridge?: SessionBridge;
+
+  attach(bridge: SessionBridge): void {
+    this.bridge = bridge;
+  }
+
+  open(path: string, text: string, eol: LineEnding = '\n'): void {
+    this.documents.set(path, { text, eol });
+  }
+
+  close(path: string): void {
+    this.documents.delete(path);
+  }
+
+  /** A user's keystroke, dispatched before the queued apply runs. */
+  type(path: string, text: string): void {
+    const document = this.documents.get(path);
+    if (document === undefined) {
+      return;
+    }
+    document.text = text;
+    this.bridge?.documentChanged(path);
+  }
+
+  text(path: string): string | undefined {
+    return this.documents.get(path)?.text;
+  }
+
+  lineEnding(path: string): LineEnding {
+    return this.documents.get(path)?.eol ?? '\n';
+  }
+
+  applyChange(path: string, change: TextChange): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.queue.push(() => {
+        const document = this.documents.get(path);
+        if (!this.accepts || document === undefined) {
+          this.refused.push(path);
+          resolve(false);
+          return;
+        }
+        document.text = applyToText(document.text, change);
+        this.bridge?.documentChanged(path);
+        resolve(true);
+      });
+    });
+  }
+
+  /** Lands the queued applies, in order, as the editor host applies them. */
+  pump(): void {
+    const queued = this.queue;
+    this.queue = [];
+    for (const run of queued) {
+      run();
+    }
+  }
+
+  save(path: string): Promise<boolean> {
+    this.saves.push(path);
+    this.savedText.push(this.text(path) ?? '<closed>');
+    return Promise.resolve(true);
+  }
+
+  renderCursors(cursors: Cursor[]): void {
+    this.cursors = cursors;
+  }
+
+  report(report: Report): void {
+    this.reports.push(report);
+  }
+
+  /** Every report of one kind, for assertions that do not care about the others. */
+  reportsOf<K extends Report['kind']>(kind: K): Array<Extract<Report, { kind: K }>> {
+    return this.reports.filter(
+      (report): report is Extract<Report, { kind: K }> => report.kind === kind,
+    );
   }
 }

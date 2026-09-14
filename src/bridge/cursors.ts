@@ -52,7 +52,7 @@ export interface Cursor {
   role: Role;
   /** The document the peer says it is in, as a room path. */
   path: string;
-  /** Selection endpoints as offsets into this replica's text: UTF-16 code units. */
+  /** Selection endpoints as offsets into the editor's buffer: UTF-16 code units. */
   anchor: number;
   head: number;
   /** The peer's colour, opaque, for a caret and a name label. */

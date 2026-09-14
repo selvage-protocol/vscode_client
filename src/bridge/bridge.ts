@@ -26,7 +26,7 @@ import type {
 
 import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
-import { diff, matchesReplica, render, toCrdt } from './editing.ts';
+import { diff, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
 
 /**
@@ -37,6 +37,7 @@ import type { LineEnding, TextChange } from './editing.ts';
 export interface Engine {
   session(): SessionInfo;
   text(path: string): string;
+  has(path: string): boolean;
   open(path: string): Promise<void>;
   close(path: string): Promise<void>;
   insert(path: string, index: number, text: string): void;
@@ -58,16 +59,18 @@ export interface EditorHost {
   /** The document's line endings, as this editor has them. */
   lineEnding(path: string): LineEnding;
   /**
-   * Replaces `[change.start, change.end)` with `change.text`.
+   * Replaces `[change.start, change.end)` with `change.text`, and resolves `true` once the
+   * buffer holds it.
    *
-   * An editor that refuses the change — `workspace.applyEdit` answers `false`, and it does
-   * so when the range it was given no longer fits — must ask for `reconcile` again rather
-   * than leave the buffer behind: the range is recomputed from the buffer's current text,
-   * so a retry is always the right edit and never a stale one.
+   * An editor that refuses the change — `workspace.applyEdit` answers `false` — leaves the
+   * buffer alone; the bridge works out the change again from the buffer's current text
+   * rather than replaying a stale range, and gives up after a bounded number of attempts.
+   * A `true` is not a promise that the range was the right one; it is only a promise that
+   * the edit landed.
    */
-  applyChange(path: string, change: TextChange): void;
+  applyChange(path: string, change: TextChange): Promise<boolean>;
   /** Writes the document's content wherever it lives. A guest's is a no-op. */
-  save(path: string): void;
+  save(path: string): Promise<boolean>;
   /** Draws the remote cursors; `[]` clears them. */
   renderCursors(cursors: Cursor[]): void;
   /** Something the user can see. */
@@ -85,6 +88,12 @@ export type Report =
   | { kind: 'hostAttached'; peer: PeerInfo }
   | { kind: 'roomGone'; reason: string }
   | { kind: 'sessionError'; code: string; message: string }
+  /** `applyEdit` refused every attempt: the buffer and the room are apart, and stay apart. */
+  | { kind: 'applyRefused'; path: string }
+  /** The buffer and the replica differ after the edit meant to bring them together. */
+  | { kind: 'divergence'; path: string }
+  /** The document could not be written; the file on disk is stale. */
+  | { kind: 'saveFailed'; path: string; message?: string }
   | { kind: 'disconnected' };
 
 /** Timers, so the save policy is testable without waiting for one. */
@@ -105,11 +114,24 @@ export const realTimers: Timers = {
 /** How long the room may go on editing a document before it is written to disk. */
 export const DEFAULT_SAVE_SETTLE_MS = 500;
 
+/**
+ * How long the buffer is left alone before it is compared against the replica. The study's
+ * §2.5 backstop: the minimal diff is always taken against the buffer as it reads, and an
+ * editor applies it a macrotask later, so a change that slips into that window can leave
+ * the two apart. The debounced check catches that class rather than the one window it knows.
+ */
+export const DEFAULT_RECONCILE_SETTLE_MS = 100;
+
+/** How many times a refused change is worked out again before the refusal is reported. */
+export const DEFAULT_MAX_APPLY_ATTEMPTS = 3;
+
 export interface BridgeOptions {
   engine: Engine;
   host: EditorHost;
   timers?: Timers;
   saveSettleMs?: number;
+  reconcileSettleMs?: number;
+  maxApplyAttempts?: number;
   /**
    * Whether a document the room changed is written. A remote edit leaves a buffer dirty
    * and its file on disk stale, and the host's working copy is the truth (`DESIGN.md` §5),
@@ -128,12 +150,19 @@ export interface BridgeOptions {
  * when an editor delivers a coalesced change event; replica → buffer needs nothing,
  * because the engine reports a change only for a transaction that did not come from this
  * adapter's own edit (`SPIKES.md`, spike 2).
+ *
+ * A change the editor is asked to apply is asynchronous, so at most one apply per document
+ * is ever in flight, and a change that arrives while one is in flight is not diffed — the
+ * buffer it would be diffed against may be the pre-apply text, and a range applied to the
+ * wrong text is not a range the editor can reject.
  */
 export class SessionBridge {
   private readonly engine: Engine;
   private readonly host: EditorHost;
   private readonly timers: Timers;
   private readonly saveSettleMs: number;
+  private readonly reconcileSettleMs: number;
+  private readonly maxApplyAttempts: number;
   private readonly autoSave: boolean;
   /** The paths the editor currently has open in this session. */
   private readonly documents = new Set<string>();
@@ -142,6 +171,13 @@ export class SessionBridge {
   /** The paths this client holds open on the server, as opposed to asked it to open. */
   private readonly held = new Set<string>();
   private readonly saves = new Map<string, () => void>();
+  private readonly backstops = new Map<string, () => void>();
+  /** One entry per document with an apply in flight: what it should leave, and from where. */
+  private readonly inFlight = new Map<string, { expected: string; replica: string }>();
+  /** Documents with a reconcile wanted once the apply in flight settles. */
+  private readonly pending = new Set<string>();
+  /** Refused applies since the last change that landed, per document. */
+  private readonly attempts = new Map<string, number>();
   private readonly stops: Array<() => void> = [];
   private disposed = false;
 
@@ -150,6 +186,8 @@ export class SessionBridge {
     this.host = options.host;
     this.timers = options.timers ?? realTimers;
     this.saveSettleMs = options.saveSettleMs ?? DEFAULT_SAVE_SETTLE_MS;
+    this.reconcileSettleMs = options.reconcileSettleMs ?? DEFAULT_RECONCILE_SETTLE_MS;
+    this.maxApplyAttempts = options.maxApplyAttempts ?? DEFAULT_MAX_APPLY_ATTEMPTS;
     this.autoSave = options.autoSave ?? true;
     this.stops.push(this.engine.on((event) => this.onEngineEvent(event)));
   }
@@ -189,6 +227,11 @@ export class SessionBridge {
    * here; the change event this adapter's own application of a peer's edit produces does not,
    * because the buffer then already holds what the replica holds — that comparison is the
    * guard, and it is the whole of it.
+   *
+   * While an apply is in flight the buffer may be behind the replica, and a change diffed
+   * against the replica then is a change computed from two texts without a shared lineage.
+   * Nothing is published: the apply's settle compares the buffer with what it asked for and
+   * publishes what the user typed into the window.
    */
   documentChanged(path: string): void {
     if (this.disposed || !this.documents.has(path)) {
@@ -202,18 +245,17 @@ export class SessionBridge {
     if (matchesReplica(text, replica)) {
       return;
     }
+    if (this.inFlight.has(path)) {
+      this.pending.add(path);
+      return;
+    }
     // The whole buffer is compared and diffed rather than the event's own ranges. A range an
     // editor reports is in the buffer's coordinates, and mapping it onto the replica's would
     // need the EOL offset table — a class of its own in the extension the study read. Two
     // string scans per change event buy the whole policy being four lines long.
-    const incoming = toCrdt(text);
-    const change = diff(replica, incoming);
-    if (change.end > change.start) {
-      this.engine.delete(path, change.start, change.end - change.start);
-    }
-    if (change.text !== '') {
-      this.engine.insert(path, change.start, change.text);
-    }
+    this.publish(path, text, replica);
+    this.moveSave(path);
+    this.scheduleBackstop(path);
   }
 
   /** The editor closed a document: this client stops holding it open in the room. */
@@ -223,6 +265,9 @@ export class SessionBridge {
     }
     this.documents.delete(path);
     this.cancelSave(path);
+    this.cancelBackstop(path);
+    this.pending.delete(path);
+    this.attempts.delete(path);
     this.release(path);
   }
 
@@ -231,7 +276,18 @@ export class SessionBridge {
     if (this.disposed || !this.documents.has(path)) {
       return;
     }
-    this.engine.setSelection(path, selection);
+    const buffer = this.host.text(path);
+    if (buffer === undefined) {
+      return;
+    }
+    // The adapter reports a buffer offset, the replica is LF-only: a caret after a `\r\n`
+    // is one code unit further right here than there, and one past the replica's end at the
+    // end of a CRLF file. Converting is what keeps the end-of-file caret from being withheld
+    // and every other one from landing a column late.
+    this.engine.setSelection(path, {
+      anchor: toReplicaOffset(buffer, selection.anchor),
+      head: toReplicaOffset(buffer, selection.head),
+    });
   }
 
   /**
@@ -249,11 +305,14 @@ export class SessionBridge {
 
   /**
    * Makes the document's buffer hold what the replica holds, with the smallest edit that
-   * gets there. Public because an editor can refuse an applied change and has to ask
-   * again; nothing else needs to call it.
+   * gets there. Public because the backstop and a settled apply both re-enter here.
    */
   reconcile(path: string): void {
     if (this.disposed) {
+      return;
+    }
+    if (this.inFlight.has(path)) {
+      this.pending.add(path);
       return;
     }
     const buffer = this.host.text(path);
@@ -262,10 +321,13 @@ export class SessionBridge {
     }
     const rendered = render(this.engine.text(path), this.host.lineEnding(path));
     if (rendered === buffer) {
+      this.attempts.delete(path);
+      this.cancelBackstop(path);
       return;
     }
-    this.host.applyChange(path, diff(buffer, rendered));
+    this.issue(path, diff(buffer, rendered), rendered);
     this.scheduleSave(path);
+    this.scheduleBackstop(path);
   }
 
   /** The remote cursors this replica can resolve right now, ordered by peer id. */
@@ -291,10 +353,18 @@ export class SessionBridge {
       if (resolved === undefined) {
         continue;
       }
+      const buffer = this.host.text(path);
+      if (buffer === undefined) {
+        continue;
+      }
       cursors.push(
         cursorFor(
           { peerId: peer.peer_id, displayName: peer.display_name, role: peer.role },
-          { path, anchor: resolved.anchor, head: resolved.head },
+          {
+            path,
+            anchor: toBufferOffset(buffer, resolved.anchor),
+            head: toBufferOffset(buffer, resolved.head),
+          },
         ),
       );
     }
@@ -313,8 +383,15 @@ export class SessionBridge {
       cancel();
     }
     this.saves.clear();
+    for (const cancel of this.backstops.values()) {
+      cancel();
+    }
+    this.backstops.clear();
     this.documents.clear();
     this.held.clear();
+    this.inFlight.clear();
+    this.pending.clear();
+    this.attempts.clear();
   }
 
   // -- internals -------------------------------------------------------------
@@ -324,13 +401,17 @@ export class SessionBridge {
    * seeds a path once, and only into a replica that has received nothing for it. A path a
    * peer has already edited is not something to overwrite with whatever happens to be on
    * this disk, and a file reopened later is already in the room.
+   *
+   * "Received nothing" is the replica having no text for the path at all, not its text being
+   * empty: a room can legitimately agree on an empty document, and re-seeding that from disk
+   * is the one way this rule loses an edit rather than protecting one.
    */
   private seed(path: string, bufferText: string): void {
     if (this.role() !== 'host' || this.seeded.has(path)) {
       return;
     }
     this.seeded.add(path);
-    if (this.engine.text(path) !== '') {
+    if (this.engine.has(path)) {
       return;
     }
     const incoming = toCrdt(bufferText);
@@ -377,6 +458,116 @@ export class SessionBridge {
     });
   }
 
+  /** Writes the buffer's difference from the replica into the replica. */
+  private publish(path: string, bufferText: string, replica: string): void {
+    const change = diff(replica, toCrdt(bufferText));
+    if (change.end > change.start) {
+      this.engine.delete(path, change.start, change.end - change.start);
+    }
+    if (change.text !== '') {
+      this.engine.insert(path, change.start, change.text);
+    }
+  }
+
+  /**
+   * Asks the editor for one change, and records what the buffer should hold when it lands.
+   * The promise is what serialises this document's applies: nothing else is issued until it
+   * settles, so a change is never diffed against a buffer an edit is still moving.
+   */
+  private issue(path: string, change: TextChange, expected: string): void {
+    this.inFlight.set(path, { expected, replica: this.engine.text(path) });
+    void this.host
+      .applyChange(path, change)
+      .then((applied) => {
+        this.settle(path, applied);
+      })
+      .catch((error: unknown) => {
+        this.inFlight.delete(path);
+        this.host.report({
+          kind: 'sessionError',
+          code: 'error',
+          message: `the editor failed to apply a change to ${path}: ${describe(error)}`,
+        });
+        if (this.pending.delete(path)) {
+          this.reconcile(path);
+        }
+      });
+  }
+
+  private settle(path: string, applied: boolean): void {
+    const flight = this.inFlight.get(path);
+    this.inFlight.delete(path);
+    if (!applied) {
+      this.refuse(path);
+      return;
+    }
+    this.attempts.delete(path);
+    const actual = this.host.text(path);
+    const replica = this.engine.text(path);
+    if (actual !== undefined && actual !== flight?.expected && !matchesReplica(actual, replica)) {
+      if (flight !== undefined && replica === flight.replica) {
+        // The buffer moved while the edit was in flight — the user typed into the window.
+        // It now holds the user's text with the change landed on it, and the replica has not
+        // moved since: the difference is the user's, so it goes to the room.
+        this.publish(path, actual, replica);
+      } else {
+        // The replica moved too, so the buffer's difference is not separable from a peer's
+        // edit that has not reached it. The replica wins; a whole-document reconcile is what
+        // the backstop would do anyway, and the difference is reported rather than guessed.
+        this.host.report({ kind: 'divergence', path });
+      }
+    }
+    if (this.pending.delete(path)) {
+      this.reconcile(path);
+    }
+  }
+
+  /**
+   * A refused `applyEdit`. `false` is the editor saying the range no longer fits — a
+   * read-only document is the plain case — and the change is worked out again from the
+   * buffer's current text, but only a bounded number of times: the retry cannot fix a
+   * document that will refuse every range, and an unbounded one spins the extension host
+   * with nothing on screen.
+   */
+  private refuse(path: string): void {
+    const attempts = (this.attempts.get(path) ?? 0) + 1;
+    this.attempts.set(path, attempts);
+    if (attempts < this.maxApplyAttempts) {
+      this.reconcile(path);
+      return;
+    }
+    this.pending.delete(path);
+    this.cancelBackstop(path);
+    this.host.report({ kind: 'applyRefused', path });
+  }
+
+  /**
+   * The §2.5 backstop: once the buffer has been quiet for `reconcileSettleMs`, compare it
+   * with the replica and, if the minimal diff did not get them together, replace the whole
+   * document. The minimal diff is the right edit only if the buffer it was computed from is
+   * still there; a whole-document replacement is the one edit that does not care.
+   */
+  private backstop(path: string): void {
+    if (this.disposed || !this.documents.has(path)) {
+      return;
+    }
+    if (this.inFlight.has(path)) {
+      this.pending.add(path);
+      return;
+    }
+    const buffer = this.host.text(path);
+    if (buffer === undefined) {
+      return;
+    }
+    const rendered = render(this.engine.text(path), this.host.lineEnding(path));
+    if (rendered === buffer) {
+      return;
+    }
+    this.host.report({ kind: 'divergence', path });
+    this.issue(path, { start: 0, end: buffer.length, text: rendered }, rendered);
+    this.scheduleSave(path);
+  }
+
   /**
    * Writes the document once the room has stopped changing it. A second remote edit inside
    * the window moves the deadline rather than adding a write, so a burst of edits from a
@@ -392,9 +583,29 @@ export class SessionBridge {
       if (this.host.text(path) === undefined) {
         return;
       }
-      this.host.save(path);
+      this.write(path);
     });
     this.saves.set(path, cancel);
+  }
+
+  /** A local edit inside the window moves the write rather than racing it. */
+  private moveSave(path: string): void {
+    if (this.saves.has(path)) {
+      this.scheduleSave(path);
+    }
+  }
+
+  private write(path: string): void {
+    void this.host
+      .save(path)
+      .then((saved) => {
+        if (!saved) {
+          this.host.report({ kind: 'saveFailed', path });
+        }
+      })
+      .catch((error: unknown) => {
+        this.host.report({ kind: 'saveFailed', path, message: describe(error) });
+      });
   }
 
   private cancelSave(path: string): void {
@@ -402,6 +613,26 @@ export class SessionBridge {
     if (cancel !== undefined) {
       cancel();
       this.saves.delete(path);
+    }
+  }
+
+  private scheduleBackstop(path: string): void {
+    this.cancelBackstop(path);
+    if (this.reconcileSettleMs <= 0) {
+      return;
+    }
+    const cancel = this.timers.after(this.reconcileSettleMs, () => {
+      this.backstops.delete(path);
+      this.backstop(path);
+    });
+    this.backstops.set(path, cancel);
+  }
+
+  private cancelBackstop(path: string): void {
+    const cancel = this.backstops.get(path);
+    if (cancel !== undefined) {
+      cancel();
+      this.backstops.delete(path);
     }
   }
 
