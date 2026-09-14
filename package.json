@@ -71,7 +71,7 @@
         },
         "selvage.displayName": {
           "type": "string",
-          "description": "The name other participants see. Asked for when unset."
+          "description": "The name other participants see, for the next host or join — a session already live keeps the name it started with. At most 32 UTF-16 code units; an emoji costs two. A longer name is refused when a session starts rather than shortened. Asked for when unset; the Selvage: Set the name other participants see command changes it."
         },
         "selvage.autoSave": {
           "type": "boolean",
@@ -108,7 +108,7 @@
     "test:extension": "npm run build && node --test test/manifest.test.ts test/guest-fs.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "npm run build && node --test test/boundary.test.ts test/manifest.test.ts test/commands.test.ts test/labels.test.ts test/guest-fs.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
+    "test:fast": "npm run build && node --test test/boundary.test.ts test/manifest.test.ts test/commands.test.ts test/display-name.test.ts test/labels.test.ts test/guest-fs.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",

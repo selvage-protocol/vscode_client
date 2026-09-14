@@ -19,10 +19,14 @@ const registered = {
   clipboard: '',
   clipboardWrites: [],
   information: [],
+  /** The buttons each information message offered, in order, beside `information`. */
+  informationItems: [],
   warnings: [],
   errors: [],
   quickPicks: [],
   inputs: [],
+  /** Every configuration write: `{ key, value, target }`, in order. */
+  settingWrites: [],
   /** The URI strings `workspace.openTextDocument` was asked for, in order. */
   opened: [],
   /** The URI strings `window.showTextDocument` was given, in order. */
@@ -33,25 +37,42 @@ const registered = {
   inputReply: undefined,
 };
 
-/** Clears everything a test observed, leaving registration and configuration in place. */
+/** The settings a window has been configured with, as `get` and `update` see them. */
+const configured = new Map();
+
+/**
+ * Clears everything a test observed and every setting it wrote, leaving registration in place.
+ * A test starts from a window configured with nothing, which is the state the settings are
+ * documented against; one that needs a configured value writes it itself.
+ */
 function reset() {
   registered.clipboard = '';
   registered.clipboardWrites.length = 0;
   registered.information.length = 0;
+  registered.informationItems.length = 0;
   registered.warnings.length = 0;
   registered.errors.length = 0;
   registered.quickPicks.length = 0;
   registered.inputs.length = 0;
+  registered.settingWrites.length = 0;
   registered.opened.length = 0;
   registered.shown.length = 0;
   registered.informationReply = undefined;
   registered.warningReply = undefined;
   registered.quickPickReply = undefined;
   registered.inputReply = undefined;
+  configured.clear();
 }
 
 function disposable() {
   return { dispose() {} };
+}
+
+/** Seeds a setting the way a hand-edited `settings.json` would, before `activate` runs. */
+function configure(values) {
+  for (const [key, value] of Object.entries(values)) {
+    configured.set(key, value);
+  }
 }
 
 /** The URI components an editor hands to a provider, parsed from a URI string. */
@@ -93,6 +114,7 @@ module.exports = {
   /** What the extension registered and did, for the tests that look. */
   registered,
   reset,
+  configure,
 
   EventEmitter: class {
     constructor() {
@@ -109,6 +131,8 @@ module.exports = {
   },
 
   StatusBarAlignment: { Left: 1, Right: 2 },
+
+  ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
 
   FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
 
@@ -158,7 +182,14 @@ module.exports = {
   workspace: {
     textDocuments: [],
     getName: () => 'selvage-stub',
-    getConfiguration: () => ({ get: (_key, fallback) => fallback }),
+    getConfiguration: () => ({
+      get: (key, fallback) => (configured.has(key) ? configured.get(key) : fallback),
+      update: (key, value, target) => {
+        configured.set(key, value);
+        registered.settingWrites.push({ key, value, target });
+        return Promise.resolve();
+      },
+    }),
     getWorkspaceFolder: () => undefined,
     asRelativePath: (uri) => String(uri),
     openTextDocument(uri) {
@@ -199,7 +230,7 @@ module.exports = {
     },
     showInformationMessage: (message, ...rest) => {
       registered.information.push(message);
-      void rest;
+      registered.informationItems.push(rest);
       return Promise.resolve(registered.informationReply);
     },
     showWarningMessage: (message, ...rest) => {

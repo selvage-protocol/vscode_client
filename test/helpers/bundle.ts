@@ -49,10 +49,12 @@ export interface EditorStub {
     clipboard: string;
     clipboardWrites: string[];
     information: string[];
+    informationItems: unknown[][];
     warnings: string[];
     errors: string[];
-    quickPicks: Array<{ items: string[]; options: unknown }>;
-    inputs: unknown[];
+    quickPicks: Array<{ items: unknown[]; options: unknown }>;
+    inputs: Array<Record<string, unknown>>;
+    settingWrites: Array<{ key: string; value: unknown; target: number }>;
     opened: string[];
     shown: string[];
     informationReply: unknown;
@@ -61,6 +63,9 @@ export interface EditorStub {
     inputReply: unknown;
   };
   reset(): void;
+  /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
+  configure(values: Record<string, unknown>): void;
+  ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
   commands: {
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>;
   };

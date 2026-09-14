@@ -192,6 +192,13 @@ export class FakeServer {
     return [...this.clients.keys()].sort();
   }
 
+  /** The display names the seated clients were accepted with, sorted. */
+  displayNames(): string[] {
+    return [...this.clients.values()]
+      .map((client) => client.peer.display_name)
+      .sort();
+  }
+
   async stop(): Promise<void> {
     for (const room of this.rooms.values()) {
       if (room.reap !== undefined) {
