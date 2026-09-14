@@ -294,6 +294,20 @@ test('/meta is read before connecting: unreachable is advisory, incompatible is 
   );
   assert.equal(incompatible.connectionCount, 0, 'no socket was opened');
 
+  // The grammar is the schema's (`^selvage/(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$`), so a
+  // leading zero is not a version at all: an advertisement that names only one names
+  // nothing the client can speak, exactly as one naming another major does (§10,
+  // CANONICAL.md §2.5).
+  const malformed = await FakeServer.start({ metaWireVersions: ['selvage/01'] });
+  t.after(async () => {
+    await malformed.stop();
+  });
+  await assert.rejects(
+    SelvageEngine.host(malformed.wsBase, 'Ada', {}),
+    (error: unknown) => isProtocolError(error, 'unsupported_version'),
+  );
+  assert.equal(malformed.connectionCount, 0, 'no socket was opened');
+
   // A handshake that works while `/meta` does not: the endpoint is a convenience.
   const degraded = await FakeServer.start({ metaStatus: 404 });
   t.after(async () => {
