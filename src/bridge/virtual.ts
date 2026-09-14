@@ -11,6 +11,10 @@
  * The room travels in the query rather than in the URI authority because an authority is
  * case-folded by every URI parser and a room id is not this client's to fold.
  *
+ * Reading one back takes the components an editor's URI type gives — scheme, path, query —
+ * rather than its string form: an editor is free to re-encode what it prints, and a room id
+ * that came back encoded is a room this client cannot name.
+ *
  * `DESIGN.md` §4.2 has no file tree: `readDirectory` on this scheme returns nothing, and
  * one URI is one shared document.
  */
@@ -24,8 +28,8 @@ function encodePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
-function decodePath(encoded: string): string {
-  return encoded.split('/').map(decodeURIComponent).join('/');
+function decodePath(path: string): string {
+  return path.split('/').map(decodeURIComponent).join('/');
 }
 
 /** The URI a guest opens for a room path. */
@@ -33,42 +37,40 @@ export function virtualUri(roomId: string, path: string): string {
   return `${SCHEME}:/${encodePath(path)}?${ROOM_KEY}=${encodeURIComponent(roomId)}`;
 }
 
-export interface VirtualUri {
+export interface VirtualDocument {
   roomId: string;
   path: string;
 }
 
 /**
- * Takes a `selvage:` URI back apart. `undefined` for any other scheme, for a URI with no
- * room, and for one whose path is empty — a document this client cannot name is one it must
- * not open, because a wrong path is a document that exists and a missing one is not.
+ * Reads the components of a `selvage:` URI back into the document it names. `undefined` for
+ * any other scheme, for a URI with no room, and for one whose path is empty — a document
+ * this client cannot name is one it must not open, because a wrong path is a document that
+ * exists and a missing one is not.
  */
-export function parseVirtualUri(uri: string): VirtualUri | undefined {
-  const prefix = `${SCHEME}:/`;
-  if (!uri.startsWith(prefix)) {
+export function virtualDocument(
+  scheme: string,
+  path: string,
+  query: string,
+): VirtualDocument | undefined {
+  if (scheme !== SCHEME || path.length < 2 || !path.startsWith('/')) {
     return undefined;
   }
-  const rest = uri.slice(prefix.length);
-  const at = rest.indexOf('?');
-  const encodedPath = at === -1 ? rest : rest.slice(0, at);
-  const query = at === -1 ? '' : rest.slice(at + 1);
-  if (encodedPath === '') {
+  const roomId = roomFromQuery(query);
+  if (roomId === undefined) {
     return undefined;
   }
-  let roomId: string | undefined;
+  return { roomId, path: decodePath(path.slice(1)) };
+}
+
+/** The room id a URI's query names, `undefined` when it names none. */
+export function roomFromQuery(query: string): string | undefined {
+  let room: string | undefined;
   for (const pair of query.split('&')) {
     const equals = pair.indexOf('=');
     if (equals !== -1 && pair.slice(0, equals) === ROOM_KEY) {
-      roomId = decodeURIComponent(pair.slice(equals + 1));
+      room = decodeURIComponent(pair.slice(equals + 1));
     }
   }
-  if (roomId === undefined || roomId === '') {
-    return undefined;
-  }
-  return { roomId, path: decodePath(encodedPath) };
-}
-
-/** True for a URI this client's guest documents live under. */
-export function isVirtual(uri: string): boolean {
-  return uri.startsWith(`${SCHEME}:/`);
+  return room === undefined || room === '' ? undefined : room;
 }

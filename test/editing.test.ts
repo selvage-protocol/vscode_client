@@ -15,7 +15,7 @@ import {
   toCrdt,
 } from '../src/bridge/editing.ts';
 import { peerColour, translucent } from '../src/bridge/cursors.ts';
-import { isVirtual, parseVirtualUri, virtualUri } from '../src/bridge/virtual.ts';
+import { roomFromQuery, virtualDocument, virtualUri } from '../src/bridge/virtual.ts';
 
 test('the replica holds LF, and a document renders with its own line endings', () => {
   assert.equal(toCrdt('a\r\nb\r\n'), 'a\nb\n');
@@ -79,27 +79,33 @@ test('a buffer that already holds the replica is not a change, in either line en
 
 test('a guest document URI round-trips, and its room is not case-folded', () => {
   assert.equal(virtualUri('r-0aF1', 'src/main.rs'), 'selvage:/src/main.rs?room=r-0aF1');
-  assert.deepEqual(parseVirtualUri(virtualUri('r-0aF1', 'src/main.rs')), {
+  assert.deepEqual(virtualDocument('selvage', '/src/main.rs', 'room=r-0aF1'), {
     roomId: 'r-0aF1',
     path: 'src/main.rs',
   });
 
   // A path and a room are not this client's to normalise: a name with a space, a `?`, a
   // `#` or a non-ASCII character has to come back exactly, or the provider reads the wrong
-  // document.
+  // document. The URI an editor hands the provider is split into scheme, path and query the
+  // way every editor does it, and those are the parts this reads.
   for (const path of ['a b/c?d#e.txt', 'ünïcode/日本語.md', 'x%20y/z', 'dir/sub/file.ts']) {
     const uri = virtualUri('r-CASE', path);
-    assert.deepEqual(parseVirtualUri(uri), { roomId: 'r-CASE', path }, uri);
+    const at = uri.indexOf('?');
+    assert.deepEqual(
+      virtualDocument(uri.slice(0, uri.indexOf(':')), uri.slice(uri.indexOf(':') + 1, at), uri.slice(at + 1)),
+      { roomId: 'r-CASE', path },
+      uri,
+    );
   }
 
-  assert.equal(isVirtual(virtualUri('r-1', 'a.ts')), true);
-  assert.equal(isVirtual('file:///tmp/a.ts'), false);
-
   // A document this client cannot name is one it must not open.
-  assert.equal(parseVirtualUri('file:///tmp/a.ts'), undefined);
-  assert.equal(parseVirtualUri('selvage:/a.ts'), undefined);
-  assert.equal(parseVirtualUri('selvage:/a.ts?room='), undefined);
-  assert.equal(parseVirtualUri('selvage:/?room=r-1'), undefined);
+  assert.equal(virtualDocument('file', '/tmp/a.ts', ''), undefined);
+  assert.equal(virtualDocument('selvage', '/a.ts', ''), undefined);
+  assert.equal(virtualDocument('selvage', '/a.ts', 'room='), undefined);
+  assert.equal(virtualDocument('selvage', '/', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', 'a.ts', 'room=r-1'), undefined);
+  assert.equal(roomFromQuery('room=r-1&x=2'), 'r-1');
+  assert.equal(roomFromQuery('x=2'), undefined);
 });
 
 test('a peer colour is a function of the peer id, the same on every client', () => {

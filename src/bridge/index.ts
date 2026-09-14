@@ -9,5 +9,5 @@ export { applyChange, diff, matchesReplica, render, toCrdt } from './editing.ts'
 export type { LineEnding, TextChange } from './editing.ts';
 export { cursorFor, peerColour, translucent } from './cursors.ts';
 export type { Cursor, CursorPeer, ResolvedCursor } from './cursors.ts';
-export { SCHEME, isVirtual, parseVirtualUri, virtualUri } from './virtual.ts';
-export type { VirtualUri } from './virtual.ts';
+export { SCHEME, roomFromQuery, virtualDocument, virtualUri } from './virtual.ts';
+export type { VirtualDocument } from './virtual.ts';

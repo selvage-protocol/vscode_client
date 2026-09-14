@@ -200,6 +200,10 @@ export class SessionBridge {
     if (matchesReplica(text, replica)) {
       return;
     }
+    // The whole buffer is compared and diffed rather than the event's own ranges. A range an
+    // editor reports is in the buffer's coordinates, and mapping it onto the replica's would
+    // need the EOL offset table — a class of its own in the extension the study read. Two
+    // string scans per change event buy the whole policy being four lines long.
     const incoming = toCrdt(text);
     const change = diff(replica, incoming);
     if (change.end > change.start) {

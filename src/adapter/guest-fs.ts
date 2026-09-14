@@ -13,7 +13,7 @@
 
 import * as vscode from 'vscode';
 
-import { parseVirtualUri } from '../bridge/index.ts';
+import { virtualDocument } from '../bridge/index.ts';
 
 /** Where a guest's documents read from: the session that is live. */
 export interface VirtualSource {
@@ -87,7 +87,7 @@ export class GuestFileSystem implements vscode.FileSystemProvider {
   }
 
   private bytes(uri: vscode.Uri): Uint8Array {
-    const parsed = parseVirtualUri(uri.toString());
+    const parsed = virtualDocument(uri.scheme, uri.path, uri.query);
     if (parsed === undefined) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }

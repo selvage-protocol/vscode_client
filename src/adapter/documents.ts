@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, parseVirtualUri } from '../bridge/index.ts';
+import { SCHEME, virtualDocument } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 
@@ -142,7 +142,7 @@ export class WorkspaceEditor implements EditorHost {
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {
-    const virtual = parseVirtualUri(uri.toString());
+    const virtual = virtualDocument(uri.scheme, uri.path, uri.query);
     if (virtual !== undefined) {
       return this.role === 'guest' ? virtual.path : undefined;
     }
