@@ -77,6 +77,19 @@
           "type": "boolean",
           "default": true,
           "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's document is virtual and its save writes nothing; the call is what clears the editor's unsaved marker."
+        },
+        "selvage.cursorLabel": {
+          "type": "string",
+          "enum": [
+            "floating",
+            "chip"
+          ],
+          "enumDescriptions": [
+            "A small name box above the peer's caret, out of the line's flow. It leans on undocumented editor behaviour, so it is cosmetic and not guaranteed.",
+            "The peer's name inside the line, behind a coloured border, built from documented decoration fields only."
+          ],
+          "default": "floating",
+          "description": "How a remote peer's name is drawn at their cursor. \"floating\" reads as an annotation and \"chip\" reads as text; switch to \"chip\" if the floating label is ever drawn wrongly, and see the README for what the floating label cannot do. Applies to an open session at once."
         }
       }
     }
