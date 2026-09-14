@@ -43,10 +43,34 @@ export interface Registered {
   files?: GuestFiles;
 }
 
+/** The stub module itself, for a test that needs to run a command or read what it recorded. */
+export interface EditorStub {
+  registered: Registered & {
+    clipboard: string;
+    clipboardWrites: string[];
+    information: string[];
+    warnings: string[];
+    errors: string[];
+    quickPicks: Array<{ items: string[]; options: unknown }>;
+    inputs: unknown[];
+    opened: string[];
+    shown: string[];
+    informationReply: unknown;
+    warningReply: unknown;
+    quickPickReply: unknown;
+    inputReply: unknown;
+  };
+  reset(): void;
+  commands: {
+    executeCommand(id: string, ...args: unknown[]): Promise<unknown>;
+  };
+}
+
 export interface LoadedExtension {
   activate(context: unknown): void;
   deactivate(): void;
   registered: Registered;
+  stub: EditorStub;
 }
 
 /**
@@ -66,12 +90,13 @@ export function loadBundle(): LoadedExtension {
   Module._resolveFilename = (...args: unknown[]): string =>
     args[0] === 'vscode' ? STUB : resolveFilename(...args);
   try {
-    const stub = require(STUB) as { registered: Registered };
+    const stub = require(STUB) as EditorStub;
     const bundle = require(BUNDLE) as { activate: unknown; deactivate: unknown };
     return {
       activate: bundle.activate as (context: unknown) => void,
       deactivate: bundle.deactivate as () => void,
       registered: stub.registered,
+      stub,
     };
   } finally {
     Module._resolveFilename = resolveFilename;
