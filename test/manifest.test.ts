@@ -27,7 +27,7 @@ interface Manifest {
   activationEvents?: string[];
   contributes?: {
     commands?: Array<{ command: string; title: string; category?: string }>;
-    configuration?: { properties?: Record<string, { type?: string; default?: unknown }> };
+    configuration?: { properties?: Record<string, { type?: string; default?: unknown; enum?: unknown[] }> };
   };
   devDependencies?: Record<string, string>;
 }
@@ -82,6 +82,21 @@ test('every setting the manifest declares is one the adapter reads', () => {
       `no adapter module reads ${key}`,
     );
   }
+});
+
+test('the cursor label draws no name unless the user opts in', () => {
+  // The contract the setting exists to keep: a window configured with nothing must not put a
+  // peer-controlled string over the code. `test/labels.test.ts` pins what each value draws;
+  // this pins that the shipped default is the one that draws nothing, and that the two modes
+  // which do draw are reachable only by asking for them.
+  const setting = manifest.contributes?.configuration?.properties?.['selvage.cursorLabel'];
+  assert.ok(setting !== undefined, 'the manifest no longer declares selvage.cursorLabel');
+  assert.equal(setting.default, 'none', 'the default cursor label draws a name over the document');
+  assert.deepEqual(
+    [...(setting.enum ?? [])].sort(),
+    ['chip', 'floating', 'none'],
+    'the setting no longer offers exactly the two opt-ins and the default',
+  );
 });
 
 test('the manifest asks for a VS Code no older than its type definitions', () => {

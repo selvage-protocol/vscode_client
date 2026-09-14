@@ -2,23 +2,66 @@
  * The label attachment, pinned.
  *
  * A peer's name is drawn by the editor out of one option object, and the whole difference
- * between a label that reads as an annotation and one that reads as the document's own text is
- * whether that object carries declarations the decoration API has no fields for. Nothing else
- * here can see it: there is no editor in this suite, and the two-instance proof asserts that
- * documents converge, not that anything was painted.
+ * between a label that reads as an annotation, one that reads as the document's own text, and
+ * nothing at all is which option object — if any — the editor is handed. Nothing else here can
+ * see it: there is no editor in this suite, and the two-instance proof asserts that documents
+ * converge, not that anything was painted.
  *
- * So this file pins the object — the exact strings, for both modes, and which setting value
- * selects which — and stops there. **The pixels are not covered by any test in this
- * repository**; the only check on how the floating label looks is a person opening a real
- * editor.
+ * So this file pins the decision — that the default draws no name, that a drawn name is clipped
+ * to a bound, and the exact option object each opt-in produces — and stops there. **The pixels
+ * are not covered by any test in this repository**; the only check on how a floating label looks
+ * is a person opening a real editor.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_LABEL_MODE, labelAttachment, labelMode } from '../src/adapter/labels.ts';
+import { DEFAULT_LABEL_MODE, LABEL_LIMIT, boundedLabel, labelAttachment, labelMode } from '../src/adapter/labels.ts';
 
 const CURSOR = { label: 'Ada', colour: '#e06c75' } as const;
+
+/** A name long enough to be clipped, the shape the setting exists to keep out of the buffer. */
+const LONG = 'justaverylongnvimuserhehehehehehehehe';
+
+test('no name is drawn with the default setting', () => {
+  // The whole point of the change: a window that is configured with nothing must not put a
+  // peer-controlled string over the code. The caret, its hover and the status bar remain.
+  assert.equal(DEFAULT_LABEL_MODE, 'none');
+  assert.equal(labelMode(undefined), 'none');
+  assert.equal(labelAttachment(CURSOR, 'none'), undefined);
+});
+
+test('a drawn name is clipped to the limit, with an ellipsis', () => {
+  assert.equal(boundedLabel(LONG), `${LONG.slice(0, LABEL_LIMIT - 1)}\u2026`);
+  assert.equal([...boundedLabel(LONG)].length, LABEL_LIMIT);
+  assert.ok(boundedLabel(LONG).endsWith('\u2026'));
+  // A name that already fits is left exactly as it is, ellipsis and all.
+  assert.equal(boundedLabel('Ada'), 'Ada');
+  assert.equal(boundedLabel('\u2026'), '\u2026');
+  // Both drawn modes carry the clipped text, so neither can be a way around the bound.
+  assert.equal(labelAttachment({ ...CURSOR, label: LONG }, 'floating')?.contentText, boundedLabel(LONG));
+  assert.equal(labelAttachment({ ...CURSOR, label: LONG }, 'chip')?.contentText, ` ${boundedLabel(LONG)} `);
+});
+
+test('the clip is by code point, never through a surrogate pair', () => {
+  // A name is peer-controlled and may hold astral characters. Clipping by UTF-16 unit could
+  // leave half of a surrogate pair, which is a lone surrogate in the string: text no editor
+  // can draw and no strict JSON consumer accepts.
+  const emoji = '\u{1F600}'.repeat(LABEL_LIMIT + 4);
+  const clipped = boundedLabel(emoji);
+  assert.equal([...clipped].length, LABEL_LIMIT);
+  assert.ok(!clipped.includes('\uFFFD'));
+  for (let index = 0; index < clipped.length; index += 1) {
+    const unit = clipped.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = clipped.charCodeAt(index + 1);
+      assert.ok(next >= 0xdc00 && next <= 0xdfff, 'a high surrogate was left without its low half');
+      index += 1;
+    } else {
+      assert.ok(unit < 0xdc00 || unit > 0xdfff, 'a low surrogate was left without its high half');
+    }
+  }
+});
 
 test('the floating label carries the declarations that lift it out of the line', () => {
   assert.deepEqual(labelAttachment(CURSOR, 'floating'), {
@@ -65,10 +108,12 @@ test('the chip is documented fields only', () => {
   );
 });
 
-test('the setting selects the mode, and anything unrecognised is the floating label', () => {
+test('the setting selects the mode, and nothing but the two opt-ins draws a name', () => {
   assert.equal(labelMode('chip'), 'chip');
   assert.equal(labelMode('floating'), 'floating');
+  assert.equal(labelMode('none'), 'none');
+  // Anything unrecognised is the default, and the default draws nothing.
   assert.equal(labelMode(undefined), DEFAULT_LABEL_MODE);
   assert.equal(labelMode('nonsense'), DEFAULT_LABEL_MODE);
-  assert.equal(DEFAULT_LABEL_MODE, 'floating');
+  assert.equal(DEFAULT_LABEL_MODE, 'none');
 });
