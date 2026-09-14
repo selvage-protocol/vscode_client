@@ -54,8 +54,9 @@ export function labelMode(value: unknown): LabelMode {
  *
  * - `top` is a magic constant against a line box whose height is `editor.lineHeight`, which is
  *   settable and unknowable from here. `-1.3em` is measured in the label's own font size — the
- *   `0.7em` below — so it tracks `editor.fontSize` and ignores the line height: a tall line
- *   leaves the box inside the line above it, a short one leaves a gap.
+ *   `0.7em` below — so it tracks `editor.fontSize` and ignores the line height: at the default
+ *   the box ends up over the text of the line above, and at `editor.lineHeight: 34` it lands
+ *   inside the caret's own line instead.
  * - The box cannot escape the editor's top edge (`.overflow-guard` clips), so on one of the
  *   first visible lines it is cut off; the left and right edges clip it too.
  * - `pointer-events: none` is mandatory. Without it the box swallows the clicks and selection
