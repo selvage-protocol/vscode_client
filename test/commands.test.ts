@@ -18,7 +18,7 @@ import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 import { SelvageEngine } from '../src/engine/index.ts';
-import { virtualUri } from '../src/bridge/index.ts';
+import { peerColour, virtualUri } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
 
@@ -337,3 +337,69 @@ test('the setting is checked before it is sent, and the question asks for a shor
   assert.deepEqual(server.displayNames(), ['Ada'], 'the refused setting reached the server');
 });
 
+test('the peers command refuses outside a session and in a room with no one else', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.peers');
+  const outside = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('host or join')) ?? false,
+  );
+  assert.match(outside, /host or join a session first/);
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () => (server.acceptedConnections > 0 ? true : false));
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.peers');
+  const alone = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) =>
+      message.includes('no other participants'),
+    ) ?? false,
+  );
+  assert.match(alone, /no other participants to name/);
+  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a list was drawn for an empty room');
+});
+
+/** One row of the participant list, as the stub recorded it. */
+interface PeerRow {
+  label: string;
+  description: string;
+  detail: string;
+  iconPath: { toString(): string };
+}
+
+test('the peers command lists the room in the colours the carets are drawn in', async (t) => {
+  const { host, invite } = await room(t, ['workspace/README.md']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+  // Published after the guest is seated: awareness converges peer to peer through a relay
+  // that forgets, so a state sent before the guest arrived was forwarded to nobody.
+  await host.setSelection('workspace/README.md', { anchor: 0, head: 0 });
+
+  const row = await waitFor('the list to name the document the host is in', () => {
+    void bundle.stub.commands.executeCommand('selvage.peers');
+    const items = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[] | undefined;
+    const first = items?.[0];
+    return first?.detail === 'workspace/README.md' ? first : false;
+  });
+  assert.equal(row.label, 'Ada');
+  assert.equal(row.description, 'host', 'the role the room gives the peer is not in the list');
+  assert.equal(row.detail, 'workspace/README.md');
+
+  // The colour is the one the caret is drawn in, derived from the same peer id by the same
+  // function the cursor model uses: a second way of choosing a colour is the defect here.
+  const colour = peerColour(host.session().peer.peer_id);
+  const swatch = decodeURIComponent(row.iconPath.toString());
+  assert.ok(swatch.includes(colour), `the list drew ${swatch}, not the caret colour ${colour}`);
+});

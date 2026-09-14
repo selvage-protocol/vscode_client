@@ -65,6 +65,11 @@
         "command": "selvage.displayName",
         "category": "Selvage",
         "title": "Set the name other participants see"
+      },
+      {
+        "command": "selvage.peers",
+        "category": "Selvage",
+        "title": "List the room's participants"
       }
     ],
     "configuration": {
