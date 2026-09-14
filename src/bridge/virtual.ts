@@ -28,8 +28,31 @@ function encodePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
-function decodePath(path: string): string {
-  return path.split('/').map(decodeURIComponent).join('/');
+/**
+ * Percent-decodes one component, `undefined` when it is not valid percent-encoding. A URI is
+ * untrusted input — it reaches here from a provider call and from the change-event listener —
+ * and `decodeURIComponent` throws `URIError` on a stray `%`. A document this client cannot
+ * name is one it must not open, so an unreadable component makes the whole URI unnameable
+ * rather than throwing out of a listener.
+ */
+function decodeComponent(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function decodePath(path: string): string | undefined {
+  const decoded: string[] = [];
+  for (const segment of path.split('/')) {
+    const part = decodeComponent(segment);
+    if (part === undefined) {
+      return undefined;
+    }
+    decoded.push(part);
+  }
+  return decoded.join('/');
 }
 
 /** The URI a guest opens for a room path. */
@@ -60,16 +83,24 @@ export function virtualDocument(
   if (roomId === undefined) {
     return undefined;
   }
-  return { roomId, path: decodePath(path.slice(1)) };
+  const decoded = decodePath(path.slice(1));
+  if (decoded === undefined) {
+    return undefined;
+  }
+  return { roomId, path: decoded };
 }
 
-/** The room id a URI's query names, `undefined` when it names none. */
+/** The room id a URI's query names, `undefined` when it names none or cannot be decoded. */
 export function roomFromQuery(query: string): string | undefined {
   let room: string | undefined;
   for (const pair of query.split('&')) {
     const equals = pair.indexOf('=');
     if (equals !== -1 && pair.slice(0, equals) === ROOM_KEY) {
-      room = decodeURIComponent(pair.slice(equals + 1));
+      const decoded = decodeComponent(pair.slice(equals + 1));
+      if (decoded === undefined) {
+        return undefined;
+      }
+      room = decoded;
     }
   }
   return room === undefined || room === '' ? undefined : room;
