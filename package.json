@@ -18,7 +18,7 @@
     "test:engine": "node --test test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "node --test test/boundary.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
+    "test:fast": "node --test test/boundary.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",
@@ -28,7 +28,9 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
+    "@types/vscode": "^1.85.0",
     "@types/ws": "8.18.1",
+    "esbuild": "^0.28.2",
     "typescript": "5.9.3"
   }
 }

@@ -1,0 +1,94 @@
+/**
+ * The document policy: line endings, the smallest change between two texts, and the
+ * comparison that stands in for an echo guard.
+ *
+ * All three are settled by measurement in `SPIKES.md`. Two editors with different line
+ * endings rewrite each other for ever unless the replica holds LF and the adapter restores
+ * the document's own endings on render (spike 3); a "this edit is mine" flag loses or
+ * duplicates an edit depending on when the coalesced change event lands, while comparing
+ * the buffer's text against the replica's is not a bet on timing (spike 2). This module is
+ * the policy those two findings add up to, with no editor in scope.
+ */
+
+/** A document's line endings. A file with neither (or an empty one) is `'\n'`. */
+export type LineEnding = '\n' | '\r\n';
+
+/**
+ * What goes into the replica: LF only, whoever wrote it. A lone `\r` is left alone — it is
+ * not a line ending any editor here produces, and rewriting one would edit a document the
+ * user cannot see changed.
+ */
+export function toCrdt(bufferText: string): string {
+  return bufferText.replaceAll('\r\n', '\n');
+}
+
+/**
+ * The replica's text as this document renders it. The result is what the buffer must hold,
+ * and it must never be written back: the conversion is this adapter's, and a peer with the
+ * other line ending would answer it with the same edit.
+ */
+export function render(crdtText: string, eol: LineEnding): string {
+  return eol === '\n' ? crdtText : crdtText.replaceAll('\n', '\r\n');
+}
+
+/**
+ * A single replacement of `[start, end)` with `text`, in UTF-16 code units of the text it
+ * changes. Offsets are counted in the text the change is taken against — the buffer's for
+ * a change handed to an editor, the replica's for one written into the CRDT.
+ */
+export interface TextChange {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * The smallest replacement that turns `from` into `to`: the common prefix and suffix are
+ * left alone.
+ *
+ * A whole-document replacement is the same edit with `start = 0`, and it is what the
+ * cheapest implementation does. It is worth the extra scan to avoid: it collapses undo
+ * granularity, resets folding and can jump the local caret, and the replica's delta is
+ * available for free (`SPIKES.md`, spike 2 finding 2). An empty change — `start === end`,
+ * `text === ''` — means the texts already agree.
+ */
+export function diff(from: string, to: string): TextChange {
+  if (from === to) {
+    return { start: 0, end: 0, text: '' };
+  }
+  let start = 0;
+  const shortest = Math.min(from.length, to.length);
+  while (start < shortest && from[start] === to[start]) {
+    start += 1;
+  }
+  let endFrom = from.length;
+  let endTo = to.length;
+  while (endFrom > start && endTo > start && from[endFrom - 1] === to[endTo - 1]) {
+    endFrom -= 1;
+    endTo -= 1;
+  }
+  return { start, end: endFrom, text: to.slice(start, endTo) };
+}
+
+/** Applies a change. The inverse of `diff` up to the range it chose. */
+export function applyChange(text: string, change: TextChange): string {
+  return (
+    text.slice(0, change.start) +
+    change.text +
+    text.slice(Math.max(change.end, change.start))
+  );
+}
+
+/**
+ * Whether a buffer already holds what this replica holds — the echo guard.
+ *
+ * An editor gives no way to tell a keystroke from this adapter's own application of a peer's
+ * edit: `WorkspaceEdit` carries no author and `TextDocumentChangeEvent` only a
+ * `reason: Undo | Redo | undefined`. Content is the only thing left to compare. A change
+ * event this answers `true` for is published as nothing — and because what *is* published
+ * is a diff against the replica rather than the event's own ranges, an event that carries
+ * no change cannot become one.
+ */
+export function matchesReplica(bufferText: string, crdtText: string): boolean {
+  return toCrdt(bufferText) === crdtText;
+}
