@@ -28,6 +28,7 @@ import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
 import { diff, hasCarriageReturn, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
+import { MAX_GRANT_FILE_BYTES, isGrantedPath } from './grant.ts';
 
 /**
  * The slice of `SelvageEngine` the bridge talks to. `SelvageEngine` satisfies it as it
@@ -483,6 +484,20 @@ export class SessionBridge {
     if (this.role() !== 'host' || this.seeded.has(path)) {
       return;
     }
+    // A file the user opened is still one the room has to carry: the grant's own rule and
+    // the session's size bound gate this path exactly as they gate a peer's request below,
+    // so opening `.env`, a key or a huge log shares nothing and wedges no frame. A refusal
+    // is said once, out loud, rather than seeded as an empty document or left for the user
+    // to discover from a guest's question.
+    const refusal = seedRefusal(path, bufferText);
+    if (refusal !== undefined) {
+      this.host.report({
+        kind: 'sessionError',
+        code: 'error',
+        message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
+      });
+      return;
+    }
     this.seeded.add(path);
     if (this.engine.has(path)) {
       return;
@@ -504,43 +519,72 @@ export class SessionBridge {
    * seeded as an empty document. The guard on the insert is `seed`'s: only a replica that has
    * received nothing for the path may be given a disk copy.
    *
-   * A refusal is recorded as asked-for and not as seeded: the user opening that file later is
-   * the user's own act, and it still has to reach the room.
+   * A refusal is recorded as asked-for and not as seeded: the user opening that file later
+   * still passes through `seed`'s own gates, so a file the grant excludes stays out of the
+   * room whichever way it was reached.
    */
   private seedRequested(documents: string[]): void {
     if (this.role() !== 'host') {
       return;
     }
+    const fresh: string[] = [];
     for (const path of documents) {
       if (this.requested.has(path) || this.documents.has(path)) {
         continue;
       }
       this.requested.add(path);
+      // A path the grant would never publish — `.env`, `..`, an over-long name — is not
+      // something a peer can talk the room into: it is dropped silently, so a guessed
+      // secret buys no dialog confirming it, and a bogus listing buys no read at all.
+      if (isGrantedPath(path)) {
+        fresh.push(path);
+      }
+    }
+    if (fresh.length === 0) {
+      return;
+    }
+    // One report for the whole event, however many paths failed it: a listing of N
+    // unknown paths is one dialog, never N.
+    const refusals: string[] = [];
+    let settled = 0;
+    const report = (): void => {
+      settled += 1;
+      if (settled < fresh.length) {
+        return;
+      }
+      if (refusals.length === 1) {
+        this.host.report({ kind: 'sessionError', code: 'error', message: refusals[0] ?? '' });
+      } else if (refusals.length > 1) {
+        const shown = refusals.slice(0, 3).join('; ');
+        const rest = refusals.length > 3 ? `; and ${refusals.length - 3} more` : '';
+        this.host.report({
+          kind: 'sessionError',
+          code: 'error',
+          message: `could not share ${refusals.length} paths the room asked for (${shown}${rest}); nothing was shared for them`,
+        });
+      }
+    };
+    for (const path of fresh) {
       void this.host
         .readGrantedFile(path)
         .then((text) => {
           if (text === undefined) {
-            this.host.report({
-              kind: 'sessionError',
-              code: 'error',
-              message: `could not share ${path}: it is not a readable file in the folder this window shares (it may have been deleted after the listing was published); nothing was shared for it`,
-            });
-            return;
+            refusals.push(
+              `could not share ${path}: it is not a readable file in the folder this window shares (it may have been deleted after the listing was published); nothing was shared for it`,
+            );
+          } else if (!this.engine.has(path)) {
+            const incoming = toCrdt(text);
+            if (incoming !== '') {
+              this.engine.insert(path, 0, incoming);
+            }
           }
-          if (this.engine.has(path)) {
-            return;
-          }
-          const incoming = toCrdt(text);
-          if (incoming !== '') {
-            this.engine.insert(path, 0, incoming);
-          }
+          report();
         })
         .catch((error: unknown) => {
-          this.host.report({
-            kind: 'sessionError',
-            code: 'error',
-            message: `could not read ${path} from this window's working copy: ${describe(error)}`,
-          });
+          refusals.push(
+            `could not read ${path} from this window's working copy: ${describe(error)}; nothing was shared for it`,
+          );
+          report();
         });
     }
   }
@@ -852,6 +896,28 @@ export class SessionBridge {
       }
     }
   }
+}
+
+/**
+ * Why a locally-opened file must not enter the room's replica, or `undefined` when it
+ * may. The grant's shape rule and the session's size bound: the gates a peer's request
+ * passes through, applied to the buffer rather than the disk. The editor holds decoded
+ * text, so readability and decodability are what opening established; a file the window
+ * has not saved yet is still shareable while it is otherwise grantable.
+ */
+function seedRefusal(path: string, bufferText: string): string | undefined {
+  if (!isGrantedPath(path)) {
+    return 'it is not a path the room shares (excluded from the grant, or escaping the folder)';
+  }
+  // UTF-8 bytes are never fewer than UTF-16 code units, so an over-long buffer is refused
+  // without encoding it; the rest pays one pass for the exact byte count.
+  if (
+    bufferText.length > MAX_GRANT_FILE_BYTES ||
+    new TextEncoder().encode(bufferText).length > MAX_GRANT_FILE_BYTES
+  ) {
+    return `it is over the ${MAX_GRANT_FILE_BYTES} bytes a session will carry`;
+  }
+  return undefined;
 }
 
 function describe(error: unknown): string {
