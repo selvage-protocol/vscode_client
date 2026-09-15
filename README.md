@@ -31,11 +31,11 @@ Requirements, as found on this host:
 | nix | `2.34.8` | `nix develop` gives the Node above, `nix flake check` runs the server-free half in a sandbox, and `nix develop ../reference_server` builds `selvaged` out of the sibling checkout, which the four server-backed tests need |
 
 ```console
-$ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
-$ npm run build                        # → dist/extension.js, 448 kB, and dist/package.json
+$ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
+$ npm run build                        # → dist/extension.js, 452.8 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 169 tests, no server, no editor
-$ npm test                             # 173 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 181 tests, no server, no editor
+$ npm test                             # 185 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -99,8 +99,8 @@ Then, in the two windows:
    the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
    drawn over the text unless `selvage.cursorLabel` asks for it. With several documents in the
    room only the first opens; run *Selvage: Open a document from the room* to reach any of the
-   others.
-6. `Selvage: Leave session` on either side. Closing window one — the host — ends the room
+   others, and set `selvage.openOnJoin` to `false` to be shown nothing by a join.
+6. `Selvage: Leave the session` on either side. Closing window one — the host — ends the room
    after the server's grace period, and window two is told.
 
 Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. There is
@@ -117,10 +117,10 @@ Seven, the same seven the Neovim client has with `:SelvageHost`, `:SelvageJoin`,
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
 | `Selvage: Join a session from an invite link` | Join the room the invite link names, pre-filled from the clipboard when the clipboard holds one. |
-| `Selvage: Set the name other participants see` | Report the name in force, and set the one the next host or join will use. |
+| `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. Only a guest has virtual documents to open; a host's open files are the room's. |
 | `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
-| `Selvage: Leave session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
+| `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
 
 The name other participants see is resolved when a session starts, in this order:
@@ -131,9 +131,10 @@ chose: the setting is checked before it is sent, the question refuses an answer 
 and says how many units it used, and the command refuses to write one. A settings file the
 editor will not write — one a configuration manager owns and leaves read-only — is reported
 rather than left to look as though the name had changed. The name travels in the
-`host`/`join` handshake and nothing carries it afterwards, so a change made while a session is
-live applies to the next host or join, not the current one; `Selvage: Set the name other
-participants see` says so when it sets it.
+`host`/`join` handshake, and a live session renames itself when the setting changes: the write
+`Selvage: Set the name other participants see` makes is the one thing that sends the
+`session.rename`, so the room sees the new name at once and the next host or join carries it
+too.
 
 `Selvage: List the room's participants` is the key to the carets. A peer is drawn as a bar in
 their own colour with their name in the caret's hover, and this is where a colour is turned back
@@ -278,11 +279,15 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   those already open when the session starts; that folder is the grant. A guest shares nothing
   from disk — only the `selvage:` documents the room gave it. There are no exclude globs in
   v1: what a host shares is what it has open, which is visible in its own window.
-- **A guest opens the room's first document as it joins**, once and with no input: joining a
-  room that already has files should land in the work, not in a quick-pick. Only the first — a
-  host with five files open must not open five editors — and *Open a document from the room*
-  still lists every path. The adapter opens nothing later in the session, so it never pulls
-  focus from a document the user is editing.
+- **A guest lands in the room's first document, once and with no input**: joining a room that
+  already has files should land in the work, not in a quick-pick, and a room that is empty at
+  join still owes that landing to the guest who stays — the first document that arrives opens,
+  which is what the Neovim client does too. Only the first: a host with five files open must not
+  open five editors, a document after that one is left alone because taking the window then
+  would interrupt whatever the user is editing, and *Open a document from the room* still lists
+  every path. A host never lands anywhere — its own open files are the room's — and
+  **`selvage.openOnJoin`**, on by default, turns a guest's landing off. It is the same knob the
+  Neovim client has, as `vim.g.selvage_open_on_join`.
 - **Hosting while already hosting copies the invite**, the same thing *Copy the invite link*
   does, rather than telling the user to run it; no second room is minted. A guest that runs
   *Host*, or anyone that runs *Join* while in a session, is asked to confirm leaving first —
@@ -329,8 +334,10 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   name other participants see* reports the name in force — the live session's, else the setting's
   — and writes `selvage.displayName` at the global scope, which is the analogue of the Neovim
   client's `vim.g.selvage_display_name`; a workspace is not a place a person's name belongs. The
-  name travels in the `host`/`join` handshake and nothing carries it afterwards, so the command
-  says that a session already live keeps the name it started with. **A name is at most 32 UTF-16
+  name travels in the `host`/`join` handshake, and the setting's own write renames a session that
+  is already live: the configuration listener sends a `session.rename` whenever the change comes
+  from the editor, so the room sees the new name at once and the next host or join carries it too.
+  **A name is at most 32 UTF-16
   code units and an over-long one is refused, never shortened**: the setting is checked before it
   is sent, the question refuses an answer while it is typed and says how many units it used, and
   reaching for a shorter name is the question that then appears, pre-filled with the one that was
@@ -405,7 +412,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, the leave-first questions, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
+| `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after an empty join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
@@ -415,7 +423,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**173 tests, 0 failures**: 169 server-free and 4 that need a built `selvaged`. Waits are bounded
+**185 tests, 0 failures**: 181 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
