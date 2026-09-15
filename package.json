@@ -35,6 +35,14 @@
     "onFileSystem:selvage"
   ],
   "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "selvage.grant",
+          "name": "Selvage"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "selvage.host",

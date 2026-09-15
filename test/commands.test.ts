@@ -760,3 +760,192 @@ test('a room that is gone is named before the session ends', async (t) => {
   );
   assert.equal(ended, 'Selvage: join a session first.');
 });
+
+/** The tree view the extension registered, as the provider a test can ask for children. */
+interface GrantTreeLike {
+  getChildren(node?: { path: string }): Array<{
+    name: string;
+    path: string;
+    directory: boolean;
+  }>;
+  getTreeItem(node: { name: string; path: string; directory: boolean }): {
+    label: string;
+    collapsibleState: number;
+    command?: { command: string; arguments: unknown[] };
+  };
+}
+
+function treeOf(bundle: LoadedExtension): GrantTreeLike {
+  const view = bundle.registered.treeViews.find((entry) => entry.id === 'selvage.grant');
+  assert.ok(view !== undefined, 'activating registered no Explorer view');
+  return view.options['treeDataProvider'] as GrantTreeLike;
+}
+
+/** The invite a bundle host copied, read off the clipboard as a user's click would leave it. */
+async function inviteOf(bundle: LoadedExtension): Promise<string> {
+  // The copy resolves a microtask after it is asked for, so the check re-asks and reads what
+  // the clipboard holds by the next poll, exactly as a user clicking the command would.
+  return await waitFor('the invite link', () => {
+    void bundle.stub.commands.executeCommand('selvage.copyInvite');
+    const clipboard = bundle.stub.registered.clipboard;
+    return clipboard.startsWith('ws://') ? clipboard : false;
+  });
+}
+
+test('a host publishes the listing of the folder it was invited on', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.put('src/main.rs', 'fn main() {}\n');
+  bundle.stub.put('docs/guide/intro.md', 'intro\n');
+  // What a working copy should not share: the defaults `DESIGN.md` §4.2 names, dependency
+  // trees and build outputs, a symbolic link, and a file too large for one `Y.Text`.
+  bundle.stub.put('.env', 'SECRET=1\n');
+  bundle.stub.put('.git/config', '[core]\n');
+  bundle.stub.put('node_modules/left-pad/index.js', 'module.exports = 1\n');
+  bundle.stub.put('target/debug/selvage', 'binary\n');
+  bundle.stub.putLink('src/latest.rs', 'file');
+  bundle.stub.put('assets/big.bin', 'x', { size: 4 * 1024 * 1024 });
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+
+  const paths = await waitFor('the room to learn the listing', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  assert.deepEqual(paths, ['README.md', 'docs/guide/intro.md', 'src/main.rs']);
+  assert.deepEqual(
+    paths,
+    [...paths].sort(),
+    'the listing is not ascending by UTF-16 code unit',
+  );
+});
+
+test("the Explorer view is the room's listing, as a tree", async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['README.md', 'src/deep/nested.rs', 'src/main.rs']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const tree = treeOf(bundle);
+
+  await waitFor('the listing to reach the view', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+  assert.deepEqual(
+    tree.getChildren().map((node) => [node.name, node.directory]),
+    [
+      ['src', true],
+      ['README.md', false],
+    ],
+    'the tree is not the grant derived by splitting its paths',
+  );
+  assert.deepEqual(
+    tree.getChildren({ path: 'src' }).map((node) => [node.name, node.directory]),
+    [
+      ['deep', true],
+      ['main.rs', false],
+    ],
+  );
+
+  // A file the room never opened is still a row, and opening it is the room path's command.
+  const file = tree.getChildren({ path: 'src' }).find((node) => node.name === 'main.rs');
+  assert.ok(file !== undefined, 'main.rs is not in the tree');
+  assert.deepEqual(tree.getTreeItem(file).command, {
+    command: 'selvage.openDocument',
+    title: 'Open a document from the room',
+    arguments: [{ path: 'src/main.rs' }],
+  });
+  assert.equal(tree.getTreeItem({ name: 'src', path: 'src', directory: true }).collapsibleState, 1);
+
+  // What the tree rows open is the guest's virtual document, as the picker's are.
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'src/deep/nested.rs' });
+  await waitFor('the granted path to open', () =>
+    bundle.stub.registered.opened.includes(virtualUri(roomId, 'src/deep/nested.rs')),
+  );
+});
+
+test('a room with no grant still shows what it holds open', async (t) => {
+  const { bundle } = await guest(t, ['workspace/README.md', 'workspace/src/main.rs']);
+  const tree = treeOf(bundle);
+
+  await waitFor('the view to show something', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+  assert.deepEqual(tree.getChildren().map((node) => node.name), ['workspace']);
+  assert.deepEqual(
+    tree.getChildren({ path: 'workspace' }).map((node) => [node.name, node.directory]),
+    [
+      ['src', true],
+      ['README.md', false],
+    ],
+  );
+});
+
+test('the open command offers the grant, not only what the room has open', async (t) => {
+  const { host, invite } = await room(t, []);
+  await host.grant(['README.md', 'src/deep/nested.rs']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const tree = treeOf(bundle);
+  await waitFor('the listing to reach the window', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const picked = await waitFor('the document picker', () =>
+    bundle.stub.registered.quickPicks.length > 0 ? bundle.stub.registered.quickPicks[0] : false,
+  );
+  assert.deepEqual(
+    picked.items,
+    ['README.md', 'src/deep/nested.rs'],
+    'the picker is not the grant, so a path nobody opened is unreachable',
+  );
+});
+
+test('the folder a session shares is the one it was invited on, not the window it has now', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'shared\n');
+  bundle.stub.put('inside.md', 'still shared\n');
+  bundle.stub.openWorkspaceDocument('file:///workspace/README.md');
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host file to reach the room', () =>
+    roomOffer(bundle).includes('README.md') ? true : false,
+  );
+
+  // The window is opened on a second folder and a file in it is opened too. What the room
+  // shares is the folder the invite named, so this is not a document the room hears about.
+  bundle.stub.setWorkspaceFolders(['file:///workspace', 'file:///other']);
+  const outside = bundle.stub.openWorkspaceDocument('file:///other/notes.md');
+  bundle.stub.fire('openTextDocument', outside);
+
+  // A file inside the captured folder is shared as before, and its arrival in the room is
+  // what says the earlier open had its chance to be sent first.
+  const inside = bundle.stub.openWorkspaceDocument('file:///workspace/inside.md');
+  bundle.stub.fire('openTextDocument', inside);
+  await waitFor('the file inside the captured folder', () =>
+    roomOffer(bundle).includes('inside.md') ? true : false,
+  );
+  assert.equal(
+    roomOffer(bundle).includes('notes.md'),
+    false,
+    'a folder added to the window after the invite widened what the room shares',
+  );
+});
