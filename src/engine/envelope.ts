@@ -22,6 +22,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = ['y-protocols/1', 'awarene
 /** Client → server method names (§5). */
 export const method = {
   sessionHello: 'session.hello',
+  rename: 'session.rename',
   docOpen: 'doc.open',
   docClose: 'doc.close',
 } as const;
@@ -32,6 +33,7 @@ export const event = {
   roomJoined: 'room.joined',
   peerJoined: 'peer.joined',
   peerLeft: 'peer.left',
+  peerRenamed: 'peer.renamed',
   docOpened: 'doc.opened',
   docClosed: 'doc.closed',
   hostDetached: 'host.detached',
@@ -135,6 +137,17 @@ export interface DocEvent {
   peer_id: string;
   path: string;
   documents?: string[];
+}
+
+/** `session.rename` params (§5). */
+export interface RenameParams {
+  display_name: string;
+}
+
+/** `peer.renamed` params (§6): the peer whose name changed, and the name now in force. */
+export interface PeerRenamed {
+  peer_id: string;
+  display_name: string;
 }
 
 /** `GET /meta` response body (§2). */
@@ -302,6 +315,19 @@ export function parsePeerEvent(params: unknown): PeerInfo | undefined {
   return parsePeer(wrapped ?? params);
 }
 
+/**
+ * A `peer.renamed` params object (§6). The minimal pair is the whole event, so both fields
+ * are required: a frame missing either is not a rename this client acts on.
+ */
+export function parsePeerRenamed(params: unknown): PeerRenamed | undefined {
+  const peerId = textField(params, 'peer_id');
+  const displayName = textField(params, 'display_name');
+  if (peerId === undefined || displayName === undefined) {
+    return undefined;
+  }
+  return { peer_id: peerId, display_name: displayName };
+}
+
 /** `session.hello` params for this connection. */
 export function helloParams(input: {
   displayName: string;
@@ -317,4 +343,9 @@ export function helloParams(input: {
     capabilities: [...(input.capabilities ?? CLIENT_CAPABILITIES)],
     ...(input.client === undefined ? {} : { client: input.client }),
   };
+}
+
+/** `session.rename` params: the name this connection is changing to (§5). */
+export function renameParams(input: { displayName: string }): RenameParams {
+  return { display_name: input.displayName };
 }

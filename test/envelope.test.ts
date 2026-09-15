@@ -9,12 +9,16 @@ import {
   close,
   closeCodeFor,
   code,
+  event,
   isCompatible,
   isTerminalCode,
+  method,
   parsePeer,
   parsePeerEvent,
+  parsePeerRenamed,
   parseServerMessage,
   parseVersion,
+  renameParams,
 } from '../src/engine/envelope.ts';
 import { fetchMeta, metaAccepts } from '../src/engine/meta.ts';
 import {
@@ -221,6 +225,27 @@ test('peer records are read where they are, or wrapped in an event', () => {
     role: 'guest',
     awareness_client_id: 42,
   });
+});
+
+test('the rename request and its event are the names and shapes §5 and §6 fix', () => {
+  assert.equal(method.rename, 'session.rename');
+  assert.equal(event.peerRenamed, 'peer.renamed');
+
+  // The request carries one member, built the way `helloParams` is.
+  assert.deepEqual(renameParams({ displayName: 'Ada Lovelace' }), {
+    display_name: 'Ada Lovelace',
+  });
+
+  // `peer.renamed` is the minimal pair; both members are required, so a partial frame is
+  // ignored rather than read as a rename of nobody (a missing `role` cannot be invented).
+  assert.deepEqual(parsePeerRenamed({ peer_id: 'p-1', display_name: 'Ada' }), {
+    peer_id: 'p-1',
+    display_name: 'Ada',
+  });
+  assert.equal(parsePeerRenamed({ peer_id: 'p-1' }), undefined);
+  assert.equal(parsePeerRenamed({ display_name: 'Ada' }), undefined);
+  assert.equal(parsePeerRenamed({ peer_id: 'p-1', display_name: 7 }), undefined);
+  assert.equal(parsePeerRenamed(undefined), undefined);
 });
 
 test('/meta decides compatibility, and saying nothing about versions decides nothing', () => {

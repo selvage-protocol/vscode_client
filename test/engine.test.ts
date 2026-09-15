@@ -418,6 +418,69 @@ test('a request is answered by its id, and a refusal rejects that request', asyn
   assert.ok(guest.openDocuments().includes('c.txt'));
 });
 
+test('a rename is answered, announced to the room, and reaches the mover as its own name', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const hostEvents = record(host);
+  const bob = await waitForPeer(host, 'Bob');
+  const awareness = bob.awareness_client_id;
+  await host.open(PATH);
+  await waitFor('the guest to see the room document', () =>
+    guest.documents().includes(PATH) ? true : false,
+  );
+  const documents = guest.documents();
+
+  // The guest renames itself: the request is answered `{}`, and every peer — the mover
+  // included — is told with `peer.renamed` (§5, §6).
+  await guest.rename('Robert');
+
+  const renamed = await waitFor('the host to see the new name', () =>
+    host.peers().find((peer) => peer.display_name === 'Robert') ?? false,
+  );
+  assert.equal(renamed.peer_id, bob.peer_id, 'a rename named a different peer');
+  assert.equal(renamed.role, 'guest', 'a rename changed the peer role');
+  assert.equal(renamed.awareness_client_id, awareness, 'a rename changed the awareness join');
+  assert.deepEqual(guest.documents(), documents, 'a rename moved the room document set');
+
+  // The mover is not in its own roster: its new name has to reach `session.peer`.
+  await waitFor('the mover to report its own new name', () =>
+    guest.session().peer.display_name === 'Robert' ? true : false,
+  );
+  await hostEvents.waitForEvent(
+    'the host to be told of the rename',
+    (event) =>
+      event.type === 'peersChanged' &&
+      event.peers.some((peer) => peer.display_name === 'Robert'),
+  );
+
+  // A rename to the name already in force is accepted and announced, not suppressed (§5).
+  hostEvents.events.length = 0;
+  await guest.rename('Robert');
+  await hostEvents.waitForEvent(
+    'the no-op rename to be announced',
+    (event) =>
+      event.type === 'peersChanged' &&
+      event.peers.some((peer) => peer.display_name === 'Robert'),
+  );
+
+  // A refused rename — an over-long name, here one UTF-16 unit past the bound — rejects the
+  // caller with `bad_params`, and the connection stays usable (§5).
+  await assert.rejects(guest.rename(`${'a'.repeat(31)}\u{1f600}`), (error: unknown) =>
+    isProtocolError(error, 'bad_params'),
+  );
+  assert.equal(guest.isOpen, true, 'a refused rename closed the session');
+  assert.equal(guest.session().peer.display_name, 'Robert', 'a refused rename moved the live name');
+  await guest.rename('Rob');
+  await waitFor('the later rename to take', () =>
+    guest.session().peer.display_name === 'Rob' ? true : false,
+  );
+});
+
 test('a request in flight when the socket drops fails rather than hanging', async (t) => {
   const session = await fakeSession();
   t.after(async () => {
