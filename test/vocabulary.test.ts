@@ -79,8 +79,9 @@ const SENTENCES = [
   '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
   // What the room's own reports say.
   "`Selvage: ${} was out of step with the room; the room's copy has been put back.`",
-  "`Selvage: the editor would not apply the room's change to ${}.`",
+  "`Selvage: the editor would not apply the room's change to ${}; the file may be read-only.`",
   '`Selvage: could not save ${}; the file on disk is behind the room.`',
+  '`Selvage: could not save ${}; the file on disk is behind the room (${}).`',
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
