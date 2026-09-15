@@ -34,6 +34,14 @@ function overBound(units: number): string {
   return `Selvage: this name is ${units} UTF-16 code units and the limit is 32; a name is refused rather than shortened.`;
 }
 
+/**
+ * What the status bar says the room offers. The bar is the only place this client publishes the
+ * room's own document set, so it is what a test reads to know a `documents` report has landed.
+ */
+function roomOffer(bundle: LoadedExtension): string {
+  return String(bundle.stub.registered.statusBarItems.at(-1)?.tooltip ?? '');
+}
+
 /** A server with a room, minted by a source engine, and its invite. */
 async function room(
   t: TestContext,
@@ -179,6 +187,60 @@ test('a guest drops into the room\'s only document with no input', async (t) => 
     bundle.stub.registered.shown.length > 0 ? bundle.stub.registered.shown : false,
   );
   assert.deepEqual(shown, [virtualUri(roomId, 'workspace/notes.md')]);
+});
+
+test('a guest lands in the room\'s first document, even one that arrives after the join', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const joined = await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.equal(joined, `Selvage: joined room ${roomId}; the room has no open documents yet.`);
+  assert.deepEqual(bundle.stub.registered.shown, [], 'an empty room put something in the window');
+
+  // A room that was empty at join still owes the guest the landing the join could not make.
+  await host.open('workspace/README.md');
+  const shown = await waitFor('the room document to open', () => {
+    const found = bundle.stub.registered.shown.filter((uri) => uri.startsWith('selvage:'));
+    return found.length > 0 ? found : false;
+  });
+  assert.deepEqual(shown, [virtualUri(roomId, 'workspace/README.md')]);
+
+  // A document after the first is left alone: the landing is spent, and pulling the window away
+  // from a guest who is already editing is not a join.
+  await host.open('workspace/notes.md');
+  await waitFor('the guest to be told the room holds both', () =>
+    roomOffer(bundle).includes('notes.md') ? true : false,
+  );
+  assert.deepEqual(
+    bundle.stub.registered.shown,
+    [virtualUri(roomId, 'workspace/README.md')],
+    'a document that arrived later pulled the window away from the guest',
+  );
+});
+
+test('selvage.openOnJoin off keeps a join from taking the window', async (t) => {
+  const { host, invite, roomId } = await room(t, ['workspace/README.md']);
+  const bundle = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const joined = await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.equal(joined, `Selvage: joined room ${roomId}.`);
+
+  // A second document is witness that the room's own report reached this window — the set the
+  // join arrived with included — and neither document may have taken the window.
+  await host.open('workspace/notes.md');
+  await waitFor('the guest to be told the room holds both', () =>
+    roomOffer(bundle).includes('notes.md') ? true : false,
+  );
+  assert.deepEqual(
+    bundle.stub.registered.shown,
+    [],
+    'the join took the window with the setting off',
+  );
 });
 
 test('the open command offers the room\'s document list, not a path to type', async (t) => {

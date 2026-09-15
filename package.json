@@ -88,6 +88,11 @@
           "default": true,
           "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's document is virtual and its save writes nothing; the call is what clears the editor's unsaved marker."
         },
+        "selvage.openOnJoin": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put the room's first document in an editor for a guest: as the join lands when the room already has one, and when a room that was empty at join reports its first document. Only the first, and never one that arrives after that; the Selvage: Open a document from the room command lists every path. A host is unaffected: the files it opens are the room's own, and it already has them open."
+        },
         "selvage.cursorLabel": {
           "type": "string",
           "enum": [

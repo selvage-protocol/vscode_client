@@ -60,6 +60,8 @@ export interface EditorStub {
     shown: string[];
     /** Every decoration type the extension created, as the options it was given. */
     decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown> } }>;
+    /** Every status bar item the extension created, as the object it kept drawing into. */
+    statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string }>;
     informationReply: unknown;
     warningReply: unknown;
     quickPickReply: unknown;
