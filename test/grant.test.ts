@@ -25,7 +25,6 @@ test('a granted path is workspace-relative, and one that could resolve elsewhere
     'src/main.rs',
     'src/deep/nested/file.txt',
     '.github/workflows/ci.yml',
-    '.envrc',
     'environment',
     'a file with spaces.txt',
     'envelope.ts',
@@ -62,12 +61,92 @@ test('the defaults DESIGN.md names are excluded, and so is the tree that makes a
     // one real secret a narrower rule would miss.
     '.env.example',
     'src/.env.example',
+    '.ENV',
+    'src/.Env.Local',
+    '.envrc',
+    'src/.envrc',
+    '.npmrc',
+    '.pypirc',
   ]) {
     assert.equal(isGrantedPath(excluded), false, `${excluded} must not be listed`);
   }
   for (const dir of GRANT_EXCLUDED_DIRS) {
     assert.equal(isGrantedPath(`${dir}/anything.txt`), false, `${dir}/ must not be walked`);
     assert.equal(isGrantedPath(dir), false, `${dir} must not be listed`);
+  }
+});
+
+test('excludes hold on case-folding checkouts, where .GIT is .git', () => {
+  for (const folded of [
+    '.GIT/config',
+    'src/.Git/HEAD',
+    'NODE_MODULES/left-pad/index.js',
+    'Node_Modules/left-pad/index.js',
+    'TARGET/debug/build',
+    '.Env',
+    'SRC/.ENv.PRODUCTION',
+    '.AWS/credentials',
+    '.NPMRC',
+  ]) {
+    assert.equal(isGrantedPath(folded), false, `${folded} must not be listed`);
+  }
+  // The lowercase forms stay excluded, and ordinary names stay listed.
+  assert.equal(isGrantedPath('.git/config'), false);
+  assert.equal(isGrantedPath('src/main.rs'), true);
+  assert.equal(isGrantedPath('GITIGNORE'), true, 'a prefix of an excluded name is not one');
+});
+
+test('credential stores and private keys are never part of the grant', () => {
+  for (const secret of [
+    '.aws/credentials',
+    'src/.aws/config',
+    '.envrc',
+    '.npmrc',
+    '.pypirc',
+    'id_rsa',
+    '.ssh/id_rsa',
+    '.ssh/id_ed25519',
+    '.ssh/id_ecdsa',
+    '.ssh/id_dsa',
+    '.ssh/id_rsa.pub',
+    'certs/server.pem',
+    'certs/chain.PEM',
+    'certs/server.key',
+    'certs/server.KEY',
+  ]) {
+    assert.equal(isGrantedPath(secret), false, `${secret} must not be listed`);
+  }
+  // Near-misses stay listed: the rule names secrets, not substrings of ordinary files.
+  // The key prefixes match broadly on purpose: a copied key with a suffix is still a
+  // key, and the cost of leaving out a notes file is not a secret in the room.
+  assert.equal(isGrantedPath('src/id_rsa_notes.md'), false);
+  for (const ordinary of ['mykey.txt', 'pem.pem.pem.bak', 'monkey.txt']) {
+    assert.equal(isGrantedPath(ordinary), true, `${ordinary} should be part of the grant`);
+  }
+});
+
+test('a name that spoofs a tree or picker row is not a path the room shares', () => {
+  for (const spoofed of [
+    'a\u0000b.txt',
+    'a\u001fb.txt',
+    'a\u007fb.txt',
+    'a\u009fb.txt',
+    'src/a\u202eb.txt',
+    'src/a\u202ab.txt',
+    'src/a\u200fb.txt',
+    'src/a\u200eb.txt',
+    'src/a\u2066b.txt',
+    'src/a\u061cb.txt',
+    'src/a\ufeffb.txt',
+    'src/a\u2028b.txt',
+    'src/a\u2029b.txt',
+    'src/a\u000ab.txt',
+  ]) {
+    assert.equal(isGrantedPath(spoofed), false, `${JSON.stringify(spoofed)} must not be listed`);
+  }
+  // Visible non-ASCII names are ordinary files, not spoofs.
+  for (const ordinary of ['ünïcode/日本語.md', 'a\u00e9b.txt', '😀.txt']) {
+    assert.equal(isGrantedPath(ordinary), true, `${ordinary} should be part of the grant`);
   }
 });
 
@@ -151,4 +230,15 @@ test('a path that is both a directory and a file is drawn as the directory', () 
   assert.deepEqual(grantChildren(['src', 'src/main.rs']), [
     { name: 'src', path: 'src', directory: true },
   ]);
+});
+
+test('a tree draws no row for a path the grant would never publish', () => {
+  // A server-supplied listing becomes tree rows, picker entries and URIs: whatever the
+  // receipt gate let through — or whatever a hostile listing carried before it — draws
+  // nothing here unless the grant would publish it.
+  assert.deepEqual(
+    grantChildren(['src/main.rs', '../etc/passwd', '.env', 'a\\b.txt', 'src/../../x']),
+    [{ name: 'src', path: 'src', directory: true }],
+  );
+  assert.deepEqual(grantChildren(['.env', '..', 'src//x']), []);
 });

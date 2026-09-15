@@ -32,7 +32,11 @@ export const MAX_GRANT_FILE_BYTES = 1024 * 1024;
 /**
  * Directory names that are never part of the grant. Dependency trees and build outputs are
  * what a working copy should not share, and they are also what makes a walk pathological.
- * Matched exactly: a file system that folds case is the file system's business.
+ * Matched case-insensitively: the checkouts this client hosts on include case-folding file
+ * systems (default macOS and Windows), where `.GIT/config` and `Node_Modules/…` name the
+ * same files as their lowercase forms. What this cannot see is a name that merely looks the
+ * same — a fullwidth lookalike, an unnormalized form — which the byte comparison lets
+ * through; those stay out of reach of this list, and are said as a residual where it matters.
  */
 export const GRANT_EXCLUDED_DIRS: readonly string[] = [
   '.git',
@@ -57,6 +61,75 @@ export const GRANT_EXCLUDED_DIRS: readonly string[] = [
 ];
 
 /**
+ * File names that are never part of the grant: per-user secrets beside `.env`.
+ * Matched case-insensitively, like the directories above.
+ */
+const GRANT_EXCLUDED_FILES: readonly string[] = ['.envrc', '.npmrc', '.pypirc'];
+
+/**
+ * Directory names whose whole tree is never part of the grant: credential stores.
+ * Matched case-insensitively, like the directories above.
+ */
+const GRANT_SECRET_DIRS: readonly string[] = ['.aws'];
+
+/** File-name prefixes of private keys, matched case-insensitively against every segment. */
+const GRANT_SECRET_KEY_PREFIXES: readonly string[] = [
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+];
+
+/**
+ * File-name suffixes of private keys, matched case-insensitively against every segment.
+ * Errs toward secrecy: a public `id_rsa.pub` is left out with the private key beside it.
+ */
+const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = ['.pem', '.key'];
+
+/**
+ * Whether a segment carries a character that spoofs a tree or picker row: a control, a
+ * line or paragraph separator breaking a single-line surface, a bidirectional override
+ * or isolate, or a zero-width no-break space. Names a shape to refuse, not a rendering
+ * guarantee — what the editor draws with what is left is its own.
+ */
+function hasUnsafeChar(segment: string): boolean {
+  for (const char of segment) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      return true;
+    }
+    if (
+      code === 0x61c ||
+      code === 0x200e ||
+      code === 0x200f ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a lowercased segment names a private key file. */
+function isSecretKeyName(folded: string): boolean {
+  for (const prefix of GRANT_SECRET_KEY_PREFIXES) {
+    if (folded.startsWith(prefix)) {
+      return true;
+    }
+  }
+  for (const suffix of GRANT_SECRET_KEY_SUFFIXES) {
+    if (folded.length > suffix.length && folded.endsWith(suffix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Whether a workspace-relative path is one a host may publish or serve.
  *
  * Workspace-relative and `/`-separated, with no leading slash, no `.` or `..` segment and no
@@ -76,10 +149,23 @@ export function isGrantedPath(path: string): boolean {
     if (segment === '' || segment === '.' || segment === '..') {
       return false;
     }
-    if (GRANT_EXCLUDED_DIRS.includes(segment)) {
+    if (hasUnsafeChar(segment)) {
       return false;
     }
-    if (segment === '.env' || segment.startsWith('.env.')) {
+    const folded = segment.toLowerCase();
+    if (GRANT_EXCLUDED_DIRS.includes(folded)) {
+      return false;
+    }
+    if (GRANT_SECRET_DIRS.includes(folded)) {
+      return false;
+    }
+    if (GRANT_EXCLUDED_FILES.includes(folded)) {
+      return false;
+    }
+    if (folded === '.env' || folded.startsWith('.env.')) {
+      return false;
+    }
+    if (isSecretKeyName(folded)) {
       return false;
     }
   }
@@ -136,6 +222,12 @@ export function grantChildren(
   const prefix = directory === '' ? '' : `${directory}/`;
   const byName = new Map<string, GrantChild>();
   for (const path of paths) {
+    // A listing that reached this client passed receipt validation, and one the host
+    // wrote passed the publish rule; neither is trusted here, because a tree row — and
+    // the URI opening it mints — is drawn from whatever this was handed.
+    if (!isGrantedPath(path)) {
+      continue;
+    }
     if (!path.startsWith(prefix) || path === directory) {
       continue;
     }
