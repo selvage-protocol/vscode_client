@@ -37,6 +37,8 @@ const registered = {
   decorations: [],
   /** Every status bar item the extension created, as the object it kept drawing into. */
   statusBarItems: [],
+  /** Every tree view the extension created, with the provider it was given. */
+  treeViews: [],
   informationReply: undefined,
   warningReply: undefined,
   quickPickReply: undefined,
@@ -45,8 +47,93 @@ const registered = {
   textDocuments: [],
 };
 
-/** The one folder the stub says every `file:` document belongs to; a host shares under it. */
+/**
+ * The one folder the stub says every `file:` document belongs to; a host shares under it, and
+ * a session captures it at invite time.
+ */
 const WORKSPACE_FOLDER = 'file:///workspace';
+const FOLDER = { uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0, toString: () => WORKSPACE_FOLDER };
+
+/**
+ * A stand-in for `vscode.workspace.fs`: a working copy a test seeds, as a host's folder is. A
+ * directory exists because a file is inside it, which is also how a listing carries one.
+ */
+const disk = {
+  /** `path` → `{ bytes, size }`; `size` is settable so a file can be declared larger. */
+  files: new Map(),
+  /** `path` → the `FileType` a symbolic link reports, which is never a plain file. */
+  links: new Map(),
+  /** Directories whose `readDirectory` throws, for the unreadable-tree path. */
+  unreadable: new Set(),
+  /** `readFile` calls, in order. */
+  reads: [],
+};
+
+function pathOf(uri) {
+  return String(uri).replace(/^file:\/\//, '');
+}
+
+function joinPath(base, ...parts) {
+  const path = [String(base).replace(/\/+$/, ''), ...parts.map((part) => String(part))].join('/');
+  return parseUri(`file://${path}`);
+}
+
+/** Puts a file in the working copy. `content` is a string or the bytes themselves. */
+function put(path, content, options = {}) {
+  const bytes =
+    typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  disk.files.set(`/${String(path).replace(/^\/+/, '')}`, {
+    bytes,
+    size: options.size ?? bytes.length,
+  });
+}
+
+/** Puts a symbolic link in the working copy: `kind` is `'file'` or `'directory'`. */
+function putLink(path, kind) {
+  disk.links.set(`/${String(path).replace(/^\/+/, '')}`, kind === 'directory' ? 70 : 65);
+}
+
+/** A directory whose listing the editor refuses, as an unreadable folder is. */
+function makeUnreadable(path) {
+  disk.unreadable.add(`/${String(path).replace(/^\/+/, '')}`);
+}
+
+/** Every file and link in the working copy, keyed by path, with the type it reports. */
+function allEntries() {
+  const all = new Map();
+  for (const path of disk.files.keys()) {
+    all.set(path, 1);
+  }
+  for (const [path, type] of disk.links) {
+    all.set(path, type);
+  }
+  return all;
+}
+
+/** The immediate children of a directory, from the files and links under it. */
+function entriesOf(directory) {
+  const prefix = directory === '/' ? '/' : `${directory}/`;
+  const found = new Map();
+  for (const [path, type] of allEntries()) {
+    if (!path.startsWith(prefix) || path === directory) {
+      continue;
+    }
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash === -1) {
+      found.set(rest, type);
+    } else if (!found.has(rest.slice(0, slash))) {
+      found.set(rest.slice(0, slash), 2);
+    }
+  }
+  return [...found.entries()];
+}
+
+/** True when some file or link is inside this directory. */
+function isDirectory(path) {
+  const prefix = path === '/' ? '/' : `${path}/`;
+  return [...allEntries().keys()].some((entry) => entry.startsWith(prefix));
+}
 
 /** The settings a window has been configured with, as `get` and `update` see them. */
 const configured = new Map();
@@ -72,6 +159,13 @@ function reset() {
   registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
+  registered.treeViews.length = 0;
+  disk.files.clear();
+  disk.links.clear();
+  disk.unreadable.clear();
+  disk.reads.length = 0;
+  folders.length = 0;
+  folders.push({ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 });
   registered.informationReply = undefined;
   registered.warningReply = undefined;
   registered.quickPickReply = undefined;
@@ -90,6 +184,9 @@ function disposable() {
  * built, which is after a test's own `reset`.
  */
 const listeners = new Map();
+
+/** The folders the window is opened on; a session captures these at invite time. */
+const folders = [{ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }];
 
 function event(name) {
   return (handler) => {
@@ -137,7 +234,10 @@ function documentFor(uri) {
     isDirty: false,
     getText: () => {
       try {
-        return new TextDecoder().decode(registered.files.readFile(uri));
+        const bytes = registered.files.readFile(uri);
+        // A read that has to ask the room answers with a promise; a document stand-in cannot
+        // hold a promise as text, and reads again when it settles.
+        return bytes instanceof Uint8Array ? new TextDecoder().decode(bytes) : '';
       } catch {
         return '';
       }
@@ -153,6 +253,19 @@ module.exports = {
   registered,
   reset,
   configure,
+  /** Seeds the window's working copy, as a folder a host opens a session on. */
+  put,
+  putLink,
+  makeUnreadable,
+  /** Replaces the folders the window is open on, as adding one mid-session would. */
+  setWorkspaceFolders(paths) {
+    folders.length = 0;
+    paths.forEach((path, index) => {
+      const text = path.startsWith('file://') ? path : `file://${path}`;
+      const name = String(path).replace(/\/+$/, '').split('/').pop();
+      folders.push({ uri: parseUri(text), name, index });
+    });
+  },
   /**
    * Puts a `file:` document in the window, as VS Code would have it open when a session starts.
    * A host shares its own files, so a test that wants to reach that path seeds one here.
@@ -184,6 +297,15 @@ module.exports = {
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
 
   FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+
+  TreeItem: class {
+    constructor(label, collapsibleState) {
+      this.label = label;
+      this.collapsibleState = collapsibleState;
+    }
+  },
+
+  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
 
   EndOfLine: { LF: 1, CRLF: 2 },
 
@@ -239,7 +361,45 @@ module.exports = {
     get textDocuments() {
       return registered.textDocuments;
     },
+    /** The folders the window is opened on; a test can replace them mid-session. */
+    get workspaceFolders() {
+      return folders.length === 0 ? undefined : [...folders];
+    },
     getName: () => 'selvage-stub',
+    /** A working copy for a host to enumerate and read: only what the adapter uses. */
+    fs: {
+      readDirectory: (uri) => {
+        const path = pathOf(uri);
+        if (disk.unreadable.has(path)) {
+          return Promise.reject(new Error(`cannot read ${path}`));
+        }
+        return Promise.resolve(entriesOf(path));
+      },
+      stat: (uri) => {
+        const path = pathOf(uri);
+        const file = disk.files.get(path);
+        if (file !== undefined) {
+          return Promise.resolve({ type: 1, ctime: 0, mtime: 0, size: file.size });
+        }
+        const link = disk.links.get(path);
+        if (link !== undefined) {
+          return Promise.resolve({ type: link, ctime: 0, mtime: 0, size: 0 });
+        }
+        if (isDirectory(path)) {
+          return Promise.resolve({ type: 2, ctime: 0, mtime: 0, size: 0 });
+        }
+        return Promise.reject(new Error(`not found: ${path}`));
+      },
+      readFile: (uri) => {
+        const path = pathOf(uri);
+        disk.reads.push(path);
+        const file = disk.files.get(path);
+        if (file === undefined) {
+          return Promise.reject(new Error(`not found: ${path}`));
+        }
+        return Promise.resolve(file.bytes);
+      },
+    },
     getConfiguration: () => ({
       get: (key, fallback) => (configured.has(key) ? configured.get(key) : fallback),
       update: (key, value, target) => {
@@ -332,11 +492,21 @@ module.exports = {
       registered.inputs.push(options);
       return Promise.resolve(registered.inputReply);
     },
+    /** A tree view, with the provider the extension registered for it. */
+    createTreeView: (id, options) => {
+      registered.treeViews.push({ id, options });
+      return {
+        title: undefined,
+        message: undefined,
+        dispose() {},
+      };
+    },
   },
 
   Uri: {
     parse: parseUri,
     file: (value) => parseUri(`file://${value}`),
+    joinPath,
   },
 
   env: {
