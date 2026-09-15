@@ -72,6 +72,8 @@ export interface EditorStub {
   configure(values: Record<string, unknown>): void;
   /** Fires an editor event the extension subscribed to, as VS Code would. */
   fire(name: string, ...args: unknown[]): void;
+  /** Puts a `file:` document in the window, as VS Code would have it open at activation. */
+  openWorkspaceDocument(uri: string): unknown;
   /** The editor state the extension reads: what a test puts in `visibleTextEditors`. */
   window: {
     visibleTextEditors: unknown[];

@@ -243,6 +243,35 @@ test('selvage.openOnJoin off keeps a join from taking the window', async (t) => 
   );
 });
 
+test('a host with a file open is not handed a second, virtual copy of it', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  // A host's open files are the room's, and it already has them in front of it. The stub answers
+  // a workspace folder for the seeded file, which is what makes the adapter share it at all.
+  bundle.stub.openWorkspaceDocument('file:///workspace/README.md');
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  // The room's report is what a landing is decided from; wait for the host's own file to be in
+  // it, so the assertion is made after the moment a guest would have been opened into.
+  await waitFor('the room to report the host\'s file', () =>
+    roomOffer(bundle).includes('README.md') ? true : false,
+  );
+  assert.deepEqual(
+    bundle.stub.registered.shown.filter((uri) => uri.startsWith('selvage:')),
+    [],
+    'a host was handed a second, virtual copy of a file it already has open',
+  );
+});
+
 test('the open command offers the room\'s document list, not a path to type', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md', 'workspace/src/main.rs']);
   await waitFor('the room document to open', () =>
