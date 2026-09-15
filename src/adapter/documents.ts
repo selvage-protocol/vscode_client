@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, virtualDocument } from '../bridge/index.ts';
+import { diff, SCHEME, virtualDocument } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 import { decodableText, grantedFile, isShareableFile, roomPathOf } from './grant.ts';
@@ -26,6 +26,35 @@ export interface WorkspaceEditorOptions {
    * change with it: the grant is the folder chosen at invite time (`DESIGN.md` §4.2).
    */
   folders: readonly vscode.WorkspaceFolder[];
+}
+
+/**
+ * How many times a refused change is moved through the local edit behind it and offered again
+ * before the refusal goes to the bridge. Each offer is one `applyEdit` against a document that
+ * keeps moving, and a user who keeps typing moves the range rather than reaching the bound: it
+ * is reached only by a document that refuses every range it is handed.
+ */
+const MAX_REBASED_OFFERS = 3;
+
+/**
+ * `change`'s range as the document now reads, moved through the local edit `local` the document
+ * took after the range was computed.
+ *
+ * A local edit the range sits entirely after moves the range by what it did to the text's
+ * length; one the range sits entirely before leaves it alone. One the range straddles is not
+ * expressible — the peer wrote about the same characters the user did, and there is no position
+ * left to put it at — and answers `undefined`, which is the refusal the bridge's own retry is
+ * for.
+ */
+function rebase(change: TextChange, local: TextChange): TextChange | undefined {
+  if (local.end <= change.start) {
+    const moved = local.text.length - (local.end - local.start);
+    return { start: change.start + moved, end: change.end + moved, text: change.text };
+  }
+  if (local.start >= change.end) {
+    return change;
+  }
+  return undefined;
 }
 
 export class WorkspaceEditor implements EditorHost {
@@ -101,19 +130,49 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined) {
       return false;
     }
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(
-      document.uri,
-      new vscode.Range(
-        document.positionAt(change.start),
-        document.positionAt(change.end),
-      ),
-      change.text,
-    );
-    // `false` means the editor refused it and the buffer is unchanged; the bridge works the
-    // change out again from the buffer rather than replaying the range. A rejection is
+    // `false` means the editor refused the change and the buffer is unchanged: the editor
+    // stamps a workspace edit with the version its document mirror holds and refuses one whose
+    // version has moved, so a `false` says the range — not the change — no longer fits. The
+    // common cause is a local edit that reached the document while the change was being
+    // offered, and the change is still the one the room wants: it is moved through that edit
+    // and offered again, which lands it where the document now holds the text it was computed
+    // from and leaves the user's own text where they put it. Handing that refusal to the bridge
+    // instead would let it work the change out again from the buffer, which is the room's text
+    // without the local edit, and the user's keystroke would be dropped rather than merged with
+    // the peer's — `nvim_client/companion/editor.ts` defends against exactly this.
+    //
+    // A `false` with no local edit behind it is a document that refuses the range for a reason
+    // this side cannot see — a read-only document is the plain case — and it is passed on. So
+    // is one whose local edit overlaps the range, and one that has been offered the bound
+    // number of times: for those there is no position to move the range to and the bridge's own
+    // bounded retry, ending in its `applyRefused` report, is the honest answer. A rejection is
     // `applyEdit` failing outright, and it reaches the bridge's catch with the message.
-    return vscode.workspace.applyEdit(edit);
+    let offered = change;
+    let before = document.getText();
+    for (let offers = 0; ; offers += 1) {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(
+        document.uri,
+        new vscode.Range(
+          document.positionAt(offered.start),
+          document.positionAt(offered.end),
+        ),
+        offered.text,
+      );
+      if (await vscode.workspace.applyEdit(edit)) {
+        return true;
+      }
+      const current = document.getText();
+      if (current === before) {
+        return false;
+      }
+      const moved = offers < MAX_REBASED_OFFERS ? rebase(offered, diff(before, current)) : undefined;
+      if (moved === undefined) {
+        return false;
+      }
+      offered = moved;
+      before = current;
+    }
   }
 
   async save(path: string): Promise<boolean> {
