@@ -831,6 +831,53 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
   );
 });
 
+test('a symbolic link to a directory is not listed, and nothing behind it is served', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'the readme\n');
+  // A directory link out of the shared folder, as a monorepo package link or a shared config
+  // directory is. The editor reports one as a directory *and* a link, and what is behind it
+  // belongs to whatever it names rather than to the folder the invite was accepted on.
+  bundle.stub.put('/outside/secret.txt', 'OUTSIDE THE ROOT\n');
+  bundle.stub.putLink('linkd', 'directory', '/outside');
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+
+  const paths = await waitFor('the room to learn the listing', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  assert.deepEqual(
+    paths,
+    ['README.md'],
+    'the listing carries a directory link or what is behind it, which is a name outside the folder',
+  );
+
+  // The path behind the link was never listed, so a guest that guessed it asks for a path the
+  // grant leaves out and is refused like any other, with the file on the far side unread.
+  await guest.open('linkd/secret.txt');
+  const refusals = await waitFor('the refusal of the path through the link to be reported', () =>
+    bundle.stub.registered.errors.length > 0 ? bundle.stub.registered.errors : false,
+  );
+  assert.equal(
+    refusals.every((message) => message.includes('linkd/secret.txt')),
+    true,
+    `the path through the link was not what was refused: ${JSON.stringify(refusals)}`,
+  );
+  assert.equal(guest.has('linkd/secret.txt'), false, 'a path through a symbolic link was seeded');
+  assert.equal(guest.text('linkd/secret.txt'), '', 'a path through a symbolic link was served');
+});
+
 test("the Explorer view is the room's listing, as a tree", async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['README.md', 'src/deep/nested.rs', 'src/main.rs']);

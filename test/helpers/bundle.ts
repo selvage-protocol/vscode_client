@@ -80,8 +80,12 @@ export interface EditorStub {
   configure(values: Record<string, unknown>): void;
   /** Seeds the window's working copy, as a host's folder: a file a session can enumerate. */
   put(path: string, content: string | Uint8Array, options?: { size?: number }): void;
-  /** A symbolic link in the working copy, which a listing never carries. */
-  putLink(path: string, kind: 'file' | 'directory'): void;
+  /**
+   * A symbolic link in the working copy, which a listing never carries. A link with a `target`
+   * names something elsewhere, as a link out of the folder does, and a path through it reaches
+   * what it names.
+   */
+  putLink(path: string, kind: 'file' | 'directory', target?: string): void;
   /** A directory whose listing the editor refuses. */
   makeUnreadable(path: string): void;
   /** Replaces the folders the window is open on, as adding one mid-session would. */
