@@ -8,6 +8,11 @@
  * This drives `selvage.host`/`selvage.openDocument` through the small, optional-argument seam
  * `src/adapter/extension.ts` exports for exactly this (`HostArgs`, `OpenDocumentArgs`) instead
  * of a UI it cannot click through.
+ *
+ * The watch phase is this suite's own file system work: a file made and a file removed under
+ * the folder this window shares, with plain `fs`, which is what a build, a branch switch or a
+ * person with another terminal does to a project. The guest's half is the room's listing; this
+ * half waits for the guest to be finished with the phase so the room does not outlive it.
  */
 
 const vscode = require('vscode');
@@ -23,6 +28,11 @@ const ROOM_PATH_FILE = process.env.SELVAGE_E2E_ROOM_PATH_FILE;
 const GRANTED_PATH_FILE = process.env.SELVAGE_E2E_GRANTED_PATH_FILE;
 const GRANTED_DONE_FILE = process.env.SELVAGE_E2E_GRANTED_DONE_FILE;
 const GRANTED_PATH = process.env.SELVAGE_E2E_GRANTED_PATH;
+const WATCH_PATH = process.env.SELVAGE_E2E_WATCH_PATH;
+const WATCH_TEXT = process.env.SELVAGE_E2E_WATCH_TEXT;
+const WATCH_DOOMED_PATH = process.env.SELVAGE_E2E_WATCH_DOOMED_PATH;
+const WATCH_READY_FILE = process.env.SELVAGE_E2E_WATCH_READY_FILE;
+const WATCH_DONE_FILE = process.env.SELVAGE_E2E_WATCH_DONE_FILE;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
@@ -53,7 +63,7 @@ async function waitFor(label, check, deadlineMs) {
 }
 
 async function run() {
-  const result = { role: 'host', phase1: undefined, phase2: undefined, granted: undefined, error: undefined };
+  const result = { role: 'host', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, error: undefined };
   try {
     await vscode.commands.executeCommand('selvage.host', {
       serverUrl: SERVER_URL,
@@ -139,6 +149,30 @@ async function run() {
         DEADLINE_MS,
       );
       result.granted = { text: grantedText, heldBeforeGuest };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+    }
+
+    if (WATCH_PATH !== undefined && WATCH_DONE_FILE !== undefined) {
+      // The guest has to have read the room's listing before a path is taken out of it, and it
+      // says so by writing the ready file. What this phase proves is the listing following the
+      // folder, not the listing as it happened to stand.
+      await waitFor(
+        'the guest to have seen the room\u2019s listing',
+        () => (fs.existsSync(WATCH_READY_FILE) ? true : false),
+        DEADLINE_MS,
+      );
+
+      const created = path.join(WORKSPACE_DIR, WATCH_PATH);
+      fs.mkdirSync(path.dirname(created), { recursive: true });
+      fs.writeFileSync(created, WATCH_TEXT);
+      fs.rmSync(path.join(WORKSPACE_DIR, WATCH_DOOMED_PATH));
+
+      await waitFor(
+        'the guest to open the created path and to lose the deleted one',
+        () => (fs.existsSync(WATCH_DONE_FILE) ? true : false),
+        DEADLINE_MS + 15_000,
+      );
+      result.watch = { created: WATCH_PATH, deleted: WATCH_DOOMED_PATH };
       fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
     }
 

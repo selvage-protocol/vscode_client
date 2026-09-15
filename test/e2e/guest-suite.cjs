@@ -8,6 +8,11 @@
  * `selvage.openDocument` through the optional-argument seam `src/adapter/extension.ts`
  * exports for automation (`JoinArgs`, `OpenDocumentArgs`) rather than a `showInputBox`/
  * `showQuickPick` it has no way to click through.
+ *
+ * The watch phase reads the room's listing through this window's own file system provider —
+ * the same listing the Explorer view renders — while the host makes a file under its folder
+ * and removes another. The Explorer view itself cannot be driven from an extension test, and
+ * the provider's directory listing is what it is drawn from.
  */
 
 const vscode = require('vscode');
@@ -19,6 +24,11 @@ const ROOM_PATH_FILE = process.env.SELVAGE_E2E_ROOM_PATH_FILE;
 const GRANTED_PATH_FILE = process.env.SELVAGE_E2E_GRANTED_PATH_FILE;
 const GRANTED_DONE_FILE = process.env.SELVAGE_E2E_GRANTED_DONE_FILE;
 const GRANTED_TEXT = process.env.SELVAGE_E2E_GRANTED_TEXT;
+const WATCH_PATH = process.env.SELVAGE_E2E_WATCH_PATH;
+const WATCH_TEXT = process.env.SELVAGE_E2E_WATCH_TEXT;
+const WATCH_DOOMED_PATH = process.env.SELVAGE_E2E_WATCH_DOOMED_PATH;
+const WATCH_READY_FILE = process.env.SELVAGE_E2E_WATCH_READY_FILE;
+const WATCH_DONE_FILE = process.env.SELVAGE_E2E_WATCH_DONE_FILE;
 const PROXY_ADDR = process.env.SELVAGE_E2E_PROXY_ADDR;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
@@ -83,7 +93,7 @@ function routeThroughProxy(invite) {
 }
 
 async function run() {
-  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, error: undefined };
+  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, error: undefined };
   try {
     const rawInvite = await waitFor(
       'the host to publish an invite link',
@@ -180,6 +190,90 @@ async function run() {
       result.granted = { text: grantedText };
       fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
       fs.writeFileSync(GRANTED_DONE_FILE, 'go');
+    }
+
+    if (WATCH_PATH !== undefined && WATCH_DONE_FILE !== undefined) {
+      // The room's listing, as this window's own provider renders it: the same listing the
+      // Explorer view is built from, read the way anything in this editor would read it.
+      const roomId = decodeURIComponent(/[?&]room=([^&]+)/.exec(rawInvite)[1]);
+      const room = `room=${encodeURIComponent(roomId)}`;
+      const namesIn = async (uri) =>
+        (await vscode.workspace.fs.readDirectory(uri)).map(([name]) => name);
+      const top = WATCH_PATH.split('/')[0];
+      const leaf = WATCH_PATH.slice(top.length + 1);
+
+      // The path the host is about to remove has to be in the listing first, and this window
+      // says it read it: what the phase proves is the listing following the folder, not the
+      // listing as it happened to stand.
+      const rootBefore = await waitFor(
+        'the room\u2019s listing to name the path the host is about to remove',
+        async () => {
+          try {
+            const seen = await namesIn(vscode.Uri.parse(`selvage:/?${room}`));
+            return seen.includes(WATCH_DOOMED_PATH) ? seen : false;
+          } catch {
+            return false;
+          }
+        },
+        DEADLINE_MS,
+      );
+      fs.writeFileSync(WATCH_READY_FILE, 'go');
+
+      // The host makes one path under its folder and removes another. The room's listing has
+      // to end up with the one and without the other, which only a republished grant can say.
+      const rootAfter = await waitFor(
+        'the room\u2019s listing to gain the created path and lose the removed one',
+        async () => {
+          try {
+            const seen = await namesIn(vscode.Uri.parse(`selvage:/?${room}`));
+            return seen.includes(top) && !seen.includes(WATCH_DOOMED_PATH) ? seen : false;
+          } catch {
+            return false;
+          }
+        },
+        DEADLINE_MS + 15_000,
+      );
+
+      // The created path is a directory in the listing because a path goes through it: this
+      // window walks into it, which a file could not answer.
+      const createdDir = await waitFor(
+        'the created path to be a directory this window can walk into',
+        async () => {
+          try {
+            const seen = await namesIn(vscode.Uri.parse(`selvage:/${top}?${room}`));
+            return seen.includes(leaf) ? seen : false;
+          } catch {
+            return false;
+          }
+        },
+        DEADLINE_MS,
+      );
+
+      // And it opens with the host's text in it: it was a name in the listing a moment ago, so
+      // its content can only have arrived because this window asked the room for it.
+      const createdEditor = await waitFor(
+        'the created path to open with the host\u2019s text in it',
+        async () => {
+          await vscode.commands.executeCommand('selvage.openDocument', { path: WATCH_PATH });
+          return vscode.window.visibleTextEditors.find(
+            (candidate) =>
+              candidate.document.uri.scheme === 'selvage' &&
+              candidate.document.getText() === WATCH_TEXT,
+          );
+        },
+        DEADLINE_MS + 15_000,
+      );
+
+      result.watch = {
+        created: WATCH_PATH,
+        deleted: WATCH_DOOMED_PATH,
+        rootBefore,
+        rootAfter,
+        createdDir,
+        text: createdEditor.document.getText(),
+      };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+      fs.writeFileSync(WATCH_DONE_FILE, 'go');
     }
 
     if (CONTROL_FILE !== undefined) {

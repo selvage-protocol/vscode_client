@@ -21,13 +21,18 @@
  * because the guest asked — then opens the file afterwards and finds the guest's edit in it.
  * Nothing else in the suite proves that a path was only ever a name until somebody asked for
  * its content.
+ *
+ * The watch phase proves the listing follows the folder: the host makes a file under its own
+ * folder and removes another while the room is live, and the guest's own view of the room — the
+ * provider its Explorer reads — has to gain the created path and lose the deleted one, with the
+ * created path's content arriving when the guest opens it.
  */
 
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { constants } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
@@ -49,6 +54,13 @@ const SEED_TEXT = 'a document two real editors are about to share\n';
 // arrived because the host read its own working copy on the guest's request.
 const GRANTED_PATH = 'granted/never-opened.txt';
 const GRANTED_TEXT = 'a file the host never opens in its own window\n';
+// The watch phase: a path the host makes under its folder while the room is live, and a path
+// it removes. The guest's view of the room has to gain the first and lose the second, which
+// nothing but the folder being watched can tell it.
+const WATCH_PATH = 'made-while-live/after-start.txt';
+const WATCH_TEXT = 'a file the host made while the room was live\n';
+const WATCH_DOOMED_PATH = 'doomed-while-live.txt';
+const WATCH_DOOMED_TEXT = 'a file the host removes while the room is live\n';
 
 /**
  * The VS Code build this proof runs against. Left to `@vscode/test-electron`, that is whatever
@@ -417,6 +429,15 @@ interface InstanceOutcome {
   phase2?: { text: string };
   /** What the granted path held in this editor, and whether the host had it open too early. */
   granted?: { text: string; heldBeforeGuest?: boolean };
+  /** What the host changed under its folder, and what the guest's view of the room became. */
+  watch?: {
+    created?: string;
+    deleted?: string;
+    rootBefore?: string[];
+    rootAfter?: string[];
+    createdDir?: string[];
+    text?: string;
+  };
   error?: string;
 }
 
@@ -525,6 +546,7 @@ async function main(): Promise<void> {
   const hostWorkspace = mkdtempSync(join(scratchDir(), 'selvage-host-'));
   const guestWorkspace = mkdtempSync(join(scratchDir(), 'selvage-guest-'));
   writeFileSync(join(hostWorkspace, SEED_PATH), SEED_TEXT);
+  writeFileSync(join(hostWorkspace, WATCH_DOOMED_PATH), WATCH_DOOMED_TEXT);
   mkdirSync(join(hostWorkspace, dirname(GRANTED_PATH)), { recursive: true });
   writeFileSync(join(hostWorkspace, GRANTED_PATH), GRANTED_TEXT);
 
@@ -536,6 +558,8 @@ async function main(): Promise<void> {
   const inviteFile = resolve(RUN_DIR, 'invite.txt');
   const roomPathFile = resolve(RUN_DIR, 'room-path.txt');
   const grantedPathFile = resolve(RUN_DIR, 'granted-path.txt');
+  const watchReadyFile = resolve(RUN_DIR, 'watch-ready.txt');
+  const watchDoneFile = resolve(RUN_DIR, 'watch-done.txt');
   const grantedDoneFile = resolve(RUN_DIR, 'granted-done.txt');
   const controlFile = RECONNECT ? resolve(RUN_DIR, 'blip-done.txt') : undefined;
   const hostResultFile = resolve(RUN_DIR, 'host-result.json');
@@ -550,6 +574,11 @@ async function main(): Promise<void> {
     SELVAGE_E2E_GRANTED_DONE_FILE: grantedDoneFile,
     SELVAGE_E2E_GRANTED_PATH: GRANTED_PATH,
     SELVAGE_E2E_GRANTED_TEXT: GRANTED_TEXT,
+    SELVAGE_E2E_WATCH_PATH: WATCH_PATH,
+    SELVAGE_E2E_WATCH_TEXT: WATCH_TEXT,
+    SELVAGE_E2E_WATCH_DOOMED_PATH: WATCH_DOOMED_PATH,
+    SELVAGE_E2E_WATCH_READY_FILE: watchReadyFile,
+    SELVAGE_E2E_WATCH_DONE_FILE: watchDoneFile,
     SELVAGE_E2E_MARKER_HOST: MARKER_HOST,
     SELVAGE_E2E_MARKER_GUEST: MARKER_GUEST,
     SELVAGE_E2E_MARKER_HOST_2: MARKER_HOST_2,
@@ -622,6 +651,17 @@ async function main(): Promise<void> {
     DEADLINE_MS + 15_000,
   );
   log('the guest has the granted path; the host will now open the file it never opened');
+
+  // The watch phase: the host's suite makes a file under its own folder and removes another,
+  // and the guest's half is what the room's listing became. It runs on its own files, so the
+  // reconnect leg's scheduling is not moved by it.
+  phase = 'waiting for the room\u2019s listing to follow the host\u2019s folder';
+  await pollFor(
+    'the guest to walk the room\u2019s listing after the host changed its folder',
+    () => (existsSync(watchDoneFile) ? true : undefined),
+    DEADLINE_MS + 15_000,
+  );
+  log('the guest has walked the room\u2019s listing the host\u2019s folder now stands for');
 
   if (proxy !== undefined && controlFile !== undefined) {
     phase = 'cutting the relay and reconnecting';
@@ -704,6 +744,26 @@ async function main(): Promise<void> {
       guestText: guestOutcome?.granted?.text,
       heldBeforeGuest: hostOutcome?.granted?.heldBeforeGuest,
     },
+    watch: {
+      // The host made a file under its own folder and removed another while the room was live,
+      // and the guest's view of the room — its own provider's listing of the grant — gained the
+      // one and lost the other. The content travelled because the guest opened a path that was
+      // a name in the listing a moment before.
+      converged:
+        hostOutcome?.watch !== undefined &&
+        guestOutcome?.watch !== undefined &&
+        guestOutcome.watch.rootBefore?.includes(WATCH_DOOMED_PATH) === true &&
+        guestOutcome.watch.rootAfter?.includes(WATCH_DOOMED_PATH) === false &&
+        guestOutcome.watch.rootAfter?.includes(dirname(WATCH_PATH)) === true &&
+        guestOutcome.watch.createdDir?.includes(basename(WATCH_PATH)) === true &&
+        guestOutcome.watch.text === WATCH_TEXT,
+      created: guestOutcome?.watch?.created,
+      deleted: guestOutcome?.watch?.deleted,
+      rootBefore: guestOutcome?.watch?.rootBefore,
+      rootAfter: guestOutcome?.watch?.rootAfter,
+      createdDir: guestOutcome?.watch?.createdDir,
+      guestText: guestOutcome?.watch?.text,
+    },
   };
   writeFileSync(resolve(RUN_DIR, 'summary.json'), JSON.stringify(summary, null, 2));
   log('summary:', JSON.stringify(summary, null, 2));
@@ -719,9 +779,14 @@ async function main(): Promise<void> {
   if (RECONNECT && summary.phase2?.converged !== true) {
     throw new Error('the reconnect phase did not converge after the simulated network blip');
   }
+  if (!summary.watch.converged) {
+    throw new Error(
+      'the room\u2019s listing did not follow the host\u2019s folder: the guest\u2019s view of the room did not gain the path the host made, or did not lose the one it removed',
+    );
+  }
   log(
-    'PASSED: two real VS Code instances converged on the shared document, and a guest read a granted path the host never opened' +
-      (RECONNECT ? ', and again after a simulated network blip' : ''),
+    'PASSED: two real VS Code instances converged on the shared document, a guest read a granted path the host never opened, and the room\u2019s listing followed the host\u2019s folder' +
+      (RECONNECT ? ', and the guest re-converged after a simulated network blip' : ''),
   );
   phase = 'done';
 }
