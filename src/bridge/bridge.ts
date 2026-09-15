@@ -190,7 +190,7 @@ export class SessionBridge {
   /** One entry per document with an apply in flight: what it should leave, and from where. */
   private readonly inFlight = new Map<
     string,
-    { expected: string; replica: string; before: string | undefined }
+    { expected: string; replica: string; before: string | undefined; moved: boolean }
   >();
   /** Documents with a reconcile wanted once the apply in flight settles. */
   private readonly pending = new Set<string>();
@@ -295,7 +295,12 @@ export class SessionBridge {
     if (matchesReplica(text, replica)) {
       return;
     }
-    if (this.inFlight.has(path)) {
+    const flight = this.inFlight.get(path);
+    if (flight !== undefined) {
+      // The buffer moved while the apply was in flight. The text it holds now may not survive
+      // the apply — a rebased change can land the merge back on the pre-apply text — so the
+      // flight records the movement itself, not just the text it started from.
+      flight.moved = true;
       this.pending.add(path);
       return;
     }
@@ -609,6 +614,7 @@ export class SessionBridge {
       expected,
       replica: this.engine.text(path),
       before: this.host.text(path),
+      moved: false,
     });
     void this.host
       .applyChange(path, change)
@@ -642,11 +648,14 @@ export class SessionBridge {
       if (flight !== undefined && replica === flight.replica) {
         // The buffer moved while the edit was in flight — the user typed into the window.
         // It now holds the user's text with the change landed on it, and the replica has not
-        // moved since: the difference is the user's, so it goes to the room. A buffer still
-        // holding what it held when the edit was issued was not moved by the user at all —
-        // the editor reported the change landed without it landing — and publishing that is
-        // how a guest's own text overwrites the room.
-        if (actual !== flight.before) {
+        // moved since: the difference is the user's, so it goes to the room. A buffer that held
+        // what it held when the edit was issued was not moved by the user at all — the editor
+        // reported the change landed without it landing — and publishing that is how a guest's
+        // own text overwrites the room. The two states are told apart by `moved`, not by the
+        // text alone: a change the editor refused and the adapter rebuilt through the local
+        // edit behind it lands the merge exactly on the pre-apply text when the peer's change
+        // and the user's edit are inverses.
+        if (actual !== flight.before || flight.moved) {
           this.publish(path, actual, replica);
         }
       } else {
