@@ -110,12 +110,39 @@ export function applyChange(text: string, change: TextChange): string {
 }
 
 /**
+ * Whether a buffer's offsets and the replica's differ at all.
+ *
+ * The conversions below are a no-op unless the buffer holds a `\r`: the two texts count the
+ * same code units otherwise, and a lone `\r` counts as one in the replica too, so only the
+ * pairs matter. A caller that already has the buffer in hand works this out once per change
+ * and passes the answer down, rather than each conversion scanning the document again — the
+ * scan is what a caret and every peer cursor's endpoint would otherwise repeat per report.
+ */
+export function hasCarriageReturn(text: string): boolean {
+  return text.indexOf('\r') !== -1;
+}
+
+/**
  * A buffer offset as a replica offset. The replica is LF-only and the buffer keeps the
  * document's own endings, so the two count the same code units in different texts: every
  * `\r\n` before the offset is one code unit the replica does not have. Offsets stop at the
  * seam, and this is the seam.
+ *
+ * `carriageReturn` is `hasCarriageReturn(bufferText)` when it is left out, so every call is
+ * exactly the scan below; passing it is what makes a document with no `\r` in it free.
  */
-export function toReplicaOffset(bufferText: string, bufferOffset: number): number {
+export function toReplicaOffset(
+  bufferText: string,
+  bufferOffset: number,
+  carriageReturn = hasCarriageReturn(bufferText),
+): number {
+  if (!carriageReturn) {
+    // What the loop counts: one replica code unit per buffer code unit it walks, stopping
+    // at either end. `Math.min`/`Math.max` take the fractional and non-finite offsets the
+    // `<` test does — nothing a caller produces, and nothing this may change the answer for.
+    const end = Math.min(Math.ceil(bufferOffset), bufferText.length);
+    return end > 0 ? end : 0;
+  }
   let replica = 0;
   for (let index = 0; index < bufferOffset && index < bufferText.length; index += 1) {
     if (bufferText[index] === '\r' && bufferText[index + 1] === '\n') {
@@ -127,7 +154,15 @@ export function toReplicaOffset(bufferText: string, bufferOffset: number): numbe
 }
 
 /** The inverse of `toReplicaOffset`: the buffer offset a replica offset lands on. */
-export function toBufferOffset(bufferText: string, replicaOffset: number): number {
+export function toBufferOffset(
+  bufferText: string,
+  replicaOffset: number,
+  carriageReturn = hasCarriageReturn(bufferText),
+): number {
+  if (!carriageReturn) {
+    const end = Math.min(Math.ceil(replicaOffset), bufferText.length);
+    return end > 0 ? end : 0;
+  }
   let replica = 0;
   let buffer = 0;
   while (replica < replicaOffset && buffer < bufferText.length) {

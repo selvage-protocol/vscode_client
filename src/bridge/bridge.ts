@@ -26,7 +26,7 @@ import type {
 
 import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
-import { diff, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
+import { diff, hasCarriageReturn, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
 
 /**
@@ -321,10 +321,12 @@ export class SessionBridge {
     // The adapter reports a buffer offset, the replica is LF-only: a caret after a `\r\n`
     // is one code unit further right here than there, and one past the replica's end at the
     // end of a CRLF file. Converting is what keeps the end-of-file caret from being withheld
-    // and every other one from landing a column late.
+    // and every other one from landing a column late. A document with no `\r` in it needs
+    // none of that, and working it out once here is what keeps the flush off the conversion.
+    const carriageReturn = hasCarriageReturn(buffer);
     this.engine.setSelection(path, {
-      anchor: toReplicaOffset(buffer, selection.anchor),
-      head: toReplicaOffset(buffer, selection.head),
+      anchor: toReplicaOffset(buffer, selection.anchor, carriageReturn),
+      head: toReplicaOffset(buffer, selection.head, carriageReturn),
     });
   }
 
@@ -372,6 +374,19 @@ export class SessionBridge {
   cursors(): Cursor[] {
     const local = this.engine.session().peer.peer_id;
     const cursors: Cursor[] = [];
+    // Every endpoint below is converted against the same buffer, and the answer to whether
+    // that buffer's offsets need converting at all is the same for all of them: worked out
+    // once per document rather than once per peer cursor.
+    const carriageReturn = new Map<string, boolean>();
+    const carriageReturnOf = (path: string, buffer: string): boolean => {
+      const known = carriageReturn.get(path);
+      if (known !== undefined) {
+        return known;
+      }
+      const answer = hasCarriageReturn(buffer);
+      carriageReturn.set(path, answer);
+      return answer;
+    };
     for (const presence of this.engine.presence()) {
       const peer = presence.peer;
       const path = presence.state?.path;
@@ -400,8 +415,8 @@ export class SessionBridge {
           { peerId: peer.peer_id, displayName: peer.display_name, role: peer.role },
           {
             path,
-            anchor: toBufferOffset(buffer, resolved.anchor),
-            head: toBufferOffset(buffer, resolved.head),
+            anchor: toBufferOffset(buffer, resolved.anchor, carriageReturnOf(path, buffer)),
+            head: toBufferOffset(buffer, resolved.head, carriageReturnOf(path, buffer)),
           },
         ),
       );
