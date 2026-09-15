@@ -402,7 +402,11 @@ test('the peers command refuses outside a session and in a room with no one else
     serverUrl: server.wsBase,
     displayName: 'Ada',
   });
-  await waitFor('the host to be seated', () => (server.acceptedConnections > 0 ? true : false));
+  // The session exists once `host()` has built it and said so; the socket being accepted is
+  // earlier than that, and a command run in the gap warns `host or join a session first`.
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => /is open/.test(message)) ? true : false,
+  );
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.peers');
   const alone = await waitFor('the warning', () =>
