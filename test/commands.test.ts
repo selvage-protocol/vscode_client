@@ -17,10 +17,22 @@ import { loadBundle } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
-import { SelvageEngine } from '../src/engine/index.ts';
+import { SelvageEngine, parseSessionUrl } from '../src/engine/index.ts';
 import { peerColour, virtualUri } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
+
+/** The room an invite names, so a message that has to name it can be read as a whole. */
+function roomOf(invite: string): string {
+  const room = parseSessionUrl(invite)?.join.room;
+  assert.ok(room !== undefined, `the invite names no room: ${invite}`);
+  return room;
+}
+
+/** The refusal both clients send for a name over the protocol's 32-unit bound. */
+function overBound(units: number): string {
+  return `Selvage: this name is ${units} UTF-16 code units and the limit is 32; a name is refused rather than shortened.`;
+}
 
 /** A server with a room, minted by a source engine, and its invite. */
 async function room(
@@ -94,10 +106,52 @@ test('hosting while hosting copies the invite rather than minting a room', async
   });
   assert.equal(copied, invite, 'the second host copied a different invite');
   assert.equal(server.acceptedConnections, 1, 'the second host minted a second room');
-  assert.ok(
-    bundle.stub.registered.information.some((message) => message.includes('invite link copied')),
-    'the user was not told the invite was copied',
+  const said = await waitFor('the room to be named', () =>
+    bundle.stub.registered.information.find((message) => message.includes('already hosting')) ??
+      false,
   );
+  assert.equal(
+    said,
+    `Selvage: you are already hosting room ${roomOf(invite)}; the invite link is on the clipboard.`,
+  );
+});
+
+test('the copy command says where the invite went, and a window with none is told why', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+
+  // Nothing has minted a room in this window, so there is no invite to put anywhere.
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const none = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('invite')) ?? false,
+  );
+  assert.equal(
+    none,
+    'Selvage: there is no invite link: only the connection that opened the room has one.',
+  );
+  assert.equal(bundle.stub.registered.clipboard, '', 'something reached the clipboard');
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const opened = await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.find((message) => message.includes('is open')) ?? false,
+  );
+  // The room id is the server's, so the sentence is read with the id as its one loose part.
+  assert.match(opened, /^Selvage: room \S+ is open; copy the invite link to let someone join\.$/);
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const said = await waitFor('the invite to be copied', () =>
+    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
+  );
+  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  assert.ok(bundle.stub.registered.clipboard.startsWith('ws://'), 'nothing reached the clipboard');
 });
 
 test('a guest opens the room\'s first document by itself, and only that one', async (t) => {
@@ -145,8 +199,59 @@ test('the open command offers the room\'s document list, not a path to type', as
   assert.equal(bundle.stub.registered.inputs.length, 0, 'a path was asked for by hand');
 });
 
+test('the open command refuses outside a session and in a room with nothing in it', async (t) => {
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const outside = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
+  );
+  assert.equal(outside, 'Selvage: join a session first.');
+
+  const { invite } = await room(t, []);
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const empty = await waitFor('the message', () =>
+    bundle.stub.registered.information.find((message) => message.includes('documents')) ?? false,
+  );
+  assert.equal(empty, 'Selvage: the room has no open documents yet.');
+  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a list was drawn for an empty room');
+});
+
+test('open while hosting says the host\'s own files are the room\'s', async (t) => {
+  // The one moment this client refuses with words of its own: a host has no virtual documents
+  // to open, and the room's set is the host's own open files.
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const said = await waitFor('the message', () =>
+    bundle.stub.registered.information.find((message) => message.includes('hosting')) ?? false,
+  );
+  assert.equal(said, 'Selvage: you are hosting, so the files you open are the ones the room has.');
+  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a host was offered its own files');
+});
+
 test('hosting while a guest asks before leaving, and leaves on request', async (t) => {
-  const { bundle, server } = await guest(t, ['workspace/README.md']);
+  const { bundle, server, roomId } = await guest(t, ['workspace/README.md']);
   const before = server.acceptedConnections;
 
   await bundle.stub.commands.executeCommand('selvage.host', {
@@ -154,9 +259,9 @@ test('hosting while a guest asks before leaving, and leaves on request', async (
     displayName: 'Ada again',
   });
   const asked = await waitFor('the leave-and-host question', () =>
-    bundle.stub.registered.warnings.find((message) => /guest in room/.test(message)) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
   );
-  assert.match(asked, /guest in room/);
+  assert.equal(asked, `Selvage: you are in room ${roomId}; leaving it leaves it.`);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 
   bundle.stub.registered.warningReply = 'Leave and host';
@@ -190,9 +295,10 @@ test('joining while hosting asks before ending the room', async (t) => {
     displayName: 'Bob',
   });
   const asked = await waitFor('the leave-and-join question', () =>
-    bundle.stub.registered.warnings.find((message) => /hosting room/.test(message)) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
   );
-  assert.match(asked, /hosting room/);
+  // The room id is the server's, so the sentence is read with the id as the one loose part.
+  assert.match(asked, /^Selvage: you are hosting room \S+; leaving it ends it for everyone\.$/);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 });
 
@@ -207,7 +313,7 @@ test('the display-name command reports the name in force and offers to change it
     bundle.stub.registered.information.find((message) => message.includes('display name')) ??
       false,
   );
-  assert.match(reported, /no display name is set/);
+  assert.equal(reported, 'Selvage: no display name is set yet.');
   assert.deepEqual(
     bundle.stub.registered.informationItems[0],
     ['Change the name'],
@@ -256,6 +362,34 @@ test('a settings file that will not take the name is reported, not swallowed', a
   );
 });
 
+test('a name of nothing is refused in the words both clients use', async (t) => {
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: '   ' });
+  const refusal = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('name')) ?? false,
+  );
+  assert.equal(refusal, 'Selvage: a name is needed.');
+  assert.equal(bundle.stub.registered.settingWrites.length, 0, 'a blank name was written');
+});
+
+test('leaving says so, and a window that is not in a session is told that instead', async (t) => {
+  const { bundle } = await guest(t, ['workspace/README.md']);
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  const left = await waitFor('the message', () =>
+    bundle.stub.registered.information.find((message) => message.includes('left')) ?? false,
+  );
+  assert.equal(left, 'Selvage: left the session.');
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  const again = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
+  );
+  assert.equal(again, 'Selvage: not in a session.');
+});
+
 test('a name set during a session is a live rename, told to the room', async (t) => {
   const { bundle, server } = await guest(t, ['workspace/README.md']);
 
@@ -266,7 +400,7 @@ test('a name set during a session is a live rename, told to the room', async (t)
       message.includes('the name others see'),
     ) ?? false,
   );
-  assert.match(reported, /the name others see is "Bob"/);
+  assert.equal(reported, 'Selvage: the name others see is "Bob".');
 
   await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Robert' });
   const said = await waitFor('the confirmation', () =>
@@ -305,7 +439,7 @@ test('a name already in force sends no rename, and one over the bound is refused
   const refusal = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
   );
-  assert.match(refusal, /33 UTF-16 code units/);
+  assert.equal(refusal, overBound(33));
   assert.equal(bundle.stub.registered.settingWrites.length, 1, 'a refused name was written');
   assert.equal(server.renames.length, 0, 'a refused name reached the server');
 });
@@ -320,8 +454,7 @@ test('a name over the bound is refused with both counts and never written', asyn
   const refusal = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
   );
-  assert.match(refusal, /33 UTF-16 code units/);
-  assert.match(refusal, /limit is 32/);
+  assert.equal(refusal, overBound(33));
   assert.equal(bundle.stub.registered.settingWrites.length, 0, 'a refused name was written');
   assert.equal(
     bundle.stub.registered.information.length,
@@ -344,7 +477,7 @@ test('an over-long name never reaches the server', async (t) => {
   const refusal = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
   );
-  assert.match(refusal, /33 UTF-16 code units/);
+  assert.equal(refusal, overBound(33));
   assert.equal(
     server.acceptedConnections,
     0,
@@ -365,11 +498,9 @@ test('the setting is checked before it is sent, and the question asks for a shor
 
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   const refusal = await waitFor('the setting to be refused', () =>
-    bundle.stub.registered.errors.find((message) =>
-      message.includes('selvage.displayName'),
-    ) ?? false,
+    bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
   );
-  assert.match(refusal, /33 UTF-16 code units/);
+  assert.equal(refusal, overBound(33));
 
   const asked = await waitFor('the question', () =>
     bundle.stub.registered.inputs[0] ?? false,
@@ -394,16 +525,16 @@ test('the peers command refuses outside a session and in a room with no one else
 
   await bundle.stub.commands.executeCommand('selvage.peers');
   const outside = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('host or join')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
   );
-  assert.match(outside, /host or join a session first/);
+  assert.equal(outside, 'Selvage: join a session first.');
 
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
   });
   // The session exists once `host()` has built it and said so; the socket being accepted is
-  // earlier than that, and a command run in the gap warns `host or join a session first`.
+  // earlier than that, and a command run in the gap warns `join a session first`.
   await waitFor('the host to be seated', () =>
     bundle.stub.registered.information.some((message) => /is open/.test(message)) ? true : false,
   );
@@ -414,7 +545,7 @@ test('the peers command refuses outside a session and in a room with no one else
       message.includes('no other participants'),
     ) ?? false,
   );
-  assert.match(alone, /no other participants to name/);
+  assert.equal(alone, 'Selvage: no other participants yet.');
   assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a list was drawn for an empty room');
 });
 
@@ -454,4 +585,87 @@ test('the peers command lists the room in the colours the carets are drawn in', 
   const colour = peerColour(host.session().peer.peer_id);
   const swatch = decodeURIComponent(row.iconPath.toString());
   assert.ok(swatch.includes(colour), `the list drew ${swatch}, not the caret colour ${colour}`);
+});
+
+test('joining again asks before leaving the room this window is in', async (t) => {
+  const { bundle, roomId } = await guest(t, ['workspace/README.md']);
+
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: 'ws://127.0.0.1:1/session?room=r&token=t',
+    displayName: 'Bob',
+  });
+  const asked = await waitFor('the question', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
+  );
+  assert.equal(asked, `Selvage: you are in room ${roomId}; leaving it leaves it.`);
+
+  // A dismissed question leaves the room alone, so this window is still in the one it was in.
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const reported = await waitFor('the report', () =>
+    bundle.stub.registered.information.find((message) =>
+      message.includes('name others see'),
+    ) ?? false,
+  );
+  assert.equal(reported, 'Selvage: the name others see is "Bob".');
+});
+
+test('a host that goes away and comes back is announced', async (t) => {
+  const { bundle, server } = await guest(t, ['workspace/README.md']);
+
+  bundle.stub.reset();
+  server.drop('Ada');
+  const away = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('host left')) ?? false,
+  );
+  assert.equal(away, 'Selvage: the host left the room; it closes in 30s unless they come back.');
+
+  const back = await waitFor('the announcement', () =>
+    bundle.stub.registered.information.find((message) => message.includes('hosting again')) ??
+      false,
+  );
+  assert.equal(back, 'Selvage: Ada is hosting again.');
+});
+
+test('a room that is gone is named before the session ends', async (t) => {
+  const server = await FakeServer.start({ roomGraceMs: 2000 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
+  t.after(async () => {
+    await host.disconnect();
+  });
+  await host.open('workspace/README.md');
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the host was given no invite link');
+
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+
+  bundle.stub.reset();
+  await host.disconnect();
+  const away = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('host left')) ?? false,
+  );
+  assert.equal(away, 'Selvage: the host left the room; it closes in 2s unless they come back.');
+
+  const gone = await waitFor('the room to be reported gone', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('gone')) ?? false,
+  );
+  assert.equal(gone, 'Selvage: the room is gone (host did not return).');
+
+  // The session goes with the room, so the window is in nothing.
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.peers');
+  const ended = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
+  );
+  assert.equal(ended, 'Selvage: join a session first.');
 });
