@@ -51,6 +51,15 @@ const GRANTED_TEXT = 'a file the host never opens in its own window\n';
 const RECONNECT = process.env.SELVAGE_E2E_RECONNECT !== '0';
 const DEADLINE_MS = Number(process.env.SELVAGE_E2E_DEADLINE_MS ?? '20000');
 const RECONNECT_DEADLINE_MS = Number(process.env.SELVAGE_E2E_RECONNECT_DEADLINE_MS ?? '40000');
+/**
+ * How long one editor may take to finish on its own before the run gives up on it. Startup,
+ * both phases and the shutdown, with room to spare: this is the bound that turns an editor
+ * that never exits into a failure, rather than an orchestrator that says nothing for as long
+ * as whatever started it is willing to wait.
+ */
+const INSTANCE_DEADLINE_MS = Number(
+  process.env.SELVAGE_E2E_INSTANCE_DEADLINE_MS ?? String(DEADLINE_MS + RECONNECT_DEADLINE_MS + 180_000),
+);
 
 function log(...parts: unknown[]): void {
   console.log('[e2e]', ...parts);
@@ -355,7 +364,20 @@ async function main(): Promise<void> {
     log('blip signalled; waiting for the guest to reconnect and both sides to re-converge');
   }
 
-  const [hostResult, guestResult] = await Promise.allSettled([hostRun, guestRun]);
+  const hostLogFile = resolve(RUN_DIR, 'host.log');
+  const guestLogFile = resolve(RUN_DIR, 'guest.log');
+  // A launched editor that never finishes is otherwise waited on for ever, and a run that
+  // prints nothing while it waits cannot be told from a hung one — which is how a stalled run
+  // reads when its output is piped somewhere it will not be read until it exits. The deadline
+  // names the logs instead.
+  const [hostResult, guestResult] = await Promise.race([
+    Promise.allSettled([hostRun, guestRun]),
+    delay(INSTANCE_DEADLINE_MS).then((): never => {
+      throw new Error(
+        `orchestrator: an instance did not finish within ${INSTANCE_DEADLINE_MS}ms; its output is in ${hostLogFile} and ${guestLogFile}`,
+      );
+    }),
+  ]);
   await proxy?.stop();
   await server.stop();
 
@@ -433,5 +455,9 @@ function scratchDir(): string {
 
 main().catch((error: unknown) => {
   console.error('[e2e] FAILED:', error);
-  process.exitCode = 1;
+  // A failed run must end here. The editor processes are `@vscode/test-electron`'s children, and
+  // an exception thrown before they settle leaves them holding the event loop open: the run then
+  // sits silent until whatever started it gives up, which reads like a hang rather than a
+  // failure. The exit code is the report; nothing after this point is worth waiting for.
+  process.exit(1);
 });

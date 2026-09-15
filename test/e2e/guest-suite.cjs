@@ -48,6 +48,31 @@ async function waitFor(label, check, deadlineMs) {
   }
 }
 
+/**
+ * Appends `marker` to the document, recomputing the position on every attempt.
+ *
+ * An editor refuses an edit whose document changed between the edit being worked out and being
+ * applied, and the peer is typing into this same document: a refusal is not a failure, it is an
+ * attempt at a position that has moved. The retry is bounded and reports the text it saw, so a
+ * marker that never lands fails with evidence rather than hanging.
+ */
+async function appendMarker(document, marker, deadlineMs) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(document.uri, document.positionAt(document.getText().length), marker);
+    if (await vscode.workspace.applyEdit(edit)) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `guest: ${document.uri.toString()} refused ${marker} for ${deadlineMs}ms; it reads ${JSON.stringify(document.getText())}`,
+      );
+    }
+    await delay(50);
+  }
+}
+
 /** Routes the guest through the reconnect proxy when one is configured, keeping the room and
  * token the host actually minted. */
 function routeThroughProxy(invite) {
@@ -88,12 +113,7 @@ async function run() {
     const document = editor.document;
 
     // The guest appends its marker at the end of whatever the host has published so far.
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(document.uri, document.positionAt(document.getText().length), MARKER_GUEST);
-    const applied = await vscode.workspace.applyEdit(edit);
-    if (!applied) {
-      throw new Error('guest: applyEdit for the first marker was refused');
-    }
+    await appendMarker(document, MARKER_GUEST, DEADLINE_MS);
 
     const converged1 = await waitFor(
       'both markers to appear in the guest document',
@@ -102,7 +122,18 @@ async function run() {
         return text.includes(MARKER_HOST) && text.includes(MARKER_GUEST) ? text : false;
       },
       DEADLINE_MS,
-    );
+    ).catch((error) => {
+      // A timeout here has to say what the window actually held: whether the guest's own
+      // marker is in the buffer, and whether the room's document is one editor or two.
+      throw new Error(
+        `${error.message}; the guest document reads ${JSON.stringify(document.getText())}; ` +
+          `open room documents: ${JSON.stringify(
+            vscode.window.visibleTextEditors
+              .filter((candidate) => candidate.document.uri.scheme === 'selvage')
+              .map((candidate) => candidate.document.uri.toString()),
+          )}`,
+      );
+    });
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
 
@@ -135,16 +166,7 @@ async function run() {
 
       // The guest appends its marker, so the host's copy of a file it never opened becomes
       // something this window wrote.
-      const grantedEdit = new vscode.WorkspaceEdit();
-      grantedEdit.insert(
-        grantedDocument.uri,
-        grantedDocument.positionAt(grantedDocument.getText().length),
-        MARKER_GUEST,
-      );
-      const grantedApplied = await vscode.workspace.applyEdit(grantedEdit);
-      if (!grantedApplied) {
-        throw new Error('guest: applyEdit for the granted marker was refused');
-      }
+      await appendMarker(grantedDocument, MARKER_GUEST, DEADLINE_MS);
       const grantedText = await waitFor(
         'the granted marker to land in the guest document',
         () => {
@@ -152,7 +174,9 @@ async function run() {
           return text.includes(MARKER_GUEST) ? text : false;
         },
         DEADLINE_MS,
-      );
+      ).catch((error) => {
+        throw new Error(`${error.message}; the granted document reads ${JSON.stringify(grantedDocument.getText())}`);
+      });
       result.granted = { text: grantedText };
       fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
       fs.writeFileSync(GRANTED_DONE_FILE, 'go');
@@ -165,12 +189,7 @@ async function run() {
         RECONNECT_DEADLINE_MS,
       );
 
-      const edit2 = new vscode.WorkspaceEdit();
-      edit2.insert(document.uri, document.positionAt(document.getText().length), MARKER_GUEST_2);
-      const applied2 = await vscode.workspace.applyEdit(edit2);
-      if (!applied2) {
-        throw new Error('guest: applyEdit for the second marker was refused');
-      }
+      await appendMarker(document, MARKER_GUEST_2, RECONNECT_DEADLINE_MS);
 
       const converged2 = await waitFor(
         'all four markers to appear in the guest document after the blip',
