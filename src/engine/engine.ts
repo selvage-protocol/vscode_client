@@ -40,6 +40,7 @@ import type {
 } from './envelope.ts';
 import { EngineClosedError, ProtocolError } from './errors.ts';
 import type { EngineEvent, EngineEventListener } from './events.ts';
+import { MAX_GRANT_PATHS, isGrantedPath } from '../bridge/grant.ts';
 import { fetchMeta, metaAccepts } from './meta.ts';
 import { buildPresence, sameAwareness, toAnchor, toRelativePosition } from './presence.ts';
 import type {
@@ -68,6 +69,18 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 /** How long a request may wait for its answer before the caller is told it will not come. */
 const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * The largest inbound frame this client will read, in bytes: the transport's own bound
+ * (`PROTOCOL.md` §2.1, informative 16 MiB). A frame over it never arrives from a conforming
+ * transport — it ends the connection the way a dropped socket does — so refusing one here
+ * changes no session that obeys the wire, and bounds what an unbounded `JSON.parse` or
+ * yjs update can allocate or do.
+ */
+const MAX_INBOUND_TEXT_BYTES = 16 * 1024 * 1024;
+
+/** See `MAX_INBOUND_TEXT_BYTES`: the same bound for the binary frames yjs arrives in. */
+const MAX_INBOUND_BINARY_BYTES = 16 * 1024 * 1024;
 
 /** Marks a transaction as this client's own edit: an adapter already has it. */
 const LOCAL_ORIGIN = Symbol('selvage:local');
@@ -1159,10 +1172,9 @@ export class SelvageEngine {
       return;
     }
     const body = (result ?? {}) as DocSet;
-    if (Array.isArray(body.documents)) {
-      this.roomDocuments = body.documents.filter(
-        (path): path is string => typeof path === 'string',
-      );
+    const documents = receivedListing(body.documents);
+    if (documents !== undefined) {
+      this.roomDocuments = documents;
     }
     if (pending.kind === 'open') {
       if (!this.heldDocuments.includes(pending.path)) {
@@ -1199,6 +1211,11 @@ export class SelvageEngine {
   // -- inbound ---------------------------------------------------------------
 
   private handleText(text: string): void {
+    // Counted in bytes, not code units: `Buffer.byteLength` walks without allocating,
+    // where encoding the frame to count it would copy it first.
+    if (Buffer.byteLength(text, 'utf8') > MAX_INBOUND_TEXT_BYTES) {
+      return;
+    }
     const message = parseServerMessage(text);
     if (message === undefined) {
       return;
@@ -1301,12 +1318,10 @@ export class SelvageEngine {
    */
   private applyDocumentSet(params: unknown): boolean {
     const body = params as DocEvent | undefined;
-    if (body === undefined || !Array.isArray(body.documents)) {
-      return true;
+    const documents = receivedListing(body?.documents);
+    if (documents === undefined) {
+      return false;
     }
-    const documents = body.documents.filter(
-      (path): path is string => typeof path === 'string',
-    );
     if (
       documents.length === this.roomDocuments.length &&
       documents.every((path, index) => path === this.roomDocuments[index])
@@ -1325,10 +1340,10 @@ export class SelvageEngine {
    */
   private applyGrant(params: unknown): boolean {
     const body = params as Partial<GrantParams> | undefined;
-    if (body === undefined || !Array.isArray(body.paths)) {
+    const paths = receivedListing(body?.paths);
+    if (paths === undefined) {
       return false;
     }
-    const paths = body.paths.filter((path): path is string => typeof path === 'string');
     if (
       paths.length === this.granted.length &&
       paths.every((path, index) => path === this.granted[index])
@@ -1380,6 +1395,11 @@ export class SelvageEngine {
   }
 
   private handleBinary(frame: Uint8Array): void {
+    if (frame.length > MAX_INBOUND_BINARY_BYTES) {
+      // A payload this large never arrives from a conforming transport; applying it
+      // would grow the replica without bound on a peer's word.
+      return;
+    }
     let replies: Uint8Array[];
     try {
       replies = applyFrame(frame, this.doc, this.awareness, REMOTE_ORIGIN)
@@ -1488,6 +1508,31 @@ function textParam(params: unknown, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * What a server-sent listing may move into this replica: the strings the grant would
+ * publish, at most the listing's own bound, in the order the publisher wrote. The grant's
+ * shape rule is the publish side's (`isGrantedPath`, in `src/bridge/grant.ts` — the one
+ * home for what a session shares), applied here on receipt because a guest that trusts a
+ * stranger's server trusts its listings as input. A hostile listing is filtered and
+ * truncated, never allocated whole: a bogus set is a smaller grant, not N error dialogs,
+ * and `undefined` is a frame with no listing at all rather than an empty one.
+ */
+function receivedListing(paths: unknown): string[] | undefined {
+  if (!Array.isArray(paths)) {
+    return undefined;
+  }
+  const listing: string[] = [];
+  for (const path of paths) {
+    if (listing.length >= MAX_GRANT_PATHS) {
+      break;
+    }
+    if (typeof path === 'string' && isGrantedPath(path)) {
+      listing.push(path);
+    }
+  }
+  return listing;
+}
+
 function numberParam(params: unknown, key: string): number | undefined {
   const value =
     typeof params === 'object' && params !== null
@@ -1525,9 +1570,7 @@ function sessionFrom(params: unknown, baseUrl: string): SessionInfo | undefined 
     role: peer.role,
     peer,
     peers,
-    documents: (body.documents ?? []).filter(
-      (path): path is string => typeof path === 'string',
-    ),
+    documents: receivedListing(body.documents) ?? [],
     capabilities: (body.capabilities ?? []).filter(
       (name): name is string => typeof name === 'string',
     ),

@@ -80,6 +80,15 @@ export const TERMINAL_CODES: readonly string[] = [
 
 export type Role = 'host' | 'guest';
 
+/**
+ * The protocol's bound on a display name: at most this many UTF-16 code units (§5). A name
+ * over it is refused, never truncated: the server refuses the `session.hello` one would
+ * arrive in, and receipt enforces the same bound, so a name past it never reaches the room.
+ * Counting is `String.prototype.length`, which *is* UTF-16 code units — an astral character
+ * costs two, where a code-point count would charge one.
+ */
+export const MAX_DISPLAY_NAME_UNITS = 32;
+
 /** A participant as seen by the session layer. `awareness_client_id` is how a cursor is attributed. */
 export interface PeerInfo {
   peer_id: string;
@@ -304,6 +313,11 @@ export function parsePeer(value: unknown): PeerInfo | undefined {
   if (peerId === undefined || displayName === undefined) {
     return undefined;
   }
+  // A name past the protocol's bound is not a peer this client acts on: over-long names
+  // are how an unbounded string reaches every surface a name is drawn on.
+  if (displayName.length > MAX_DISPLAY_NAME_UNITS) {
+    return undefined;
+  }
   const role = textField(value, 'role');
   const awareness = numberField(value, 'awareness_client_id');
   return {
@@ -333,6 +347,9 @@ export function parsePeerRenamed(params: unknown): PeerRenamed | undefined {
   const peerId = textField(params, 'peer_id');
   const displayName = textField(params, 'display_name');
   if (peerId === undefined || displayName === undefined) {
+    return undefined;
+  }
+  if (displayName.length > MAX_DISPLAY_NAME_UNITS) {
     return undefined;
   }
   return { peer_id: peerId, display_name: displayName };

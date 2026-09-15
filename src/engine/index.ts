@@ -25,6 +25,7 @@ export { EngineClosedError, ProtocolError, isProtocolError } from './errors.ts';
 export {
   CLIENT_CAPABILITIES,
   DEFAULT_KEEPALIVE,
+  MAX_DISPLAY_NAME_UNITS,
   WIRE_VERSION,
   close,
   closeCodeFor,

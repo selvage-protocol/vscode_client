@@ -20,8 +20,9 @@
 
 import type { InputBoxOptions } from 'vscode';
 
-/** The protocol's bound: a display name is at most this many UTF-16 code units. */
-export const MAX_DISPLAY_NAME_UNITS = 32;
+import { MAX_DISPLAY_NAME_UNITS } from '../engine/envelope.ts';
+
+export { MAX_DISPLAY_NAME_UNITS };
 
 /** How many UTF-16 code units a name costs: two for an astral character, one for the rest. */
 export function displayNameUnits(name: string): number {
