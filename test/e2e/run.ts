@@ -349,6 +349,24 @@ async function nixElectronLibraryPath(): Promise<string> {
   return stdout.trim();
 }
 
+/**
+ * The clipboard the host suite reads its invite back from has to be this run's own. `xvfb-run`
+ * gives the instances an X display, but the Wayland variables it leaves in place are the login
+ * session's, so a Wayland-capable Electron reads — and writes — the session clipboard that
+ * `wl-copy` and every other client on the machine own: a run has taken another repository's test
+ * value off it as its invite, and then joined an address nothing was listening on. With only the
+ * X display, the selection belongs to these two instances and to nothing else.
+ *
+ * `XDG_SESSION_TYPE` is named rather than dropped because it is the hint a client falls back on.
+ * The session bus is left alone: it is not a display, and the portal clipboard is out of play in
+ * a dev host with the sandbox off.
+ */
+const DISPLAY_ONLY_ENV: Record<string, string | undefined> = {
+  WAYLAND_DISPLAY: undefined,
+  WAYLAND_SOCKET: undefined,
+  XDG_SESSION_TYPE: 'x11',
+};
+
 interface InstanceOutcome {
   role: string;
   phase1?: { text: string };
@@ -386,7 +404,7 @@ async function runInstance(
   workspaceDir: string,
   userDataDir: string,
   extensionsDir: string,
-  env: Record<string, string>,
+  env: Record<string, string | undefined>,
   logFile: string,
 ): Promise<{ code: number }> {
   mkdirSync(dirname(logFile), { recursive: true });
@@ -479,6 +497,7 @@ async function main(): Promise<void> {
   const guestResultFile = resolve(RUN_DIR, 'guest-result.json');
 
   const sharedEnv = {
+    ...DISPLAY_ONLY_ENV,
     SELVAGE_E2E_SEED_PATH: SEED_PATH,
     SELVAGE_E2E_INVITE_FILE: inviteFile,
     SELVAGE_E2E_ROOM_PATH_FILE: roomPathFile,
