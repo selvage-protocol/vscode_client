@@ -84,15 +84,80 @@ test('a guest document is editable and its save writes nothing', () => {
   assert.equal(decode(files.readFile(document)), "the room's text\n");
 });
 
-test('there is no file tree, and nothing is created, renamed or deleted', () => {
+test('there is still no create, rename or delete, and nothing is watched', () => {
   const files = provider();
   const document = uri(virtualUri(ROOM, 'src/main.rs'));
 
-  assert.deepEqual(files.readDirectory(), []);
   assert.throws(() => files.createDirectory(document), /no permissions/);
   assert.throws(() => files.delete(document), /no permissions/);
   assert.throws(() => files.rename(document), /no permissions/);
   assert.equal(typeof files.watch(document).dispose, 'function');
+});
+
+test("the file system mirrors the room's listing as a tree", () => {
+  const files = provider();
+  const listing = [
+    'README.md',
+    'docs/guide/intro.md',
+    'src/deep/nested.rs',
+    'src/main.rs',
+  ];
+  files.use({ roomId: ROOM, text: () => 'text', paths: () => listing });
+
+  // A listing carries files alone (`PROTOCOL.md` §5): `docs` and `src` are the implication
+  // of the paths that go through them, and each level is the immediate children of one.
+  assert.deepEqual(files.readDirectory(uri(virtualUri(ROOM, ''))), [
+    ['docs', 2],
+    ['src', 2],
+    ['README.md', 1],
+  ]);
+  assert.deepEqual(files.readDirectory(uri(virtualUri(ROOM, 'src'))), [
+    ['deep', 2],
+    ['main.rs', 1],
+  ]);
+  assert.deepEqual(files.readDirectory(uri(virtualUri(ROOM, 'src/deep'))), [
+    ['nested.rs', 1],
+  ]);
+  assert.deepEqual(files.readDirectory(uri(virtualUri(ROOM, 'docs/guide'))), [
+    ['intro.md', 1],
+  ]);
+
+  // A path that is a file is not a directory, an implied directory is not invented further
+  // than the listing goes, and another room is another room's listing.
+  assert.throws(() => files.readDirectory(uri(virtualUri(ROOM, 'README.md'))), /not found/);
+  assert.throws(() => files.readDirectory(uri(virtualUri(ROOM, 'src/deep/nested.rs'))), /not found/);
+  assert.throws(() => files.readDirectory(uri(virtualUri(ROOM, 'nope'))), /not found/);
+  assert.throws(() => files.readDirectory(uri(virtualUri('r-other', 'src'))), /not found/);
+});
+
+test('stat tells an implied directory from a listed file', () => {
+  const files = provider();
+  files.use({
+    roomId: ROOM,
+    text: (path) => (path === 'src/main.rs' ? 'from the room\n' : ''),
+    paths: () => ['src/main.rs', 'README.md'],
+  });
+
+  const directory = files.stat(uri(virtualUri(ROOM, 'src')));
+  assert.equal(directory.type, 2, 'an intermediate path is a directory');
+  assert.equal(directory.size, 0);
+
+  const file = files.stat(uri(virtualUri(ROOM, 'src/main.rs')));
+  assert.equal(file.type, 1, 'a listed leaf is a file');
+  assert.equal(file.size, 'from the room\n'.length);
+
+  // A path the listing does not name is still a document that may arrive: the room may be
+  // about to be sent it, and a guest was already able to open one.
+  assert.equal(files.stat(uri(virtualUri(ROOM, 'src/other.rs'))).type, 1);
+});
+
+test('a source that knows no listing serves no directory', () => {
+  const files = provider();
+  files.use({ roomId: ROOM, text: () => 'text' });
+
+  // The listing is what a directory is derived from, and there is none to derive from.
+  assert.deepEqual(files.readDirectory(uri(virtualUri(ROOM, ''))), []);
+  assert.equal(files.stat(uri(virtualUri(ROOM, 'README.md'))).type, 1);
 });
 
 test('a document outlives the session that produced it', () => {

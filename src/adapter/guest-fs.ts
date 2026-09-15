@@ -7,18 +7,25 @@
  * provider answers a `selvage:` URI with the replica's text and accepts writes by doing
  * nothing with them: the shared buffer is the truth, and there is no host file to write.
  *
- * There is no file tree in v1 (`DESIGN.md` §4.2): `readDirectory` is empty, and one URI is
- * one shared document.
+ * The room also carries the host's grant — a listing of paths and never content — and the
+ * provider mirrors its *shape*: `readDirectory` and `stat` are derived from the listing, so
+ * the room looks like a project rather than one document (`DESIGN.md` §4.2). Content is still
+ * fetched only when something reads it.
  */
 
 import * as vscode from 'vscode';
 
-import { virtualDocument } from '../bridge/index.ts';
+import { SCHEME, grantChildren, roomFromQuery, virtualDocument } from '../bridge/index.ts';
 
 /** Where a guest's documents read from: the session that is live. */
 export interface VirtualSource {
   roomId: string;
   text(path: string): string;
+  /**
+   * The paths the room offers: its grant, and the documents it holds open. Absent for a source
+   * that knows no listing, which reads as an empty tree rather than as every path.
+   */
+  paths?(): readonly string[];
 }
 
 export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
@@ -52,6 +59,13 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
   stat(uri: vscode.Uri): vscode.FileStat {
     // `mtime: 0` is VS Code's "no information": the room, not the filesystem, decides when a
     // guest document changes, so a real timestamp would only invite a reload that does not help.
+    const directory = this.directory(uri);
+    if (directory !== undefined) {
+      // A listing carries files and no directory entry (`PROTOCOL.md` §5): an intermediate
+      // path is a directory because some listed path goes through it, and that is the only
+      // reason it exists at all.
+      return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+    }
     return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: this.bytes(uri).length };
   }
 
@@ -78,8 +92,19 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
     return new vscode.Disposable(() => undefined);
   }
 
-  readDirectory(): Array<[string, vscode.FileType]> {
-    return [];
+  /**
+   * The immediate children of a directory, derived by splitting the room's listing: `src`
+   * exists because `src/main.rs` does, and the room never said so.
+   */
+  readDirectory(uri: vscode.Uri): Array<[string, vscode.FileType]> {
+    const directory = this.directory(uri);
+    if (directory === undefined) {
+      throw vscode.FileSystemError.FileNotFound(uri);
+    }
+    return grantChildren(this.paths(), directory).map((child) => [
+      child.name,
+      child.directory ? vscode.FileType.Directory : vscode.FileType.File,
+    ]);
   }
 
   createDirectory(uri: vscode.Uri): void {
@@ -107,5 +132,35 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
       throw vscode.FileSystemError.FileNotFound(uri);
     }
     return new TextEncoder().encode(text);
+  }
+
+  /** The paths the live session offers, or nothing when no session is holding the room. */
+  private paths(): readonly string[] {
+    return this.live?.paths?.() ?? [];
+  }
+
+  /**
+   * The directory a URI names inside the live room, or `undefined` when it names no directory.
+   *
+   * The root is `selvage:/?room=<id>`, which is a directory and not a document, so it is
+   * recognised here rather than through `virtualDocument`, which rightly refuses a URI that
+   * names no path at all.
+   */
+  private directory(uri: vscode.Uri): string | undefined {
+    if (uri.scheme !== SCHEME || this.live === undefined) {
+      return undefined;
+    }
+    const parsed = virtualDocument(uri.scheme, uri.path, uri.query);
+    if (parsed !== undefined) {
+      if (parsed.roomId !== this.live.roomId) {
+        return undefined;
+      }
+      const prefix = `${parsed.path}/`;
+      return this.paths().some((path) => path.startsWith(prefix)) ? parsed.path : undefined;
+    }
+    if (uri.path === '/' && roomFromQuery(uri.query) === this.live.roomId) {
+      return '';
+    }
+    return undefined;
   }
 }

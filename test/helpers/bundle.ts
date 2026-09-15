@@ -25,13 +25,17 @@ export interface UriLike {
 
 /** The guest file system, as the stub recorded it: the contract the adapter implements. */
 export interface GuestFiles {
-  use(source: { roomId: string; text(path: string): string }): void;
+  use(source: {
+    roomId: string;
+    text(path: string): string;
+    paths?(): readonly string[];
+  }): void;
   freeze(text: Iterable<[uri: string, content: string]>): void;
   stat(uri: UriLike): { type: number; size: number };
   readFile(uri: UriLike): Uint8Array;
   writeFile(uri: UriLike, content: Uint8Array): void;
   watch(uri: UriLike): { dispose(): void };
-  readDirectory(): Array<[string, number]>;
+  readDirectory(uri: UriLike): Array<[string, number]>;
   createDirectory(uri: UriLike): void;
   delete(uri: UriLike): void;
   rename(uri: UriLike): void;
@@ -40,6 +44,8 @@ export interface GuestFiles {
 export interface Registered {
   commands: string[];
   schemes: string[];
+  /** Every tree view the extension created, with the options it was given. */
+  treeViews: Array<{ id: string; options: Record<string, unknown> }>;
   files?: GuestFiles;
 }
 
@@ -70,6 +76,14 @@ export interface EditorStub {
   reset(): void;
   /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
   configure(values: Record<string, unknown>): void;
+  /** Seeds the window's working copy, as a host's folder: a file a session can enumerate. */
+  put(path: string, content: string | Uint8Array, options?: { size?: number }): void;
+  /** A symbolic link in the working copy, which a listing never carries. */
+  putLink(path: string, kind: 'file' | 'directory'): void;
+  /** A directory whose listing the editor refuses. */
+  makeUnreadable(path: string): void;
+  /** Replaces the folders the window is open on, as adding one mid-session would. */
+  setWorkspaceFolders(paths: string[]): void;
   /** Fires an editor event the extension subscribed to, as VS Code would. */
   fire(name: string, ...args: unknown[]): void;
   /** Puts a `file:` document in the window, as VS Code would have it open at activation. */
