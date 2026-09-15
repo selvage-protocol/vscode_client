@@ -41,7 +41,12 @@ const registered = {
   warningReply: undefined,
   quickPickReply: undefined,
   inputReply: undefined,
+  /** The window's open documents, as a test seeded them before the session started. */
+  textDocuments: [],
 };
+
+/** The one folder the stub says every `file:` document belongs to; a host shares under it. */
+const WORKSPACE_FOLDER = 'file:///workspace';
 
 /** The settings a window has been configured with, as `get` and `update` see them. */
 const configured = new Map();
@@ -64,6 +69,7 @@ function reset() {
   registered.settingWriteFails = false;
   registered.opened.length = 0;
   registered.shown.length = 0;
+  registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
   registered.informationReply = undefined;
@@ -147,6 +153,15 @@ module.exports = {
   registered,
   reset,
   configure,
+  /**
+   * Puts a `file:` document in the window, as VS Code would have it open when a session starts.
+   * A host shares its own files, so a test that wants to reach that path seeds one here.
+   */
+  openWorkspaceDocument(uriString) {
+    const document = documentFor(parseUri(uriString));
+    registered.textDocuments.push(document);
+    return document;
+  },
   /** Fires an editor event the extension subscribed to: `fire('visibleEditors')`. */
   fire,
 
@@ -221,7 +236,9 @@ module.exports = {
   },
 
   workspace: {
-    textDocuments: [],
+    get textDocuments() {
+      return registered.textDocuments;
+    },
     getName: () => 'selvage-stub',
     getConfiguration: () => ({
       get: (key, fallback) => (configured.has(key) ? configured.get(key) : fallback),
@@ -239,8 +256,15 @@ module.exports = {
         return Promise.resolve();
       },
     }),
-    getWorkspaceFolder: () => undefined,
-    asRelativePath: (uri) => String(uri),
+    getWorkspaceFolder: (uri) =>
+      String(uri).startsWith('file:')
+        ? { uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }
+        : undefined,
+    asRelativePath: (uri) => {
+      const text = String(uri);
+      const prefix = `${WORKSPACE_FOLDER}/`;
+      return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+    },
     openTextDocument(uri) {
       registered.opened.push(uri.toString());
       return Promise.resolve(documentFor(uri));
