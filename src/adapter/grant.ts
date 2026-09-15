@@ -75,13 +75,19 @@ async function walk(
       continue;
     }
     const target = vscode.Uri.joinPath(dir, name);
+    // `FileType` is a bit set, and a link to a directory carries the directory bit as well as
+    // its own, so the link is tested first: a symbolic link is neither a file this host can
+    // vouch for nor one it should follow, because it can point anywhere, including out of the
+    // folder being shared. Nothing behind a link is listed, and nothing behind it is descended
+    // into.
+    if ((type & vscode.FileType.SymbolicLink) !== 0) {
+      continue;
+    }
     if ((type & vscode.FileType.Directory) !== 0) {
       await walk(target, child, prefix, out, budget);
       continue;
     }
-    // A listing carries files and never directories, and a symbolic link is neither a file
-    // this host can vouch for nor one it should follow: it can point anywhere, including out
-    // of the folder being shared. `FileType` is a bit set, so a link is tested explicitly.
+    // A listing carries files and never directories.
     if (type !== vscode.FileType.File) {
       continue;
     }
@@ -135,17 +141,56 @@ function relativeWithin(base: string, path: string): string | undefined {
  *
  * This is the path a *peer* named, so it is checked rather than trusted: the excludes and the
  * segment rules of `isGrantedPath` apply to it, because a guest that guessed `.env` or
- * `.git/config` must not be able to ask for what the grant deliberately leaves out.
+ * `.git/config` must not be able to ask for what the grant deliberately leaves out. Every
+ * segment on the way to the file must be a plain directory of the folder as well, so a guessed
+ * path that travels *through* a symbolic link is refused too — no such path was listed, and
+ * what it would read is outside the folder.
  */
-export function grantedFile(
+export async function grantedFile(
   folders: readonly vscode.WorkspaceFolder[],
   path: string,
-): vscode.Uri | undefined {
+): Promise<vscode.Uri | undefined> {
   const resolved = withinFolders(folders, path);
   if (resolved === undefined || !isGrantedPath(resolved.relative)) {
     return undefined;
   }
+  if (!(await throughPlainDirectories(resolved.folder.uri, resolved.relative))) {
+    return undefined;
+  }
   return vscode.Uri.joinPath(resolved.folder.uri, resolved.relative);
+}
+
+/**
+ * True when every directory between the folder and the file is a plain directory of that folder.
+ *
+ * `vscode.workspace.fs` has no `realpath`, and `Uri.joinPath` resolves nothing: it joins strings.
+ * A path that travels through a symbolic link therefore lands on a real file somewhere else
+ * entirely, while the leaf's own `stat` reports an ordinary file. A link's own `stat` reports the
+ * `SymbolicLink` bit, so the path is walked one segment at a time and every segment has to be
+ * exactly a directory. The leaf is left to the caller, which reads it only as a plain file.
+ *
+ * What this cannot see, because the API does not expose it: a segment that is followed by the
+ * editor's own file system without reporting a link (a mount point, a provider that resolves
+ * links itself), and a link put in place between this walk and the read that follows it.
+ */
+async function throughPlainDirectories(folder: vscode.Uri, relative: string): Promise<boolean> {
+  const segments = relative.split('/');
+  let head = folder;
+  for (const segment of segments.slice(0, -1)) {
+    head = vscode.Uri.joinPath(head, segment);
+    if (!(await isPlainDirectory(head))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function isPlainDirectory(uri: vscode.Uri): Promise<boolean> {
+  try {
+    return (await vscode.workspace.fs.stat(uri)).type === vscode.FileType.Directory;
+  } catch {
+    return false;
+  }
 }
 
 /** A room path split into the captured folder it belongs to and its path inside it. */

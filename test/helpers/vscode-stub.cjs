@@ -61,7 +61,8 @@ const FOLDER = { uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0, t
 const disk = {
   /** `path` → `{ bytes, size }`; `size` is settable so a file can be declared larger. */
   files: new Map(),
-  /** `path` → the `FileType` a symbolic link reports, which is never a plain file. */
+  /** `path` → `{ type, target }` for a symbolic link: `target` is the directory it names, when
+   * it has one. A link reports its own type, and a path *through* it reaches the target. */
   links: new Map(),
   /** Directories whose `readDirectory` throws, for the unreadable-tree path. */
   unreadable: new Set(),
@@ -98,9 +99,38 @@ function put(path, content, options = {}) {
   });
 }
 
-/** Puts a symbolic link in the working copy: `kind` is `'file'` or `'directory'`. */
-function putLink(path, kind) {
-  disk.links.set(diskPath(path), kind === 'directory' ? 70 : 65);
+/**
+ * Puts a symbolic link in the working copy: `kind` is `'file'` or `'directory'`. A link with a
+ * `target` names a file or directory elsewhere — outside the folder, in the cases that matter —
+ * and a path through it reaches what it names, as the editor's own file system follows a link.
+ */
+function putLink(path, kind, target) {
+  disk.links.set(diskPath(path), {
+    type: kind === 'directory' ? 70 : 65,
+    target: target === undefined ? undefined : diskPath(target),
+  });
+}
+
+/**
+ * `path` after following every symbolic link along it, as a `readFile` or a `readDirectory`
+ * through a link does — the nested-prefix case included. The hop bound only stops a link chain
+ * that names itself; a link into a link resolves.
+ */
+function resolved(path) {
+  let current = path;
+  for (let hop = 0; hop < 8; hop += 1) {
+    const candidates = [...disk.links.entries()].filter(
+      ([at, link]) => link.target !== undefined && (current === at || current.startsWith(`${at}/`)),
+    );
+    if (candidates.length === 0) {
+      return current;
+    }
+    // The longest matching link is the innermost one, which is the one a real file system
+    // resolves first.
+    const [at, link] = candidates.sort(([left], [right]) => right.length - left.length)[0];
+    current = `${link.target}${current.slice(at.length)}`;
+  }
+  return current;
 }
 
 /** A directory whose listing the editor refuses, as an unreadable folder is. */
@@ -114,18 +144,19 @@ function allEntries() {
   for (const path of disk.files.keys()) {
     all.set(path, 1);
   }
-  for (const [path, type] of disk.links) {
-    all.set(path, type);
+  for (const [path, link] of disk.links) {
+    all.set(path, link.type);
   }
   return all;
 }
 
 /** The immediate children of a directory, from the files and links under it. */
 function entriesOf(directory) {
-  const prefix = directory === '/' ? '/' : `${directory}/`;
+  const real = resolved(directory);
+  const prefix = real === '/' ? '/' : `${real}/`;
   const found = new Map();
   for (const [path, type] of allEntries()) {
-    if (!path.startsWith(prefix) || path === directory) {
+    if (!path.startsWith(prefix) || path === real) {
       continue;
     }
     const rest = path.slice(prefix.length);
@@ -141,7 +172,8 @@ function entriesOf(directory) {
 
 /** True when some file or link is inside this directory. */
 function isDirectory(path) {
-  const prefix = path === '/' ? '/' : `${path}/`;
+  const real = resolved(path);
+  const prefix = real === '/' ? '/' : `${real}/`;
   return [...allEntries().keys()].some((entry) => entry.startsWith(prefix));
 }
 
@@ -399,20 +431,22 @@ module.exports = {
     fs: {
       readDirectory: (uri) => {
         const path = pathOf(uri);
-        if (disk.unreadable.has(path)) {
+        if (disk.unreadable.has(resolved(path))) {
           return Promise.reject(new Error(`cannot read ${path}`));
         }
         return Promise.resolve(entriesOf(path));
       },
       stat: (uri) => {
         const path = pathOf(uri);
-        const file = disk.files.get(path);
-        if (file !== undefined) {
-          return Promise.resolve({ type: 1, ctime: 0, mtime: 0, size: file.size });
-        }
+        // A link reports the link: the final component of a stat is not followed, which is how
+        // a host sees that what a peer named is a link at all. Everything before it is.
         const link = disk.links.get(path);
         if (link !== undefined) {
-          return Promise.resolve({ type: link, ctime: 0, mtime: 0, size: 0 });
+          return Promise.resolve({ type: link.type, ctime: 0, mtime: 0, size: 0 });
+        }
+        const file = disk.files.get(resolved(path));
+        if (file !== undefined) {
+          return Promise.resolve({ type: 1, ctime: 0, mtime: 0, size: file.size });
         }
         if (isDirectory(path)) {
           return Promise.resolve({ type: 2, ctime: 0, mtime: 0, size: 0 });
@@ -422,7 +456,7 @@ module.exports = {
       readFile: (uri) => {
         const path = pathOf(uri);
         disk.reads.push(path);
-        const file = disk.files.get(path);
+        const file = disk.files.get(resolved(path));
         if (file === undefined) {
           return Promise.reject(new Error(`not found: ${path}`));
         }

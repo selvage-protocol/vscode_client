@@ -132,13 +132,14 @@ export class WorkspaceEditor implements EditorHost {
    * Reads a file the room asked for, out of the folder this session was invited on.
    *
    * The path came from a peer, so it is resolved against the captured folders and has to be a
-   * path the grant itself would publish — the `.git/**` and `.env` defaults included — before
-   * a single byte is read. `undefined` is then the answer for a directory, a symbolic link, a
-   * file over the size a session will carry, and bytes that are not text; the bridge reports
-   * that rather than putting an empty document into the room.
+   * path the grant itself would publish — the `.git/**` and `.env` defaults included, and every
+   * directory on the way a plain directory of the folder rather than a symbolic link out of it —
+   * before a single byte is read. `undefined` is then the answer for a directory, a symbolic
+   * link, a file over the size a session will carry, and bytes that are not text; the bridge
+   * reports that rather than putting an empty document into the room.
    */
   async readGrantedFile(path: string): Promise<string | undefined> {
-    const uri = grantedFile(this.folders, path);
+    const uri = await grantedFile(this.folders, path);
     if (uri === undefined || !(await isShareableFile(uri))) {
       return undefined;
     }
