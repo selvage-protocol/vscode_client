@@ -137,9 +137,10 @@ export function toReplicaOffset(
   carriageReturn = hasCarriageReturn(bufferText),
 ): number {
   if (!carriageReturn) {
-    // What the loop counts: one replica code unit per buffer code unit it walks, stopping
-    // at either end. `Math.min`/`Math.max` take the fractional and non-finite offsets the
-    // `<` test does — nothing a caller produces, and nothing this may change the answer for.
+    // What the loop counts: one replica code unit per buffer code unit it walks, stopped by
+    // either end. `Math.ceil` keeps the answer for a fractional or non-finite offset what
+    // the loop's `<` test makes it — nothing a caller produces, and nothing a CRLF document
+    // can be affected by, since this path is only taken for a buffer with no `\r` in it.
     const end = Math.min(Math.ceil(bufferOffset), bufferText.length);
     return end > 0 ? end : 0;
   }
