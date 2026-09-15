@@ -237,7 +237,7 @@ test('the display-name command reports the name in force and offers to change it
       false,
   );
   assert.match(said, /display name set to "Ada"/);
-  assert.match(said, /the next session will use it/);
+  assert.match(said, /^Selvage: display name set to "Ada"\.$/);
 });
 
 test('a settings file that will not take the name is reported, not swallowed', async (t) => {
@@ -273,7 +273,7 @@ test('a name set during a session is a live rename, told to the room', async (t)
     bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
       false,
   );
-  assert.match(said, /this session is renamed too/);
+  assert.match(said, /^Selvage: display name set to "Robert"\.$/);
   assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Robert');
 
   // The setting write is what the listener saw; the listener is the one sender, so one
@@ -295,7 +295,7 @@ test('a name already in force sends no rename, and one over the bound is refused
     bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
       false,
   );
-  assert.match(unchanged, /this session is renamed too/);
+  assert.match(unchanged, /^Selvage: display name set to "Bob"\.$/);
   assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Bob');
   assert.equal(server.renames.length, 0, 'a no-op change sent a rename');
 
