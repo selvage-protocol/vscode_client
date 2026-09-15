@@ -16,6 +16,9 @@ const fs = require('fs');
 const DISPLAY_NAME = process.env.SELVAGE_E2E_DISPLAY_NAME ?? 'Bob';
 const INVITE_FILE = process.env.SELVAGE_E2E_INVITE_FILE;
 const ROOM_PATH_FILE = process.env.SELVAGE_E2E_ROOM_PATH_FILE;
+const GRANTED_PATH_FILE = process.env.SELVAGE_E2E_GRANTED_PATH_FILE;
+const GRANTED_DONE_FILE = process.env.SELVAGE_E2E_GRANTED_DONE_FILE;
+const GRANTED_TEXT = process.env.SELVAGE_E2E_GRANTED_TEXT;
 const PROXY_ADDR = process.env.SELVAGE_E2E_PROXY_ADDR;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
@@ -55,7 +58,7 @@ function routeThroughProxy(invite) {
 }
 
 async function run() {
-  const result = { role: 'guest', phase1: undefined, phase2: undefined, error: undefined };
+  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, error: undefined };
   try {
     const rawInvite = await waitFor(
       'the host to publish an invite link',
@@ -102,6 +105,58 @@ async function run() {
     );
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
+
+    if (GRANTED_DONE_FILE !== undefined) {
+      // A path the room grants and nobody has opened. Opening it is what makes the host read
+      // its own working copy, so the guest waits for this file's *text* rather than for the
+      // document to exist: an empty buffer would be the failure this phase exists to catch.
+      const grantedPath = await waitFor(
+        'the host to publish the granted path',
+        () =>
+          fs.existsSync(GRANTED_PATH_FILE)
+            ? fs.readFileSync(GRANTED_PATH_FILE, 'utf8')
+            : false,
+        DEADLINE_MS,
+      );
+
+      const grantedEditor = await waitFor(
+        'the granted path to open with the host\'s text in it',
+        async () => {
+          await vscode.commands.executeCommand('selvage.openDocument', { path: grantedPath });
+          return vscode.window.visibleTextEditors.find(
+            (candidate) =>
+              candidate.document.uri.scheme === 'selvage' &&
+              candidate.document.getText() === GRANTED_TEXT,
+          );
+        },
+        DEADLINE_MS,
+      );
+      const grantedDocument = grantedEditor.document;
+
+      // The guest appends its marker, so the host's copy of a file it never opened becomes
+      // something this window wrote.
+      const grantedEdit = new vscode.WorkspaceEdit();
+      grantedEdit.insert(
+        grantedDocument.uri,
+        grantedDocument.positionAt(grantedDocument.getText().length),
+        MARKER_GUEST,
+      );
+      const grantedApplied = await vscode.workspace.applyEdit(grantedEdit);
+      if (!grantedApplied) {
+        throw new Error('guest: applyEdit for the granted marker was refused');
+      }
+      const grantedText = await waitFor(
+        'the granted marker to land in the guest document',
+        () => {
+          const text = grantedDocument.getText();
+          return text.includes(MARKER_GUEST) ? text : false;
+        },
+        DEADLINE_MS,
+      );
+      result.granted = { text: grantedText };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+      fs.writeFileSync(GRANTED_DONE_FILE, 'go');
+    }
 
     if (CONTROL_FILE !== undefined) {
       await waitFor(

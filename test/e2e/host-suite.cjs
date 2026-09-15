@@ -20,6 +20,9 @@ const SERVER_URL = process.env.SELVAGE_E2E_SERVER_URL;
 const DISPLAY_NAME = process.env.SELVAGE_E2E_DISPLAY_NAME ?? 'Ada';
 const INVITE_FILE = process.env.SELVAGE_E2E_INVITE_FILE;
 const ROOM_PATH_FILE = process.env.SELVAGE_E2E_ROOM_PATH_FILE;
+const GRANTED_PATH_FILE = process.env.SELVAGE_E2E_GRANTED_PATH_FILE;
+const GRANTED_DONE_FILE = process.env.SELVAGE_E2E_GRANTED_DONE_FILE;
+const GRANTED_PATH = process.env.SELVAGE_E2E_GRANTED_PATH;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
@@ -50,7 +53,7 @@ async function waitFor(label, check, deadlineMs) {
 }
 
 async function run() {
-  const result = { role: 'host', phase1: undefined, phase2: undefined, error: undefined };
+  const result = { role: 'host', phase1: undefined, phase2: undefined, granted: undefined, error: undefined };
   try {
     await vscode.commands.executeCommand('selvage.host', {
       serverUrl: SERVER_URL,
@@ -83,6 +86,15 @@ async function run() {
     // host — the only side that can compute it the same way — writes it down.
     fs.writeFileSync(ROOM_PATH_FILE, vscode.workspace.asRelativePath(uri, true).replaceAll('\\', '/'));
 
+    // The room path of the granted file, for the guest to open. This window writes the file
+    // down and does not open it: the guest's read is the only way its text can arrive, which
+    // is what makes the granted phase a proof of the on-request read rather than of an open.
+    const grantedUri = vscode.Uri.file(path.join(WORKSPACE_DIR, GRANTED_PATH));
+    fs.writeFileSync(
+      GRANTED_PATH_FILE,
+      vscode.workspace.asRelativePath(grantedUri, true).replaceAll('\\', '/'),
+    );
+
     // The host prepends its marker at the very start of the seeded text.
     const edit = new vscode.WorkspaceEdit();
     edit.insert(uri, document.positionAt(0), MARKER_HOST);
@@ -101,6 +113,33 @@ async function run() {
     );
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
+
+    if (GRANTED_DONE_FILE !== undefined) {
+      const heldBeforeGuest = vscode.workspace.textDocuments.some(
+        (document) => document.uri.fsPath === grantedUri.fsPath,
+      );
+      await waitFor(
+        'the guest to converge on the granted path',
+        () => (fs.existsSync(GRANTED_DONE_FILE) ? true : false),
+        DEADLINE_MS + 15_000,
+      );
+
+      // The file was never open here, so whatever the room holds for it came from the read
+      // this window made because the guest asked for it. Opening it now puts the room's copy
+      // in front of the user: the guest's marker has to be in it.
+      const granted = await vscode.workspace.openTextDocument(grantedUri);
+      await vscode.window.showTextDocument(granted);
+      const grantedText = await waitFor(
+        'the host copy of the granted file to hold the guest marker',
+        () => {
+          const text = granted.getText();
+          return text.includes(MARKER_GUEST) ? text : false;
+        },
+        DEADLINE_MS,
+      );
+      result.granted = { text: grantedText, heldBeforeGuest };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+    }
 
     if (CONTROL_FILE !== undefined) {
       await waitFor(

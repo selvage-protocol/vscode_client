@@ -15,10 +15,16 @@
  * cutting the proxy's sockets is a real TCP close the guest's engine has to recover from on
  * its own, with the room and the host's connection untouched — unlike killing the server
  * itself, which would destroy the room along with the connection.
+ *
+ * The granted phase proves the room's grant end to end: the host's folder holds a file the
+ * host never opens, the guest opens it by path alone, and the host reads its own working copy
+ * because the guest asked — then opens the file afterwards and finds the guest's edit in it.
+ * Nothing else in the suite proves that a path was only ever a name until somebody asked for
+ * its content.
  */
 
 import { spawnSync } from 'node:child_process';
-import { createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -37,6 +43,10 @@ const MARKER_HOST_2 = '[[HOST-EDIT-2]]';
 const MARKER_GUEST_2 = '[[GUEST-EDIT-2]]';
 const SEED_PATH = 'notes.txt';
 const SEED_TEXT = 'a document two real editors are about to share\n';
+// A file the host writes down but never opens: the guest opens it, so its text can only have
+// arrived because the host read its own working copy on the guest's request.
+const GRANTED_PATH = 'granted/never-opened.txt';
+const GRANTED_TEXT = 'a file the host never opens in its own window\n';
 
 const RECONNECT = process.env.SELVAGE_E2E_RECONNECT !== '0';
 const DEADLINE_MS = Number(process.env.SELVAGE_E2E_DEADLINE_MS ?? '20000');
@@ -144,6 +154,8 @@ interface InstanceOutcome {
   role: string;
   phase1?: { text: string };
   phase2?: { text: string };
+  /** What the granted path held in this editor, and whether the host had it open too early. */
+  granted?: { text: string; heldBeforeGuest?: boolean };
   error?: string;
 }
 
@@ -241,6 +253,8 @@ async function main(): Promise<void> {
   const hostWorkspace = mkdtempSync(join(scratchDir(), 'selvage-host-'));
   const guestWorkspace = mkdtempSync(join(scratchDir(), 'selvage-guest-'));
   writeFileSync(join(hostWorkspace, SEED_PATH), SEED_TEXT);
+  mkdirSync(join(hostWorkspace, dirname(GRANTED_PATH)), { recursive: true });
+  writeFileSync(join(hostWorkspace, GRANTED_PATH), GRANTED_TEXT);
 
   const hostUserData = resolve(RUN_DIR, 'host-user-data');
   const hostExtensions = resolve(RUN_DIR, 'host-extensions');
@@ -249,6 +263,8 @@ async function main(): Promise<void> {
 
   const inviteFile = resolve(RUN_DIR, 'invite.txt');
   const roomPathFile = resolve(RUN_DIR, 'room-path.txt');
+  const grantedPathFile = resolve(RUN_DIR, 'granted-path.txt');
+  const grantedDoneFile = resolve(RUN_DIR, 'granted-done.txt');
   const controlFile = RECONNECT ? resolve(RUN_DIR, 'blip-done.txt') : undefined;
   const hostResultFile = resolve(RUN_DIR, 'host-result.json');
   const guestResultFile = resolve(RUN_DIR, 'guest-result.json');
@@ -257,6 +273,10 @@ async function main(): Promise<void> {
     SELVAGE_E2E_SEED_PATH: SEED_PATH,
     SELVAGE_E2E_INVITE_FILE: inviteFile,
     SELVAGE_E2E_ROOM_PATH_FILE: roomPathFile,
+    SELVAGE_E2E_GRANTED_PATH_FILE: grantedPathFile,
+    SELVAGE_E2E_GRANTED_DONE_FILE: grantedDoneFile,
+    SELVAGE_E2E_GRANTED_PATH: GRANTED_PATH,
+    SELVAGE_E2E_GRANTED_TEXT: GRANTED_TEXT,
     SELVAGE_E2E_MARKER_HOST: MARKER_HOST,
     SELVAGE_E2E_MARKER_GUEST: MARKER_GUEST,
     SELVAGE_E2E_MARKER_HOST_2: MARKER_HOST_2,
@@ -302,20 +322,33 @@ async function main(): Promise<void> {
   hostRun.catch(() => {});
   guestRun.catch(() => {});
 
+  // Phase 1 has to actually land in both real editors before anything after it means
+  // anything, in both the reconnect run and the plain one.
+  await pollFor(
+    'both instances to report phase 1 converged',
+    () => {
+      const hostOutcome = readOutcome(hostResultFile);
+      const guestOutcome = readOutcome(guestResultFile);
+      return hostOutcome?.phase1 !== undefined && guestOutcome?.phase1 !== undefined
+        ? true
+        : undefined;
+    },
+    DEADLINE_MS + 15_000,
+  );
+
+  // The guest opens a granted path the host never opened. The guest writes the control file
+  // once its own copy of that file's text has arrived, so the host's half of the proof —
+  // opening the file and finding the guest's marker in it — starts only after the guest has
+  // read what the host supplied on request.
+  await pollFor(
+    'the guest to converge on a granted path the host never opened',
+    () => (existsSync(grantedDoneFile) ? true : undefined),
+    DEADLINE_MS + 15_000,
+  );
+  log('the guest has the granted path; the host will now open the file it never opened');
+
   if (proxy !== undefined && controlFile !== undefined) {
-    // Phase 1 has to actually land in both real editors before the blip means anything.
-    await pollFor(
-      'both instances to report phase 1 converged',
-      () => {
-        const hostOutcome = readOutcome(hostResultFile);
-        const guestOutcome = readOutcome(guestResultFile);
-        return hostOutcome?.phase1 !== undefined && guestOutcome?.phase1 !== undefined
-          ? true
-          : undefined;
-      },
-      DEADLINE_MS + 15_000,
-    );
-    log('phase 1 converged in both real editors; cutting the guest relay (a real TCP close)');
+    log('cutting the guest relay (a real TCP close)');
     proxy.dropAll();
     await delay(2000);
     writeFileSync(controlFile, 'go');
@@ -358,6 +391,20 @@ async function main(): Promise<void> {
           guestText: guestOutcome?.phase2?.text,
         }
       : undefined,
+    granted: {
+      // The guest read a file the host never opened, and the host then opened it and found
+      // the guest's marker in the room's copy: content travelled both ways over a path that
+      // was only ever a name until somebody asked for it.
+      converged:
+        hostOutcome?.granted !== undefined &&
+        guestOutcome?.granted !== undefined &&
+        guestOutcome.granted.text === GRANTED_TEXT + MARKER_GUEST &&
+        hostOutcome.granted.text === GRANTED_TEXT + MARKER_GUEST &&
+        hostOutcome.granted.heldBeforeGuest === false,
+      hostText: hostOutcome?.granted?.text,
+      guestText: guestOutcome?.granted?.text,
+      heldBeforeGuest: hostOutcome?.granted?.heldBeforeGuest,
+    },
   };
   writeFileSync(resolve(RUN_DIR, 'summary.json'), JSON.stringify(summary, null, 2));
   log('summary:', JSON.stringify(summary, null, 2));
@@ -365,10 +412,18 @@ async function main(): Promise<void> {
   if (!summary.phase1.converged) {
     throw new Error('the two real VS Code instances did not converge on the shared document');
   }
+  if (!summary.granted.converged) {
+    throw new Error(
+      'the guest did not converge on a granted path the host supplied on request',
+    );
+  }
   if (RECONNECT && summary.phase2?.converged !== true) {
     throw new Error('the reconnect phase did not converge after the simulated network blip');
   }
-  log('PASSED: two real VS Code instances converged on the shared document' + (RECONNECT ? ', and again after a simulated network blip' : ''));
+  log(
+    'PASSED: two real VS Code instances converged on the shared document, and a guest read a granted path the host never opened' +
+      (RECONNECT ? ', and again after a simulated network blip' : ''),
+  );
 }
 
 function scratchDir(): string {
