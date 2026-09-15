@@ -81,10 +81,11 @@ async function run() {
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document);
 
-    // The room path a host's file is shared under includes the workspace folder's name
-    // (`src/adapter/documents.ts`'s `roomPath`); rather than have the guest guess it, the
-    // host — the only side that can compute it the same way — writes it down.
-    fs.writeFileSync(ROOM_PATH_FILE, vscode.workspace.asRelativePath(uri, true).replaceAll('\\', '/'));
+    // The room path a host's file is shared under (`src/adapter/documents.ts`'s `roomPath`):
+    // relative to the folder the session shares, qualified by that folder's name only when the
+    // window is open on more than one. `asRelativePath` without the flag is exactly that rule,
+    // and this side — the only one that can compute it — writes it down for the guest.
+    fs.writeFileSync(ROOM_PATH_FILE, vscode.workspace.asRelativePath(uri).replaceAll('\\', '/'));
 
     // The room path of the granted file, for the guest to open. This window writes the file
     // down and does not open it: the guest's read is the only way its text can arrive, which
@@ -92,7 +93,7 @@ async function run() {
     const grantedUri = vscode.Uri.file(path.join(WORKSPACE_DIR, GRANTED_PATH));
     fs.writeFileSync(
       GRANTED_PATH_FILE,
-      vscode.workspace.asRelativePath(grantedUri, true).replaceAll('\\', '/'),
+      vscode.workspace.asRelativePath(grantedUri).replaceAll('\\', '/'),
     );
 
     // The host prepends its marker at the very start of the seeded text.
