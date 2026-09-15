@@ -40,6 +40,13 @@ export class FakeEditor implements EditorHost {
   saveFails = false;
   /** Paths whose change this editor refused, for the reconcile-again path. */
   readonly refused: string[] = [];
+  /**
+   * The working copy a host reads a granted path from, and the paths it was asked for. A path
+   * absent here is one this editor will not serve: a directory, a binary, one over the size a
+   * session will carry, or one outside the folder this window shares.
+   */
+  readonly disk = new Map<string, string>();
+  readonly reads: string[] = [];
 
   private bridge?: SessionBridge;
 
@@ -100,6 +107,11 @@ export class FakeEditor implements EditorHost {
     return Promise.resolve(!this.saveFails);
   }
 
+  readGrantedFile(path: string): Promise<string | undefined> {
+    this.reads.push(path);
+    return Promise.resolve(this.disk.get(path));
+  }
+
   renderCursors(cursors: Cursor[]): void {
     this.cursors = cursors;
   }
@@ -151,6 +163,9 @@ export class QueuedEditor implements EditorHost {
   readonly refused: string[] = [];
   cursors: Cursor[] = [];
   accepts = true;
+  /** A working copy to read a requested path from, as `FakeEditor` has it. */
+  readonly disk = new Map<string, string>();
+  readonly reads: string[] = [];
 
   private queue: Array<() => void> = [];
   private bridge?: SessionBridge;
@@ -214,6 +229,11 @@ export class QueuedEditor implements EditorHost {
     this.saves.push(path);
     this.savedText.push(this.text(path) ?? '<closed>');
     return Promise.resolve(true);
+  }
+
+  readGrantedFile(path: string): Promise<string | undefined> {
+    this.reads.push(path);
+    return Promise.resolve(this.disk.get(path));
   }
 
   renderCursors(cursors: Cursor[]): void {

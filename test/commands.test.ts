@@ -949,3 +949,64 @@ test('the folder a session shares is the one it was invited on, not the window i
     'a folder added to the window after the invite widened what the room shares',
   );
 });
+
+test('a host serves the path the room asks for, and refuses what the grant leaves out', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.put('src/main.rs', 'fn main() {}\n');
+  bundle.stub.put('.env', 'SECRET=1\n');
+  bundle.stub.put('.git/config', '[core]\n');
+  bundle.stub.put('assets/big.bin', 'x', { size: 4 * 1024 * 1024 });
+  bundle.stub.put('blob.bin', new Uint8Array([0x89, 0x50, 0x00, 0x0a]));
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+
+  // A path the host's editor has never opened still arrives: the host reads its own working
+  // copy because a peer asked, which is the one thing this feature adds.
+  await guest.open('src/main.rs');
+  const text = await waitFor('the host to serve the requested path', () => {
+    const held = guest.text('src/main.rs');
+    return held === 'fn main() {}\n' ? held : false;
+  });
+  assert.equal(text, 'fn main() {}\n');
+
+  // Everything else the peer asks for is refused and reported, and nothing is seeded empty:
+  // the defaults the grant excludes, a path that resolves out of the folder, a file over the
+  // size a session will carry, and bytes that are not text.
+  const refused = ['.env', '.git/config', '../etc/passwd', '/etc/passwd', 'assets/big.bin', 'blob.bin'];
+  for (const path of refused) {
+    await guest.open(path);
+  }
+  await waitFor('every refusal to be reported', () =>
+    bundle.stub.registered.errors.length >= refused.length
+      ? bundle.stub.registered.errors
+      : false,
+  );
+  for (const path of refused) {
+    assert.equal(guest.has(path), false, `${path} was seeded anyway`);
+  }
+  assert.ok(
+    bundle.stub.registered.errors.every((message) => message.includes('not a readable file')),
+    `a refusal was worded differently: ${JSON.stringify(bundle.stub.registered.errors)}`,
+  );
+
+  // A refusal is not a decision about the file: a host opening it in its own window is the
+  // user's own act, and the room hears about that as it hears about any other open document.
+  const own = bundle.stub.openWorkspaceDocument('file:///workspace/.env');
+  bundle.stub.fire('openTextDocument', own);
+  await waitFor('the host to share the file it opened itself', () =>
+    guest.text('.env') === 'SECRET=1\n' ? true : false,
+  );
+});

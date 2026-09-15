@@ -931,3 +931,125 @@ test("the room's grant reaches the adapter as a report, whole and in order", asy
   );
   assert.deepEqual(shrunk.paths, ['src/main.rs']);
 });
+/** A host editor whose read of the working copy is held open until the test lets it land. */
+class HeldRead extends FakeEditor {
+  private release?: () => void;
+
+  override readGrantedFile(path: string): Promise<string | undefined> {
+    this.reads.push(path);
+    return new Promise((resolve) => {
+      this.release = () => {
+        resolve(this.disk.get(path));
+      };
+    });
+  }
+
+  /** Lets the read that was asked for finish. */
+  let(): void {
+    this.release?.();
+  }
+}
+
+test('a host seeds a path the room asks for that it never opened', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  host.editor.disk.set(OTHER, 'from the working copy\n');
+
+  // A guest opens a granted path: the host has no editor for it, and nothing to seed from
+  // until it reads its own working copy — which is the one thing this feature adds.
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  await waitFor('the host to seed the room from its disk', () =>
+    session.host.text(OTHER) === 'from the working copy\n',
+  );
+  await waitFor('the guest to have the text', () =>
+    guest.editor.text(OTHER) === 'from the working copy\n',
+  );
+  assert.deepEqual(host.editor.reads, [OTHER], 'the file was read for the requested path');
+  assert.deepEqual(host.bridge.openDocuments(), [], 'the host opened a document it was not asked to');
+});
+
+test('a host refuses a requested path that is not a readable file, and seeds nothing', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+
+  // `readGrantedFile` answers `undefined` for a directory, a binary, a file over the size a
+  // session will carry, and one that escapes or is excluded from the folder being shared. The
+  // path came from a peer, so a refusal is reported rather than guessed at.
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  const refusal = await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError')[0] ?? false,
+  );
+  assert.match(refusal.message, /not a readable file in the folder this window shares/);
+  assert.deepEqual(host.editor.reads, [OTHER], 'the path was not even offered to the disk');
+  assert.equal(session.host.has(OTHER), false, 'a refusal was seeded as an empty document');
+  assert.equal(session.host.text(OTHER), '');
+});
+
+test('a guest never reads its working copy for the room', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  guest.editor.disk.set(OTHER, 'a guest copy that must never be shared\n');
+
+  host.editor.open(OTHER, 'from the host\n');
+  host.bridge.documentOpened(OTHER);
+  await waitFor('the room to offer the path', () =>
+    guest.editor.reportsOf('documents').some((report) => report.documents.includes(OTHER)),
+  );
+
+  assert.deepEqual(guest.editor.reads, [], 'a guest read its disk for a requested path');
+  await waitFor('the room text to arrive', () => session.guest.text(OTHER) === 'from the host\n');
+});
+
+test('a requested path is read once, and never over what the replica has received', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  host.editor.disk.set(OTHER, 'from disk\n');
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+  await waitFor('the seed', () => session.host.text(OTHER) === 'from disk\n');
+
+  // The room edits the path. The open-document set is restated on every change, and a second
+  // read would put the disk copy back over an edit the room has already agreed on.
+  guest.editor.type(OTHER, 'from disk\nedited\n');
+  await converge(session.host, session.guest, OTHER);
+
+  host.editor.open(PATH, FILE);
+  host.bridge.documentOpened(PATH);
+  await waitFor('the room to offer both paths', () => session.host.documents().length === 2);
+
+  assert.deepEqual(host.editor.reads, [OTHER], 'a seeded path was read again');
+  assert.equal(session.host.text(OTHER), 'from disk\nedited\n', 'the room was overwritten');
+});
+
+test('a seed in flight does not land over text the room supplied while it was reading', async (t) => {
+  const session = await fakeSession();
+  const editor = new HeldRead();
+  const bridge = new SessionBridge({
+    engine: slice(session.host),
+    host: editor,
+    autoSave: false,
+  });
+  editor.attach(bridge);
+  t.after(async () => {
+    bridge.dispose();
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  editor.disk.set(OTHER, 'a stale copy on disk\n');
+
+  await session.guest.open(OTHER);
+  await waitFor('the host to ask its disk', () => editor.reads.length === 1);
+  session.guest.insert(OTHER, 0, 'from the room\n');
+  await waitFor('the room text to reach this replica', () =>
+    session.host.text(OTHER) === 'from the room\n',
+  );
+
+  editor.let();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    session.host.text(OTHER),
+    'from the room\n',
+    'the disk copy was seeded over text the replica had already received',
+  );
+});
