@@ -411,7 +411,7 @@ class Session {
       }
       case 'applyRefused': {
         void vscode.window.showErrorMessage(
-          `Selvage: the editor would not apply the room's change to ${report.path}.`,
+          `Selvage: the editor would not apply the room's change to ${report.path}; the file may be read-only.`,
         );
         break;
       }
@@ -423,7 +423,9 @@ class Session {
       }
       case 'saveFailed': {
         void vscode.window.showErrorMessage(
-          `Selvage: could not save ${report.path}; the file on disk is behind the room.`,
+          report.message === undefined
+            ? `Selvage: could not save ${report.path}; the file on disk is behind the room.`
+            : `Selvage: could not save ${report.path}; the file on disk is behind the room (${report.message}).`,
         );
         break;
       }
