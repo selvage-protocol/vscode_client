@@ -446,7 +446,7 @@ class Session {
         this.onReport({
           kind: 'sessionError',
           code: 'error',
-          message: `could not watch the folder this window shares, so the room's listing will not follow it: ${message(error)}`,
+          message: `could not watch the folder this window shares: ${message(error)}`,
         });
         return;
       }

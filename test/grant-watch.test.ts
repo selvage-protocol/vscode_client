@@ -376,7 +376,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
   assert.deepEqual(
     said,
     [
-      "Selvage: could not watch the folder this window shares, so the room's listing will not follow it: this window has no watcher for that folder (error)",
+      "Selvage: could not watch the folder this window shares: this window has no watcher for that folder (error)",
     ],
     'two folders that cannot be watched are two failures the user has to read',
   );
