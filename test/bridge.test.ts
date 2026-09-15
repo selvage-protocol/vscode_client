@@ -721,12 +721,69 @@ test('a peer caret that does not resolve here is not drawn at offset zero', () =
 });
 
 test('a guest never seeds the room, even from a non-empty buffer', async (t) => {
-  const { session, guest } = await twoWindows(t);
+  const { session, host, guest } = await twoWindows(t);
+  // The guest opens the path from its virtual document before the room has sent its text.
   guest.editor.open(PATH, 'a guest disk copy\n');
   guest.bridge.documentOpened(PATH);
   assert.equal(guest.bridge.role(), 'guest');
+  await guest.editor.settle();
   assert.equal(session.guest.text(PATH), '', 'the guest seeded the room');
-  assert.equal(guest.editor.text(PATH), '', 'the guest buffer kept the disk copy');
+
+  // Nothing of the guest's own buffer reached the room, and the room's text still wins when
+  // it arrives.
+  host.editor.open(PATH, 'from the room\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the room text to reach the guest buffer', () =>
+    guest.editor.text(PATH) === 'from the room\n',
+  );
+  assert.equal(session.guest.text(PATH), 'from the room\n', 'the guest doubled the content');
+});
+
+test('a guest that opens before the room text has arrived never inserts its buffer', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  // The editor reports the reconcile's clear as landed without the buffer moving, which is
+  // the window the VS Code document model sits in while a virtual document materialises.
+  guest.editor.stallApply = true;
+  guest.editor.open(PATH, 'hello world\n');
+  guest.bridge.documentOpened(PATH);
+  await guest.editor.settle();
+  assert.equal(session.guest.text(PATH), '', 'the guest published its own buffer into the room');
+
+  // The room's text arrives; the guest adopts it and the room holds it once.
+  host.editor.open(PATH, 'hello world\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the room text to reach the guest replica', () =>
+    session.guest.text(PATH) === 'hello world\n',
+  );
+  assert.equal(guest.editor.text(PATH), 'hello world\n');
+  assert.equal(session.guest.text(PATH), 'hello world\n', 'the room ended up holding the text twice');
+});
+
+test('a guest never publishes a stale buffer over the room it has already received', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  host.editor.open(PATH, 'from the room\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the guest to have the room text', () => session.guest.has(PATH));
+
+  // The guest's tab still holds a stale copy — a session rejoined, a document reopened — and
+  // the editor reports the reconcile as landed without moving the buffer.
+  guest.editor.stallApply = true;
+  guest.editor.open(PATH, 'a stale disk copy\n');
+  guest.bridge.documentOpened(PATH);
+  await guest.editor.settle();
+  assert.equal(session.guest.text(PATH), 'from the room\n', 'the stale buffer overwrote the room');
+});
+
+test('a change to a guest buffer before its room text arrives is superseded', async (t) => {
+  const { session, guest } = await twoWindows(t);
+  // The guest opens a buffer of its own, and the editor reports a change to it before the
+  // room has sent the document. Neither reaches the room; the room's text supersedes both.
+  guest.editor.open(PATH, 'a guest disk copy\n');
+  guest.bridge.documentOpened(PATH);
+  await guest.editor.settle();
+  guest.editor.type(PATH, 'typed before arrival\n');
+  await guest.editor.settle();
+  assert.equal(session.guest.text(PATH), '', 'a pre-arrival change was published');
 });
 
 test('a local keystroke is published as the smallest change', () => {
