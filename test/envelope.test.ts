@@ -10,6 +10,7 @@ import {
   closeCodeFor,
   code,
   event,
+  grantParams,
   isCompatible,
   isTerminalCode,
   method,
@@ -246,6 +247,19 @@ test('the rename request and its event are the names and shapes §5 and §6 fix'
   assert.equal(parsePeerRenamed({ display_name: 'Ada' }), undefined);
   assert.equal(parsePeerRenamed({ peer_id: 'p-1', display_name: 7 }), undefined);
   assert.equal(parsePeerRenamed(undefined), undefined);
+});
+
+test('the grant request and its event are the names and shapes §5 and §6.3 fix', () => {
+  assert.equal(method.docGrant, 'doc.grant');
+  assert.equal(event.docGranted, 'doc.granted');
+
+  // The listing is copied, so a caller cannot mutate the frame it is about to send, and the
+  // order it is given is the order it is written: a publisher's claim, not this client's.
+  const paths = ['README.md', '\u{1F600}.txt', 'ｆ.txt'];
+  const params = grantParams({ paths });
+  assert.deepEqual(params, { paths });
+  paths.push('src/main.rs');
+  assert.deepEqual(params.paths, ['README.md', '\u{1F600}.txt', 'ｆ.txt']);
 });
 
 test('/meta decides compatibility, and saying nothing about versions decides nothing', () => {

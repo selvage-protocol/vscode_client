@@ -43,6 +43,11 @@ export interface FakeServerOptions {
   silent?: boolean;
   /** Go silent once this many connections have been accepted, for a retry's timeout. */
   silentAfter?: number;
+  /**
+   * `false` models a server that predates the grant: `doc.grant` is answered
+   * `unknown_method` and the connection stays open.
+   */
+  grant?: boolean;
 }
 
 interface Client {
@@ -60,6 +65,8 @@ interface Room {
   hostId: string | null;
   peers: Set<string>;
   documents: string[];
+  /** The host's listing, in the order it was published: the server never normalises it. */
+  grant: string[];
   reap?: ReturnType<typeof setTimeout>;
 }
 
@@ -88,6 +95,8 @@ export class FakeServer {
   readonly requests: Array<{ client: string; method: string; path: string }> = [];
   /** Every `session.rename` handled, in arrival order: the peer and the name asked for. */
   readonly renames: Array<{ peerId: string; displayName: string }> = [];
+  /** Every `doc.grant` handled, in arrival order: the peer and the listing it published. */
+  readonly grants: Array<{ peerId: string; paths: string[] }> = [];
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
@@ -316,6 +325,7 @@ export class FakeServer {
         hostId: client.id,
         peers: new Set([client.id]),
         documents: [],
+        grant: [],
       };
       this.rooms.set(minted.id, minted);
       client.roomId = minted.id;
@@ -370,6 +380,11 @@ export class FakeServer {
       event.roomJoined,
       this.sessionParams(existing, client, {}),
     );
+    // A joining connection learns the room's grant straight after its `room.joined`, and only
+    // when the room grants something (§6.3).
+    if (existing.grant.length > 0) {
+      this.send(client, event.docGranted, { paths: existing.grant });
+    }
     if (wasHostless && role === 'host') {
       this.broadcast(existing, { peer: client.peer }, event.hostAttached, client.id);
     } else {
@@ -419,6 +434,48 @@ export class FakeServer {
     }
     const params = (message.params ?? {}) as Record<string, unknown>;
     switch (message.method) {
+      case method.docGrant: {
+        const room = this.rooms.get(client.roomId ?? '');
+        if (room === undefined) {
+          this.respond(client, id, undefined, {
+            code: code.roomGone,
+            message: 'the room is gone',
+          });
+          return;
+        }
+        if (this.options.grant === false) {
+          this.respond(client, id, undefined, {
+            code: code.unknownMethod,
+            message: 'no such method: doc.grant',
+          });
+          return;
+        }
+        const paths = Array.isArray(params.paths) ? params.paths : undefined;
+        if (
+          paths === undefined ||
+          paths.some((path) => typeof path !== 'string' || path.trim() === '')
+        ) {
+          this.respond(client, id, undefined, {
+            code: code.badParams,
+            message: 'paths is required and every path must be non-blank',
+          });
+          return;
+        }
+        if (room.hostId !== client.id) {
+          this.respond(client, id, undefined, {
+            code: code.badParams,
+            message: "the room's grant is its host's to publish",
+          });
+          return;
+        }
+        const listing = paths as string[];
+        this.grants.push({ peerId: client.id, paths: [...listing] });
+        // Stored and relayed verbatim: the fake server does not sort or deduplicate either.
+        room.grant = [...listing];
+        this.respond(client, id, {});
+        this.broadcast(room, { paths: room.grant }, event.docGranted);
+        return;
+      }
       case method.docOpen:
       case method.docClose: {
         const path = typeof params.path === 'string' ? params.path : '';

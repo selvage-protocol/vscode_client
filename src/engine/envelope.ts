@@ -25,6 +25,7 @@ export const method = {
   rename: 'session.rename',
   docOpen: 'doc.open',
   docClose: 'doc.close',
+  docGrant: 'doc.grant',
 } as const;
 
 /** Server → client event names (§6). */
@@ -36,6 +37,7 @@ export const event = {
   peerRenamed: 'peer.renamed',
   docOpened: 'doc.opened',
   docClosed: 'doc.closed',
+  docGranted: 'doc.granted',
   hostDetached: 'host.detached',
   hostAttached: 'host.attached',
   roomGone: 'room.gone',
@@ -142,6 +144,14 @@ export interface DocEvent {
 /** `session.rename` params (§5). */
 export interface RenameParams {
   display_name: string;
+}
+
+/**
+ * `doc.grant` / `doc.granted` params (§5, §6.3): the whole listing, replacing whatever the
+ * room or this replica held. The order is the publisher's claim and is carried unchanged.
+ */
+export interface GrantParams {
+  paths: string[];
 }
 
 /** `peer.renamed` params (§6): the peer whose name changed, and the name now in force. */
@@ -348,4 +358,9 @@ export function helloParams(input: {
 /** `session.rename` params: the name this connection is changing to (§5). */
 export function renameParams(input: { displayName: string }): RenameParams {
   return { display_name: input.displayName };
+}
+
+/** `doc.grant` params: the listing this host is publishing (§5). */
+export function grantParams(input: { paths: string[] }): GrantParams {
+  return { paths: [...input.paths] };
 }

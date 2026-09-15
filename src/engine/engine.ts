@@ -18,6 +18,7 @@ import {
   close,
   code as errCode,
   event as eventName,
+  grantParams,
   helloParams,
   isTerminalCode,
   method,
@@ -31,6 +32,7 @@ import type {
   ClientMessage,
   DocEvent,
   DocSet,
+  GrantParams,
   Keepalive,
   PeerInfo,
   Role,
@@ -175,16 +177,19 @@ interface PendingRequestBase {
 
 /**
  * A request waiting for its answer. An `open`/`close` names the document it is about; a
- * `rename` names no document, so its answer touches no document bookkeeping (§5).
+ * `rename` and a `grant` name no document, so their answers touch no document bookkeeping
+ * (§5).
  */
 type PendingRequest =
   | (PendingRequestBase & { kind: 'open' | 'close'; path: string })
-  | (PendingRequestBase & { kind: 'rename' });
+  | (PendingRequestBase & { kind: 'rename' })
+  | (PendingRequestBase & { kind: 'grant' });
 
 /** The frame a request is built from, discriminated by the pending kind it will be stored under. */
 type RequestFrame =
   | { kind: 'open' | 'close'; path: string; method: string; params: unknown }
-  | { kind: 'rename'; method: string; params: unknown };
+  | { kind: 'rename'; method: string; params: unknown }
+  | { kind: 'grant'; method: string; params: unknown };
 
 interface SeatWaiter {
   resolve: (info: SessionInfo) => void;
@@ -246,6 +251,8 @@ export class SelvageEngine {
   private requestId = 0;
   private localState: AwarenessState | null;
   private roomDocuments: string[] = [];
+  /** The room's grant: the host's listing of its working tree. Never content. */
+  private granted: string[] = [];
   private heldDocuments: string[] = [];
   private timer?: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
@@ -523,6 +530,23 @@ export class SelvageEngine {
   }
 
   /**
+   * Publishes the room's grant: the host's listing of its working tree (§5). The listing is a
+   * snapshot replacing the room's whole grant, and only the room's host may publish one — the
+   * server refuses any other connection, and a server that does not know the method answers
+   * `unknown_method`, which is "this server has no grant" rather than a fault.
+   *
+   * The order is carried exactly as given: a publisher writes its listing ascending by UTF-16
+   * code unit (§5), and this client does not sort, deduplicate or otherwise normalise it.
+   */
+  grant(paths: readonly string[]): Promise<void> {
+    return this.sendRequest({
+      kind: 'grant',
+      method: method.docGrant,
+      params: grantParams({ paths: [...paths] }),
+    });
+  }
+
+  /**
    * The current text of a document: relayed content if there is any, even for a path this
    * connection never opened. Empty when this replica has received nothing for it.
    */
@@ -566,6 +590,14 @@ export class SelvageEngine {
   /** The room's open-document set, as the server owns it. */
   documents(): string[] {
     return [...this.roomDocuments];
+  }
+
+  /**
+   * The room's grant, as the server owns it: the host's listing, in the order the host wrote
+   * it. Empty for a room whose host has published nothing or a server that has no grant.
+   */
+  grantedPaths(): string[] {
+    return [...this.granted];
   }
 
   /** The documents this client holds open. */
@@ -834,6 +866,15 @@ export class SelvageEngine {
     // Every request went out on the socket that just died; no answer can arrive on the
     // next one, and their frames must not be replayed there.
     this.failPending();
+    // The grant is not a member of the join reply: the server restates it in a `doc.granted`
+    // straight after the next `room.joined`, and only when the room grants something. This
+    // replica's view of the listing is therefore local and stale the moment the socket dies,
+    // and dropping it here is what keeps a reconnect into a room that now grants nothing from
+    // showing the listing this client held before.
+    if (this.granted.length > 0) {
+      this.granted = [];
+      this.emit({ type: 'grantChanged', paths: [] });
+    }
     if (this.disposed || this.finished) {
       return;
     }
@@ -1076,7 +1117,9 @@ export class SelvageEngine {
       const pending: PendingRequest =
         request.kind === 'rename'
           ? { kind: 'rename', resolve, reject, timer }
-          : { kind: request.kind, path: request.path, resolve, reject, timer };
+          : request.kind === 'grant'
+            ? { kind: 'grant', resolve, reject, timer }
+            : { kind: request.kind, path: request.path, resolve, reject, timer };
       this.pending.set(id, pending);
       this.enqueueText(JSON.stringify(message), id);
     });
@@ -1110,8 +1153,9 @@ export class SelvageEngine {
   /** Moves local state to what the server accepted, then reports the room's set. */
   private accept(pending: PendingRequest, result: unknown): void {
     // A rename's answer is `{}`: it changes this connection's name, which the `peer.renamed`
-    // event carries, and it must not move the room's document set (§5).
-    if (pending.kind === 'rename') {
+    // event carries, and it must not move the room's document set (§5). A grant's answer is
+    // `{}` for the same reason: the listing is carried by `doc.granted`.
+    if (pending.kind === 'rename' || pending.kind === 'grant') {
       return;
     }
     const body = (result ?? {}) as DocSet;
@@ -1195,6 +1239,12 @@ export class SelvageEngine {
         }
         break;
       }
+      case eventName.docGranted: {
+        if (this.applyGrant(message.params)) {
+          this.emit({ type: 'grantChanged', paths: this.grantedPaths() });
+        }
+        break;
+      }
       case eventName.hostDetached: {
         const graceMs = numberParam(message.params, 'grace_ms') ?? 0;
         this.emit({ type: 'hostDetached', graceMs });
@@ -1264,6 +1314,28 @@ export class SelvageEngine {
       return false;
     }
     this.roomDocuments = documents;
+    return true;
+  }
+
+  /**
+   * Moves this replica's view of the grant to what a `doc.granted` names, and says whether it
+   * moved. The listing replaces whatever was held — a shorter one is a smaller grant, not a
+   * partial one — and it is kept in the order the host wrote (§5, §6.3): a receipt that says
+   * what this replica already has is not news, exactly as for the open-document set.
+   */
+  private applyGrant(params: unknown): boolean {
+    const body = params as Partial<GrantParams> | undefined;
+    if (body === undefined || !Array.isArray(body.paths)) {
+      return false;
+    }
+    const paths = body.paths.filter((path): path is string => typeof path === 'string');
+    if (
+      paths.length === this.granted.length &&
+      paths.every((path, index) => path === this.granted[index])
+    ) {
+      return false;
+    }
+    this.granted = paths;
     return true;
   }
 

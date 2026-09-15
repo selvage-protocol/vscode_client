@@ -1,6 +1,6 @@
 /**
  * The event vocabulary an editor adapter consumes. It mirrors the reference server's
- * `crates/client/src/editor.rs` — the same nine events, so the seam is a project-wide
+ * `crates/client/src/editor.rs` — the same events, so the seam is a project-wide
  * vocabulary rather than a Rust detail. The reference server lives at
  * https://github.com/selvage-protocol/reference_server.
  */
@@ -13,6 +13,8 @@ export type EngineEvent =
   | { type: 'documentChanged'; path: string }
   /** The room's open-document set changed. */
   | { type: 'documentsChanged'; documents: string[] }
+  /** The room's grant changed: the whole listing, replacing whatever the adapter held. */
+  | { type: 'grantChanged'; paths: string[] }
   /** Membership changed. */
   | { type: 'peersChanged'; peers: PeerInfo[] }
   /** Awareness changed: remote cursors moved, joined or expired. */

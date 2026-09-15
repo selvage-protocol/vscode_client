@@ -416,3 +416,69 @@ test('a reconnect that is refused as host_present does not become a second host'
     server.connectionCount === 1,
   );
 });
+
+test('a reconnect re-learns the room\'s grant, and a drop drops the listing', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.grant(['README.md', 'src/main.rs']);
+  await waitFor('the guest to learn the grant', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  const firstPeerId = guest.session().peer.peer_id;
+  const events = record(guest);
+
+  session.server.drop('Bob');
+
+  // The listing is this replica's view of the room and the room restates it after the join,
+  // so the drop takes it away before the reconnect brings it back.
+  const cleared = await events.waitForEvent(
+    'the grant to be dropped with the connection',
+    (event) => event.type === 'grantChanged' && event.paths.length === 0,
+  );
+  assert.deepEqual(cleared.type === 'grantChanged' ? cleared.paths : undefined, []);
+
+  await waitFor('the guest to be seated again', () => {
+    const peerId = guest.session().peer.peer_id;
+    return peerId !== firstPeerId ? peerId : false;
+  });
+  const relearned = await waitFor('the grant to come back', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  assert.deepEqual(relearned, ['README.md', 'src/main.rs']);
+});
+
+test('a reconnect into a room that now grants nothing shows nothing', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await host.grant(['README.md']);
+  await waitFor('the guest to learn the grant', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+
+  // The host empties the grant while the guest's socket is down, so the guest misses the
+  // event and its stale listing is all it has to go on. A server sends no `doc.granted` for an
+  // empty grant, which is why the drop has to be what took the listing away.
+  const firstPeerId = guest.session().peer.peer_id;
+  session.server.drop('Bob');
+  await host.grant([]);
+
+  await waitFor('the guest to be seated again', () => {
+    const peerId = guest.session().peer.peer_id;
+    return peerId !== firstPeerId ? peerId : false;
+  });
+  assert.deepEqual(
+    guest.grantedPaths(),
+    [],
+    'the listing the drop took away came back on the reconnect',
+  );
+});
