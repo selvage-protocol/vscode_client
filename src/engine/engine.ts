@@ -37,7 +37,7 @@ import type {
 import { EngineClosedError, ProtocolError } from './errors.ts';
 import type { EngineEvent, EngineEventListener } from './events.ts';
 import { fetchMeta, metaAccepts } from './meta.ts';
-import { buildPresence, toAnchor, toRelativePosition } from './presence.ts';
+import { buildPresence, sameAwareness, toAnchor, toRelativePosition } from './presence.ts';
 import type {
   Anchor,
   AwarenessState,
@@ -557,6 +557,14 @@ export class SelvageEngine {
 
   /** Publishes this client's presence: document path plus selection. `null` clears it. */
   setAwareness(state: AwarenessState | null): void {
+    // y-protocols emits an `update` for every `setLocalState`, whether it changed anything or
+    // not, and each of those is a frame (§8). A caret that has not moved, and a clear of an
+    // already-clear state, are therefore not published at all — a repeated state is not news.
+    // The renewal is a different caller (`publishAwareness`), because it is deliberately this
+    // same state on a newer clock, which §8.2 requires republishing.
+    if (sameAwareness(this.localState, state)) {
+      return;
+    }
     this.localState = state;
     this.awareness.setLocalState(state);
   }

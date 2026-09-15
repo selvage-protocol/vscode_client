@@ -5,8 +5,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
+import type { ConnectOptions } from '../src/engine/engine.ts';
 import { EngineClosedError, ProtocolError, isProtocolError } from '../src/engine/errors.ts';
 import * as Y from 'yjs';
 
@@ -14,6 +16,8 @@ import { caret } from '../src/engine/presence.ts';
 import type { Anchor, AwarenessState } from '../src/engine/presence.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
+import { counting } from './helpers/counting-socket.ts';
+import type { Counting } from './helpers/counting-socket.ts';
 import { fakeSession, options } from './helpers/session.ts';
 import {
   converge,
@@ -584,6 +588,116 @@ test('setAwareness(null) clears presence rather than publishing an empty state',
       false,
     { describe: () => host.presence() },
   );
+});
+
+/**
+ * A host and a guest whose outbound frames are counted, so a test can name what the guest
+ * published. A peer's own view cannot: an unchanged state is deliberately invisible to it.
+ */
+async function countedGuest(
+  t: TestContext,
+  connect: Partial<ConnectOptions> = {},
+): Promise<{ host: SelvageEngine; guest: SelvageEngine; tap: Counting }> {
+  const tap = counting();
+  const server = await FakeServer.start();
+  const host = await SelvageEngine.host(
+    server.wsBase,
+    'Ada',
+    options({ baseUrl: server.wsBase, displayName: 'Ada', reconnect: false }),
+  );
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the host was given no invite URL');
+  const guest = await SelvageEngine.join(
+    invite,
+    'Bob',
+    options({
+      baseUrl: server.wsBase,
+      displayName: 'Bob',
+      reconnect: false,
+      webSocketFactory: tap.factory,
+      ...connect,
+    }),
+  );
+  t.after(async () => {
+    await guest.disconnect();
+    await host.disconnect();
+    await server.stop();
+  });
+  await host.open(PATH);
+  await guest.open(PATH);
+  host.insert(PATH, 0, 'fn main() {}\n');
+  await converge(host, guest, PATH);
+  return { host, guest, tap };
+}
+
+test('an identical selection is not published a second time', async (t) => {
+  const { host, guest, tap } = await countedGuest(t);
+  guest.setSelection(PATH, { anchor: 1, head: 1 });
+  await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 1);
+
+  // Nothing else is in flight between the reset and the changed position, so the frames the
+  // tally holds are the ones these two calls produced: a repeat of the state Bob already
+  // holds, then a state he does not.
+  tap.reset();
+  guest.setSelection(PATH, { anchor: 1, head: 1 });
+  guest.setSelection(PATH, { anchor: 2, head: 2 });
+  const seen = await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 2);
+  assert.deepEqual(seen.selection, { anchor: 2, head: 2 });
+  assert.equal(tap.tally.sent.awareness, 1, 'the unchanged state was published again');
+});
+
+test('a renewal republishes the same state with a newer clock', async (t) => {
+  const { host, guest, tap } = await countedGuest(t, {
+    keepalive: { renewMs: 40, expireMs: 8000 },
+  });
+  guest.setSelection(PATH, { anchor: 1, head: 1 });
+  await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 1);
+
+  // A renewal is deliberately the state the room already has (§8.2), so it is the one
+  // publication the comparison must not swallow.
+  tap.reset();
+  await waitFor(
+    'the renewal tick to republish',
+    () => tap.tally.sent.awareness > 0,
+    { timeoutMs: 2000 },
+  );
+  await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 1);
+});
+
+test('clearing an already-clear presence publishes nothing', async (t) => {
+  const { host, guest, tap } = await countedGuest(t);
+  guest.setAwareness(null);
+  await waitFor(
+    "Bob's presence to be gone",
+    () =>
+      host.presence().some((presence) => presence.peer?.display_name === 'Bob') ===
+      false,
+    { describe: () => host.presence() },
+  );
+
+  tap.reset();
+  guest.setAwareness(null);
+  guest.setAwareness({ path: PATH, selection: caret(anchored(guest, PATH, 1)) });
+  const seen = await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 1);
+  assert.deepEqual(seen.selection, { anchor: 1, head: 1 });
+  assert.equal(tap.tally.sent.awareness, 1, 'the second clear was published');
+});
+
+test('a changed state is published', async (t) => {
+  const { host, guest, tap } = await countedGuest(t);
+  guest.setSelection(PATH, { anchor: 1, head: 1 });
+  await waitForSelection(host, 'Bob', PATH, (selection) => selection.anchor === 1);
+
+  tap.reset();
+  guest.setSelection(PATH, { anchor: 2, head: 4 });
+  const seen = await waitForSelection(
+    host,
+    'Bob',
+    PATH,
+    (selection) => selection.head === 4,
+  );
+  assert.deepEqual(seen.selection, { anchor: 2, head: 4 });
+  assert.equal(tap.tally.sent.awareness, 1);
 });
 
 test('a sender publishes no selection it cannot anchor', async (t) => {
