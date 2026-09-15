@@ -11,7 +11,7 @@ import * as vscode from 'vscode';
 
 import { SCHEME, SessionBridge, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
-import { SelvageEngine, parseSessionUrl } from '../engine/index.ts';
+import { SelvageEngine, isProtocolError, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -158,6 +158,9 @@ class Session {
         if (event.affectsConfiguration('selvage.cursorLabel')) {
           this.editor.renderCursors(this.bridge.cursors());
         }
+        if (event.affectsConfiguration('selvage.displayName')) {
+          this.renameToConfigured();
+        }
       }),
     );
     this.status.show();
@@ -206,9 +209,34 @@ class Session {
     return this.peers.map((peer) => peer.display_name);
   }
 
-  /** The name this session was seated with. It travelled in the handshake and never moves. */
+  /** The name this session is known by: the handshake's, until a live rename replaces it. */
   displayName(): string {
     return this.engine.session().peer.display_name;
+  }
+
+  /**
+   * The `selvage.displayName` setting changed. The listener is the one sender, so both the
+   * `Selvage: Set the display name` command — which writes the setting — and a direct
+   * settings-UI edit arrive here. A name already in force sends nothing; a name the
+   * protocol refuses is skipped rather than sent, and a refusal from the server is reported
+   * and leaves the live name alone.
+   */
+  private renameToConfigured(): void {
+    const configured = config().get<string>('displayName', '');
+    if (displayNameRefusal(configured) !== undefined) {
+      return;
+    }
+    const name = configured.trim();
+    if (name === this.displayName()) {
+      return;
+    }
+    void this.engine.rename(name).catch((error: unknown) => {
+      this.onReport({
+        kind: 'sessionError',
+        code: isProtocolError(error) ? error.code : 'error',
+        message: `the server refused the display-name change: ${message(error)}`,
+      });
+    });
   }
 
   /**
@@ -700,9 +728,10 @@ export interface DisplayNameArgs {
  * command can both read and set: a Neovim command takes `:SelvageDisplayName [name]` and a
  * palette entry takes nothing, so the report is the first thing the user sees either way.
  *
- * The name travels in the `host`/`join` handshake and nothing carries it afterwards, so a
- * session already live keeps the name it started with; the change is for the next one. The
- * setting is written at the global scope, so a later window is not asked again.
+ * The name travels in the `host`/`join` handshake, and a live session changes it with the
+ * `selvage.displayName` setting write: the configuration listener sends a `session.rename`,
+ * so a change applies to the room now rather than only to the next host or join. The setting
+ * is written at the global scope, so a later window is not asked again.
  */
 async function displayName(args?: DisplayNameArgs): Promise<void> {
   if (args?.name !== undefined) {
@@ -756,7 +785,7 @@ async function acceptDisplayName(raw: string): Promise<void> {
   void vscode.window.showInformationMessage(
     current === undefined
       ? `Selvage: display name set to "${name}"; the next session will use it.`
-      : `Selvage: display name set to "${name}"; this session keeps the name it started with, the change applies to the next host or join.`
+      : `Selvage: display name set to "${name}"; this session is renamed too, and the room is told.`
   );
 }
 

@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 448 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 162 tests, no server, no editor
-$ npm test                             # 166 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 166 tests, no server, no editor
+$ npm test                             # 170 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -398,24 +398,24 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 
 | File | What it covers |
 |---|---|
-| `test/envelope.test.ts` | version compatibility (same-major, minor decisive only at 0.x), error/close codes, URL round-trips, permissive envelope parsing |
-| `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, convergence, presence attribution and expiry, what a publish suppresses and what a renewal does not, the room lifecycle, hostile frames |
+| `test/envelope.test.ts` | version compatibility (same-major, minor decisive only at 0.x), error/close codes, URL round-trips, permissive envelope parsing, the `session.rename`/`peer.renamed` shapes |
+| `test/engine.test.ts` | mint/join by invite URL, refusals by code, `/meta` fail-fast, the open-document set's hold semantics, request correlation, a mid-session rename answered and announced, convergence, presence attribution and expiry, what a publish suppresses and what a renewal does not, the room lifecycle, hostile frames |
 | `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine; the fixture is vendored under `test/fixtures/`, or read from the `specification` checkout named by `SELVAGE_VECTORS` |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, the leave-first questions, the display name reported, set, refused over the bound and never sent, the participant list and its colours |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, the leave-first questions, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
-| `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, and the `gutterIconPath`/`'contain'` decoration type the built extension creates |
+| `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**166 tests, 0 failures**: 162 server-free and 4 that need a built `selvaged`. Waits are bounded
+**170 tests, 0 failures**: 166 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
