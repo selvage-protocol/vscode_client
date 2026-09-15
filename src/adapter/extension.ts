@@ -32,6 +32,15 @@ const CLIENT = 'selvage-vscode/0.1.0';
 const SELECTION_INTERVAL_MS = 100;
 
 /**
+ * How long a filesystem event waits before the room is told the listing again. A burst — a
+ * `cargo build`, a branch switch, an editor writing its own files — is tens of thousands of
+ * events, so a trailing throttle turns them into one walk of the folder per interval rather
+ * than one per event. This is the Neovim client's value, so a peer sees a listing change after
+ * the same delay whichever client is hosting.
+ */
+const GRANT_REFRESH_INTERVAL_MS = 250;
+
+/**
  * How long a read waits for the room to send a path this replica has received nothing for.
  *
  * A listed path is a candidate and not a promise — it names what the host's folder held when
@@ -128,6 +137,16 @@ class Session {
    * on another folder afterwards; what the room holds is the folder it was invited on.
    */
   private readonly folders: readonly vscode.WorkspaceFolder[];
+  /**
+   * The listing this session last published. The engine's `grant` writes whatever it is handed,
+   * so the comparison is the adapter's: an enumeration that says what the last one said is not
+   * sent, and a burst pays for one walk of the folder and no frame.
+   */
+  private published: string[] | undefined;
+  /** A filesystem event whose republish has not run yet. */
+  private grantTimer: ReturnType<typeof setTimeout> | undefined;
+  /** What makes the listing follow the folders, live only while this session hosts. */
+  private readonly grantWatchers: vscode.Disposable[] = [];
   private peers: PeerInfo[] = [];
   private documents: string[] = [];
   private granted: string[] = [];
@@ -209,10 +228,11 @@ class Session {
     this.refreshStatus();
     this.selection();
     grantTree?.use(this);
-    // The room's shape is the host's to publish, and it is read off the working copy once, when
-    // the session starts: the folder the invite names is the grant, and a later change to what
-    // the window has open is not a statement about the folder.
+    // The room's shape is the host's to publish: the folder the invite names is the grant, read
+    // off the working copy at the start and again whenever a file under it appears, disappears
+    // or changes. What the window has *open* is not a statement about the folder.
     if (this.role() === 'host') {
+      this.watchFolders();
       void this.publishGrant();
     }
     // A guest joins a room that may have documents already, and may join one that has none.
@@ -319,9 +339,15 @@ class Session {
    *
    * A server that does not know `doc.grant` answers `unknown_method`, which means it has no
    * grant rather than that anything failed: the session goes on and the room falls back to its
-   * open-document set. Any other refusal is reported and also changes nothing.
+   * open-document set. Any other refusal is reported and also changes nothing. A listing the
+   * last publication already said is not sent at all.
    */
   private async publishGrant(): Promise<void> {
+    // A republish the interval had already armed when the session ended has nothing to say to
+    // a room this window has left.
+    if (this.finished) {
+      return;
+    }
     let paths: string[];
     try {
       paths = await enumerateGrant(this.folders);
@@ -333,8 +359,17 @@ class Session {
       });
       return;
     }
-    await this.engine.grant(paths).catch((error: unknown) => {
+    if (this.published !== undefined && sameListing(this.published, paths)) {
+      return;
+    }
+    try {
+      await this.engine.grant(paths);
+      this.published = paths;
+    } catch (error) {
       if (isProtocolError(error) && error.code === errCode.unknownMethod) {
+        // A server with no grant stores no listing, so repeating one is a frame per change for
+        // nothing. Remembering it here is the same tolerance the first publication gets.
+        this.published = paths;
         return;
       }
       this.onReport({
@@ -342,7 +377,73 @@ class Session {
         code: isProtocolError(error) ? error.code : 'error',
         message: `the server refused the listing of the folder this window shares: ${message(error)}`,
       });
-    });
+    }
+  }
+
+  /**
+   * Makes the room's listing follow the folders this session was invited on.
+   *
+   * One watcher per folder, because a `RelativePattern` names one base. The session is the
+   * watchers' owner: a guest publishes nothing and so watches nothing, and nothing outlives
+   * `dispose`.
+   */
+  private watchFolders(): void {
+    for (const folder of this.folders) {
+      let watcher: vscode.FileSystemWatcher;
+      try {
+        watcher = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(folder, '**/*'),
+        );
+      } catch (error) {
+        // An editor that cannot watch one of the folders is not one to half-watch with: the
+        // listing would follow some of what this window shares and silently not the rest, which
+        // is a worse thing to leave running than a listing that is known to be as of session
+        // start. So the watch is dropped and said once, and the session goes on.
+        this.stopWatching();
+        this.onReport({
+          kind: 'sessionError',
+          code: 'error',
+          message: `could not watch the folder this window shares, so the room's listing will not follow it: ${message(error)}`,
+        });
+        return;
+      }
+      // A content change is one of the three: a file that grows past what a session will carry
+      // leaves the listing, and one that shrinks back into it returns.
+      const refresh = (): void => {
+        this.scheduleGrant();
+      };
+      this.grantWatchers.push(
+        watcher.onDidCreate(refresh),
+        watcher.onDidChange(refresh),
+        watcher.onDidDelete(refresh),
+        watcher,
+      );
+    }
+  }
+
+  /**
+   * Arms the one republish the interval allows. Further events inside the window do not extend
+   * it, and the flush enumerates when it runs, so what a burst publishes is the folder as it
+   * stands then rather than what each event saw.
+   */
+  private scheduleGrant(): void {
+    if (this.grantTimer !== undefined) {
+      return;
+    }
+    this.grantTimer = setTimeout(() => {
+      this.grantTimer = undefined;
+      void this.publishGrant();
+    }, GRANT_REFRESH_INTERVAL_MS);
+  }
+
+  private stopWatching(): void {
+    for (const disposable of this.grantWatchers.splice(0)) {
+      try {
+        disposable.dispose();
+      } catch {
+        // A watcher the editor will not release must not stop the rest of the session's teardown.
+      }
+    }
   }
 
   names(): string[] {
@@ -409,6 +510,12 @@ class Session {
       return;
     }
     this.finished = true;
+    // A queued republish is dropped rather than sent: the room is not this window's any more.
+    if (this.grantTimer !== undefined) {
+      clearTimeout(this.grantTimer);
+      this.grantTimer = undefined;
+    }
+    this.stopWatching();
     // The position the interval was still holding reaches the room before the session ends.
     this.flushSelection();
     // A guest's tabs keep what the room held for them: the session is over, but nothing a
@@ -1049,6 +1156,11 @@ async function ask(
 
 function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('selvage');
+}
+
+/** Whether two listings say the same thing, in the same order. */
+function sameListing(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
 /** Whether a join puts the room's first document in front of the guest (`selvage.openOnJoin`). */
