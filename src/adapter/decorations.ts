@@ -101,6 +101,10 @@ export class Cursors {
       const options = carets.get(caret) ?? [];
       options.push({
         range: new vscode.Range(head, head),
+        // A plain string renders as Markdown, so a peer's `[text](url)` name renders as a
+        // link in every host's hover; the receipt bound (at most 32 units) caps what such a
+        // name can carry. Stated residual, owned by the rendering change: the fix is a
+        // plain-text hover there.
         hoverMessage: `${cursor.label} · ${cursor.role}`,
       });
       carets.set(caret, options);
@@ -153,6 +157,9 @@ export class Cursors {
    * The glyph-margin badge for one peer, cached per (initials, colour) so a cursor move never
    * mints a new decoration type. The image is a base64 SVG handed to `Uri.parse`: a plain
    * string would be read as a file path, and there is no background-colour field to fill it.
+   * The cache is bounded by the receipt bound on names times the fixed palette, but it is
+   * never evicted except on dispose — a rename loop churns types within that bound (stated
+   * residual, owned by the rendering change).
    */
   private badgeType(cursor: Pick<Cursor, 'label' | 'colour'>): vscode.TextEditorDecorationType {
     const text = initials(cursor.label);

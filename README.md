@@ -406,7 +406,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
   clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
   holding an astral character is never cut through a surrogate pair. The clip is only on what
-  is *drawn*: the caret's hover and the status bar always carry the whole name.
+  is *drawn*: the caret's hover always carries the whole name, while the status bar lists
+  the first 20 names and counts the rest.
 - **`selvage.cursorLabel: "floating"` is an explicit opt-in** — a small box in the peer's
   colour above their caret, out of the line's flow. The decoration API has no position, layer
   or overlay, so the box is drawn by writing declarations — `position: absolute; top: -1.3em;
