@@ -41,18 +41,29 @@ function provider(): GuestFiles {
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
+/**
+ * What a read that does not have to ask the room answers with. A path the replica has received
+ * nothing for is asked for instead, and that answers with a promise; every use here holds the
+ * path already, so a promise would be the provider reaching for the room when it need not.
+ */
+function read(files: GuestFiles, uri: UriLike): string {
+  const bytes = files.readFile(uri);
+  assert.ok(bytes instanceof Uint8Array, 'a read asked the room for a path it already holds');
+  return decode(bytes);
+}
+
 test('a guest document reads what the session holds for it', () => {
   const files = provider();
   files.use({ roomId: ROOM, text: (path) => (path === 'src/main.rs' ? 'from the room\n' : '') });
 
   const document = uri(virtualUri(ROOM, 'src/main.rs'));
-  assert.equal(decode(files.readFile(document)), 'from the room\n');
+  assert.equal(read(files, document), 'from the room\n');
   assert.equal(files.stat(document).size, 'from the room\n'.length);
   assert.equal(files.stat(document).type, 1, 'a guest document is a file');
 
   // A path the replica has received nothing for is not a 404: the room may still fill it,
   // and an empty buffer is what a document with no content looks like.
-  assert.equal(decode(files.readFile(uri(virtualUri(ROOM, 'src/new.rs')))), '');
+  assert.equal(read(files, uri(virtualUri(ROOM, 'src/new.rs'))), '');
 });
 
 test('the provider refuses a document it cannot name', () => {
@@ -81,7 +92,7 @@ test('a guest document is editable and its save writes nothing', () => {
   // The shared buffer is the truth and a guest has no file to write: a save is a no-op that
   // resolves, which is what clears the editor's dirty marker. The content does not move.
   files.writeFile(document, new TextEncoder().encode('edited\n'));
-  assert.equal(decode(files.readFile(document)), "the room's text\n");
+  assert.equal(read(files, document), "the room's text\n");
 });
 
 test('there is still no create, rename or delete, and nothing is watched', () => {
@@ -164,15 +175,59 @@ test('a document outlives the session that produced it', () => {
   const files = provider();
   const document = uri(virtualUri(ROOM, 'src/main.rs'));
   files.use({ roomId: ROOM, text: () => 'while the room is live\n' });
-  assert.equal(decode(files.readFile(document)), 'while the room is live\n');
+  assert.equal(read(files, document), 'while the room is live\n');
 
   // The room ended: the session keeps what the tabs were showing, so a document the user is
   // looking at does not turn into an error.
   files.freeze([[document.toString(), 'what the room had\n']]);
-  assert.equal(decode(files.readFile(document)), 'what the room had\n');
+  assert.equal(read(files, document), 'what the room had\n');
 
   // A document that was never opened is still nothing, and a new session takes over.
   assert.throws(() => files.readFile(uri(virtualUri(ROOM, 'src/other.rs'))), /not found/);
   files.use({ roomId: ROOM, text: () => 'a second session\n' });
-  assert.equal(decode(files.readFile(document)), 'a second session\n');
+  assert.equal(read(files, document), 'a second session\n');
+});
+
+test('a read asks the room for a path it has not received, instead of handing back empty', async () => {
+  const files = provider();
+  const held = new Map<string, string>();
+  const asked: string[] = [];
+  files.use({
+    roomId: ROOM,
+    text: (path) => held.get(path) ?? '',
+    has: (path) => held.has(path),
+    paths: () => ['src/main.rs'],
+    fetch: (path) => {
+      asked.push(path);
+      held.set(path, 'from the room\n');
+      return Promise.resolve();
+    },
+  });
+
+  const document = uri(virtualUri(ROOM, 'src/main.rs'));
+  const pending = files.readFile(document);
+  assert.ok(
+    pending instanceof Promise,
+    'a read handed back an empty buffer for a path the room may still send',
+  );
+  assert.deepEqual(asked, ['src/main.rs']);
+  assert.equal(decode(await pending), 'from the room\n');
+
+  // The window holds it now, so the next read is the synchronous one it always was.
+  assert.equal(read(files, document), 'from the room\n');
+  assert.deepEqual(asked, ['src/main.rs']);
+});
+
+test('a read nothing answers for is an empty document, not a failure', async () => {
+  const files = provider();
+  files.use({
+    roomId: ROOM,
+    text: () => '',
+    has: () => false,
+    paths: () => ['gone.txt'],
+    // A bounded wait that gave up is the same thing to a reader as a document with no content.
+    fetch: () => Promise.resolve(),
+  });
+
+  assert.equal(decode(await files.readFile(uri(virtualUri(ROOM, 'gone.txt')))), '');
 });

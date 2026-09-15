@@ -99,7 +99,10 @@ async function seat(t: TestContext): Promise<Adapter> {
       return false;
     }
     try {
-      return new TextDecoder().decode(files.readFile(document.uri)) === TEXT;
+      const bytes = files.readFile(document.uri);
+      // A read of a path the replica has not received answers with a promise, which is not
+      // yet the room's text: the wait polls until the synchronous answer holds it.
+      return bytes instanceof Uint8Array && new TextDecoder().decode(bytes) === TEXT;
     } catch {
       return false;
     }
