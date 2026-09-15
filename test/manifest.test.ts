@@ -27,6 +27,7 @@ interface Manifest {
   activationEvents?: string[];
   contributes?: {
     commands?: Array<{ command: string; title: string; category?: string }>;
+    views?: { explorer?: Array<{ id: string; name?: string }> };
     configuration?: { properties?: Record<string, { type?: string; default?: unknown; enum?: unknown[] }> };
   };
   devDependencies?: Record<string, string>;
@@ -96,6 +97,26 @@ test('the cursor label draws no name unless the user opts in', () => {
     [...(setting.enum ?? [])].sort(),
     ['chip', 'floating', 'none'],
     'the setting no longer offers exactly the two opt-ins and the default',
+  );
+});
+
+test('the manifest contributes the Explorer view the extension registers', () => {
+  // A tree with no view is code nothing draws, and a view with no tree is an empty pane; the
+  // two are one feature and are named the same way.
+  const bundle = loadBundle();
+  bundle.activate({ subscriptions: [] });
+  bundle.deactivate();
+
+  const contributed = manifest.contributes?.views?.explorer ?? [];
+  assert.ok(contributed.length > 0, 'the manifest contributes no Explorer view');
+  for (const view of contributed) {
+    assert.match(view.id, /^selvage\./, `${view.id} is outside the extension's namespace`);
+    assert.ok((view.name ?? '').trim() !== '', `${view.id} has no name`);
+  }
+  assert.deepEqual(
+    [...bundle.registered.treeViews.map((view) => view.id)].sort(),
+    contributed.map((view) => view.id).sort(),
+    'a view the palette cannot reach, or a contributed one that is never registered',
   );
 });
 

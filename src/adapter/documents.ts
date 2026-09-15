@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { SCHEME, virtualDocument } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
+import { roomPathOf } from './grant.ts';
 
 import { Cursors } from './decorations.ts';
 
@@ -19,11 +20,18 @@ export interface WorkspaceEditorOptions {
   role: Role;
   /** Something the user has to see. */
   report: (report: Report) => void;
+  /**
+   * The folders this session shares, captured when it started. The window's own folder list can
+   * change under a session — a folder added, another closed — and what the room shares must not
+   * change with it: the grant is the folder chosen at invite time (`DESIGN.md` §4.2).
+   */
+  folders: readonly vscode.WorkspaceFolder[];
 }
 
 export class WorkspaceEditor implements EditorHost {
   private readonly role: Role;
   private readonly onReport: (report: Report) => void;
+  private readonly folders: readonly vscode.WorkspaceFolder[];
   private readonly cursors = new Cursors();
   /** The documents this window shares, by room path, and the same back again by URI. */
   private readonly documents = new Map<string, vscode.TextDocument>();
@@ -32,11 +40,12 @@ export class WorkspaceEditor implements EditorHost {
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
     this.onReport = options.report;
+    this.folders = options.folders;
   }
 
   /**
    * The room path this document is shared under, or `undefined` when the session does not
-   * share it. A host shares the `file:` documents open under its workspace folder — the
+   * share it. A host shares the `file:` documents open under a folder it captured — the
    * folder chosen at invite time is the grant (`DESIGN.md` §4.2) — and a guest shares only
    * the `selvage:` documents the room gave it. Recording it here is what makes the reverse
    * lookup in `pathOf` possible.
@@ -147,13 +156,9 @@ export class WorkspaceEditor implements EditorHost {
     if (this.role !== 'host' || uri.scheme !== 'file') {
       return undefined;
     }
-    if (vscode.workspace.getWorkspaceFolder(uri) === undefined) {
-      return undefined;
-    }
-    // `true` qualifies the path by its workspace folder when there is more than one, so two
-    // `main.rs`s in two folders are two room paths rather than one document. With one folder
-    // the name is left off, as before.
-    const path = vscode.workspace.asRelativePath(uri, true).replaceAll('\\', '/');
-    return path === '' ? undefined : path;
+    // The captured folders, not the live ones: a folder added to the window mid-session must
+    // not quietly widen what the room holds. Two folders or more qualify the path with the
+    // folder's name, so two `main.rs` are two room paths rather than one document.
+    return roomPathOf(this.folders, uri);
   }
 }

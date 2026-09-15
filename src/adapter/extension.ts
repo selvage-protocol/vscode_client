@@ -9,13 +9,15 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, SessionBridge, peerColour, virtualUri } from '../bridge/index.ts';
+import { SCHEME, SessionBridge, grantUnion, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
-import { SelvageEngine, isProtocolError, parseSessionUrl } from '../engine/index.ts';
+import { SelvageEngine, code as errCode, isProtocolError, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
+import { enumerateGrant } from './grant.ts';
 import { GuestFileSystem } from './guest-fs.ts';
+import { GrantTree } from './tree.ts';
 
 /** Identifies this client in `session.hello`, for diagnostics (`PROTOCOL.md` §5). */
 const CLIENT = 'selvage-vscode/0.1.0';
@@ -32,6 +34,9 @@ const SELECTION_INTERVAL_MS = 100;
 /** The session this window is in. One per window: multi-room is a v1 non-goal. */
 let current: Session | undefined;
 
+/** The Explorer's view of the room, created when the extension activates. */
+let grantTree: GrantTree | undefined;
+
 /** The last server a user typed, so the next prompt is a keystroke rather than a paste. */
 let lastServer: string | undefined;
 
@@ -42,6 +47,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.registerFileSystemProvider(SCHEME, files, {
       isCaseSensitive: true,
       isReadonly: false,
+    }),
+  );
+  grantTree = new GrantTree();
+  context.subscriptions.push(
+    grantTree,
+    vscode.window.createTreeView('selvage.grant', {
+      treeDataProvider: grantTree,
+      showCollapseAll: true,
     }),
   );
   context.subscriptions.push(
@@ -72,6 +85,7 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   current?.dispose();
   current = undefined;
+  grantTree = undefined;
 }
 
 /**
@@ -99,8 +113,14 @@ class Session {
   private readonly bridge: SessionBridge;
   private readonly status: vscode.StatusBarItem;
   private readonly listeners: vscode.Disposable[] = [];
+  /**
+   * The folders this session shares, captured the moment it started. The window can be opened
+   * on another folder afterwards; what the room holds is the folder it was invited on.
+   */
+  private readonly folders: readonly vscode.WorkspaceFolder[];
   private peers: PeerInfo[] = [];
   private documents: string[] = [];
+  private granted: string[] = [];
   private detachedMs: number | undefined;
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
@@ -113,11 +133,14 @@ class Session {
   constructor(files: GuestFileSystem, engine: SelvageEngine) {
     this.files = files;
     this.engine = engine;
+    this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
     this.documents = engine.documents();
+    this.granted = engine.grantedPaths();
     this.autoOpen = engine.session().role === 'guest';
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
+      folders: this.folders,
       report: (report) => {
         this.onReport(report);
       },
@@ -131,7 +154,11 @@ class Session {
     this.status.name = 'Selvage';
     this.status.command = engine.session().role === 'host' ? 'selvage.copyInvite' : undefined;
 
-    this.files.use({ roomId: engine.session().roomId, text: (path) => engine.text(path) });
+    this.files.use({
+      roomId: engine.session().roomId,
+      text: (path) => engine.text(path),
+      paths: () => this.offered(),
+    });
     // A document that was already open when the session started is shared too.
     for (const document of vscode.workspace.textDocuments) {
       this.open(document);
@@ -169,6 +196,13 @@ class Session {
     this.status.show();
     this.refreshStatus();
     this.selection();
+    grantTree?.use(this);
+    // The room's shape is the host's to publish, and it is read off the working copy once, when
+    // the session starts: the folder the invite names is the grant, and a later change to what
+    // the window has open is not a statement about the folder.
+    if (this.role() === 'host') {
+      void this.publishGrant();
+    }
     // A guest joins a room that may have documents already, and may join one that has none.
     // Landing in the room's first document is the whole point of "come edit my code with me";
     // the palette round trip is the chore this removes.
@@ -214,6 +248,46 @@ class Session {
   /** The room's open-document set, as the server owns it. */
   roomDocuments(): string[] {
     return this.documents;
+  }
+
+  /**
+   * What the room offers: its grant, unioned with the documents it holds open. The union is
+   * what a tree, a picker and a guest's file system all read, so a server that has no grant
+   * still shows everything the room knows.
+   */
+  offered(): string[] {
+    return grantUnion(this.granted, this.documents);
+  }
+
+  /**
+   * Publishes the listing of the folders this session was invited on.
+   *
+   * A server that does not know `doc.grant` answers `unknown_method`, which means it has no
+   * grant rather than that anything failed: the session goes on and the room falls back to its
+   * open-document set. Any other refusal is reported and also changes nothing.
+   */
+  private async publishGrant(): Promise<void> {
+    let paths: string[];
+    try {
+      paths = await enumerateGrant(this.folders);
+    } catch (error) {
+      this.onReport({
+        kind: 'sessionError',
+        code: 'error',
+        message: `could not read the folder this window shares: ${message(error)}`,
+      });
+      return;
+    }
+    await this.engine.grant(paths).catch((error: unknown) => {
+      if (isProtocolError(error) && error.code === errCode.unknownMethod) {
+        return;
+      }
+      this.onReport({
+        kind: 'sessionError',
+        code: isProtocolError(error) ? error.code : 'error',
+        message: `the server refused the listing of the folder this window shares: ${message(error)}`,
+      });
+    });
   }
 
   names(): string[] {
@@ -288,6 +362,9 @@ class Session {
       .virtualDocuments()
       .map(([uri, path]) => [uri, this.engine.text(path)]);
     this.files.freeze(frozen);
+    if (grantTree !== undefined) {
+      grantTree.use(undefined);
+    }
     this.bridge.dispose();
     this.editor.dispose();
     for (const listener of this.listeners) {
@@ -374,7 +451,13 @@ class Session {
       case 'documents': {
         this.documents = report.documents;
         this.refreshStatus();
+        grantTree?.refresh();
         this.openFromRoom();
+        break;
+      }
+      case 'grant': {
+        this.granted = report.paths;
+        grantTree?.refresh();
         break;
       }
       case 'peers': {
@@ -663,7 +746,7 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
     );
     return;
   }
-  const paths = session.roomDocuments();
+  const paths = session.offered();
   if (paths.length === 0) {
     void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
     return;

@@ -74,15 +74,25 @@ function pathOf(uri) {
 }
 
 function joinPath(base, ...parts) {
-  const path = [String(base).replace(/\/+$/, ''), ...parts.map((part) => String(part))].join('/');
+  // Joined on the URI's path, not on its string form: `file:///workspace` and `/workspace`
+  // have to name the same place, as the real `Uri.joinPath` has it. The stub's own URI keeps
+  // the authority's slashes, so they are normalised away here rather than left in the path.
+  const basePath = `/${parseUri(base).path.replace(/^\/+/, '').replace(/\/+$/, '')}`;
+  const path = [basePath, ...parts.map((part) => String(part).replace(/^\/+/, ''))].join('/');
   return parseUri(`file://${path}`);
+}
+
+/** A seeded path is relative to the window's folder unless it is written as an absolute one. */
+function diskPath(path) {
+  const text = String(path);
+  return text.startsWith('/') ? text : `/workspace/${text}`;
 }
 
 /** Puts a file in the working copy. `content` is a string or the bytes themselves. */
 function put(path, content, options = {}) {
   const bytes =
     typeof content === 'string' ? new TextEncoder().encode(content) : content;
-  disk.files.set(`/${String(path).replace(/^\/+/, '')}`, {
+  disk.files.set(diskPath(path), {
     bytes,
     size: options.size ?? bytes.length,
   });
@@ -90,12 +100,12 @@ function put(path, content, options = {}) {
 
 /** Puts a symbolic link in the working copy: `kind` is `'file'` or `'directory'`. */
 function putLink(path, kind) {
-  disk.links.set(`/${String(path).replace(/^\/+/, '')}`, kind === 'directory' ? 70 : 65);
+  disk.links.set(diskPath(path), kind === 'directory' ? 70 : 65);
 }
 
 /** A directory whose listing the editor refuses, as an unreadable folder is. */
 function makeUnreadable(path) {
-  disk.unreadable.add(`/${String(path).replace(/^\/+/, '')}`);
+  disk.unreadable.add(diskPath(path));
 }
 
 /** Every file and link in the working copy, keyed by path, with the type it reports. */
@@ -159,7 +169,6 @@ function reset() {
   registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
-  registered.treeViews.length = 0;
   disk.files.clear();
   disk.links.clear();
   disk.unreadable.clear();
@@ -280,10 +289,23 @@ module.exports = {
 
   EventEmitter: class {
     constructor() {
-      this.event = () => disposable();
+      this.listeners = [];
+      this.event = (handler) => {
+        this.listeners.push(handler);
+        return disposable();
+      };
     }
 
-    dispose() {}
+    /** Fires the event, as the extension asking a view to redraw does. */
+    fire(value) {
+      for (const handler of [...this.listeners]) {
+        handler(value);
+      }
+    }
+
+    dispose() {
+      this.listeners.length = 0;
+    }
   },
 
   Disposable: class {
@@ -494,7 +516,15 @@ module.exports = {
     },
     /** A tree view, with the provider the extension registered for it. */
     createTreeView: (id, options) => {
-      registered.treeViews.push({ id, options });
+      // One view per id, as the editor has: activating again replaces it rather than adding a
+      // second, which is what makes the recorded view the one a session is bound to.
+      const existing = registered.treeViews.findIndex((entry) => entry.id === id);
+      const entry = { id, options };
+      if (existing === -1) {
+        registered.treeViews.push(entry);
+      } else {
+        registered.treeViews[existing] = entry;
+      }
       return {
         title: undefined,
         message: undefined,
