@@ -144,6 +144,13 @@ class Session {
    */
   private published: string[] | undefined;
   /**
+   * The listing the server last refused. A walk that enumerates the same listing has nothing
+   * new to offer a server that already refused it, so it is neither sent nor reported again; a
+   * listing that differs is offered and reported as usual, which is what lets a folder that
+   * changed back into what was refused be refused out loud a second time.
+   */
+  private refusedListing: string[] | undefined;
+  /**
    * How many republish walks this session has started. A walk records the count before it reads
    * the folder and may publish only while no later walk has started: a walk slower than the one
    * after it is dropped rather than sent, so the room cannot go backwards to an older listing.
@@ -379,12 +386,16 @@ class Session {
     if (this.published !== undefined && sameListing(this.published, paths)) {
       return;
     }
+    if (this.refusedListing !== undefined && sameListing(this.refusedListing, paths)) {
+      return;
+    }
     try {
       await this.engine.grant(paths);
       // A later walk that started while this frame was out is the one whose outcome describes
       // the folder, and its own send has recorded it.
       if (attempt === this.grantWalks) {
         this.published = paths;
+        this.refusedListing = undefined;
       }
     } catch (error) {
       // The session can end while the frame is out, and the closed engine answers rather than
@@ -397,8 +408,12 @@ class Session {
         // nothing. Remembering it here is the same tolerance the first publication gets.
         if (attempt === this.grantWalks) {
           this.published = paths;
+          this.refusedListing = undefined;
         }
         return;
+      }
+      if (attempt === this.grantWalks) {
+        this.refusedListing = paths;
       }
       this.onReport({
         kind: 'sessionError',

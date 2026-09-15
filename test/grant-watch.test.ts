@@ -499,7 +499,8 @@ test('a refused listing is reported, and the session goes on', async (t) => {
       'the listing is over the bound this server will store (bad_params)',
   ]);
 
-  // A refusal is not a reason to stop watching: the next change is published and refused too.
+  // A refusal is not a reason to stop watching: the next *different* listing is published and
+  // refused too.
   bundle.stub.put('src/main.rs', 'fn main() {}\n');
   bundle.stub.watchEvent('create', 'src/main.rs');
   await waitFor('the second refusal', () =>
@@ -513,6 +514,51 @@ test('a refused listing is reported, and the session goes on', async (t) => {
     await guest.disconnect();
   });
   assert.equal(guest.session().role, 'guest');
+});
+
+/**
+ * A refusal is a property of the listing, not of the moment: re-enumerating the folder every
+ * window cannot change what the server will store, so an unchanged refused listing is neither
+ * sent nor reported again. Before this, a host whose project exceeds the server's bound got one
+ * error per window for as long as anything kept touching the folder.
+ */
+test('a refused listing is offered and reported once while it says the same thing', async (t) => {
+  const server = await FakeServer.start({ refuseGrant: true });
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'the readme\n');
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the refusal to be reported', () =>
+    bundle.stub.registered.errors.length > 0 ? true : false,
+  );
+
+  // Six windows, each opened by a content change: a write cannot alter which paths the folder
+  // holds, so every walk enumerates the listing the server has already refused.
+  for (let index = 0; index < 6; index += 1) {
+    bundle.stub.put('README.md', `the readme, edited ${index}\n`);
+    bundle.stub.watchEvent('change', 'README.md');
+    const walks = bundle.stub.registered.listings;
+    await waitFor('the window to walk the folder', () =>
+      bundle.stub.registered.listings > walks ? true : false,
+    );
+  }
+  await quiet();
+
+  assert.equal(
+    bundle.stub.registered.errors.length,
+    1,
+    `the same refusal was reported again: ${JSON.stringify(bundle.stub.registered.errors)}`,
+  );
+  assert.equal(
+    server.grantAttempts,
+    1,
+    'the same listing was sent again to a server that has already refused it',
+  );
 });
 
 /**
