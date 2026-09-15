@@ -982,6 +982,11 @@ test('a host refuses a requested path that is not a readable file, and seeds not
     host.editor.reportsOf('sessionError')[0] ?? false,
   );
   assert.match(refusal.message, /not a readable file in the folder this window shares/);
+  assert.match(
+    refusal.message,
+    /may have been deleted after the listing was published/,
+    'a file gone from the shared folder reads as a failure rather than as a deletion',
+  );
   assert.deepEqual(host.editor.reads, [OTHER], 'the path was not even offered to the disk');
   assert.equal(session.host.has(OTHER), false, 'a refusal was seeded as an empty document');
   assert.equal(session.host.text(OTHER), '');

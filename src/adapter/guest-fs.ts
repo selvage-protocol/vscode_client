@@ -17,6 +17,14 @@ import * as vscode from 'vscode';
 
 import { SCHEME, grantChildren, roomFromQuery, virtualDocument } from '../bridge/index.ts';
 
+/**
+ * The rule every refused file mutation is told with. Guests cannot create, rename or
+ * delete: the room carries paths, never file operations (`DESIGN.md` §4.2, §11) —
+ * so each of them says this sentence at the point of action, and a created file never
+ * looks saved while its bytes go nowhere.
+ */
+const NO_FILE_MUTATIONS = 'the room carries no file mutations yet';
+
 /** Where a guest's documents read from: the session that is live. */
 export interface VirtualSource {
   roomId: string;
@@ -34,7 +42,8 @@ export interface VirtualSource {
   /**
    * Asks the room for the path's content and resolves once it has arrived, or once waiting can
    * no longer help. A path the room never writes to is not a fault: it resolves, and the read
-   * is an empty document.
+   * is an empty document. A path the room's listing named and no longer does is refused
+   * instead: the host has nothing to serve, so there is no document to read.
    */
   fetch?(path: string): Promise<void>;
 }
@@ -111,12 +120,28 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
   }
 
   /**
-   * A save writes nothing. The document's content is the room's, a guest has no file to
-   * write it to, and the editor's own save path is what clears the dirty marker
-   * (`docs/studies/vscode-plugin.md` §2.4, open-pair's `DocumentRegistry` does the same).
+   * A save of a document the room holds writes nothing. The document's content is the
+   * room's, a guest has no file to write it to, and the editor's own save path is what
+   * clears the dirty marker (`docs/studies/vscode-plugin.md` §2.4, open-pair's
+   * `DocumentRegistry` does the same). A save of a path the room neither holds nor lists
+   * is a file being created, and is refused rather than silently kept nowhere.
    */
-  writeFile(_uri: vscode.Uri, _content: Uint8Array): void {
-    // Deliberately empty.
+  writeFile(uri: vscode.Uri, _content: Uint8Array): void {
+    const parsed = virtualDocument(uri.scheme, uri.path, uri.query);
+    const source = this.live;
+    if (
+      parsed !== undefined &&
+      source !== undefined &&
+      parsed.roomId === source.roomId &&
+      source.has !== undefined &&
+      !source.has(parsed.path) &&
+      !this.paths().includes(parsed.path)
+    ) {
+      throw vscode.FileSystemError.NoPermissions(
+        `${NO_FILE_MUTATIONS}: creating a file here is not shared`,
+      );
+    }
+    // Deliberately a no-op otherwise.
   }
 
   watch(_uri: vscode.Uri): vscode.Disposable {
@@ -139,16 +164,22 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
     ]);
   }
 
-  createDirectory(uri: vscode.Uri): void {
-    throw vscode.FileSystemError.NoPermissions(uri);
+  createDirectory(_uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(
+      `${NO_FILE_MUTATIONS}: creating a directory here is not shared`,
+    );
   }
 
-  delete(uri: vscode.Uri): void {
-    throw vscode.FileSystemError.NoPermissions(uri);
+  delete(_uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(
+      `${NO_FILE_MUTATIONS}: deleting here is not shared`,
+    );
   }
 
-  rename(uri: vscode.Uri): void {
-    throw vscode.FileSystemError.NoPermissions(uri);
+  rename(_uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(
+      `${NO_FILE_MUTATIONS}: renaming here is not shared`,
+    );
   }
 
   private bytes(uri: vscode.Uri): Uint8Array {

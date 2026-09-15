@@ -771,6 +771,7 @@ interface GrantTreeLike {
   getTreeItem(node: { name: string; path: string; directory: boolean }): {
     label: string;
     collapsibleState: number;
+    description?: string;
     command?: { command: string; arguments: unknown[] };
   };
 }
@@ -1089,4 +1090,157 @@ test('a guest read of a granted path waits for the room to send it', async (t) =
     new TextDecoder().decode(files.readFile(document) as Uint8Array),
     'the readme\n',
   );
+});
+
+test('a host names deletion when the room asks for a file it removed', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('doomed.txt', 'was here\n');
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+
+  // The host removes the file after publishing it, and the guest opens it from the
+  // listing as it stood: the refusal names the likely cause instead of reading as a
+  // failure, and nothing is seeded for it.
+  bundle.stub.remove('doomed.txt');
+  await guest.open('doomed.txt');
+  const refusal = await waitFor('the host to refuse the deleted path', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ??
+      false,
+  );
+  assert.match(refusal, /not a readable file in the folder this window shares/);
+  assert.match(
+    refusal,
+    /may have been deleted after the listing was published/,
+    'a deliberate deletion reads as a failure',
+  );
+  assert.equal(guest.has('doomed.txt'), false, 'the deleted path was seeded anyway');
+});
+
+test('a guest is told when a path it opens left the listing, not handed an empty document', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['doomed.txt']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+  const tree = treeOf(bundle);
+  await waitFor('the listing to reach the window', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+
+  // The host takes the path out of the listing. The guest opens it from the listing as
+  // it stood: nothing can arrive, so the open is refused with the reason rather than
+  // leaving a phantom empty document.
+  await host.grant([]);
+  await waitFor('the smaller listing to reach the window', () =>
+    tree.getChildren().length === 0 ? true : false,
+  );
+  const files = bundle.registered.files;
+  assert.ok(files !== undefined, 'activating registered no file system provider');
+  const document = {
+    scheme: 'selvage',
+    path: '/doomed.txt',
+    query: `room=${roomId}`,
+    toString: () => virtualUri(roomId, 'doomed.txt'),
+  };
+  await assert.rejects(files.readFile(document) as Promise<Uint8Array>, (error: unknown) => {
+    assert.match(String((error as Error).message), /the host no longer shares doomed\.txt/);
+    assert.match(
+      String((error as Error).message),
+      /may have been deleted after the listing was published/,
+    );
+    return true;
+  });
+
+  // The hold the fetch took keeps the path offered, and the row says it left the
+  // listing rather than looking listed.
+  const row = await waitFor('the held path to stay offered', () =>
+    tree.getChildren().find((node) => node.name === 'doomed.txt') ?? false,
+  );
+  assert.equal(tree.getTreeItem(row).description, 'no longer listed');
+});
+
+test('a stale openDocument path that left the listing is refused, not silently dropped', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['doomed.txt']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+  const tree = treeOf(bundle);
+  await waitFor('the listing to reach the window', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+
+  // The host takes the path out of the listing while a click on its row is still
+  // in flight — or a caller still names it. The command refuses with the same
+  // reason the fetch give-up reports instead of returning silently, and the
+  // gate never reaches `readFile`, so no document opens either way.
+  await host.grant([]);
+  await waitFor('the smaller listing to reach the window', () =>
+    tree.getChildren().length === 0 ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'doomed.txt' });
+  const refusal = await waitFor('the stale path to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ?? false,
+  );
+  assert.match(refusal, /could not open doomed\.txt from the room/);
+  assert.match(refusal, /the host no longer shares doomed\.txt/);
+  assert.match(refusal, /may have been deleted after the listing was published/);
+  assert.ok(
+    !bundle.stub.registered.opened.includes(virtualUri(roomId, 'doomed.txt')),
+    'the stale path was opened anyway',
+  );
+});
+
+test('a document open when its path leaves the listing keeps its text and is badged', async (t) => {
+  const { host, invite, roomId } = await room(t, ['doomed.txt']);
+  host.insert('doomed.txt', 0, 'held text\n');
+  await host.grant(['doomed.txt']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+  const tree = treeOf(bundle);
+  const files = bundle.registered.files;
+  assert.ok(files !== undefined, 'activating registered no file system provider');
+  const document = {
+    scheme: 'selvage',
+    path: '/doomed.txt',
+    query: `room=${roomId}`,
+    toString: () => virtualUri(roomId, 'doomed.txt'),
+  };
+  assert.equal(new TextDecoder().decode(await files.readFile(document)), 'held text\n');
+
+  // The host takes the path out of the listing while the guest holds it open: nothing
+  // is closed for that, the text stays, and the row is badged.
+  await host.grant([]);
+  const row = await waitFor('the row to be badged', () => {
+    const node = tree.getChildren().find((candidate) => candidate.name === 'doomed.txt');
+    return node !== undefined && tree.getTreeItem(node).description === 'no longer listed'
+      ? node
+      : false;
+  });
+  assert.equal(new TextDecoder().decode(await files.readFile(document)), 'held text\n');
+  assert.equal(row.path, 'doomed.txt');
 });

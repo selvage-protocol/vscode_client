@@ -272,6 +272,23 @@ async function run() {
         createdDir,
         text: createdEditor.document.getText(),
       };
+
+      // The removed path, opened fresh from the listing as it stood: the host has no
+      // file to serve for it, so the open is refused with the reason instead of leaving
+      // a phantom empty document.
+      let deleteRefused = false;
+      let deleteRefusal = '';
+      try {
+        const phantom = await vscode.workspace.openTextDocument(
+          vscode.Uri.parse(`selvage:/${WATCH_DOOMED_PATH}?${room}`),
+        );
+        deleteRefusal = `opened with ${JSON.stringify(phantom.getText())}`;
+      } catch (error) {
+        deleteRefusal = error instanceof Error ? error.message : String(error);
+        deleteRefused = deleteRefusal.includes('no longer shares');
+      }
+      result.watch.deleteRefused = deleteRefused;
+      result.watch.deleteRefusal = deleteRefusal;
       fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
       fs.writeFileSync(WATCH_DONE_FILE, 'go');
     }
