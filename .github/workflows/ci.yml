@@ -33,7 +33,11 @@ jobs:
       # The four server-backed tests in `test/selvaged.test.ts` need a built `selvaged` from the
       # sibling `reference_server` repository, which this workflow does not check out, so CI runs
       # the server-free suite. Run `npm test` locally, with a server built, for the real thing.
+      # A shared runner is slower than a developer's machine; the suite's waits poll conditions
+      # that do hold, and this only makes the deadline generous enough not to race the load.
       - run: npm run test:fast
+        env:
+          SELVAGE_WAIT_MS: "30000"
 
   # Actions results are not readable where the maintainer works; an issue is the only signal.
   # A pull request files nothing: its check runs are readable on the pull request itself.

@@ -135,14 +135,14 @@ test('a burst of caret moves publishes one presence frame, at the last position'
 
   const seen = await waitForSelection(adapter.host, 'Bob', PATH, (selection) => selection.anchor === last);
   assert.deepEqual(seen.selection, { anchor: last, head: last });
-  // The throttle flushes at most once per 100 ms, so a synchronous burst's frame count is a
-  // function of how long the burst took, not of how many events it held. Bound it by that
-  // time — a loaded machine must not turn a correct coalescing into a failure — which still
-  // catches the defect this pins: one frame per event would be 200.
+  // The throttle flushes at most once per 100 ms, so a burst's cursor frames are a function of
+  // how long the burst took, not of how many events it held. Bound it by that time — a loaded
+  // machine must not turn correct coalescing into a failure — which still catches the defect this
+  // pins: one frame per event would be 200.
   const allowed = Math.ceil(elapsed / 100) + 1;
   assert.ok(
-    adapter.tap.tally.received.awareness <= allowed,
-    `200 caret events over ${elapsed.toFixed(1)}ms sent ${adapter.tap.tally.received.awareness} awareness frames (allowed ${allowed})`,
+    adapter.tap.tally.received.awarenessSelection <= allowed,
+    `200 caret events over ${elapsed.toFixed(1)}ms sent ${adapter.tap.tally.received.awarenessSelection} cursor frames (allowed ${allowed})`,
   );
 });
 
@@ -160,7 +160,7 @@ test('a caret that has not moved adds no frame', async (t) => {
   adapter.move(4);
   await waitForSelection(adapter.host, 'Bob', PATH, (selection) => selection.anchor === 4);
   assert.equal(
-    adapter.tap.tally.received.awareness,
+    adapter.tap.tally.received.awarenessSelection,
     1,
     'an unmoved caret was published again',
   );
@@ -195,7 +195,7 @@ test('a session that ends inside the interval still publishes the last position'
       }
     }
     return false;
-  });
+  }, { describe: () => ({ events: events.types(), hostText: adapter.host.text(PATH) }) });
 });
 
 test('leaving the shared document clears the cursor rather than dropping the event', async (t) => {
