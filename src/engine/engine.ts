@@ -1190,13 +1190,9 @@ export class SelvageEngine {
       }
       case eventName.docOpened:
       case eventName.docClosed: {
-        const params = message.params as DocEvent | undefined;
-        if (params !== undefined && Array.isArray(params.documents)) {
-          this.roomDocuments = params.documents.filter(
-            (path): path is string => typeof path === 'string',
-          );
+        if (this.applyDocumentSet(message.params)) {
+          this.emit({ type: 'documentsChanged', documents: this.documents() });
         }
-        this.emit({ type: 'documentsChanged', documents: this.documents() });
         break;
       }
       case eventName.hostDetached: {
@@ -1244,6 +1240,31 @@ export class SelvageEngine {
         break;
       }
     }
+  }
+
+  /**
+   * Moves the room's set to what a `doc.opened` / `doc.closed` event names, and says whether
+   * it moved. The event goes to the connection that asked as well as to the room, and the
+   * answer that made the change has already been applied here (§9.2), so a set that says what
+   * this connection already has is not news: emitting it again would refresh every listener —
+   * the status bar, and a guest's first document — twice for one open.
+   */
+  private applyDocumentSet(params: unknown): boolean {
+    const body = params as DocEvent | undefined;
+    if (body === undefined || !Array.isArray(body.documents)) {
+      return true;
+    }
+    const documents = body.documents.filter(
+      (path): path is string => typeof path === 'string',
+    );
+    if (
+      documents.length === this.roomDocuments.length &&
+      documents.every((path, index) => path === this.roomDocuments[index])
+    ) {
+      return false;
+    }
+    this.roomDocuments = documents;
+    return true;
   }
 
   private peerLeft(params: unknown): void {

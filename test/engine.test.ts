@@ -29,6 +29,7 @@ import {
 } from './helpers/wait.ts';
 
 const PATH = 'src/main.rs';
+const OTHER = 'src/other.rs';
 
 /** `anchorAt` for a document the test has already put a text behind. */
 function anchored(engine: SelvageEngine, path: string, index: number): Anchor {
@@ -1055,6 +1056,62 @@ test('closing a path this connection never held releases nothing, and a bad path
   const error = await session.host.open('').catch((reason: unknown) => reason);
   assert.ok(error instanceof ProtocolError);
   assert.equal(error.code, 'bad_params');
+});
+
+test('opening a document refreshes the room\'s set once, for the mover as well as the room', async (t) => {
+  const server = await FakeServer.start();
+  const guestFrames = counting();
+  t.after(async () => {
+    await host.disconnect();
+    await guest.disconnect();
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(
+    server.wsBase,
+    'Ada',
+    options({ baseUrl: server.wsBase, displayName: 'Ada' }),
+  );
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined);
+  const guest = await SelvageEngine.join(
+    invite,
+    'Bob',
+    options({
+      baseUrl: server.wsBase,
+      displayName: 'Bob',
+      webSocketFactory: guestFrames.factory,
+    }),
+  );
+  await host.open(PATH);
+  // The recorder starts once the room's set has settled, so what it counts is one open and
+  // not the host's event for the path that was already there.
+  await waitFor('the guest to learn the room\'s set', () => guest.documents().includes(PATH));
+
+  const guestEvents = record(guest);
+  const hostEvents = record(host);
+  guestFrames.reset();
+  await guest.open(OTHER);
+  // The mover is sent the answer and then its own event (§9.2), and the frame count is what
+  // says the event has been dealt with rather than still being on the wire.
+  await waitFor('the mover to have heard back and been told', () =>
+    guestFrames.tally.received.text >= 2 ? true : false,
+  );
+  assert.deepEqual(guest.documents(), [PATH, OTHER]);
+  assert.equal(
+    guestEvents.types().filter((type) => type === 'documentsChanged').length,
+    1,
+    'the document set was announced to the mover twice for one open',
+  );
+  await waitFor(
+    'the room to hear the open',
+    () => hostEvents.types().filter((type) => type === 'documentsChanged').length >= 1,
+    { describe: () => hostEvents.types() },
+  );
+  assert.equal(
+    hostEvents.types().filter((type) => type === 'documentsChanged').length,
+    1,
+    'the room heard the set once',
+  );
 });
 
 const DRIFT_SEED = 'const answer = 42;\nlet total = 0;\n';
