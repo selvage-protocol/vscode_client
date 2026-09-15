@@ -434,7 +434,8 @@ other half, and `ci.yml` runs it before `test:fast`.
 ## The two-instance proof (`test/e2e/`)
 
 Everything above stubs the editor or runs one process. `test/e2e/run.ts` does neither: it
-starts a real `selvaged`, downloads a real VS Code build, and launches **two independent, real
+starts a real `selvaged`, resolves a pinned VS Code build (`1.137.0` by default; set
+`SELVAGE_E2E_VSCODE_VERSION` to move it), and launches **two independent, real
 Extension Development Host processes** (`@vscode/test-electron`, headless under Xvfb) with the
 real built extension loaded — one hosting a real file, one joining by invite, both editing
 concurrently — and asserts their documents converge. Left running, it also cuts the guest's
