@@ -377,6 +377,17 @@ test('a guest document URI round-trips, and its room is not case-folded', () => 
   assert.equal(virtualDocument('selvage', '/./x', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/%2e%2e/x', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/%2E%2E%2Fx', 'room=r-1'), undefined);
+  // One encoded segment is one path segment: a decoded `%2F` never becomes a separator.
+  assert.equal(virtualDocument('selvage', '/a%2Fb', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/a%2fb', 'room=r-1'), undefined);
+  // Single decode only: `%252F` stays a literal `%2F` in the name, not a separator.
+  assert.deepEqual(virtualDocument('selvage', '/a%252Fb', 'room=r-1'), {
+    roomId: 'r-1',
+    path: 'a%2Fb',
+  });
+  // A URI that names what the grant would never publish mints no document.
+  assert.equal(virtualDocument('selvage', '/.env', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/certs/server.pem', 'room=r-1'), undefined);
   assert.equal(roomFromQuery('room=r-1&x=2'), 'r-1');
   assert.equal(roomFromQuery('x=2'), undefined);
 });

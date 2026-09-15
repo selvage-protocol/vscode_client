@@ -1,3 +1,5 @@
+import { isGrantedPath } from './grant.ts';
+
 /**
  * The guest's document URIs.
  *
@@ -50,11 +52,16 @@ function decodePath(path: string): string | undefined {
     if (part === undefined) {
       return undefined;
     }
+    // A decoded separator is not a segment: `%2F` never becomes one, so one encoded
+    // segment can never address two paths. Single decode only: `%252F` stays literal.
+    if (part.includes('/')) {
+      return undefined;
+    }
     decoded.push(part);
   }
   const full = decoded.join('/');
-  // Decoding can reintroduce separators (`%2F`) and escapes (`%2e%2e`): the name this
-  // client would actually open is judged, not the encoded form.
+  // Decoding can reintroduce escapes (`%2e%2e`): the name this client would actually open
+  // is judged, not the encoded form.
   for (const piece of full.split('/')) {
     if (piece === '' || piece === '.' || piece === '..') {
       return undefined;
@@ -92,7 +99,9 @@ export function virtualDocument(
     return undefined;
   }
   const decoded = decodePath(path.slice(1));
-  if (decoded === undefined) {
+  // A URI that names what the grant would never publish mints no document: the receipt
+  // filter keeps such names out of listings, and this keeps them out of hand-made URIs too.
+  if (decoded === undefined || !isGrantedPath(decoded)) {
     return undefined;
   }
   return { roomId, path: decoded };
