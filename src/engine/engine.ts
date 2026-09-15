@@ -75,7 +75,9 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * (`PROTOCOL.md` §2.1, informative 16 MiB). A frame over it never arrives from a conforming
  * transport — it ends the connection the way a dropped socket does — so refusing one here
  * changes no session that obeys the wire, and bounds what an unbounded `JSON.parse` or
- * yjs update can allocate or do.
+ * yjs update can allocate or do. Refusal is drop-and-continue, never fail: an over-bound
+ * frame is ignored and the session goes on with the grant, documents and replica it holds,
+ * stale rather than ended, because ending it would hand any sender a kill switch.
  */
 const MAX_INBOUND_TEXT_BYTES = 16 * 1024 * 1024;
 
@@ -1212,7 +1214,8 @@ export class SelvageEngine {
 
   private handleText(text: string): void {
     // Counted in bytes, not code units: `Buffer.byteLength` walks without allocating,
-    // where encoding the frame to count it would copy it first.
+    // where encoding the frame to count it would copy it first. Node-only by construction —
+    // the extension host and the companion both run on Node — like the rest of this file.
     if (Buffer.byteLength(text, 'utf8') > MAX_INBOUND_TEXT_BYTES) {
       return;
     }
@@ -1397,7 +1400,8 @@ export class SelvageEngine {
   private handleBinary(frame: Uint8Array): void {
     if (frame.length > MAX_INBOUND_BINARY_BYTES) {
       // A payload this large never arrives from a conforming transport; applying it
-      // would grow the replica without bound on a peer's word.
+      // would grow the replica without bound on a peer's word. Dropped, and the session
+      // continues stale rather than ending: see `MAX_INBOUND_TEXT_BYTES`.
       return;
     }
     let replies: Uint8Array[];
