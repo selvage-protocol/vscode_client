@@ -44,10 +44,11 @@ test('a name at the bound is accepted and one unit over it is refused', () => {
   assert.equal(displayNameRefusal(exact), undefined);
 
   const refusal = displayNameRefusal(`${exact}b`);
-  assert.ok(refusal !== undefined, '33 units were accepted');
-  assert.match(refusal, /33 UTF-16 code units/);
-  assert.match(refusal, /limit is 32/);
-  assert.match(refusal, /refused rather than shortened/);
+  assert.equal(
+    refusal,
+    'this name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
+    'the refusal is not the sentence the Neovim client sends',
+  );
 });
 
 test('the count is the units the room charges, not the number of characters typed', () => {
@@ -66,8 +67,8 @@ test('the count is the units the room charges, not the number of characters type
 });
 
 test('a blank name is refused before it is sent', () => {
-  assert.match(displayNameRefusal('') ?? '', /a name is needed/);
-  assert.match(displayNameRefusal('   ') ?? '', /a name is needed/);
+  assert.equal(displayNameRefusal(''), 'a name is needed.');
+  assert.equal(displayNameRefusal('   '), 'a name is needed.');
   // Trimmed before it is counted, so the spaces around a name are not part of what it costs.
   assert.equal(displayNameRefusal(' Ada '), undefined);
   assert.match(displayNameRefusal(` ${'a'.repeat(33)} `) ?? '', /33 UTF-16 code units/);

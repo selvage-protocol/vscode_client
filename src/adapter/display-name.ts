@@ -32,16 +32,17 @@ export function displayNameUnits(name: string): number {
  * Why this name cannot be sent, or `undefined` when it can. The name is trimmed first, so the
  * count is the count of what would go on the wire, and the over-long reason names both counts —
  * the units used and the units allowed — because a refusal that does not say why is a bug report
- * waiting to happen.
+ * waiting to happen. Both reasons are whole sentences, the ones the Neovim client sends, so the
+ * two clients refuse a name in the same words.
  */
 export function displayNameRefusal(name: string): string | undefined {
   const trimmed = name.trim();
   if (trimmed === '') {
-    return 'a name is needed to go on.';
+    return 'a name is needed.';
   }
   const units = displayNameUnits(trimmed);
   if (units > MAX_DISPLAY_NAME_UNITS) {
-    return `this name is ${units} UTF-16 code units and the limit is ${MAX_DISPLAY_NAME_UNITS}; a name must be the one you chose, so it is refused rather than shortened.`;
+    return `this name is ${units} UTF-16 code units and the limit is ${MAX_DISPLAY_NAME_UNITS}; a name is refused rather than shortened.`;
   }
   return undefined;
 }

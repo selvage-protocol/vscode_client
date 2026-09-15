@@ -374,7 +374,7 @@ class Session {
         this.detachedMs = report.graceMs;
         this.refreshStatus();
         void vscode.window.showWarningMessage(
-          `Selvage: the host left the room. It closes in ${seconds(report.graceMs)} unless they come back.`,
+          `Selvage: the host left the room; it closes in ${seconds(report.graceMs)} unless they come back.`,
         );
         break;
       }
@@ -399,7 +399,7 @@ class Session {
       }
       case 'applyRefused': {
         void vscode.window.showErrorMessage(
-          `Selvage: the editor would not apply the room's change to ${report.path}. The file is not in step with the room; it may be read-only.`,
+          `Selvage: the editor would not apply the room's change to ${report.path}.`,
         );
         break;
       }
@@ -411,12 +411,14 @@ class Session {
       }
       case 'saveFailed': {
         void vscode.window.showErrorMessage(
-          `Selvage: could not save ${report.path}; the file on disk is behind the room${report.message === undefined ? '' : ` (${report.message})`}.`,
+          `Selvage: could not save ${report.path}; the file on disk is behind the room.`,
         );
         break;
       }
       case 'disconnected': {
-        void vscode.window.showWarningMessage('Selvage: the session ended.');
+        void vscode.window.showWarningMessage(
+          'Selvage: the connection ended and the session is over.',
+        );
         this.dispose();
         break;
       }
@@ -448,6 +450,16 @@ class Session {
 }
 
 /**
+ * What leaving the session this command is about to end costs, in one sentence shared by `Host`
+ * and `Join`: a host's room ends for everyone in it, a guest's is left.
+ */
+function leavingWarning(session: Session): string {
+  return session.role() === 'host'
+    ? `Selvage: you are hosting room ${session.roomId()}; leaving it ends it for everyone.`
+    : `Selvage: you are in room ${session.roomId()}; leaving it leaves it.`;
+}
+
+/**
  * Arguments a caller of `vscode.commands.executeCommand` can pass to `selvage.host` instead
  * of the interactive prompts — the same commands, driven programmatically. Used by
  * `test/e2e/`, which cannot click through a `showInputBox`; there is no other consumer today.
@@ -462,13 +474,17 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
   if (inSession !== undefined) {
     if (inSession.role() === 'host') {
       // Hosting again is reaching for the invite, not asking for a second room.
-      await copyInvite();
+      if ((await copyInviteLink()) !== undefined) {
+        void vscode.window.showInformationMessage(
+          `Selvage: you are already hosting room ${inSession.roomId()}; the invite link is on the clipboard.`,
+        );
+      }
       return;
     }
     // A guest cannot host without leaving the room it is in, and leaving is the user's call.
     const leave = 'Leave and host';
     const choice = await vscode.window.showWarningMessage(
-      `Selvage: you are a guest in room ${inSession.roomId()}. Hosting a session means leaving it first.`,
+      leavingWarning(inSession),
       { modal: true },
       leave,
     );
@@ -507,7 +523,7 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
   }
   const copy = 'Copy invite link';
   const choice = await vscode.window.showInformationMessage(
-    `Selvage: room ${engine.session().roomId} is open. Share the invite link to let someone join.`,
+    `Selvage: room ${engine.session().roomId} is open; copy the invite link to let someone join.`,
     copy,
   );
   if (choice === copy) {
@@ -524,12 +540,9 @@ export interface JoinArgs {
 async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
-    const hosting = inSession.role() === 'host';
     const leave = 'Leave and join';
     const choice = await vscode.window.showWarningMessage(
-      hosting
-        ? `Selvage: you are hosting room ${inSession.roomId()}. Joining another session ends this room for everyone in it.`
-        : `Selvage: you are in room ${inSession.roomId()}. Joining another session leaves it.`,
+      leavingWarning(inSession),
       { modal: true },
       leave,
     );
@@ -566,28 +579,35 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
     return;
   }
   current = new Session(files, engine);
-  const documents = engine.documents();
-  const howMany =
-    documents.length > 1
-      ? `; run "Selvage: Open a document from the room" for the other ${documents.length - 1}`
-      : '';
+  const first = engine.documents()[0];
   void vscode.window.showInformationMessage(
-    documents.length === 0
-      ? `Selvage: joined room ${engine.session().roomId}. This room has no open documents yet.`
-      : `Selvage: joined room ${engine.session().roomId}. Opening ${documents[0]}${howMany}.`,
+    first === undefined
+      ? `Selvage: joined room ${engine.session().roomId}; the room has no open documents yet.`
+      : `Selvage: joined room ${engine.session().roomId}; opening ${first}.`,
   );
 }
 
-async function copyInvite(): Promise<void> {
+/**
+ * Puts this window's invite on the clipboard, or warns that it has none — only the connection
+ * that minted the room has one. The sentence that accompanies the copy is the caller's:
+ * hosting again and copying the link deliberately say different things about the same copy.
+ */
+async function copyInviteLink(): Promise<string | undefined> {
   const invite = current?.invite();
   if (invite === undefined) {
     void vscode.window.showWarningMessage(
-      'Selvage: this window holds no invite link. Only the connection that opened the room has one.',
+      'Selvage: there is no invite link: only the connection that opened the room has one.',
     );
-    return;
+    return undefined;
   }
   await vscode.env.clipboard.writeText(invite);
-  void vscode.window.showInformationMessage('Selvage: invite link copied.');
+  return invite;
+}
+
+async function copyInvite(): Promise<void> {
+  if ((await copyInviteLink()) !== undefined) {
+    void vscode.window.showInformationMessage('Selvage: the invite link is on the clipboard.');
+  }
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.openDocument`. */
@@ -603,7 +623,7 @@ export interface OpenDocumentArgs {
 async function openDocument(args?: OpenDocumentArgs): Promise<void> {
   const session = current;
   if (session === undefined) {
-    void vscode.window.showWarningMessage('Selvage: host or join a session first.');
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
     return;
   }
   if (session.role() === 'host') {
@@ -614,9 +634,7 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
   }
   const paths = session.roomDocuments();
   if (paths.length === 0) {
-    void vscode.window.showInformationMessage(
-      'Selvage: this room has no open documents yet. One appears here as soon as the host opens a file.',
-    );
+    void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
     return;
   }
   let picked: string | undefined;
@@ -649,7 +667,7 @@ async function openRoomDocument(session: Session, path: string): Promise<void> {
 function leave(): void {
   const session = current;
   if (session === undefined) {
-    void vscode.window.showWarningMessage('Selvage: this window is not in a session.');
+    void vscode.window.showWarningMessage('Selvage: not in a session.');
     return;
   }
   session.dispose();
@@ -670,14 +688,13 @@ function nameInForce(): string | undefined {
 }
 
 /**
- * A name inside the protocol's bound, or `undefined` with the reason reported. `where` names
- * the source in the refusal, so a person knows which of the three to fix.
+ * A name inside the protocol's bound, or `undefined` with the refusal reported.
  */
-function withinBound(raw: string, where: string): string | undefined {
+function withinBound(raw: string): string | undefined {
   const name = raw.trim();
   const refusal = displayNameRefusal(name);
   if (refusal !== undefined) {
-    void vscode.window.showErrorMessage(`Selvage: the ${where} was not sent: ${refusal}`);
+    void vscode.window.showErrorMessage(`Selvage: ${refusal}`);
     return undefined;
   }
   return name;
@@ -695,11 +712,11 @@ function withinBound(raw: string, where: string): string | undefined {
  */
 async function resolveDisplayName(given?: string): Promise<string | undefined> {
   if (given !== undefined) {
-    return withinBound(given, 'name you gave');
+    return withinBound(given);
   }
   const configured = config().get<string>('displayName', '').trim();
   if (configured !== '') {
-    const name = withinBound(configured, '"selvage.displayName" setting');
+    const name = withinBound(configured);
     if (name !== undefined) {
       return name;
     }
@@ -713,7 +730,7 @@ async function resolveDisplayName(given?: string): Promise<string | undefined> {
   if (answer === undefined) {
     return undefined;
   }
-  return withinBound(answer, 'name you typed');
+  return withinBound(answer);
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.displayName`. */
@@ -741,7 +758,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
   const currentName = nameInForce();
   const reported =
     currentName === undefined
-      ? 'Selvage: no display name is set, so the next host or join will ask for one.'
+      ? 'Selvage: no display name is set yet.'
       : `Selvage: the name others see is "${currentName}".`;
   const change = 'Change the name';
   const choice = await vscode.window.showInformationMessage(reported, change);
@@ -770,7 +787,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
  * and the confirmation is not sent.
  */
 async function acceptDisplayName(raw: string): Promise<void> {
-  const name = withinBound(raw, 'name you gave');
+  const name = withinBound(raw);
   if (name === undefined) {
     return;
   }
@@ -811,14 +828,12 @@ function swatch(colour: string): vscode.Uri {
 async function listPeers(): Promise<void> {
   const session = current;
   if (session === undefined) {
-    void vscode.window.showWarningMessage('Selvage: host or join a session first.');
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
     return;
   }
   const participants = session.participants();
   if (participants.length === 0) {
-    void vscode.window.showWarningMessage(
-      'Selvage: no other participants to name; a session names them as they arrive.',
-    );
+    void vscode.window.showWarningMessage('Selvage: no other participants yet.');
     return;
   }
   await vscode.window.showQuickPick(
