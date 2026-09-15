@@ -99,10 +99,42 @@ test('there is still no create, rename or delete, and nothing is watched', () =>
   const files = provider();
   const document = uri(virtualUri(ROOM, 'src/main.rs'));
 
-  assert.throws(() => files.createDirectory(document), /no permissions/);
-  assert.throws(() => files.delete(document), /no permissions/);
-  assert.throws(() => files.rename(document), /no permissions/);
+  // Each says the one rule at the point of action, rather than failing as a broken
+  // provider.
+  assert.throws(
+    () => files.createDirectory(document),
+    /the room carries no file mutations yet/,
+  );
+  assert.throws(() => files.delete(document), /the room carries no file mutations yet/);
+  assert.throws(() => files.rename(document), /the room carries no file mutations yet/);
   assert.equal(typeof files.watch(document).dispose, 'function');
+});
+
+test('creating a file is refused instead of silently kept nowhere', () => {
+  const files = provider();
+  files.use({
+    roomId: ROOM,
+    text: (path) => (path === 'src/main.rs' ? "the room's text\n" : ''),
+    paths: () => ['src/main.rs', 'src/slow.rs'],
+    has: (path) => path === 'src/main.rs',
+  });
+
+  // A path the room neither holds nor lists is a file being created: the save is refused
+  // rather than looking saved while its bytes go nowhere.
+  const created = uri(virtualUri(ROOM, 'src/created.rs'));
+  assert.throws(
+    () => files.writeFile(created, new TextEncoder().encode('new\n')),
+    /the room carries no file mutations yet/,
+    'creating a file looked like success',
+  );
+
+  // A listed path the room has not sent yet is a slow host, not a creation: its save stays
+  // the silent no-op that clears the dirty marker, as does a held document's.
+  const slow = uri(virtualUri(ROOM, 'src/slow.rs'));
+  files.writeFile(slow, new TextEncoder().encode('early\n'));
+  const held = uri(virtualUri(ROOM, 'src/main.rs'));
+  files.writeFile(held, new TextEncoder().encode('edited\n'));
+  assert.equal(read(files, held), "the room's text\n");
 });
 
 test("the file system mirrors the room's listing as a tree", () => {
