@@ -99,6 +99,10 @@ export class RealServer {
       return;
     }
     this.stopped = true;
+    // Already gone: `exit` has fired, so waiting for it again would wait for ever.
+    if (this.child.exitCode !== null || this.child.signalCode !== null) {
+      return;
+    }
     const exited = new Promise<void>((resolve_) => {
       this.child.once('exit', () => {
         resolve_();

@@ -26,6 +26,7 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -90,6 +91,8 @@ const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '300000');
  */
 const NIX_EVAL_TIMEOUT_MS = Number(process.env.SELVAGE_E2E_NIX_TIMEOUT_MS ?? '120000');
 const NIX_EVAL_KILL_GRACE_MS = 2000;
+/** How long the server is given to stop on the way out before the process leaves without it. */
+const SERVER_STOP_GRACE_MS = 5000;
 
 /**
  * What the watchdog reports on: the phase the run is in, the last line it logged, and which
@@ -98,6 +101,8 @@ const NIX_EVAL_KILL_GRACE_MS = 2000;
 let phase = 'startup';
 let lastLogged = '(nothing logged yet)';
 const inFlight = new Set<'host' | 'guest'>();
+/** The server this run started, if it has got that far; stopped on every way out. */
+let activeServer: RealServer | undefined;
 
 function log(...parts: unknown[]): void {
   lastLogged = parts.map((part) => String(part)).join(' ');
@@ -142,6 +147,44 @@ function liveEditorProcesses(): { host: number[]; guest: number[] } {
 }
 
 /**
+ * SIGTERMs the editors this run spawned, found the way the watchdog reports them: by the
+ * user-data directory only this run passes, so nothing else on the machine can match. They are
+ * `@vscode/test-electron`'s children and no handle on them comes back, so on a throw, a signal
+ * or the watchdog they are otherwise abandoned alive.
+ */
+function killLiveEditors(): void {
+  const alive = liveEditorProcesses();
+  for (const pid of [...alive.host, ...alive.guest]) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // It exited between the scan and the signal.
+    }
+  }
+}
+
+/**
+ * Everything this run started is stopped here, whatever ended it: the server is on an ephemeral
+ * port and outlives the proof that started it, and the editors are children nobody hands back.
+ */
+async function stopWhatThisRunStarted(): Promise<void> {
+  const server = activeServer;
+  activeServer = undefined;
+  if (server !== undefined) {
+    // `stop` escalates to SIGKILL on its own; the race is what makes the wait bounded even if
+    // that never lands, since the process is leaving either way.
+    await Promise.race([server.stop(), delay(SERVER_STOP_GRACE_MS)]);
+  }
+  killLiveEditors();
+}
+
+/** Stop, then leave with this code: the body of every failing ending. */
+async function stopAndExit(code: number): Promise<void> {
+  await stopWhatThisRunStarted();
+  process.exit(code);
+}
+
+/**
  * The deadline for the whole run. It is armed before `main` starts and cleared once the run is
  * done — until it is cleared it holds the event loop open itself, which is what keeps a
  * promise that never settles or a child that never exits from ending the process quietly.
@@ -160,7 +203,7 @@ function armWatchdog(): ReturnType<typeof setTimeout> {
     console.error(
       `[e2e] WATCHDOG: editor output: ${resolve(RUN_DIR, 'host.log')}, ${resolve(RUN_DIR, 'guest.log')}`,
     );
-    process.exit(1);
+    void stopAndExit(1);
   }, WATCHDOG_MS);
 }
 
@@ -453,6 +496,7 @@ async function main(): Promise<void> {
   phase = 'starting the real selvaged';
   log('starting the real selvaged');
   const server = await RealServer.start();
+  activeServer = server;
   log('selvaged listening at', server.wsBase);
 
   const [, hostPort] = /:(\d+)$/.exec(server.address) ?? [];
@@ -610,7 +654,7 @@ async function main(): Promise<void> {
     deadline.abort();
   });
   await proxy?.stop();
-  await server.stop();
+  await stopWhatThisRunStarted();
 
   phase = 'checking the outcomes';
   const hostOutcome = readOutcome(hostResultFile);
@@ -696,6 +740,18 @@ main()
     // A failed run must end here. The editor processes are `@vscode/test-electron`'s children, and
     // an exception thrown before they settle leaves them holding the event loop open: the run then
     // sits silent until whatever started it gives up, which reads like a hang rather than a
-    // failure. The exit code is the report; nothing after this point is worth waiting for.
-    process.exit(1);
+    // failure. The exit code is the report; nothing after this point is worth waiting for. The
+    // server and the editors are stopped first, or a failed run leaves them running for ever.
+    void stopAndExit(1);
   });
+
+/**
+ * A signal is a run ending non-zero too, and it ends in the same place: stop what was started,
+ * then leave with the code the shell expects for that signal.
+ */
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    console.error(`[e2e] ${signal}: stopping the server and the editors this run started`);
+    void stopAndExit(128 + constants.signals[signal]);
+  });
+}
