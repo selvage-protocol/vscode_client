@@ -562,6 +562,65 @@ test('a refused listing is offered and reported once while it says the same thin
 });
 
 /**
+ * A refusal belongs to the walk that is current when its answer arrives, not to the one
+ * that sent it: with a slow room, the send of an older walk is still out when the walk a
+ * later event starts sends its own, and only the latest walk's answer may report. Before
+ * this, the older walk reported its refusal too, so one refused listing cost one error per
+ * overlapping walk.
+ */
+test('a walk overtaken by a later one reports no refusal of its own', async (t) => {
+  const server = await FakeServer.start({ refuseGrant: true });
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  bundle.stub.put('README.md', 'the readme\n');
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the first refusal to be reported', () =>
+    bundle.stub.registered.errors.length > 0 ? true : false,
+  );
+  const attempts = server.grantAttempts;
+  const errors = bundle.stub.registered.errors.length;
+
+  // Every grant answer waits, so the republish this event starts is still sending when the
+  // walk the next event starts sends its own listing.
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  server.grantHold = released;
+
+  bundle.stub.put('a.txt', 'a\n');
+  bundle.stub.watchEvent('create', 'a.txt');
+  await waitFor('the first send to be held', () =>
+    server.grantAttempts > attempts ? true : false,
+  );
+  bundle.stub.put('b.txt', 'b\n');
+  bundle.stub.watchEvent('create', 'b.txt');
+  await waitFor('the second send to be held', () =>
+    server.grantAttempts > attempts + 1 ? true : false,
+  );
+
+  release();
+  server.grantHold = undefined;
+  await quiet();
+
+  assert.equal(
+    server.grantAttempts,
+    attempts + 2,
+    `the held sends never arrived: ${server.grantAttempts}`,
+  );
+  assert.equal(
+    bundle.stub.registered.errors.length,
+    errors + 1,
+    `an overtaken walk reported its own refusal: ${JSON.stringify(bundle.stub.registered.errors)}`,
+  );
+});
+
+/**
  * The room's shape is two facts, and a listing that shrinks is not a hold released: `doc.grant`
  * replaces the room's grant wholesale and says nothing about the room's open-document set
  * (`PROTOCOL.md` §5 against §6). A path that leaves the listing because the host deleted or

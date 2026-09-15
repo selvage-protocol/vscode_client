@@ -376,7 +376,8 @@ class Session {
     try {
       paths = await enumerateGrant(this.folders);
     } catch (error) {
-      if (this.finished) {
+      // A later walk describes the folder now, and its own read reports its outcome.
+      if (this.finished || attempt !== this.grantWalks) {
         return;
       }
       this.onReport({
@@ -421,9 +422,11 @@ class Session {
         }
         return;
       }
-      if (attempt === this.grantWalks) {
-        this.refusedListing = paths;
+      // A later walk describes the folder now, and its own send reports its outcome.
+      if (attempt !== this.grantWalks) {
+        return;
       }
+      this.refusedListing = paths;
       this.onReport({
         kind: 'sessionError',
         code: isProtocolError(error) ? error.code : 'error',
