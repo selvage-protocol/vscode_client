@@ -256,11 +256,10 @@ test('a settings file that will not take the name is reported, not swallowed', a
   );
 });
 
-test('a name set during a session says the session keeps the one it started with', async (t) => {
-  const { bundle } = await guest(t, ['workspace/README.md']);
+test('a name set during a session is a live rename, told to the room', async (t) => {
+  const { bundle, server } = await guest(t, ['workspace/README.md']);
 
-  // The name in force is the room's own: it travelled in the handshake and nothing carries
-  // it afterwards, so the report names the session, not the setting.
+  // The name in force is the room's own: the report names the session, not the setting.
   await bundle.stub.commands.executeCommand('selvage.displayName');
   const reported = await waitFor('the report', () =>
     bundle.stub.registered.information.find((message) =>
@@ -269,13 +268,46 @@ test('a name set during a session says the session keeps the one it started with
   );
   assert.match(reported, /the name others see is "Bob"/);
 
-  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Ada again' });
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Robert' });
   const said = await waitFor('the confirmation', () =>
     bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
       false,
   );
-  assert.match(said, /this session keeps the name it started with/);
-  assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Ada again');
+  assert.match(said, /this session is renamed too/);
+  assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Robert');
+
+  // The setting write is what the listener saw; the listener is the one sender, so one
+  // rename went out, and the room's own record moves to the new name.
+  const rename = await waitFor('the rename to reach the room', () => server.renames[0] ?? false);
+  assert.equal(rename.displayName, 'Robert');
+  assert.equal(server.renames.length, 1, 'the rename was sent more than once');
+  await waitFor('the room to know the new name', () =>
+    server.displayNames().includes('Robert') ? true : false,
+  );
+});
+
+test('a name already in force sends no rename, and one over the bound is refused first', async (t) => {
+  const { bundle, server } = await guest(t, ['workspace/README.md']);
+
+  // The same name: the setting write fires the listener, which finds nothing to change.
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Bob' });
+  const unchanged = await waitFor('the confirmation', () =>
+    bundle.stub.registered.information.find((message) => message.includes('display name set')) ??
+      false,
+  );
+  assert.match(unchanged, /this session is renamed too/);
+  assert.equal(bundle.stub.registered.settingWrites[0]?.value, 'Bob');
+  assert.equal(server.renames.length, 0, 'a no-op change sent a rename');
+
+  // Thirty-two code points and thirty-three UTF-16 units: refused before it is written or sent.
+  const overLong = `${'a'.repeat(31)}\u{1f600}`;
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: overLong });
+  const refusal = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
+  );
+  assert.match(refusal, /33 UTF-16 code units/);
+  assert.equal(bundle.stub.registered.settingWrites.length, 1, 'a refused name was written');
+  assert.equal(server.renames.length, 0, 'a refused name reached the server');
 });
 
 test('a name over the bound is refused with both counts and never written', async (t) => {

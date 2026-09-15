@@ -285,3 +285,56 @@ test('the badge is a base64 SVG in the glyph margin, applied at the caret line',
   const option = ranges[0] as { range: { start: { line: number; character: number } } };
   assert.deepEqual(option.range.start, { line: 1, character: 0 });
 });
+
+/** Every caret `hoverMessage` the editor was handed, oldest draw first. */
+function hoverLabels(editor: StubEditor): string[] {
+  return editor.drawn
+    .flatMap((entry) => entry.options as Array<{ hoverMessage?: unknown }>)
+    .map((options) => options.hoverMessage)
+    .filter((label): label is string => typeof label === 'string');
+}
+
+/** The SVG behind the newest non-empty gutter badge the editor was handed. */
+function drawnBadgeSvg(editor: StubEditor): string {
+  const prefix = 'data:image/svg+xml;base64,';
+  for (let index = editor.drawn.length - 1; index >= 0; index -= 1) {
+    const entry = editor.drawn[index];
+    const icon = entry.type.options.gutterIconPath as { toString(): string } | undefined;
+    if (icon !== undefined && entry.options.length > 0) {
+      return Buffer.from(icon.toString().slice(prefix.length), 'base64').toString('utf8');
+    }
+  }
+  return '';
+}
+
+test('a peer that renames itself re-labels its caret and its badge', async (t) => {
+  const { host, invite } = await room(t, [PATH]);
+  host.insert(PATH, 0, 'hello\n');
+  const bundle = await seat(t, invite);
+  host.setSelection(PATH, { anchor: 0, head: 0 });
+  const editor = installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+
+  // The host's caret is drawn under its first name, its hover and its badge alike.
+  await waitFor('the caret to be drawn', () => {
+    bundle.stub.fire('visibleEditors');
+    return hoverLabels(editor).find((label) => label.startsWith('Ada ')) ?? false;
+  });
+  assert.equal(hoverLabels(editor).find((label) => label.startsWith('Ada ')), 'Ada · host');
+  assert.ok(
+    drawnBadgeSvg(editor).includes('>Ad</text>'),
+    'the badge does not show the first initials',
+  );
+
+  // The host renames mid-session. Nothing in the adapter names a peer itself; the caret
+  // and the badge follow `peersChanged`, and that is what this pins.
+  await host.rename('Grace Hopper');
+  const relabelled = await waitFor('the caret to be relabelled', () => {
+    bundle.stub.fire('visibleEditors');
+    return hoverLabels(editor).find((label) => label.startsWith('Grace Hopper ')) ?? false;
+  });
+  assert.equal(relabelled, 'Grace Hopper · host');
+  await waitFor('the badge to show the new initials', () => {
+    bundle.stub.fire('visibleEditors');
+    return drawnBadgeSvg(editor).includes('>Gr</text>') ? true : false;
+  });
+});

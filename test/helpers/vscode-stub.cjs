@@ -228,6 +228,11 @@ module.exports = {
         }
         configured.set(key, value);
         registered.settingWrites.push({ key, value, target });
+        // VS Code fires `onDidChangeConfiguration` for a write, and the display-name
+        // command routes its rename through that listener, so the stub models it.
+        fire('configuration', {
+          affectsConfiguration: (section) => section === 'selvage' || section === `selvage.${key}`,
+        });
         return Promise.resolve();
       },
     }),
