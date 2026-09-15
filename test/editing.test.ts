@@ -368,6 +368,15 @@ test('a guest document URI round-trips, and its room is not case-folded', () => 
   // is unreadable rather than a `URIError` thrown out of the change-event listener.
   assert.equal(virtualDocument('selvage', '/a%2.ts', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/a.ts', 'room=%'), undefined);
+  // A server-supplied listing becomes URIs: a name that resolves elsewhere is one this
+  // client cannot name, however it is encoded.
+  assert.equal(virtualDocument('selvage', '/..', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/../etc/passwd', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/src/../../x', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/src//x', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/./x', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/%2e%2e/x', 'room=r-1'), undefined);
+  assert.equal(virtualDocument('selvage', '/%2E%2E%2Fx', 'room=r-1'), undefined);
   assert.equal(roomFromQuery('room=r-1&x=2'), 'r-1');
   assert.equal(roomFromQuery('x=2'), undefined);
 });

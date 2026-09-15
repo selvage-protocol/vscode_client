@@ -52,7 +52,15 @@ function decodePath(path: string): string | undefined {
     }
     decoded.push(part);
   }
-  return decoded.join('/');
+  const full = decoded.join('/');
+  // Decoding can reintroduce separators (`%2F`) and escapes (`%2e%2e`): the name this
+  // client would actually open is judged, not the encoded form.
+  for (const piece of full.split('/')) {
+    if (piece === '' || piece === '.' || piece === '..') {
+      return undefined;
+    }
+  }
+  return full;
 }
 
 /** The URI a guest opens for a room path. */
