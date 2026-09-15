@@ -65,6 +65,47 @@ export function caret(at: Anchor): Selection {
   return { anchor: at, head: at };
 }
 
+function sameAnchorId(left: AnchorId | undefined, right: AnchorId | undefined): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return left.client === right.client && left.clock === right.clock;
+}
+
+function sameAnchor(left: Anchor, right: Anchor): boolean {
+  return (
+    left.assoc === right.assoc &&
+    left.tname === right.tname &&
+    sameAnchorId(left.item, right.item) &&
+    sameAnchorId(left.type, right.type)
+  );
+}
+
+function sameSelection(left: Selection | undefined, right: Selection | undefined): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return sameAnchor(left.anchor, right.anchor) && sameAnchor(left.head, right.head);
+}
+
+/**
+ * Whether two local states say the same thing, so publishing the second would put the same
+ * bytes on the wire again. Only the awareness *clock* is left out, and it is left out by not
+ * being here: y-protocols keeps it beside a state rather than in one, so a renewal —
+ * deliberately this state on a newer clock (§8.2) — compares equal and is the caller's
+ * business to tell apart. The clocks inside an anchor are part of what it names, and are
+ * compared like any other member.
+ */
+export function sameAwareness(
+  left: AwarenessState | null,
+  right: AwarenessState | null,
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return left.path === right.path && sameSelection(left.selection, right.selection);
+}
+
 /**
  * `0` (after) or `-1` (before) for any number, normalised by sign (§8.1); `undefined` when the
  * member is not a number at all, which is not an `assoc` and costs the anchor it sits in.
