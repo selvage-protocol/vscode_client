@@ -65,7 +65,7 @@ async function twoWindows(
 
 test('opening an excluded file shares nothing and says so once', async (t) => {
   const { session, host } = await twoWindows(t);
-  for (const path of ['.env', 'src/.env.local', '.GIT/config', 'id_rsa', 'certs/server.pem']) {
+  for (const path of ['.env', 'src/.env.local', '.git/config', 'id_rsa', 'certs/server.pem']) {
     host.editor.open(path, 'SECRET=1\n');
     host.bridge.documentOpened(path);
   }
@@ -79,7 +79,7 @@ test('opening an excluded file shares nothing and says so once', async (t) => {
     assert.match(refusal.message, /will not share .* with the room/);
     assert.match(refusal.message, /nothing was shared for it/);
   }
-  for (const path of ['.env', 'src/.env.local', '.GIT/config', 'id_rsa', 'certs/server.pem']) {
+  for (const path of ['.env', 'src/.env.local', '.git/config', 'id_rsa', 'certs/server.pem']) {
     assert.equal(session.host.has(path), false, `${path} entered the replica`);
   }
 

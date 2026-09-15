@@ -128,12 +128,12 @@ test('a name the grant excludes is not servable, even when it is on disk', async
     stub.reset();
   });
   stub.put('.env', 'SECRET=1\n');
-  stub.put('.GIT/config', 'secret\n');
+  stub.put('.git/config', 'secret\n');
   stub.put('id_rsa', 'secret\n');
   stub.put('src/main.rs', 'inside\n');
 
   assert.equal(await grantedFile(folders(), '.env'), undefined);
-  assert.equal(await grantedFile(folders(), '.GIT/config'), undefined);
+  assert.equal(await grantedFile(folders(), '.git/config'), undefined);
   assert.equal(await grantedFile(folders(), 'id_rsa'), undefined);
   assert.ok((await grantedFile(folders(), 'src/main.rs')) !== undefined);
 });
@@ -145,7 +145,7 @@ test('the listing names only what the room may serve', async (t) => {
   });
   stub.put('src/main.rs', 'inside\n');
   stub.put('.env', 'SECRET=1\n');
-  stub.put('.GIT/config', 'secret\n');
+  stub.put('.git/config', 'secret\n');
   stub.put('id_rsa', 'secret\n');
   stub.put('node_modules/dep/index.js', 'dep\n');
   stub.put('big.bin', 'x', { size: 2 * 1024 * 1024 });

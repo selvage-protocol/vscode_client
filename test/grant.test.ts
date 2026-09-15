@@ -56,13 +56,7 @@ test('the defaults DESIGN.md names are excluded, and so is the tree that makes a
     '.env',
     'src/.env',
     '.env.local',
-    '.env.production',
-    // The family goes with the name: a file that is a template for secrets is not worth the
-    // one real secret a narrower rule would miss.
-    '.env.example',
-    'src/.env.example',
-    '.ENV',
-    'src/.Env.Local',
+    'src/.env.production.local',
     '.envrc',
     'src/.envrc',
     '.npmrc',
@@ -76,24 +70,119 @@ test('the defaults DESIGN.md names are excluded, and so is the tree that makes a
   }
 });
 
-test('excludes hold on case-folding checkouts, where .GIT is .git', () => {
-  for (const folded of [
-    '.GIT/config',
-    'src/.Git/HEAD',
-    'NODE_MODULES/left-pad/index.js',
-    'Node_Modules/left-pad/index.js',
-    'TARGET/debug/build',
-    '.Env',
-    'SRC/.ENv.PRODUCTION',
-    '.AWS/credentials',
-    '.NPMRC',
-  ]) {
-    assert.equal(isGrantedPath(folded), false, `${folded} must not be listed`);
+test('excludes fold only where the filesystem does, and match exactly elsewhere', () => {
+  // On a case-sensitive checkout `Build/` is an ordinary directory, not `build/`: Linux
+  // pays nothing for macOS's filesystem.
+  for (const platform of ['linux', 'freebsd']) {
+    for (const ordinary of ['Build/output.o', 'Vendor/lib.js', 'TARGET/x', '.GIT/config']) {
+      assert.equal(
+        isGrantedPath(ordinary, platform),
+        true,
+        `${ordinary} should be shareable on ${platform}`,
+      );
+    }
+    for (const excluded of ['build/output.o', '.git/config', 'node_modules/dep/index.js']) {
+      assert.equal(
+        isGrantedPath(excluded, platform),
+        false,
+        `${excluded} must not be listed on ${platform}`,
+      );
+    }
   }
-  // The lowercase forms stay excluded, and ordinary names stay listed.
+  // Where the filesystem folds, the folded forms are stopped too.
+  for (const platform of ['darwin', 'win32']) {
+    for (const folded of [
+      '.GIT/config',
+      'src/.Git/HEAD',
+      'NODE_MODULES/left-pad/index.js',
+      'Node_Modules/left-pad/index.js',
+      'TARGET/debug/build',
+      'Build/output.o',
+      'Vendor/lib.js',
+      '.Env',
+      'src/.Env.Local',
+      '.AWS/credentials',
+      '.NPMRC',
+      'certs/chain.PEM',
+      'certs/server.KEY',
+    ]) {
+      assert.equal(
+        isGrantedPath(folded, platform),
+        false,
+        `${folded} must not be listed on ${platform}`,
+      );
+    }
+  }
+  // An unknown host keeps the fold: sharing less is the safer error.
+  assert.equal(isGrantedPath('Build/output.o', ''), false);
+  // The lowercase forms stay excluded everywhere, and ordinary names stay listed.
   assert.equal(isGrantedPath('.git/config'), false);
   assert.equal(isGrantedPath('src/main.rs'), true);
   assert.equal(isGrantedPath('GITIGNORE'), true, 'a prefix of an excluded name is not one');
+});
+
+test('secret-bearing .env files are out, templates stay shareable', () => {
+  for (const secret of [
+    '.env',
+    'src/.env',
+    '.env.local',
+    '.env.production.local',
+    'src/.env.staging.local',
+    '.env.ci.local',
+  ]) {
+    assert.equal(isGrantedPath(secret), false, `${secret} must not be listed`);
+  }
+  // Templates carry no secrets: the pairing flow that shares them keeps working.
+  for (const template of [
+    '.env.example',
+    'src/.env.example',
+    '.env.sample',
+    '.env.staging.sample',
+    '.env.template',
+    '.env.production.template',
+  ]) {
+    assert.equal(isGrantedPath(template), true, `${template} should be part of the grant`);
+  }
+  // `.env.<name>` without `.local` is configuration, not secret, by decision: denying the
+  // whole family back would take the templates with it. Stated, not smuggled.
+  assert.equal(isGrantedPath('.env.production'), true);
+  assert.equal(isGrantedPath('src/.env.development'), true);
+  // The fold follows the platform, like the directories.
+  assert.equal(isGrantedPath('.ENV', 'darwin'), false);
+  assert.equal(isGrantedPath('.Env.Local', 'darwin'), false);
+  assert.equal(isGrantedPath('.ENV', 'linux'), true);
+  assert.equal(isGrantedPath('.env.example', 'darwin'), true);
+});
+
+test('secret file names match the leaf only, never a whole directory', () => {
+  // A directory named like a key is not a key: the subtree stays in the room.
+  for (const ordinary of [
+    'id_rsa_backup/keys.txt',
+    'id_ed25519-old/keys.txt',
+    'configs/.npmrc/notes.txt',
+    '.envrc.d/notes.txt',
+    'notes/keyboard-shortcuts.md',
+  ]) {
+    assert.equal(isGrantedPath(ordinary), true, `${ordinary} should be part of the grant`);
+  }
+  // The leaf rule itself is unchanged: keys and secret files are still out.
+  for (const secret of [
+    'id_rsa',
+    '.ssh/id_rsa',
+    '.ssh/id_rsa.pub',
+    'src/id_rsa_notes.md',
+    '.envrc',
+    'configs/.npmrc',
+    'certs/server.pem',
+    'certs/server.key',
+  ]) {
+    assert.equal(isGrantedPath(secret), false, `${secret} must not be listed`);
+  }
+  // A rename past a suffix rule re-shares the file: accident-guard, not boundary, stated
+  // where the excludes are defined rather than chased here.
+  for (const renamed of ['certs/server.pem.bak', '.npmrc.bak', '.envrc.bak', 'my.pem.bak']) {
+    assert.equal(isGrantedPath(renamed), true, `${renamed} re-shares by rename, stated`);
+  }
 });
 
 test('credential stores and private keys are never part of the grant', () => {
@@ -110,9 +199,8 @@ test('credential stores and private keys are never part of the grant', () => {
     '.ssh/id_dsa',
     '.ssh/id_rsa.pub',
     'certs/server.pem',
-    'certs/chain.PEM',
+    'certs/chain.pem',
     'certs/server.key',
-    'certs/server.KEY',
   ]) {
     assert.equal(isGrantedPath(secret), false, `${secret} must not be listed`);
   }

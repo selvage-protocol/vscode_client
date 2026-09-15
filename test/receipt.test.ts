@@ -87,8 +87,8 @@ test('a hostile listing is filtered to what the grant would publish', async (t) 
         '/etc/passwd',
         '.env',
         'src/.env.local',
-        '.GIT/config',
-        'NODE_MODULES/dep/index.js',
+        '.git/config',
+        'node_modules/dep/index.js',
         'id_rsa',
         'certs/server.pem',
         'a\\b.txt',
@@ -144,7 +144,7 @@ test('a hostile open-document set is filtered the same way', async (t) => {
     event('doc.opened', {
       peer_id: 'p-evil',
       path: 'ok.ts',
-      documents: ['ok.ts', '../evil', '.env', '.GIT/x', 7, 'a\\b'],
+      documents: ['ok.ts', '../evil', '.env', '.git/x', 7, 'a\\b'],
     }),
   );
 
