@@ -23,5 +23,16 @@ export {
 export type { LineEnding, TextChange } from './editing.ts';
 export { cursorFor, peerColour, translucent } from './cursors.ts';
 export type { Cursor, CursorPeer, ResolvedCursor } from './cursors.ts';
+export {
+  GRANT_EXCLUDED_DIRS,
+  MAX_GRANT_FILE_BYTES,
+  MAX_GRANT_PATHS,
+  MAX_GRANT_PATH_BYTES,
+  grantChildren,
+  grantUnion,
+  isGrantedPath,
+  sortGrant,
+} from './grant.ts';
+export type { GrantChild } from './grant.ts';
 export { SCHEME, roomFromQuery, virtualDocument, virtualUri } from './virtual.ts';
 export type { VirtualDocument } from './virtual.ts';
