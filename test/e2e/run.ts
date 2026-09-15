@@ -55,10 +55,12 @@ const RECONNECT_DEADLINE_MS = Number(process.env.SELVAGE_E2E_RECONNECT_DEADLINE_
  * How long one editor may take to finish on its own before the run gives up on it. Startup,
  * both phases and the shutdown, with room to spare: this is the bound that turns an editor
  * that never exits into a failure, rather than an orchestrator that says nothing for as long
- * as whatever started it is willing to wait.
+ * as whatever started it is willing to wait. A run with the reconnect phase off never waits
+ * for that phase either, so it does not reserve its budget.
  */
 const INSTANCE_DEADLINE_MS = Number(
-  process.env.SELVAGE_E2E_INSTANCE_DEADLINE_MS ?? String(DEADLINE_MS + RECONNECT_DEADLINE_MS + 180_000),
+  process.env.SELVAGE_E2E_INSTANCE_DEADLINE_MS ??
+    String(DEADLINE_MS + (RECONNECT ? RECONNECT_DEADLINE_MS : 0) + 180_000),
 );
 
 function log(...parts: unknown[]): void {
@@ -370,14 +372,21 @@ async function main(): Promise<void> {
   // prints nothing while it waits cannot be told from a hung one — which is how a stalled run
   // reads when its output is piped somewhere it will not be read until it exits. The deadline
   // names the logs instead.
+  //
+  // The deadline is cancelled as soon as the instances settle: the timer behind it would
+  // otherwise outlive the race and hold the process open for the rest of its budget, which is
+  // minutes of wall clock on a run that has already passed.
+  const deadline = new AbortController();
   const [hostResult, guestResult] = await Promise.race([
     Promise.allSettled([hostRun, guestRun]),
-    delay(INSTANCE_DEADLINE_MS).then((): never => {
+    delay(INSTANCE_DEADLINE_MS, undefined, { signal: deadline.signal }).then((): never => {
       throw new Error(
         `orchestrator: an instance did not finish within ${INSTANCE_DEADLINE_MS}ms; its output is in ${hostLogFile} and ${guestLogFile}`,
       );
     }),
-  ]);
+  ]).finally(() => {
+    deadline.abort();
+  });
   await proxy?.stop();
   await server.stop();
 
