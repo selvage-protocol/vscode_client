@@ -53,6 +53,15 @@ const registered = {
    * `test/documents.test.ts`.
    */
   applyEditImpl: () => Promise.resolve(true),
+  /** Every file system watcher the extension created, with the pattern each was given. */
+  watchers: [],
+  /**
+   * When set, `createFileSystemWatcher` throws with this message: a window whose editor cannot
+   * watch the folder it shares.
+   */
+  watcherFailure: undefined,
+  /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
+  listings: 0,
 };
 
 /**
@@ -146,6 +155,91 @@ function makeUnreadable(path) {
   disk.unreadable.add(diskPath(path));
 }
 
+/** Takes a file out of the working copy, as deleting it from the project does. */
+function remove(path) {
+  disk.files.delete(diskPath(path));
+}
+
+/**
+ * A stand-in for `workspace.createFileSystemWatcher`, as the extension creates one per folder
+ * it shares. The watcher it returns records its listeners, so a test can fire a file system
+ * event the way the editor's own watcher does and see whether it was still live: a disposed
+ * watcher delivers nothing, as the editor's does not. Each watcher is kept in
+ * `registered.watchers`, with the pattern it was given.
+ */
+
+/** How many watchers this window may still create before `watcherFailure` starts applying. */
+let watcherBudget = 0;
+
+function createFileSystemWatcher(
+  pattern,
+  ignoreCreateEvents,
+  ignoreChangeEvents,
+  ignoreDeleteEvents,
+) {
+  if (registered.watcherFailure !== undefined && watcherBudget <= 0) {
+    throw new Error(registered.watcherFailure);
+  }
+  watcherBudget -= 1;
+  const watcher = {
+    pattern,
+    /** What the extension asked not to hear, so a test can see what it did not subscribe to. */
+    ignored: {
+      create: ignoreCreateEvents === true,
+      change: ignoreChangeEvents === true,
+      delete: ignoreDeleteEvents === true,
+    },
+    disposed: false,
+    listeners: new Map(),
+  };
+  registered.watchers.push(watcher);
+  const on = (kind) => (listener) => {
+    const list = watcher.listeners.get(kind) ?? [];
+    list.push(listener);
+    watcher.listeners.set(kind, list);
+    return {
+      dispose() {
+        watcher.listeners.set(
+          kind,
+          (watcher.listeners.get(kind) ?? []).filter((one) => one !== listener),
+        );
+      },
+    };
+  };
+  return {
+    onDidCreate: on('create'),
+    onDidChange: on('change'),
+    onDidDelete: on('delete'),
+    dispose() {
+      watcher.disposed = true;
+      watcher.listeners.clear();
+    },
+  };
+}
+
+/** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
+function watchEvent(kind, path) {
+  const uri = parseUri(`file://${diskPath(path)}`);
+  for (const watcher of registered.watchers) {
+    if (watcher.disposed) {
+      continue;
+    }
+    for (const listener of watcher.listeners.get(kind) ?? []) {
+      listener(uri);
+    }
+  }
+}
+
+/**
+ * Makes every watcher the extension creates from here on throw, as an unwatchable folder does.
+ * `after` is how many it may create first: a multi-folder session whose second folder fails is
+ * the half-watched shape a test needs.
+ */
+function refuseWatchers(reason, after = 0) {
+  registered.watcherFailure = reason ?? 'cannot watch this folder';
+  watcherBudget = after;
+}
+
 /** Every file and link in the working copy, keyed by path, with the type it reports. */
 function allEntries() {
   const all = new Map();
@@ -213,6 +307,10 @@ function reset() {
   disk.links.clear();
   disk.unreadable.clear();
   disk.reads.length = 0;
+  registered.watchers.length = 0;
+  registered.watcherFailure = undefined;
+  watcherBudget = 0;
+  registered.listings = 0;
   folders.length = 0;
   folders.push({ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 });
   registered.informationReply = undefined;
@@ -314,6 +412,12 @@ module.exports = {
   put,
   putLink,
   makeUnreadable,
+  /** Deletes a file from the working copy, as removing it from the project does. */
+  remove,
+  /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
+  watchEvent,
+  /** Makes every watcher the extension creates throw, as an unwatchable folder does. */
+  refuseWatchers,
   /** Replaces the folders the window is open on, as adding one mid-session would. */
   setWorkspaceFolders(paths) {
     folders.length = 0;
@@ -449,6 +553,7 @@ module.exports = {
     fs: {
       readDirectory: (uri) => {
         const path = pathOf(uri);
+        registered.listings += 1;
         if (disk.unreadable.has(resolved(path))) {
           return Promise.reject(new Error(`cannot read ${path}`));
         }
@@ -511,6 +616,7 @@ module.exports = {
       return Promise.resolve(documentFor(uri));
     },
     applyEdit: (edit) => registered.applyEditImpl(edit),
+    createFileSystemWatcher,
     registerFileSystemProvider(scheme, provider) {
       registered.schemes.push(scheme);
       registered.files = provider;
@@ -596,6 +702,17 @@ module.exports = {
     parse: parseUri,
     file: (value) => parseUri(`file://${value}`),
     joinPath,
+  },
+
+  /**
+   * A pattern relative to a folder. Both halves are kept as they were given, which is what a
+   * test asserts the watch covers.
+   */
+  RelativePattern: class {
+    constructor(base, pattern) {
+      this.base = base;
+      this.pattern = pattern;
+    }
   },
 
   env: {

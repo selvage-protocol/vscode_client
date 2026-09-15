@@ -48,6 +48,14 @@ export interface Registered {
   schemes: string[];
   /** Every tree view the extension created, with the options it was given. */
   treeViews: Array<{ id: string; options: Record<string, unknown> }>;
+  /** Every file system watcher the extension created, as the stub keeps it. */
+  watchers: Array<{
+    pattern: { base?: { uri?: { toString(): string } }; pattern?: string };
+    ignored: { create: boolean; change: boolean; delete: boolean };
+    disposed: boolean;
+  }>;
+  /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
+  listings: number;
   files?: GuestFiles;
 }
 
@@ -70,6 +78,7 @@ export interface EditorStub {
     decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown> } }>;
     /** Every status bar item the extension created, as the object it kept drawing into. */
     statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string }>;
+    watcherFailure: string | undefined;
     informationReply: unknown;
     warningReply: unknown;
     quickPickReply: unknown;
@@ -88,6 +97,12 @@ export interface EditorStub {
   putLink(path: string, kind: 'file' | 'directory', target?: string): void;
   /** A directory whose listing the editor refuses. */
   makeUnreadable(path: string): void;
+  /** Deletes a file from the working copy, as removing it from the project does. */
+  remove(path: string): void;
+  /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
+  watchEvent(kind: 'create' | 'change' | 'delete', path: string): void;
+  /** Makes every watcher the extension creates throw, as an unwatchable folder does. */
+  refuseWatchers(reason?: string, after?: number): void;
   /** Replaces the folders the window is open on, as adding one mid-session would. */
   setWorkspaceFolders(paths: string[]): void;
   /** Fires an editor event the extension subscribed to, as VS Code would. */

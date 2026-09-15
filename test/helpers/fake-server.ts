@@ -48,6 +48,11 @@ export interface FakeServerOptions {
    * `unknown_method` and the connection stays open.
    */
   grant?: boolean;
+  /**
+   * Models a server that understands the grant and will not store this listing — one over its
+   * own bound (`PROTOCOL.md` §5) — so `doc.grant` is answered `bad_params`.
+   */
+  refuseGrant?: boolean;
 }
 
 interface Client {
@@ -97,6 +102,11 @@ export class FakeServer {
   readonly renames: Array<{ peerId: string; displayName: string }> = [];
   /** Every `doc.grant` handled, in arrival order: the peer and the listing it published. */
   readonly grants: Array<{ peerId: string; paths: string[] }> = [];
+  /**
+   * How many `doc.grant` frames arrived, whether or not the server applied them: what a host
+   * attempted rather than only what a server kept.
+   */
+  grantAttempts = 0;
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
@@ -443,10 +453,18 @@ export class FakeServer {
           });
           return;
         }
+        this.grantAttempts += 1;
         if (this.options.grant === false) {
           this.respond(client, id, undefined, {
             code: code.unknownMethod,
             message: 'no such method: doc.grant',
+          });
+          return;
+        }
+        if (this.options.refuseGrant === true) {
+          this.respond(client, id, undefined, {
+            code: code.badParams,
+            message: 'the listing is over the bound this server will store',
           });
           return;
         }
