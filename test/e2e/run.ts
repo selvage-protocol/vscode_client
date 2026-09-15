@@ -23,12 +23,11 @@
  * its content.
  */
 
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
 
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
@@ -83,6 +82,14 @@ const INSTANCE_DEADLINE_MS = Number(
  * can be given room with `SELVAGE_E2E_WATCHDOG_MS`.
  */
 const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '300000');
+/**
+ * How long the one `nix eval` below may take. It resolves and evaluates `<nixpkgs>`, which can
+ * block on an evaluation, a fetch or a store lock, so it is bounded like every other step: an
+ * answer that never comes is a failure naming the cache and the way out, rather than a run that
+ * sits there until the watchdog. The answer is slow and stable and is cached once it arrives.
+ */
+const NIX_EVAL_TIMEOUT_MS = Number(process.env.SELVAGE_E2E_NIX_TIMEOUT_MS ?? '120000');
+const NIX_EVAL_KILL_GRACE_MS = 2000;
 
 /**
  * What the watchdog reports on: the phase the run is in, the last line it logged, and which
@@ -223,8 +230,6 @@ class DropProxy {
   }
 }
 
-const execFileAsync = promisify(execFile);
-
 /** A step of the run whose output belongs on this run's own stdout, awaited rather than blocked
  * on: a synchronous spawn would keep the watchdog from firing for as long as it ran. */
 async function inherit(command: string, args: string[]): Promise<void> {
@@ -236,6 +241,75 @@ async function inherit(command: string, args: string[]): Promise<void> {
         resolvePromise();
       } else {
         reject(new Error(`${command} exited with ${String(code)}`));
+      }
+    });
+  });
+}
+
+/**
+ * `nix eval`, awaited and bounded. `execFile`'s own timeout sends one signal and then waits for
+ * ever on a child that ignores it, which bounds nothing; this kills in two steps and reports.
+ */
+function nixEval(expr: string, timeoutMs: number): Promise<string> {
+  return new Promise<string>((resolvePromise, reject) => {
+    const child = spawn('nix', ['eval', '--impure', '--raw', '--expr', expr], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    const killed = (): Error =>
+      new Error(
+        `nix eval did not finish within ${String(timeoutMs)}ms, so it was killed` +
+          (stderr.trim() === '' ? '' : `; its last output was:\n${stderr.trim()}`),
+      );
+    const finish = (error?: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (escalation !== undefined) {
+        clearTimeout(escalation);
+      }
+      if (error === undefined) {
+        resolvePromise(stdout);
+      } else {
+        reject(error);
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      escalation = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, NIX_EVAL_KILL_GRACE_MS);
+    }, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      finish(error);
+    });
+    // A killed child's stdio can be held open by something behind it, so a timed-out evaluation
+    // reports at `exit`; one that finished waits for `close`, when its output has been read.
+    child.on('exit', () => {
+      if (timedOut) {
+        finish(killed());
+      }
+    });
+    child.on('close', (code) => {
+      if (timedOut) {
+        finish(killed());
+      } else if (code !== 0) {
+        finish(new Error(`nix eval exited with ${String(code)}:\n${stderr.trim()}`));
+      } else {
+        finish();
       }
     });
   });
@@ -261,12 +335,15 @@ async function nixElectronLibraryPath(): Promise<string> {
   const expr = `with import <nixpkgs> {}; lib.makeLibraryPath [${packages.join(' ')}]`;
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync('nix', ['eval', '--impure', '--raw', '--expr', expr], {
-      encoding: 'utf8',
-    }));
+    stdout = await nixEval(expr, NIX_EVAL_TIMEOUT_MS);
   } catch (error) {
-    const { stderr } = error as { stderr?: string };
-    throw new Error(`nix eval for the Electron library path failed:\n${stderr ?? String(error)}`);
+    throw new Error(
+      `nix eval for the Electron library path failed:\n${String(error)}\n` +
+        `That answer is cached: one that was obtained is written to\n  ${cacheFile}\n` +
+        `and every later run reads it instead of evaluating again. Warm it once, in a shell with\n` +
+        `a working nixpkgs, with\n  nix eval --impure --raw --expr '${expr}' > ${cacheFile}\n` +
+        `or allow the evaluation longer with SELVAGE_E2E_NIX_TIMEOUT_MS.`,
+    );
   }
   writeFileSync(cacheFile, stdout);
   return stdout.trim();
