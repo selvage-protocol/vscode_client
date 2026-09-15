@@ -131,10 +131,9 @@ chose: the setting is checked before it is sent, the question refuses an answer 
 and says how many units it used, and the command refuses to write one. A settings file the
 editor will not write — one a configuration manager owns and leaves read-only — is reported
 rather than left to look as though the name had changed. The name travels in the
-`host`/`join` handshake, and a live session renames itself when the setting changes: the write
-`Selvage: Set the name other participants see` makes is the one thing that sends the
-`session.rename`, so the room sees the new name at once and the next host or join carries it
-too.
+`host`/`join` handshake, and a live session renames itself when the setting changes: a write to
+`selvage.displayName` — by the command or by the settings UI — sends the `session.rename`, so
+the room sees the new name at once and the next host or join carries it too.
 
 `Selvage: List the room's participants` is the key to the carets. A peer is drawn as a bar in
 their own colour with their name in the caret's hover, and this is where a colour is turned back
