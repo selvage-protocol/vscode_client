@@ -33,6 +33,8 @@ const registered = {
   opened: [],
   /** The URI strings `window.showTextDocument` was given, in order. */
   shown: [],
+  /** Every `createTextEditorDecorationType` call: `{ options }`, in order. */
+  decorations: [],
   informationReply: undefined,
   warningReply: undefined,
   quickPickReply: undefined,
@@ -60,6 +62,7 @@ function reset() {
   registered.settingWriteFails = false;
   registered.opened.length = 0;
   registered.shown.length = 0;
+  registered.decorations.length = 0;
   registered.informationReply = undefined;
   registered.warningReply = undefined;
   registered.quickPickReply = undefined;
@@ -69,6 +72,29 @@ function reset() {
 
 function disposable() {
   return { dispose() {} };
+}
+
+/**
+ * The listener each `onDid…` registered, so a test can fire an editor event the way VS Code
+ * would. One listener per event is enough: the extension registers one of each. Unlike the
+ * rest of `registered`, `reset` leaves this alone — listeners are registered when a session is
+ * built, which is after a test's own `reset`.
+ */
+const listeners = new Map();
+
+function event(name) {
+  return (handler) => {
+    listeners.set(name, handler);
+    return disposable();
+  };
+}
+
+/** Runs the listener registered for `name`, as an editor event landing would. */
+function fire(name, ...args) {
+  const handler = listeners.get(name);
+  if (handler !== undefined) {
+    handler(...args);
+  }
 }
 
 /** Seeds a setting the way a hand-edited `settings.json` would, before `activate` runs. */
@@ -118,6 +144,8 @@ module.exports = {
   registered,
   reset,
   configure,
+  /** Fires an editor event the extension subscribed to: `fire('visibleEditors')`. */
+  fire,
 
   EventEmitter: class {
     constructor() {
@@ -158,9 +186,16 @@ module.exports = {
   },
 
   Range: class {
-    constructor(start, end) {
-      this.start = start;
-      this.end = end;
+    constructor(startOrLine, startCharacter, endLine, endCharacter) {
+      // The real `Range` has both shapes: `(start, end)` positions and `(line, char, line,
+      // char)`. The glyph-margin badge uses the second, so the stub answers both.
+      if (typeof startOrLine === 'number') {
+        this.start = { line: startOrLine, character: startCharacter };
+        this.end = { line: endLine, character: endCharacter };
+      } else {
+        this.start = startOrLine;
+        this.end = startCharacter;
+      }
     }
   },
 
@@ -208,10 +243,10 @@ module.exports = {
       registered.files = provider;
       return disposable();
     },
-    onDidOpenTextDocument: () => disposable(),
-    onDidCloseTextDocument: () => disposable(),
-    onDidChangeTextDocument: () => disposable(),
-    onDidChangeConfiguration: () => disposable(),
+    onDidOpenTextDocument: event('openTextDocument'),
+    onDidCloseTextDocument: event('closeTextDocument'),
+    onDidChangeTextDocument: event('changeTextDocument'),
+    onDidChangeConfiguration: event('configuration'),
   },
 
   window: {
@@ -226,10 +261,15 @@ module.exports = {
       hide() {},
       dispose() {},
     }),
-    createTextEditorDecorationType: () => disposable(),
-    onDidChangeTextEditorSelection: () => disposable(),
-    onDidChangeActiveTextEditor: () => disposable(),
-    onDidChangeVisibleTextEditors: () => disposable(),
+    createTextEditorDecorationType: (options) => {
+      const handle = disposable();
+      handle.options = options;
+      registered.decorations.push({ options, handle });
+      return handle;
+    },
+    onDidChangeTextEditorSelection: event('selection'),
+    onDidChangeActiveTextEditor: event('activeEditor'),
+    onDidChangeVisibleTextEditors: event('visibleEditors'),
     showTextDocument: (document) => {
       registered.shown.push(document.uri.toString());
       return Promise.resolve({ document });
