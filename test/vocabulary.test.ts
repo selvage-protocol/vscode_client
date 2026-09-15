@@ -14,12 +14,18 @@
  * behind an unopenable room path) reach the user only through the sentence list below — the stub's
  * guest document *is* the replica, so a document an editor refuses to change cannot hold text that
  * differs from the room's.
+ *
+ * Two sentences reach a user through a wildcard rather than a literal of their own: the
+ * display-name refusals, which the adapter wraps as `Selvage: ${refusal}`. The scan below can
+ * only pin the wildcard, so they are pinned by asking the module that writes them.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+
+import { displayNameRefusal } from '../src/adapter/display-name.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const ADAPTER = resolve(ROOT, 'src', 'adapter');
@@ -87,6 +93,15 @@ const SENTENCES = [
   "'Selvage: no other participants yet.'",
 ];
 
+/**
+ * The two sentences a display name can be refused with. They are written without the `Selvage: `
+ * prefix, because the adapter wraps them, so the scan above sees only the wildcard.
+ */
+const REFUSALS = [
+  'a name is needed.',
+  'this name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
+];
+
 /** Every `Selvage: …` string literal in a source, `${…}` collapsed. */
 function sentencesIn(source: string): string[] {
   const found: string[] = [];
@@ -129,5 +144,13 @@ test('every sentence this client can show is the shared one', () => {
     [...new Set(found)].sort(),
     [...new Set(SENTENCES)].sort(),
     'the sentences a window can show are not the ones the two clients agreed on',
+  );
+});
+
+test('a display name is refused in the words both clients use', () => {
+  assert.deepEqual(
+    [displayNameRefusal(''), displayNameRefusal('a'.repeat(33))],
+    REFUSALS,
+    'a refusal a user can be shown is not the shared one',
   );
 });
