@@ -126,16 +126,23 @@ async function seat(t: TestContext): Promise<Adapter> {
 test('a burst of caret moves publishes one presence frame, at the last position', async (t) => {
   const adapter = await seat(t);
   const last = TEXT.length - 1;
+  const started = performance.now();
   for (let i = 0; i < 200; i += 1) {
     adapter.move((i % last) + 1);
   }
   adapter.move(last);
+  const elapsed = performance.now() - started;
 
   const seen = await waitForSelection(adapter.host, 'Bob', PATH, (selection) => selection.anchor === last);
   assert.deepEqual(seen.selection, { anchor: last, head: last });
+  // The throttle flushes at most once per 100 ms, so a synchronous burst's frame count is a
+  // function of how long the burst took, not of how many events it held. Bound it by that
+  // time — a loaded machine must not turn a correct coalescing into a failure — which still
+  // catches the defect this pins: one frame per event would be 200.
+  const allowed = Math.ceil(elapsed / 100) + 1;
   assert.ok(
-    adapter.tap.tally.received.awareness <= 2,
-    `200 caret events sent ${adapter.tap.tally.received.awareness} awareness frames`,
+    adapter.tap.tally.received.awareness <= allowed,
+    `200 caret events over ${elapsed.toFixed(1)}ms sent ${adapter.tap.tally.received.awareness} awareness frames (allowed ${allowed})`,
   );
 });
 
