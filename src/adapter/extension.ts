@@ -103,6 +103,8 @@ class Session {
   private documents: string[] = [];
   private detachedMs: number | undefined;
   private finished = false;
+  /** True while a guest's one auto-open is still owed; the room's first document spends it. */
+  private autoOpen: boolean;
   /** A caret event that has not reached the room yet. */
   private selectionDirty = false;
   /** The one flush the interval allows, while one is armed. */
@@ -113,6 +115,7 @@ class Session {
     this.engine = engine;
     this.peers = engine.peers();
     this.documents = engine.documents();
+    this.autoOpen = engine.session().role === 'guest';
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
       report: (report) => {
@@ -166,23 +169,31 @@ class Session {
     this.status.show();
     this.refreshStatus();
     this.selection();
-    // A guest joins a room that already has documents. Landing in one of them is the whole
-    // point of "come edit my code with me"; the palette round trip is the chore this removes.
-    if (this.role() === 'guest') {
-      this.openFromRoom();
-    }
+    // A guest joins a room that may have documents already, and may join one that has none.
+    // Landing in the room's first document is the whole point of "come edit my code with me";
+    // the palette round trip is the chore this removes.
+    this.openFromRoom();
   }
 
   /**
-   * Opens one of the room's documents as the session is built, so a guest that just joined
-   * lands in the work. Only the first: a host with five files open must not open five
-   * editors here, and "Open a document from the room" still lists every path. Called from
-   * the constructor alone, so it can never pull focus from a document the user is editing
-   * mid-session.
+   * Opens the room's first document, once, whenever it arrives: the join's own landing when
+   * the room already has documents, and the landing a room that was empty at join still owes
+   * the guest who stayed. Only the first — a host with five files open must not open five
+   * editors here, and "Open a document from the room" still lists every path — and a second
+   * document that arrives later is left alone, because taking the window then would interrupt
+   * whatever the guest is editing. `selvage.openOnJoin` turns the landing off, and a host
+   * never lands anywhere: its open files are the room's, and it already has them open.
    */
   private openFromRoom(): void {
+    if (!this.autoOpen) {
+      return;
+    }
     const path = this.documents[0];
-    if (path !== undefined) {
+    if (path === undefined) {
+      return;
+    }
+    this.autoOpen = false;
+    if (opensOnJoin()) {
       void openRoomDocument(this, path);
     }
   }
@@ -363,6 +374,7 @@ class Session {
       case 'documents': {
         this.documents = report.documents;
         this.refreshStatus();
+        this.openFromRoom();
         break;
       }
       case 'peers': {
@@ -579,12 +591,24 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
     return;
   }
   current = new Session(files, engine);
-  const first = engine.documents()[0];
   void vscode.window.showInformationMessage(
-    first === undefined
-      ? `Selvage: joined room ${engine.session().roomId}; the room has no open documents yet.`
-      : `Selvage: joined room ${engine.session().roomId}; opening ${first}.`,
+    joinedMessage(engine.session().roomId, engine.documents()),
   );
+}
+
+/**
+ * The join's sentence: the room the window joined, and the landing it is about to make in it —
+ * which is nothing to name when the room has no documents yet, and nothing to claim when
+ * `selvage.openOnJoin` has turned the landing off.
+ */
+function joinedMessage(roomId: string, documents: string[]): string {
+  const first = documents[0];
+  if (first === undefined) {
+    return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
+  }
+  return opensOnJoin()
+    ? `Selvage: joined room ${roomId}; opening ${first}.`
+    : `Selvage: joined room ${roomId}.`;
 }
 
 /**
@@ -880,6 +904,11 @@ async function ask(
 
 function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('selvage');
+}
+
+/** Whether a join puts the room's first document in front of the guest (`selvage.openOnJoin`). */
+function opensOnJoin(): boolean {
+  return config().get<boolean>('openOnJoin', true);
 }
 
 function userName(): string {

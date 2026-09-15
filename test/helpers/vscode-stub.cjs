@@ -35,6 +35,8 @@ const registered = {
   shown: [],
   /** Every `createTextEditorDecorationType` call: `{ options }`, in order. */
   decorations: [],
+  /** Every status bar item the extension created, as the object it kept drawing into. */
+  statusBarItems: [],
   informationReply: undefined,
   warningReply: undefined,
   quickPickReply: undefined,
@@ -63,6 +65,7 @@ function reset() {
   registered.opened.length = 0;
   registered.shown.length = 0;
   registered.decorations.length = 0;
+  registered.statusBarItems.length = 0;
   registered.informationReply = undefined;
   registered.warningReply = undefined;
   registered.quickPickReply = undefined;
@@ -257,15 +260,19 @@ module.exports = {
   window: {
     activeTextEditor: undefined,
     visibleTextEditors: [],
-    createStatusBarItem: () => ({
-      text: '',
-      tooltip: undefined,
-      command: undefined,
-      name: '',
-      show() {},
-      hide() {},
-      dispose() {},
-    }),
+    createStatusBarItem: () => {
+      const item = {
+        text: '',
+        tooltip: undefined,
+        command: undefined,
+        name: '',
+        show() {},
+        hide() {},
+        dispose() {},
+      };
+      registered.statusBarItems.push(item);
+      return item;
+    },
     createTextEditorDecorationType: (options) => {
       const handle = disposable();
       handle.options = options;

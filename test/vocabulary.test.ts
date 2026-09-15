@@ -54,6 +54,7 @@ const SENTENCES = [
   '`Selvage: you are hosting room ${}; leaving it ends it for everyone.`',
   '`Selvage: you are in room ${}; leaving it leaves it.`',
   '`Selvage: joined room ${}; opening ${}.`',
+  '`Selvage: joined room ${}.`',
   '`Selvage: joined room ${}; the room has no open documents yet.`',
   '`Selvage: ${} is hosting again.`',
   '`Selvage: the host left the room; it closes in ${} unless they come back.`',
