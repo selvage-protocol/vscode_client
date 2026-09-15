@@ -26,6 +26,13 @@
  * folder and removes another while the room is live, and the guest's own view of the room — the
  * provider its Explorer reads — has to gain the created path and lose the deleted one, with the
  * created path's content arriving when the guest opens it.
+ *
+ * The follow phase proves follow-and-jump across two real editors: the guest follows the host
+ * by name, the host moves its caret to the end with no edit, and the guest's caret has to
+ * arrive at the same offset; the guest then stops, the host moves back to the start, and the
+ * guest's caret has to hold what it tracked. The host's move is a programmatic selection, so
+ * the phase also answers whether assigning `editor.selection` publishes presence — if that
+ * event never fires, the guest never tracks.
  */
 
 import { spawn } from 'node:child_process';
@@ -427,6 +434,8 @@ interface InstanceOutcome {
   role: string;
   phase1?: { text: string };
   phase2?: { text: string };
+  /** The follow phase: what the host moved to, and what the guest tracked and then held. */
+  follow?: { movedTo?: number; tracked?: number; heldAfterStop?: number };
   /** What the granted path held in this editor, and whether the host had it open too early. */
   granted?: { text: string; heldBeforeGuest?: boolean };
   /** What the host changed under its folder, and what the guest's view of the room became. */
@@ -564,6 +573,9 @@ async function main(): Promise<void> {
   const watchReadyFile = resolve(RUN_DIR, 'watch-ready.txt');
   const watchDoneFile = resolve(RUN_DIR, 'watch-done.txt');
   const grantedDoneFile = resolve(RUN_DIR, 'granted-done.txt');
+  const followReadyFile = resolve(RUN_DIR, 'follow-ready.txt');
+  const followMovedFile = resolve(RUN_DIR, 'follow-moved.txt');
+  const followStoppedFile = resolve(RUN_DIR, 'follow-stopped.txt');
   const controlFile = RECONNECT ? resolve(RUN_DIR, 'blip-done.txt') : undefined;
   const hostResultFile = resolve(RUN_DIR, 'host-result.json');
   const guestResultFile = resolve(RUN_DIR, 'guest-result.json');
@@ -582,6 +594,10 @@ async function main(): Promise<void> {
     SELVAGE_E2E_WATCH_DOOMED_PATH: WATCH_DOOMED_PATH,
     SELVAGE_E2E_WATCH_READY_FILE: watchReadyFile,
     SELVAGE_E2E_WATCH_DONE_FILE: watchDoneFile,
+    SELVAGE_E2E_FOLLOW_READY_FILE: followReadyFile,
+    SELVAGE_E2E_FOLLOW_MOVED_FILE: followMovedFile,
+    SELVAGE_E2E_FOLLOW_STOPPED_FILE: followStoppedFile,
+    SELVAGE_E2E_FOLLOW_HOST_NAME: 'Ada',
     SELVAGE_E2E_MARKER_HOST: MARKER_HOST,
     SELVAGE_E2E_MARKER_GUEST: MARKER_GUEST,
     SELVAGE_E2E_MARKER_HOST_2: MARKER_HOST_2,
@@ -733,6 +749,20 @@ async function main(): Promise<void> {
           guestText: guestOutcome?.phase2?.text,
         }
       : undefined,
+    follow: {
+      // The guest followed the host to the end of the shared document, then stopped and held
+      // the tracked position while the host moved back to the start: a follow that did not
+      // stop would have tracked back.
+      converged:
+        hostOutcome?.follow !== undefined &&
+        guestOutcome?.follow !== undefined &&
+        typeof hostOutcome.follow.movedTo === 'number' &&
+        guestOutcome.follow.tracked === hostOutcome.follow.movedTo &&
+        guestOutcome.follow.heldAfterStop === hostOutcome.follow.movedTo,
+      hostMovedTo: hostOutcome?.follow?.movedTo,
+      guestTracked: guestOutcome?.follow?.tracked,
+      guestHeld: guestOutcome?.follow?.heldAfterStop,
+    },
     granted: {
       // The guest read a file the host never opened, and the host then opened it and found
       // the guest's marker in the room's copy: content travelled both ways over a path that
@@ -778,6 +808,11 @@ async function main(): Promise<void> {
   if (!summary.phase1.converged) {
     throw new Error('the two real VS Code instances did not converge on the shared document');
   }
+  if (!summary.follow.converged) {
+    throw new Error(
+      'the guest did not track the host caret while following, or did not hold its position after stopping',
+    );
+  }
   if (!summary.granted.converged) {
     throw new Error(
       'the guest did not converge on a granted path the host supplied on request',
@@ -792,7 +827,7 @@ async function main(): Promise<void> {
     );
   }
   log(
-    'PASSED: two real VS Code instances converged on the shared document, a guest read a granted path the host never opened, and the room\u2019s listing followed the host\u2019s folder' +
+    'PASSED: two real VS Code instances converged on the shared document, the guest tracked the host caret while following and held its position after stopping, a guest read a granted path the host never opened, and the room\u2019s listing followed the host\u2019s folder' +
       (RECONNECT ? ', and the guest re-converged after a simulated network blip' : ''),
   );
   phase = 'done';

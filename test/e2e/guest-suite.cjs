@@ -29,6 +29,10 @@ const WATCH_TEXT = process.env.SELVAGE_E2E_WATCH_TEXT;
 const WATCH_DOOMED_PATH = process.env.SELVAGE_E2E_WATCH_DOOMED_PATH;
 const WATCH_READY_FILE = process.env.SELVAGE_E2E_WATCH_READY_FILE;
 const WATCH_DONE_FILE = process.env.SELVAGE_E2E_WATCH_DONE_FILE;
+const FOLLOW_READY_FILE = process.env.SELVAGE_E2E_FOLLOW_READY_FILE;
+const FOLLOW_MOVED_FILE = process.env.SELVAGE_E2E_FOLLOW_MOVED_FILE;
+const FOLLOW_STOPPED_FILE = process.env.SELVAGE_E2E_FOLLOW_STOPPED_FILE;
+const FOLLOW_HOST_NAME = process.env.SELVAGE_E2E_FOLLOW_HOST_NAME ?? 'Ada';
 const PROXY_ADDR = process.env.SELVAGE_E2E_PROXY_ADDR;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
@@ -93,7 +97,7 @@ function routeThroughProxy(invite) {
 }
 
 async function run() {
-  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, error: undefined };
+  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, follow: undefined, error: undefined };
   try {
     const rawInvite = await waitFor(
       'the host to publish an invite link',
@@ -146,6 +150,63 @@ async function run() {
     });
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
+
+    if (FOLLOW_READY_FILE !== undefined) {
+      // The follow phase: this window follows the host by name — the programmatic seam for a
+      // peer the suite cannot pick — and has to arrive where the host is. Membership strictly
+      // precedes phase 1's marker exchange, so the name resolves without the palette.
+      await vscode.commands.executeCommand('selvage.followParticipant', { displayName: FOLLOW_HOST_NAME });
+      await waitFor(
+        'the follow to land in the room document',
+        () => {
+          const active = vscode.window.activeTextEditor;
+          return active !== undefined && active.document.uri.scheme === 'selvage' ? true : false;
+        },
+        DEADLINE_MS,
+      );
+      fs.writeFileSync(FOLLOW_READY_FILE, 'go');
+
+      // The host moves its caret to the end once it sees the ready file; the follow has to
+      // track it there. This also answers the unverified question of whether assigning
+      // `editor.selection` publishes presence: if the event never fires, nothing here moves.
+      const movedTo = await waitFor(
+        'the host to move its caret to the end',
+        () => (fs.existsSync(FOLLOW_MOVED_FILE) ? Number(fs.readFileSync(FOLLOW_MOVED_FILE, 'utf8')) : false),
+        DEADLINE_MS,
+      );
+      await waitFor(
+        'the follow to track the host caret to the end',
+        () => {
+          const active = vscode.window.activeTextEditor;
+          if (active === undefined || active.document.uri.scheme !== 'selvage') {
+            return false;
+          }
+          return active.document.offsetAt(active.selection.active) === movedTo ? true : false;
+        },
+        DEADLINE_MS,
+      );
+
+      // Stopping ends it: the host moves back to the start, and this window must hold the
+      // tracked position instead of yanking back. Held constant over two seconds of presence
+      // frames, each iteration asserting, is what tells a stopped follow from a slow one.
+      await vscode.commands.executeCommand('selvage.stopFollowing');
+      fs.writeFileSync(FOLLOW_STOPPED_FILE, 'go');
+      const held = movedTo;
+      const steadyUntil = Date.now() + 2000;
+      for (;;) {
+        const active = vscode.window.activeTextEditor;
+        const at = active === undefined ? -1 : active.document.offsetAt(active.selection.active);
+        if (at !== held) {
+          throw new Error(`guest: the stopped follow moved the caret to ${at}; it should hold ${held}`);
+        }
+        if (Date.now() >= steadyUntil) {
+          break;
+        }
+        await delay(100);
+      }
+      result.follow = { tracked: movedTo, heldAfterStop: held };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+    }
 
     if (GRANTED_DONE_FILE !== undefined) {
       // A path the room grants and nobody has opened. Opening it is what makes the host read

@@ -33,6 +33,9 @@ const WATCH_TEXT = process.env.SELVAGE_E2E_WATCH_TEXT;
 const WATCH_DOOMED_PATH = process.env.SELVAGE_E2E_WATCH_DOOMED_PATH;
 const WATCH_READY_FILE = process.env.SELVAGE_E2E_WATCH_READY_FILE;
 const WATCH_DONE_FILE = process.env.SELVAGE_E2E_WATCH_DONE_FILE;
+const FOLLOW_READY_FILE = process.env.SELVAGE_E2E_FOLLOW_READY_FILE;
+const FOLLOW_MOVED_FILE = process.env.SELVAGE_E2E_FOLLOW_MOVED_FILE;
+const FOLLOW_STOPPED_FILE = process.env.SELVAGE_E2E_FOLLOW_STOPPED_FILE;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
@@ -63,7 +66,7 @@ async function waitFor(label, check, deadlineMs) {
 }
 
 async function run() {
-  const result = { role: 'host', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, error: undefined };
+  const result = { role: 'host', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, follow: undefined, error: undefined };
   try {
     await vscode.commands.executeCommand('selvage.host', {
       serverUrl: SERVER_URL,
@@ -124,6 +127,35 @@ async function run() {
     );
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
+
+    if (FOLLOW_READY_FILE !== undefined) {
+      // The follow phase's moving side: once the guest is following, the caret goes to the
+      // end of the shared document — a caret move with no edit — and the offset is written
+      // down for the guest to track. After the guest stops, the caret goes back to the start,
+      // which a follow that did not stop would track back.
+      await waitFor(
+        'the guest to follow and land',
+        () => (fs.existsSync(FOLLOW_READY_FILE) ? true : false),
+        DEADLINE_MS,
+      );
+      const hostEditor = vscode.window.activeTextEditor;
+      if (hostEditor === undefined || hostEditor.document.uri.fsPath !== uri.fsPath) {
+        throw new Error('host: the shared document is not the active editor for the follow phase');
+      }
+      const end = hostEditor.document.positionAt(hostEditor.document.getText().length);
+      hostEditor.selection = new vscode.Selection(end, end);
+      const movedTo = hostEditor.document.offsetAt(end);
+      fs.writeFileSync(FOLLOW_MOVED_FILE, String(movedTo));
+      await waitFor(
+        'the guest to stop following',
+        () => (fs.existsSync(FOLLOW_STOPPED_FILE) ? true : false),
+        DEADLINE_MS,
+      );
+      const start = hostEditor.document.positionAt(0);
+      hostEditor.selection = new vscode.Selection(start, start);
+      result.follow = { movedTo };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+    }
 
     if (GRANTED_DONE_FILE !== undefined) {
       const heldBeforeGuest = vscode.workspace.textDocuments.some(
