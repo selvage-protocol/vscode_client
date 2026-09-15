@@ -143,6 +143,12 @@ class Session {
    * sent, and a burst pays for one walk of the folder and no frame.
    */
   private published: string[] | undefined;
+  /**
+   * How many republish walks this session has started. A walk records the count before it reads
+   * the folder and may publish only while no later walk has started: a walk slower than the one
+   * after it is dropped rather than sent, so the room cannot go backwards to an older listing.
+   */
+  private grantWalks = 0;
   /** A filesystem event whose republish has not run yet. */
   private grantTimer: ReturnType<typeof setTimeout> | undefined;
   /** What makes the listing follow the folders, live only while this session hosts. */
@@ -348,10 +354,15 @@ class Session {
     if (this.finished) {
       return;
     }
+    this.grantWalks += 1;
+    const attempt = this.grantWalks;
     let paths: string[];
     try {
       paths = await enumerateGrant(this.folders);
     } catch (error) {
+      if (this.finished) {
+        return;
+      }
       this.onReport({
         kind: 'sessionError',
         code: 'error',
@@ -359,17 +370,34 @@ class Session {
       });
       return;
     }
+    // The session can end, or a later event start a walk of its own, while this one reads the
+    // folder. Either way this listing is not the one to publish: the window has left the room,
+    // or a walk that started after this one is already saying what the folder holds now.
+    if (this.finished || attempt !== this.grantWalks) {
+      return;
+    }
     if (this.published !== undefined && sameListing(this.published, paths)) {
       return;
     }
     try {
       await this.engine.grant(paths);
-      this.published = paths;
+      // A later walk that started while this frame was out is the one whose outcome describes
+      // the folder, and its own send has recorded it.
+      if (attempt === this.grantWalks) {
+        this.published = paths;
+      }
     } catch (error) {
+      // The session can end while the frame is out, and the closed engine answers rather than
+      // the server: there is no room left to be refused by, and nothing to report.
+      if (this.finished) {
+        return;
+      }
       if (isProtocolError(error) && error.code === errCode.unknownMethod) {
         // A server with no grant stores no listing, so repeating one is a frame per change for
         // nothing. Remembering it here is the same tolerance the first publication gets.
-        this.published = paths;
+        if (attempt === this.grantWalks) {
+          this.published = paths;
+        }
         return;
       }
       this.onReport({

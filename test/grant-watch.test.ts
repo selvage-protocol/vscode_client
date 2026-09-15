@@ -201,6 +201,57 @@ test('a burst of filesystem events is one republish', async (t) => {
   );
 });
 
+/**
+ * The interval bounds the walks it *starts*, not the walks running: a walk of a large tree
+ * outlasts it, so an event during one starts a second. Each walk compares its own listing
+ * against what the room holds when it *finishes*, so without a walk guard the slower, older one
+ * sends its older snapshot last and leaves the room behind the folder, which is the defect this
+ * feature exists to remove. Only the walk that started last may publish.
+ */
+test('a walk overtaken by a later one does not publish its older listing', async (t) => {
+  const { bundle, server, guest } = await hosted(t, { 'README.md': 'the readme\n' });
+  await roomLearns(guest, 'README.md');
+  const published = server.grants.length;
+
+  // The first republish walk is held until the test releases it, so the walk the next event
+  // starts is guaranteed to read the folder and publish first.
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holds = 1;
+  bundle.stub.registered.readHold = () => {
+    holds -= 1;
+    return holds < 0 ? undefined : released;
+  };
+
+  const walks = bundle.stub.registered.listings;
+  bundle.stub.put('a.txt', 'a\n');
+  bundle.stub.watchEvent('create', 'a.txt');
+  await waitFor('the held walk to begin', () =>
+    bundle.stub.registered.listings > walks ? true : false,
+  );
+
+  bundle.stub.put('b.txt', 'b\n');
+  bundle.stub.watchEvent('create', 'b.txt');
+  const paths = await roomLearns(guest, 'b.txt');
+  assert.deepEqual(paths, ['README.md', 'a.txt', 'b.txt'], 'the newer walk did not publish');
+
+  // The held walk answers now, holding the folder as it stood before b.txt existed.
+  release();
+  await quiet();
+  assert.deepEqual(
+    listing(guest),
+    ['README.md', 'a.txt', 'b.txt'],
+    'the room went backwards to the older walk\u2019s listing',
+  );
+  assert.equal(
+    server.grants.length,
+    published + 1,
+    `an overtaken walk published: ${JSON.stringify(server.grants)}`,
+  );
+});
+
 test('a guest watches nothing and publishes no listing', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
@@ -255,6 +306,46 @@ test('leaving the session stops watching, and a queued republish is dropped', as
   bundle.stub.watchEvent('create', 'src/main.rs');
   await quiet();
   assert.equal(bundle.stub.registered.listings, walks, 'the folder was walked after the session');
+  assert.equal(
+    server.grants.length,
+    published,
+    `a listing reached the room after the session ended: ${JSON.stringify(server.grants)}`,
+  );
+});
+
+/**
+ * A walk that is in flight when the session ends resolves against an engine the session has
+ * closed. Publishing through it is answered by the engine rather than by the server, so without
+ * a check after the walk the user is shown a refusal they did not get and cannot act on. The
+ * Neovim client re-checks its engine here; this is the same rule.
+ */
+test('leaving while a republish is walking reports nothing and sends nothing', async (t) => {
+  const { bundle, server } = await hosted(t, { 'README.md': 'the readme\n' });
+  const published = server.grants.length;
+
+  // Hold the republish walk the event arms until the session has ended, so the walk is provably
+  // in flight when it does.
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  bundle.stub.registered.readHold = () => released;
+  const walks = bundle.stub.registered.listings;
+  bundle.stub.put('src/main.rs', 'fn main() {}\n');
+  bundle.stub.watchEvent('create', 'src/main.rs');
+  await waitFor('the republish walk to begin', () =>
+    bundle.stub.registered.listings > walks ? true : false,
+  );
+
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  release();
+  await quiet();
+
+  assert.deepEqual(
+    bundle.stub.registered.errors,
+    [],
+    'leaving during a walk reported a failure the user did not have',
+  );
   assert.equal(
     server.grants.length,
     published,

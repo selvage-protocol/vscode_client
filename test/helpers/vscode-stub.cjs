@@ -62,6 +62,13 @@ const registered = {
   watcherFailure: undefined,
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
   listings: 0,
+  /**
+   * Holds a directory read, as `(path, index) => Promise`: the read is answered when the promise
+   * resolves. A real walk is slow in a large tree and faster in a small one, so a test that needs
+   * two walks to overlap holds the first read of one. `index` is the read's position among all
+   * reads since `reset`.
+   */
+  readHold: undefined,
 };
 
 /**
@@ -311,6 +318,7 @@ function reset() {
   registered.watcherFailure = undefined;
   watcherBudget = 0;
   registered.listings = 0;
+  registered.readHold = undefined;
   folders.length = 0;
   folders.push({ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 });
   registered.informationReply = undefined;
@@ -553,11 +561,16 @@ module.exports = {
     fs: {
       readDirectory: (uri) => {
         const path = pathOf(uri);
+        const index = registered.listings;
         registered.listings += 1;
         if (disk.unreadable.has(resolved(path))) {
           return Promise.reject(new Error(`cannot read ${path}`));
         }
-        return Promise.resolve(entriesOf(path));
+        // The listing is taken now and the answer withheld until the test says otherwise, so one
+        // walk can be made to outlast the walk a later event starts.
+        const entries = entriesOf(path);
+        const held = registered.readHold === undefined ? undefined : registered.readHold(path, index);
+        return held === undefined ? Promise.resolve(entries) : held.then(() => entries);
       },
       stat: (uri) => {
         const path = pathOf(uri);

@@ -56,6 +56,11 @@ export interface Registered {
   }>;
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
   listings: number;
+  /**
+   * Holds a directory read until the promise it returns resolves, as `(path, index) => Promise`,
+   * so a test can have two republish walks overlap: a walk in a large tree outlasts a later one.
+   */
+  readHold: ((path: string, index: number) => Promise<unknown> | undefined) | undefined;
   files?: GuestFiles;
 }
 
