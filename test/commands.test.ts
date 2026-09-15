@@ -1262,3 +1262,61 @@ test('a document open when its path leaves the listing keeps its text and is bad
   assert.equal(new TextDecoder().decode(await files.readFile(document)), 'held text\n');
   assert.equal(row.path, 'doomed.txt');
 });
+
+test('the status tooltip names the room but never the invite token', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const tooltip = await waitFor('the status bar to be drawn', () =>
+    roomOffer(bundle).includes('Hosting room') ? roomOffer(bundle) : false,
+  );
+
+  // The invite itself, fetched the way a click fetches it: the tooltip must hold no part
+  // of it, while still saying where the link is reached from.
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const invite = await waitFor('the invite link', () => {
+    const clipboard = bundle.stub.registered.clipboard;
+    return clipboard.startsWith('ws://') ? clipboard : false;
+  });
+  const token = invite.slice(invite.indexOf('token='));
+  assert.ok(!tooltip.includes(token), 'the token is in the status tooltip');
+  assert.ok(!tooltip.includes('token='), 'the tooltip names the token field');
+  assert.match(tooltip, /click the status bar to copy/);
+});
+
+test('joining asks for the invite link with an empty box, not the clipboard', async (t) => {
+  const bundle = activated(t);
+  bundle.stub.registered.clipboard = 'the password copied just before joining';
+
+  // No arguments, so the command takes the interactive path; no reply, so it is the box
+  // itself under test rather than the session after it.
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const asked = await waitFor('the join question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.title, 'Join a Selvage session');
+  assert.equal(asked.value, '', 'the box was prefilled from the clipboard');
+  assert.equal(
+    bundle.stub.registered.clipboard,
+    'the password copied just before joining',
+    'joining touched the clipboard',
+  );
+});
+
+test('the status tooltip counts the rest instead of listing the room', async (t) => {
+  const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
+  const { bundle } = await guest(t, paths);
+
+  // Twenty-five documents offered: the tooltip is a stranger's input in full, so it shows
+  // twenty and counts the rest rather than joining them all.
+  const tooltip = await waitFor('the tooltip to bound the listing', () =>
+    roomOffer(bundle).includes('… and') ? roomOffer(bundle) : false,
+  );
+  assert.match(tooltip, /… and 5 more/);
+});
