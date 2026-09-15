@@ -23,7 +23,9 @@ import {
   method,
   parsePeer,
   parsePeerEvent,
+  parsePeerRenamed,
   parseServerMessage,
+  renameParams,
 } from './envelope.ts';
 import type {
   ClientMessage,
@@ -164,14 +166,25 @@ export type JoinOptions = Omit<
   'baseUrl' | 'displayName' | 'room' | 'token' | 'role'
 >;
 
-interface PendingRequest {
-  kind: 'open' | 'close';
-  path: string;
+interface PendingRequestBase {
   resolve: () => void;
   reject: (error: Error) => void;
   /** The request's own deadline, cleared when its answer arrives. */
   timer: ReturnType<typeof setTimeout>;
 }
+
+/**
+ * A request waiting for its answer. An `open`/`close` names the document it is about; a
+ * `rename` names no document, so its answer touches no document bookkeeping (§5).
+ */
+type PendingRequest =
+  | (PendingRequestBase & { kind: 'open' | 'close'; path: string })
+  | (PendingRequestBase & { kind: 'rename' });
+
+/** The frame a request is built from, discriminated by the pending kind it will be stored under. */
+type RequestFrame =
+  | { kind: 'open' | 'close'; path: string; method: string; params: unknown }
+  | { kind: 'rename'; method: string; params: unknown };
 
 interface SeatWaiter {
   resolve: (info: SessionInfo) => void;
@@ -494,6 +507,19 @@ export class SelvageEngine {
   /** Releases this connection's hold on a document. The text itself stays. */
   close(path: string): Promise<void> {
     return this.request('close', path);
+  }
+
+  /**
+   * Renames this connection mid-session (§5). The display name is this peer's own, so the
+   * request names no document: the answer is `{}` and the room is told with `peer.renamed`.
+   * A refusal rejects here and leaves the live name alone; it does not close the session.
+   */
+  rename(displayName: string): Promise<void> {
+    return this.sendRequest({
+      kind: 'rename',
+      method: method.rename,
+      params: renameParams({ displayName }),
+    });
   }
 
   /**
@@ -1010,6 +1036,15 @@ export class SelvageEngine {
   // -- requests --------------------------------------------------------------
 
   private request(kind: 'open' | 'close', path: string): Promise<void> {
+    return this.sendRequest({
+      kind,
+      path,
+      method: kind === 'open' ? method.docOpen : method.docClose,
+      params: { path },
+    });
+  }
+
+  private sendRequest(request: RequestFrame): Promise<void> {
     if (this.finished || this.disposed) {
       return Promise.reject(new EngineClosedError());
     }
@@ -1023,8 +1058,8 @@ export class SelvageEngine {
     const message: ClientMessage = {
       v: WIRE_VERSION,
       id,
-      method: kind === 'open' ? method.docOpen : method.docClose,
-      params: { path },
+      method: request.method,
+      params: request.params,
     };
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1038,7 +1073,11 @@ export class SelvageEngine {
           );
         }
       }, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { kind, path, resolve, reject, timer });
+      const pending: PendingRequest =
+        request.kind === 'rename'
+          ? { kind: 'rename', resolve, reject, timer }
+          : { kind: request.kind, path: request.path, resolve, reject, timer };
+      this.pending.set(id, pending);
       this.enqueueText(JSON.stringify(message), id);
     });
   }
@@ -1070,6 +1109,11 @@ export class SelvageEngine {
 
   /** Moves local state to what the server accepted, then reports the room's set. */
   private accept(pending: PendingRequest, result: unknown): void {
+    // A rename's answer is `{}`: it changes this connection's name, which the `peer.renamed`
+    // event carries, and it must not move the room's document set (§5).
+    if (pending.kind === 'rename') {
+      return;
+    }
     const body = (result ?? {}) as DocSet;
     if (Array.isArray(body.documents)) {
       this.roomDocuments = body.documents.filter(
@@ -1138,6 +1182,10 @@ export class SelvageEngine {
       }
       case eventName.peerLeft: {
         this.peerLeft(message.params);
+        break;
+      }
+      case eventName.peerRenamed: {
+        this.peerRenamed(message.params);
         break;
       }
       case eventName.docOpened:
@@ -1212,6 +1260,28 @@ export class SelvageEngine {
         [peer.awareness_client_id],
         'peer-left',
       );
+    }
+    this.emit({ type: 'peersChanged', peers: this.peers() });
+  }
+
+  /**
+   * A peer changed its own name (§6). The event is the minimal pair, so a peer this client
+   * does not hold is ignored rather than invented; the mover is not in `peerMap` — its own
+   * record is `session.peer` — and updating it is what keeps `session().peer.display_name`
+   * the name in force for the connection that renamed.
+   */
+  private peerRenamed(params: unknown): void {
+    const renamed = parsePeerRenamed(params);
+    if (renamed === undefined) {
+      return;
+    }
+    const peer = this.peerMap.get(renamed.peer_id);
+    if (peer !== undefined) {
+      peer.display_name = renamed.display_name;
+    }
+    const self = this.current;
+    if (self !== undefined && self.peer.peer_id === renamed.peer_id) {
+      self.peer.display_name = renamed.display_name;
     }
     this.emit({ type: 'peersChanged', peers: this.peers() });
   }

@@ -86,6 +86,8 @@ export class FakeServer {
   private accepted = 0;
   /** Every `doc.open` / `doc.close` handled, in arrival order: for tests about ordering. */
   readonly requests: Array<{ client: string; method: string; path: string }> = [];
+  /** Every `session.rename` handled, in arrival order: the peer and the name asked for. */
+  readonly renames: Array<{ peerId: string; displayName: string }> = [];
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
@@ -477,6 +479,33 @@ export class FakeServer {
           code: code.alreadySeated,
           message: 'this connection already completed the handshake',
         });
+        return;
+      }
+      case method.rename: {
+        const displayName =
+          typeof params.display_name === 'string' ? params.display_name : '';
+        this.renames.push({ peerId: client.id, displayName });
+        // The bound is the handshake's, counted in UTF-16 code units, and a bad one is a
+        // seated `bad_params` error response: the connection stays open (§5).
+        if (displayName.trim() === '' || displayName.length > 32) {
+          this.respond(client, id, undefined, {
+            code: code.badParams,
+            message: 'the display_name is blank or over the bound',
+          });
+          return;
+        }
+        const room = this.rooms.get(client.roomId ?? '');
+        if (room === undefined) {
+          this.respond(client, id, undefined, {
+            code: code.roomGone,
+            message: 'the room is gone',
+          });
+          return;
+        }
+        client.peer = { ...client.peer, display_name: displayName };
+        this.respond(client, id, {});
+        // Addressed like `doc.opened`: to every peer, the one that renamed included (§6).
+        this.broadcast(room, { peer_id: client.id, display_name: displayName }, event.peerRenamed);
         return;
       }
       default: {
