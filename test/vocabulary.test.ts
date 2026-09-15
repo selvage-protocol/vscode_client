@@ -51,8 +51,9 @@ const SENTENCES = [
   // Joining and hosting.
   '`Selvage: room ${} is open; copy the invite link to let someone join.`',
   '`Selvage: you are already hosting room ${}; the invite link is on the clipboard.`',
-  '`Selvage: you are hosting room ${}; leaving it ends it for everyone.`',
-  '`Selvage: you are in room ${}; leaving it leaves it.`',
+  '`Selvage: you are hosting room ${}; joining another session ends this room for everyone.`',
+  '`Selvage: you are in room ${}; joining another session leaves it.`',
+  '`Selvage: you are in room ${}; hosting a session means leaving it first.`',
   '`Selvage: joined room ${}; opening ${}.`',
   '`Selvage: joined room ${}.`',
   '`Selvage: joined room ${}; the room has no open documents yet.`',

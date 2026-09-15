@@ -462,13 +462,18 @@ class Session {
 }
 
 /**
- * What leaving the session this command is about to end costs, in one sentence shared by `Host`
- * and `Join`: a host's room ends for everyone in it, a guest's is left.
+ * What the Join command is about to cost this window, in one sentence per moment: a host's room
+ * ends for everyone in it, a guest's is left behind for the session it is joining.
  */
-function leavingWarning(session: Session): string {
+function joinWarning(session: Session): string {
   return session.role() === 'host'
-    ? `Selvage: you are hosting room ${session.roomId()}; leaving it ends it for everyone.`
-    : `Selvage: you are in room ${session.roomId()}; leaving it leaves it.`;
+    ? `Selvage: you are hosting room ${session.roomId()}; joining another session ends this room for everyone.`
+    : `Selvage: you are in room ${session.roomId()}; joining another session leaves it.`;
+}
+
+/** What the Host command asks a guest to give up: the room it is in, before it can host one. */
+function hostWarning(session: Session): string {
+  return `Selvage: you are in room ${session.roomId()}; hosting a session means leaving it first.`;
 }
 
 /**
@@ -496,7 +501,7 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
     // A guest cannot host without leaving the room it is in, and leaving is the user's call.
     const leave = 'Leave and host';
     const choice = await vscode.window.showWarningMessage(
-      leavingWarning(inSession),
+      hostWarning(inSession),
       { modal: true },
       leave,
     );
@@ -554,7 +559,7 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   if (inSession !== undefined) {
     const leave = 'Leave and join';
     const choice = await vscode.window.showWarningMessage(
-      leavingWarning(inSession),
+      joinWarning(inSession),
       { modal: true },
       leave,
     );

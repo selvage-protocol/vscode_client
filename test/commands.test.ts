@@ -321,9 +321,9 @@ test('hosting while a guest asks before leaving, and leaves on request', async (
     displayName: 'Ada again',
   });
   const asked = await waitFor('the leave-and-host question', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('hosting a session means leaving it first')) ?? false,
   );
-  assert.equal(asked, `Selvage: you are in room ${roomId}; leaving it leaves it.`);
+  assert.equal(asked, `Selvage: you are in room ${roomId}; hosting a session means leaving it first.`);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 
   bundle.stub.registered.warningReply = 'Leave and host';
@@ -357,10 +357,10 @@ test('joining while hosting asks before ending the room', async (t) => {
     displayName: 'Bob',
   });
   const asked = await waitFor('the leave-and-join question', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('joining another session ends this room')) ?? false,
   );
   // The room id is the server's, so the sentence is read with the id as the one loose part.
-  assert.match(asked, /^Selvage: you are hosting room \S+; leaving it ends it for everyone\.$/);
+  assert.match(asked, /^Selvage: you are hosting room \S+; joining another session ends this room for everyone\.$/);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 });
 
@@ -658,9 +658,9 @@ test('joining again asks before leaving the room this window is in', async (t) =
     displayName: 'Bob',
   });
   const asked = await waitFor('the question', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('leaving it')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('joining another session leaves it')) ?? false,
   );
-  assert.equal(asked, `Selvage: you are in room ${roomId}; leaving it leaves it.`);
+  assert.equal(asked, `Selvage: you are in room ${roomId}; joining another session leaves it.`);
 
   // A dismissed question leaves the room alone, so this window is still in the one it was in.
   bundle.stub.reset();
