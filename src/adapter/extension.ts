@@ -20,6 +20,15 @@ import { GuestFileSystem } from './guest-fs.ts';
 /** Identifies this client in `session.hello`, for diagnostics (`PROTOCOL.md` §5). */
 const CLIENT = 'selvage-vscode/0.1.0';
 
+/**
+ * How long after the first caret event a selection reaches the room. The editor moves a caret
+ * on every keystroke of its own, so one frame per event would put presence on the wire for
+ * every character typed; a burst is coalesced into one flush per interval instead. This is the
+ * Neovim client's value (`SELECTION_INTERVAL_MS`), so the two clients lag a peer's caret by
+ * the same amount.
+ */
+const SELECTION_INTERVAL_MS = 100;
+
 /** The session this window is in. One per window: multi-room is a v1 non-goal. */
 let current: Session | undefined;
 
@@ -94,6 +103,10 @@ class Session {
   private documents: string[] = [];
   private detachedMs: number | undefined;
   private finished = false;
+  /** A caret event that has not reached the room yet. */
+  private selectionDirty = false;
+  /** The one flush the interval allows, while one is armed. */
+  private selectionTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(files: GuestFileSystem, engine: SelvageEngine) {
     this.files = files;
@@ -131,10 +144,10 @@ class Session {
         this.changed(event.document);
       }),
       vscode.window.onDidChangeTextEditorSelection(() => {
-        this.selection();
+        this.scheduleSelection();
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
-        this.selection();
+        this.scheduleSelection();
       }),
       vscode.window.onDidChangeVisibleTextEditors(() => {
         this.editor.renderCursors(this.bridge.cursors());
@@ -228,6 +241,8 @@ class Session {
       return;
     }
     this.finished = true;
+    // The position the interval was still holding reaches the room before the session ends.
+    this.flushSelection();
     // A guest's tabs keep what the room held for them: the session is over, but nothing a
     // user is looking at should turn into an error.
     const frozen: Array<[uri: string, content: string]> = this.editor
@@ -267,6 +282,39 @@ class Session {
     if (path !== undefined) {
       this.bridge.documentChanged(path);
     }
+  }
+
+  /**
+   * Arms the one flush the interval allows. A burst of caret events — typing, an auto-repeat
+   * arrow key, a drag — becomes a single read of the editor and a single presence frame. The
+   * flush reads the selection when it runs, so what a burst publishes is where the caret
+   * ended, and what it publishes when the user has left the shared documents is a clear.
+   */
+  private scheduleSelection(): void {
+    this.selectionDirty = true;
+    if (this.selectionTimer !== undefined) {
+      return;
+    }
+    this.selectionTimer = setTimeout(() => {
+      this.selectionTimer = undefined;
+      this.flushSelection();
+    }, SELECTION_INTERVAL_MS);
+  }
+
+  /**
+   * Publishes the position the editor holds now, if an event left one unsent. Called when the
+   * session ends: the final position must not be lost to a timer that will never run.
+   */
+  private flushSelection(): void {
+    if (this.selectionTimer !== undefined) {
+      clearTimeout(this.selectionTimer);
+      this.selectionTimer = undefined;
+    }
+    if (!this.selectionDirty) {
+      return;
+    }
+    this.selectionDirty = false;
+    this.selection();
   }
 
   private selection(): void {
