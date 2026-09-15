@@ -168,12 +168,17 @@ export class SessionBridge {
   private readonly documents = new Set<string>();
   /** The paths this host has seeded, so reopening a file does not push it in again. */
   private readonly seeded = new Set<string>();
+  /** Documents a guest has opened whose room text has not arrived yet. See `documentOpened`. */
+  private readonly unarrived = new Set<string>();
   /** The paths this client holds open on the server, as opposed to asked it to open. */
   private readonly held = new Set<string>();
   private readonly saves = new Map<string, () => void>();
   private readonly backstops = new Map<string, () => void>();
   /** One entry per document with an apply in flight: what it should leave, and from where. */
-  private readonly inFlight = new Map<string, { expected: string; replica: string }>();
+  private readonly inFlight = new Map<
+    string,
+    { expected: string; replica: string; before: string | undefined }
+  >();
   /** Documents with a reconcile wanted once the apply in flight settles. */
   private readonly pending = new Set<string>();
   /** Refused applies since the last change that landed, per document. */
@@ -213,6 +218,20 @@ export class SessionBridge {
     if (text === undefined) {
       return;
     }
+    // A guest follows the room, and there is nothing to follow until the room's text has
+    // arrived for this path. A buffer that already holds text — a tab kept across a session,
+    // say — would be diffed against a replica that has received nothing, the editor asked to
+    // empty it, and whatever the buffer still holds when that settles is not the user's edit
+    // but the buffer's own content; publishing it puts the guest's local text into the room.
+    // The hold is taken now, because that is what makes the room send the text, and the
+    // document is put in front of the bridge when it arrives. An empty buffer holds nothing
+    // to publish, so it opens at once — which leaves a document the room names but never
+    // writes to openable rather than waiting for a text that will not come.
+    if (this.role() === 'guest' && !this.engine.has(path) && text !== '') {
+      this.unarrived.add(path);
+      this.hold(path);
+      return;
+    }
     this.documents.add(path);
     this.seed(path, text);
     // The replica can hold more than the editor does: a peer may have edited the path before
@@ -220,6 +239,24 @@ export class SessionBridge {
     // published as a change back to the disk copy.
     this.reconcile(path);
     this.hold(path);
+  }
+
+  /**
+   * The room's text for a document a guest opened before it arrived: the document now goes in
+   * front of the bridge. `reconcile` is what brings the buffer to the room's text, and it is
+   * here rather than at open so the buffer is never diffed against an empty replica.
+   */
+  private arrive(path: string): void {
+    if (!this.unarrived.delete(path)) {
+      return;
+    }
+    const text = this.host.text(path);
+    if (text === undefined) {
+      return;
+    }
+    this.documents.add(path);
+    this.seed(path, text);
+    this.reconcile(path);
   }
 
   /**
@@ -263,6 +300,7 @@ export class SessionBridge {
     if (this.disposed) {
       return;
     }
+    this.unarrived.delete(path);
     this.documents.delete(path);
     this.cancelSave(path);
     this.cancelBackstop(path);
@@ -389,6 +427,7 @@ export class SessionBridge {
     this.backstops.clear();
     this.documents.clear();
     this.held.clear();
+    this.unarrived.clear();
     this.inFlight.clear();
     this.pending.clear();
     this.attempts.clear();
@@ -430,13 +469,23 @@ export class SessionBridge {
       .open(path)
       .then(() => {
         this.held.add(path);
+        // A guest document whose text was here before the hold was answered: the engine
+        // attached it silently, so the `documentChanged` event an arrival waits for will not
+        // come, and this answer is the moment. See `documentOpened`.
+        if (this.unarrived.has(path) && this.engine.has(path)) {
+          this.arrive(path);
+          return;
+        }
         // Closed while the request was in flight: the hold it just gained is one nobody
         // wants, and letting it stand would leave the path offered to the room.
-        if (!this.documents.has(path)) {
+        if (!this.documents.has(path) && !this.unarrived.has(path)) {
           this.release(path);
         }
       })
       .catch((error: unknown) => {
+        // A refused hold leaves nothing that will ever open this document, so a deferred entry
+        // goes with the report rather than sitting there for the rest of the session.
+        this.unarrived.delete(path);
         this.refused('open', path, error);
       });
   }
@@ -475,7 +524,11 @@ export class SessionBridge {
    * settles, so a change is never diffed against a buffer an edit is still moving.
    */
   private issue(path: string, change: TextChange, expected: string): void {
-    this.inFlight.set(path, { expected, replica: this.engine.text(path) });
+    this.inFlight.set(path, {
+      expected,
+      replica: this.engine.text(path),
+      before: this.host.text(path),
+    });
     void this.host
       .applyChange(path, change)
       .then((applied) => {
@@ -508,8 +561,13 @@ export class SessionBridge {
       if (flight !== undefined && replica === flight.replica) {
         // The buffer moved while the edit was in flight — the user typed into the window.
         // It now holds the user's text with the change landed on it, and the replica has not
-        // moved since: the difference is the user's, so it goes to the room.
-        this.publish(path, actual, replica);
+        // moved since: the difference is the user's, so it goes to the room. A buffer still
+        // holding what it held when the edit was issued was not moved by the user at all —
+        // the editor reported the change landed without it landing — and publishing that is
+        // how a guest's own text overwrites the room.
+        if (actual !== flight.before) {
+          this.publish(path, actual, replica);
+        }
       } else {
         // The replica moved too, so the buffer's difference is not separable from a peer's
         // edit that has not reached it. The replica wins; a whole-document reconcile is what
@@ -642,7 +700,13 @@ export class SessionBridge {
   private onEngineEvent(event: EngineEvent): void {
     switch (event.type) {
       case 'documentChanged': {
-        this.reconcile(event.path);
+        // A guest document whose text the room had not sent when it was opened: the arrival
+        // is this event, so it is now put in front of the bridge. See `documentOpened`.
+        if (this.unarrived.has(event.path)) {
+          this.arrive(event.path);
+        } else {
+          this.reconcile(event.path);
+        }
         break;
       }
       case 'documentsChanged': {

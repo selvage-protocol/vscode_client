@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 448 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 166 tests, no server, no editor
-$ npm test                             # 170 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 169 tests, no server, no editor
+$ npm test                             # 173 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -415,7 +415,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**170 tests, 0 failures**: 166 server-free and 4 that need a built `selvaged`. Waits are bounded
+**173 tests, 0 failures**: 169 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 

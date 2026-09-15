@@ -30,6 +30,12 @@ export class FakeEditor implements EditorHost {
   eventDelayTicks = 1;
   /** `false` models `workspace.applyEdit` answering `false` and leaving the buffer alone. */
   accepts = true;
+  /**
+   * `true` models an editor that reports an apply as landed while the buffer still holds what
+   * it held before — the window between `applyEdit` resolving and the editor's own text
+   * catching up, which is what a virtual document looks like while it materialises.
+   */
+  stallApply = false;
   /** `false` models `document.save()` resolving `false`: the write failed and the file is stale. */
   saveFails = false;
   /** Paths whose change this editor refused, for the reconcile-again path. */
@@ -77,6 +83,9 @@ export class FakeEditor implements EditorHost {
     if (!this.accepts) {
       this.refused.push(path);
       return Promise.resolve(false);
+    }
+    if (this.stallApply) {
+      return Promise.resolve(true);
     }
     document.text = applyToText(document.text, change);
     const applied = this.changes.get(path) ?? [];
