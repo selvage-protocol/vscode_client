@@ -30,9 +30,11 @@ export interface WorkspaceEditorOptions {
 
 /**
  * How many times a refused change is moved through the local edit behind it and offered again
- * before the refusal goes to the bridge. Each offer is one `applyEdit` against a document that
- * keeps moving, and a user who keeps typing moves the range rather than reaching the bound: it
- * is reached only by a document that refuses every range it is handed.
+ * before the refusal goes to the bridge. A document that refuses without moving is handed back
+ * after one offer, and so is one whose range a local edit straddles; the bound is reached only
+ * by a document that keeps moving under the range, because each movement is what buys the next
+ * offer — which is exactly what a user typing through the window supplies. When it is reached
+ * the refusal and the deferred text go to the bridge together, and the bridge reports it.
  */
 const MAX_REBASED_OFFERS = 3;
 
@@ -142,11 +144,12 @@ export class WorkspaceEditor implements EditorHost {
     // the peer's — `nvim_client/companion/editor.ts` defends against exactly this.
     //
     // A `false` with no local edit behind it is a document that refuses the range for a reason
-    // this side cannot see — a read-only document is the plain case — and it is passed on. So
-    // is one whose local edit overlaps the range, and one that has been offered the bound
-    // number of times: for those there is no position to move the range to and the bridge's own
-    // bounded retry, ending in its `applyRefused` report, is the honest answer. A rejection is
-    // `applyEdit` failing outright, and it reaches the bridge's catch with the message.
+    // this side cannot see — a read-only document is the plain case — and it is passed on, as
+    // the bridge's bounded retry and its `applyRefused` report are for. One whose local edit
+    // overlaps the range, and one still moving when the bound is reached, are passed on too:
+    // neither has a position to move the range to, and the bridge reconciles the deferred text
+    // away and reports it rather than dropping it in silence. A rejection is `applyEdit` failing
+    // outright, and it reaches the bridge's catch with the message.
     let offered = change;
     let before = document.getText();
     for (let offers = 0; ; offers += 1) {
