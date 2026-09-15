@@ -23,6 +23,7 @@ import { createRequire, registerHooks } from 'node:module';
 
 import { SessionBridge } from '../src/bridge/bridge.ts';
 import type { Engine, Report } from '../src/bridge/bridge.ts';
+import { applyChange, diff } from '../src/bridge/editing.ts';
 import { virtualUri } from '../src/bridge/virtual.ts';
 import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -93,6 +94,14 @@ interface Window {
   /** Every change offered to this document, in order. */
   readonly offered: Offered[];
   readonly reports: Report[];
+  /**
+   * Lets every apply the bridge has issued finish, and the reconciles they lead to with them.
+   * The applies are a promise chain, so one turn of the event loop drains all of it; the loop
+   * is a real predicate on the applies this window has seen, not a guess at a turn count.
+   */
+  drain(): Promise<void>;
+  /** Ends this window's bridge, so a long run does not hold every case's state at once. */
+  dispose(): void;
 }
 
 /**
@@ -126,6 +135,11 @@ function seat(
 
   const reports: Report[] = [];
   const offered: Offered[] = [];
+  // Every `applyEdit` this window was asked for, and every one that has answered. The bridge
+  // issues the next apply only from the last one's `then`, so the two being equal is the chain
+  // being finished rather than merely quiet for a moment.
+  let initiated = 0;
+  let completed = 0;
   const editor = new WorkspaceEditor({
     role: 'guest',
     folders: [],
@@ -143,9 +157,25 @@ function seat(
     peer: room.move,
     offered,
     reports,
+    drain: async () => {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        await new Promise((resolve) => setImmediate(resolve));
+        if (initiated > 0 && initiated === completed) {
+          return;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `the apply chain did not drain: initiated=${initiated} completed=${completed}`,
+          );
+        }
+      }
+    },
+    dispose: () => bridge.dispose(),
   };
 
   stub.registered.applyEditImpl = async (edit) => {
+    initiated += 1;
     // The editor reads the change's positions against the document as it stands, which is the
     // whole point of the test: a change re-offered at stale offsets lands somewhere else.
     const read = (position: StubPosition): number => offsetIn(text, position);
@@ -161,20 +191,23 @@ function seat(
         offered.push({ start: at, end: at, text: change.text });
       }
     }
+    let ok = true;
     if (!(await answer(window))) {
-      return false;
-    }
-    for (const change of edit.edits) {
-      if (change.kind === 'replace') {
-        const start = read(change.range.start);
-        const end = read(change.range.end);
-        text = text.slice(0, start) + change.text + text.slice(end);
-      } else {
-        const at = read(change.position);
-        text = text.slice(0, at) + change.text + text.slice(at);
+      ok = false;
+    } else {
+      for (const change of edit.edits) {
+        if (change.kind === 'replace') {
+          const start = read(change.range.start);
+          const end = read(change.range.end);
+          text = text.slice(0, start) + change.text + text.slice(end);
+        } else {
+          const at = read(change.position);
+          text = text.slice(0, at) + change.text + text.slice(at);
+        }
       }
     }
-    return true;
+    completed += 1;
+    return ok;
   };
 
   editor.register(document as unknown as Parameters<typeof editor.register>[0]);
@@ -302,4 +335,171 @@ test('a document that keeps moving under a refused change is given up on, not lo
   // bridge stops retrying. The bound is what keeps a document that refuses every range from
   // spinning the extension host.
   assert.equal(window.offered.length, 12);
+});
+
+test('a re-offered change whose merge equals the buffer’s pre-apply text keeps the local edit', async (t) => {
+  const window = seat(t, 'a\n\nb', (window) => {
+    if (window.offered.length === 1) {
+      // The room is deleting one of the two adjacent newlines, and the user presses Enter
+      // while that change is in flight. The two edits are inverses, so the correct merge is
+      // the text the buffer held before the apply — the state the bridge used to read as
+      // “the change did not land”.
+      window.type('a\n\n\nb');
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(true);
+  });
+
+  window.peer(() => 'a\nb');
+
+  await waitFor(
+    'the buffer and the room to hold the merge',
+    () => (window.text() === 'a\n\nb' && window.room() === 'a\n\nb' ? true : false),
+    {
+      timeoutMs: 2000,
+      describe: () => ({
+        buffer: window.text(),
+        room: window.room(),
+        offered: window.offered,
+        reports: window.reports,
+      }),
+    },
+  );
+});
+
+test('a change given up on at the bound reaches the person instead of going quietly', async (t) => {
+  const window = seat(t, 'base\n', (window) => {
+    // A second writer lands a local-looking edit inside the first four offer windows and then
+    // stops. Each movement buys the next rebased offer, so the adapter reaches its bound with
+    // the typed text still in the buffer and hands the refusal back; the bridge’s reconcile
+    // then succeeds against the current buffer and would delete that text without a word.
+    if (window.offered.length <= 4) {
+      window.type(`${window.text()}k${window.offered.length}\n`);
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(true);
+  });
+
+  window.peer((text) => `${text}REMOTE\n`);
+
+  const told = await waitFor(
+    'the person to be told the deferred text was not kept',
+    () => window.reports.find((report) => report.kind === 'divergence') ?? false,
+    {
+      timeoutMs: 2000,
+      describe: () => ({
+        buffer: window.text(),
+        room: window.room(),
+        offered: window.offered,
+        reports: window.reports,
+      }),
+    },
+  );
+
+  assert.deepEqual(told, { kind: 'divergence', path: PATH });
+  // The bound path still ends with the buffer holding the room's text: the local text is what
+  // a reconcile works away. The report is what makes that visible rather than silent.
+  assert.equal(window.text(), 'base\nREMOTE\n');
+  assert.equal(window.room(), 'base\nREMOTE\n');
+});
+
+/** A small deterministic generator, so a failure here replays from the same seed exactly. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Repeated characters make an exact textual coincidence between two edits unremarkable. */
+const ALPHABET = ['a', 'b', '\n'];
+
+function randomText(rng: () => number, max: number): string {
+  const length = Math.floor(rng() * (max + 1));
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += ALPHABET[Math.floor(rng() * ALPHABET.length)];
+  }
+  return out;
+}
+
+/** `text` with one random contiguous replacement: the shape of one local edit. */
+function withOneEdit(rng: () => number, text: string): string {
+  const a = Math.floor(rng() * (text.length + 1));
+  const b = a + Math.floor(rng() * (text.length - a + 1));
+  return applyChange(text, { start: a, end: b, text: randomText(rng, 3) });
+}
+
+/**
+ * The property the refused-change re-offer has to hold: one local edit arriving inside one
+ * apply window, over a local edit that does not straddle the room's change, must merge — the
+ * buffer and the room end on the text that holds both edits, with neither lost nor doubled.
+ *
+ * The corpus is drawn with a fixed seed and a fixed count, and the run is bounded: the three
+ * symbols and short strings are what make the merge that equals the pre-apply text common
+ * enough for a hand-written case to miss but this to find.
+ */
+test('randomized: a local edit inside a refused apply is merged, not lost or doubled', async (t) => {
+  const rng = mulberry32(20240815);
+  const failures: string[] = [];
+  let cases = 0;
+  let straddles = 0;
+  for (let i = 0; i < 3000; i += 1) {
+    const before = randomText(rng, 14);
+    const roomText = withOneEdit(rng, before);
+    const current = withOneEdit(rng, before);
+    if (roomText === before || current === before) {
+      continue;
+    }
+    const change = diff(before, roomText);
+    const local = diff(before, current);
+    if (!(local.end <= change.start || local.start >= change.end)) {
+      straddles += 1;
+      continue;
+    }
+    cases += 1;
+    const expected =
+      local.end <= change.start ? applyChange(roomText, local) : applyChange(current, change);
+    const window = seat(t, before, (window) => {
+      if (window.offered.length === 1) {
+        // The single local edit lands inside the apply window and moves the document under
+        // the range, so the editor refuses it.
+        window.type(current);
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(true);
+    });
+    window.peer(() => roomText);
+    await window.drain();
+    const buffer = window.text();
+    const room = window.room();
+    window.dispose();
+    if (buffer !== expected || room !== expected) {
+      failures.push(
+        JSON.stringify({
+          before,
+          roomText,
+          current,
+          change,
+          local,
+          expected,
+          buffer,
+          room,
+          offers: window.offered.length,
+          reports: window.reports,
+        }),
+      );
+    }
+  }
+  assert.ok(cases > 100, `enough cases ran: ${cases}`);
+  assert.equal(
+    failures.length,
+    0,
+    `${failures.length} of ${cases} non-straddling single local edits did not merge exactly ` +
+      `(straddles=${straddles}):\n${failures.slice(0, 5).join('\n')}`
+  );
 });
