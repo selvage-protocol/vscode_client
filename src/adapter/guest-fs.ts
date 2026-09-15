@@ -10,7 +10,7 @@
  * The room also carries the host's grant — a listing of paths and never content — and the
  * provider mirrors its *shape*: `readDirectory` and `stat` are derived from the listing, so
  * the room looks like a project rather than one document (`DESIGN.md` §4.2). Content is still
- * fetched only when something reads it.
+ * fetched only when something reads it, and a read is the moment to ask for it.
  */
 
 import * as vscode from 'vscode';
@@ -26,6 +26,17 @@ export interface VirtualSource {
    * that knows no listing, which reads as an empty tree rather than as every path.
    */
   paths?(): readonly string[];
+  /**
+   * Whether this replica has received anything for the path. Absent means "assume it has",
+   * which is the behaviour of a source that cannot ask the room for one.
+   */
+  has?(path: string): boolean;
+  /**
+   * Asks the room for the path's content and resolves once it has arrived, or once waiting can
+   * no longer help. A path the room never writes to is not a fault: it resolves, and the read
+   * is an empty document.
+   */
+  fetch?(path: string): Promise<void>;
 }
 
 export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
@@ -74,7 +85,28 @@ export class GuestFileSystem implements vscode.FileSystemProvider, vscode.Dispos
     this.changes.dispose();
   }
 
-  readFile(uri: vscode.Uri): Uint8Array {
+  /**
+   * A document's bytes. A path the replica has received nothing for is asked for rather than
+   * handed back empty: an editor reads a file *before* it reports the document open, so a read
+   * that answered synchronously would show an empty buffer for a file whose content is one
+   * round trip away. `FileSystemProvider.readFile` may answer with a thenable, and that is
+   * where the fetch belongs. A document this window already holds is unaffected.
+   */
+  readFile(uri: vscode.Uri): Uint8Array | Thenable<Uint8Array> {
+    const source = this.live;
+    const parsed = virtualDocument(uri.scheme, uri.path, uri.query);
+    if (
+      source !== undefined &&
+      parsed !== undefined &&
+      parsed.roomId === source.roomId &&
+      source.has !== undefined &&
+      source.fetch !== undefined &&
+      !source.has(parsed.path)
+    ) {
+      return source
+        .fetch(parsed.path)
+        .then(() => new TextEncoder().encode(source.text(parsed.path)));
+    }
     return this.bytes(uri);
   }
 

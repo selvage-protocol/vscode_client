@@ -1010,3 +1010,36 @@ test('a host serves the path the room asks for, and refuses what the grant leave
     guest.text('.env') === 'SECRET=1\n' ? true : false,
   );
 });
+
+test('a guest read of a granted path waits for the room to send it', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['README.md']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const tree = treeOf(bundle);
+  await waitFor('the listing to reach the window', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+
+  const files = bundle.registered.files;
+  assert.ok(files !== undefined, 'activating registered no file system provider');
+  const document = {
+    scheme: 'selvage',
+    path: '/README.md',
+    query: `room=${roomId}`,
+    toString: () => virtualUri(roomId, 'README.md'),
+  };
+
+  // Nothing has this text yet: the read asks the room for it and waits rather than handing
+  // the editor an empty buffer for a file that is one round trip away.
+  const pending = files.readFile(document);
+  assert.ok(pending instanceof Promise, 'the read did not ask the room for the path');
+  host.insert('README.md', 0, 'the readme\n');
+  assert.equal(new TextDecoder().decode(await pending), 'the readme\n');
+
+  // The window holds it now, and the same read answers with it at once.
+  assert.equal(
+    new TextDecoder().decode(files.readFile(document) as Uint8Array),
+    'the readme\n',
+  );
+});

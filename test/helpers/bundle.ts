@@ -29,10 +29,12 @@ export interface GuestFiles {
     roomId: string;
     text(path: string): string;
     paths?(): readonly string[];
+    has?(path: string): boolean;
+    fetch?(path: string): Promise<void>;
   }): void;
   freeze(text: Iterable<[uri: string, content: string]>): void;
   stat(uri: UriLike): { type: number; size: number };
-  readFile(uri: UriLike): Uint8Array;
+  readFile(uri: UriLike): Uint8Array | Promise<Uint8Array>;
   writeFile(uri: UriLike, content: Uint8Array): void;
   watch(uri: UriLike): { dispose(): void };
   readDirectory(uri: UriLike): Array<[string, number]>;

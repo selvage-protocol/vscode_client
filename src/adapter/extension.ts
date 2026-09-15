@@ -31,6 +31,16 @@ const CLIENT = 'selvage-vscode/0.1.0';
  */
 const SELECTION_INTERVAL_MS = 100;
 
+/**
+ * How long a read waits for the room to send a path this replica has received nothing for.
+ *
+ * A listed path is a candidate and not a promise — it names what the host's folder held when
+ * it was enumerated — so the wait is bounded. What a timeout gives back is an empty document,
+ * which is what a path with no content looks like; the alternative is a read that never
+ * answers and a tab that never opens.
+ */
+const FETCH_TIMEOUT_MS = 5000;
+
 /** The session this window is in. One per window: multi-room is a v1 non-goal. */
 let current: Session | undefined;
 
@@ -158,6 +168,8 @@ class Session {
       roomId: engine.session().roomId,
       text: (path) => engine.text(path),
       paths: () => this.offered(),
+      has: (path) => engine.has(path),
+      fetch: (path) => this.fetch(path),
     });
     // A document that was already open when the session started is shared too.
     for (const document of vscode.workspace.textDocuments) {
@@ -257,6 +269,49 @@ class Session {
    */
   offered(): string[] {
     return grantUnion(this.granted, this.documents);
+  }
+
+  /**
+   * Asks the room for a path and resolves once its text has arrived, or once waiting can no
+   * longer help.
+   *
+   * Holding the path is what makes the room send it: a document does not have to be open for
+   * its content to sync, but the hold is what puts it in the room's set and, when the path is
+   * the host's to supply, what makes the host read its own working copy. The listener is in
+   * place before the hold is asked for, so text that arrives with the answer is not missed.
+   */
+  private fetch(path: string): Promise<void> {
+    if (this.engine.has(path)) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      let stop: () => void = () => undefined;
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stop();
+        clearTimeout(timer);
+        resolve();
+      };
+      stop = this.engine.on((event) => {
+        if (event.type === 'documentChanged' && event.path === path) {
+          finish();
+        }
+      });
+      timer = setTimeout(finish, FETCH_TIMEOUT_MS);
+      void this.engine
+        .open(path)
+        .then(() => {
+          if (this.engine.has(path)) {
+            finish();
+          }
+        })
+        .catch(finish);
+    });
   }
 
   /**
