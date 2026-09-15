@@ -71,6 +71,15 @@ export interface EditorHost {
   applyChange(path: string, change: TextChange): Promise<boolean>;
   /** Writes the document's content wherever it lives. A guest's is a no-op. */
   save(path: string): Promise<boolean>;
+  /**
+   * Reads a file from this window's working copy, for a path the room asked for.
+   *
+   * The path came from a peer and is not trusted: `undefined` is the answer for anything that
+   * is not a readable text file inside the folder this window shares — one that escapes it,
+   * one the grant excludes (`.git/**`, `.env`), a directory, a symbolic link, a binary, one
+   * over the size a session will carry, or one that cannot be read at all.
+   */
+  readGrantedFile(path: string): Promise<string | undefined>;
   /** Draws the remote cursors; `[]` clears them. */
   renderCursors(cursors: Cursor[]): void;
   /** Something the user can see. */
@@ -170,6 +179,8 @@ export class SessionBridge {
   private readonly documents = new Set<string>();
   /** The paths this host has seeded, so reopening a file does not push it in again. */
   private readonly seeded = new Set<string>();
+  /** The paths the room has asked for, so a read that was refused is not attempted again. */
+  private readonly requested = new Set<string>();
   /** Documents a guest has opened whose room text has not arrived yet. See `documentOpened`. */
   private readonly unarrived = new Set<string>();
   /** The paths this client holds open on the server, as opposed to asked it to open. */
@@ -445,6 +456,7 @@ export class SessionBridge {
     this.documents.clear();
     this.held.clear();
     this.unarrived.clear();
+    this.requested.clear();
     this.inFlight.clear();
     this.pending.clear();
     this.attempts.clear();
@@ -473,6 +485,58 @@ export class SessionBridge {
     const incoming = toCrdt(bufferText);
     if (incoming !== '') {
       this.engine.insert(path, 0, incoming);
+    }
+  }
+
+  /**
+   * The room now holds a path this window does not. A host supplies document content — its
+   * working copy is the truth (`DESIGN.md` §4.2) — so it reads the file and seeds the replica
+   * once.
+   *
+   * This is the only place a host reads its disk because a peer asked rather than because the
+   * user acted, so the path is not trusted: the editor refuses anything that is not a readable
+   * text file inside the folder this window shares, and a refusal is reported rather than
+   * seeded as an empty document. The guard on the insert is `seed`'s: only a replica that has
+   * received nothing for the path may be given a disk copy.
+   *
+   * A refusal is recorded as asked-for and not as seeded: the user opening that file later is
+   * the user's own act, and it still has to reach the room.
+   */
+  private seedRequested(documents: string[]): void {
+    if (this.role() !== 'host') {
+      return;
+    }
+    for (const path of documents) {
+      if (this.requested.has(path) || this.documents.has(path)) {
+        continue;
+      }
+      this.requested.add(path);
+      void this.host
+        .readGrantedFile(path)
+        .then((text) => {
+          if (text === undefined) {
+            this.host.report({
+              kind: 'sessionError',
+              code: 'error',
+              message: `the room asked for ${path}, which is not a readable file in the folder this window shares; nothing was shared for it`,
+            });
+            return;
+          }
+          if (this.engine.has(path)) {
+            return;
+          }
+          const incoming = toCrdt(text);
+          if (incoming !== '') {
+            this.engine.insert(path, 0, incoming);
+          }
+        })
+        .catch((error: unknown) => {
+          this.host.report({
+            kind: 'sessionError',
+            code: 'error',
+            message: `could not read ${path} from this window's working copy: ${describe(error)}`,
+          });
+        });
     }
   }
 
@@ -728,6 +792,7 @@ export class SessionBridge {
       }
       case 'documentsChanged': {
         this.host.report({ kind: 'documents', documents: event.documents });
+        this.seedRequested(event.documents);
         break;
       }
       case 'grantChanged': {

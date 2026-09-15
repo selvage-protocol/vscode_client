@@ -242,6 +242,13 @@ function documentFor(uri) {
     eol: 1,
     isDirty: false,
     getText: () => {
+      // A `file:` document is the host's own working copy, which is the disk a test seeded.
+      if (uri.scheme === 'file') {
+        const file = disk.files.get(pathOf(uri));
+        if (file !== undefined) {
+          return new TextDecoder().decode(file.bytes);
+        }
+      }
       try {
         const bytes = registered.files.readFile(uri);
         // A read that has to ask the room answers with a promise; a document stand-in cannot

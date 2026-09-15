@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { SCHEME, virtualDocument } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
-import { roomPathOf } from './grant.ts';
+import { decodableText, grantedFile, isShareableFile, roomPathOf } from './grant.ts';
 
 import { Cursors } from './decorations.ts';
 
@@ -126,6 +126,29 @@ export class WorkspaceEditor implements EditorHost {
     // save is an ordinary write, and the room's content is what it writes. `false` means the
     // write failed and the file is stale; the bridge reports it rather than swallowing it.
     return document.save();
+  }
+
+  /**
+   * Reads a file the room asked for, out of the folder this session was invited on.
+   *
+   * The path came from a peer, so it is resolved against the captured folders and has to be a
+   * path the grant itself would publish — the `.git/**` and `.env` defaults included — before
+   * a single byte is read. `undefined` is then the answer for a directory, a symbolic link, a
+   * file over the size a session will carry, and bytes that are not text; the bridge reports
+   * that rather than putting an empty document into the room.
+   */
+  async readGrantedFile(path: string): Promise<string | undefined> {
+    const uri = grantedFile(this.folders, path);
+    if (uri === undefined || !(await isShareableFile(uri))) {
+      return undefined;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await vscode.workspace.fs.readFile(uri);
+    } catch {
+      return undefined;
+    }
+    return decodableText(bytes);
   }
 
   renderCursors(cursors: Cursor[]): void {
