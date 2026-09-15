@@ -32,10 +32,10 @@ Requirements, as found on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
-$ npm run build                        # → dist/extension.js, 476.8 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 478.4 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 243 tests, no server, no editor
-$ npm test                             # 247 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 246 tests, no server, no editor
+$ npm test                             # 250 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -281,14 +281,29 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 - **The room's listing follows the host's folder.** A host watches the folders it was invited on
   — one watcher per folder, `**/*` under it — and republishes the room's grant when a file under
   one appears, disappears or changes, so a path a build, a branch switch or another terminal
-  made or removed is in the room's listing without anybody asking. A burst is one walk of the
-  folder per 250 ms rather than one per event, and a listing that says what the last one said is
-  not sent at all; 250 ms is the Neovim client's interval too, so a peer sees a listing change
-  after the same delay whichever client hosts. A server that answers `unknown_method` has no
-  grant and is not a failure — the session goes on and the watch keeps working — while any other
-  refusal is reported and also changes nothing. A guest publishes no listing and so watches
-  nothing, and leaving a session or deactivating disposes the watchers and drops a republish
-  that was still queued. **A listing that shrinks releases nothing**: a path leaving it leaves
+  made or removed is in the room's listing without anybody asking. A burst becomes at most one
+  walk of the folder per 250 ms rather than one per event, and one frame per interval at most:
+  the walk that started last is the only one allowed to publish, so a slower walk overtaken by a
+  newer one is dropped rather than sent, and a listing the room already holds is not sent. One
+  the server has already refused is neither offered nor reported again while it says the same
+  thing, so a project over the server's bound is reported once and not once per window. 250 ms is
+  the Neovim client's interval too, so a peer sees a listing change after the same delay
+  whichever client hosts. A server that answers `unknown_method` has no grant and is not a
+  failure — the session goes on and the watch keeps working — while any other refusal is reported
+  and also changes nothing. The only failure the watch can see is a synchronous refusal to
+  create a watcher, which drops the whole watch and says so once; a watcher the editor accepts
+  and then never delivers an event for has no error channel, so a folder that is silently
+  unwatched leaves the listing as of session start and nothing says so. A guest publishes no
+  listing and so watches nothing, and leaving a session or deactivating disposes the watchers and
+  drops a republish that was still queued — though not one whose walk had already begun, which is
+  dropped when it finishes instead. A change made while the connection is down is not re-offered
+  on its own: the room keeps the listing it held across the host's disconnect grace and a
+  re-seated host is sent it again, so the two agree, but nothing republishes *because* of the
+  reconnection, and the room learns of a change made during the blip at the next filesystem event
+  or not at all. An attempt that lands while the socket is down is reported in the refusal
+  sentence (`the server refused the listing of the folder this window shares: the connection is
+  down`) even though the server saw nothing: the engine answers a request it has nowhere to send.
+  **A listing that shrinks releases nothing**: a path leaving it leaves
   the room's grant and not the room's open-document set, so a document somebody is editing stays
   open and readable (`PROTOCOL.md` §5 against §6 — `doc.close` is how a hold is released).
 - **A guest lands in the room's first document, once and with no input**: joining a room that
@@ -437,7 +452,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**185 tests, 0 failures**: 181 server-free and 4 that need a built `selvaged`. Waits are bounded
+**250 tests, 0 failures**: 246 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 

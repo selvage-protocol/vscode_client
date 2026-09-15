@@ -35,8 +35,11 @@ const SELECTION_INTERVAL_MS = 100;
  * How long a filesystem event waits before the room is told the listing again. A burst — a
  * `cargo build`, a branch switch, an editor writing its own files — is tens of thousands of
  * events, so a trailing throttle turns them into one walk of the folder per interval rather
- * than one per event. This is the Neovim client's value, so a peer sees a listing change after
- * the same delay whichever client is hosting.
+ * than one per event, and one frame per interval at most. It bounds the starts and not the
+ * walks: a walk can outlast the interval that began it, and the walk that started last is the
+ * one allowed to publish, so a slower walk is dropped rather than sent over a newer listing.
+ * This is the Neovim client's value, so a peer sees a listing change after the same delay
+ * whichever client is hosting.
  */
 const GRANT_REFRESH_INTERVAL_MS = 250;
 
@@ -138,9 +141,10 @@ class Session {
    */
   private readonly folders: readonly vscode.WorkspaceFolder[];
   /**
-   * The listing this session last published. The engine's `grant` writes whatever it is handed,
-   * so the comparison is the adapter's: an enumeration that says what the last one said is not
-   * sent, and a burst pays for one walk of the folder and no frame.
+   * The listing the room holds, as this session last established it: what a `grant` was accepted
+   * with, or what a server with no grant answered `unknown_method` to. The engine writes
+   * whatever it is handed and keeps no memory of it, so whether a listing is news is decided
+   * here. Undefined until one has been sent.
    */
   private published: string[] | undefined;
   /**
@@ -353,7 +357,12 @@ class Session {
    * A server that does not know `doc.grant` answers `unknown_method`, which means it has no
    * grant rather than that anything failed: the session goes on and the room falls back to its
    * open-document set. Any other refusal is reported and also changes nothing. A listing the
-   * last publication already said is not sent at all.
+   * room already holds is not sent; one the server has already refused is neither sent nor
+   * reported again while it says the same thing.
+   *
+   * A walk can outlast the interval that started it, so a second event during one starts a
+   * second walk. Only the walk that started last may publish, and a walk whose session has
+   * ended publishes nothing at all.
    */
   private async publishGrant(): Promise<void> {
     // A republish the interval had already armed when the session ended has nothing to say to
@@ -442,6 +451,11 @@ class Session {
         // listing would follow some of what this window shares and silently not the rest, which
         // is a worse thing to leave running than a listing that is known to be as of session
         // start. So the watch is dropped and said once, and the session goes on.
+        //
+        // A synchronous throw is the only failure this can see. `vscode.FileSystemWatcher` has
+        // no error channel: an editor that returns a watcher for a folder it then never delivers
+        // an event for leaves the listing frozen, and nothing here can tell that apart from a
+        // folder that did not change.
         this.stopWatching();
         this.onReport({
           kind: 'sessionError',
