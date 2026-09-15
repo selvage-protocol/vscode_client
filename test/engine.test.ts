@@ -1501,3 +1501,156 @@ test('a yjs-native anchor, scope and element together, resolves as published', a
     'tname must equal the path the selection is resolved against',
   );
 });
+
+test('a host publishes the room\'s grant and every peer learns the listing', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest, server } = session;
+  const recorded = record(host);
+  t.after(() => recorded.stop());
+
+  assert.deepEqual(host.grantedPaths(), [], 'a fresh room grants nothing');
+  await host.grant(['README.md', 'src/main.rs']);
+
+  const changed = await recorded.waitForEvent(
+    'the grant to reach the publisher',
+    (event) => event.type === 'grantChanged',
+  );
+  assert.deepEqual(changed.type === 'grantChanged' ? changed.paths : undefined, [
+    'README.md',
+    'src/main.rs',
+  ]);
+  assert.deepEqual(host.grantedPaths(), ['README.md', 'src/main.rs']);
+  assert.deepEqual(server.roomOf(host.session().roomId)?.grant, [
+    'README.md',
+    'src/main.rs',
+  ]);
+
+  // A guest joining afterwards is told the listing straight after its `room.joined`.
+  const late = await SelvageEngine.join(session.invite, 'Cyd', options({
+    baseUrl: server.wsBase,
+    displayName: 'Cyd',
+  }));
+  t.after(async () => {
+    await late.disconnect();
+  });
+  await waitFor('the joiner to learn the grant', () =>
+    late.grantedPaths().length > 0 ? late.grantedPaths() : false,
+  );
+  assert.deepEqual(late.grantedPaths(), ['README.md', 'src/main.rs']);
+
+  // And the guest already in the room hears the change too.
+  await waitFor('the room to be told', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  assert.deepEqual(guest.grantedPaths(), ['README.md', 'src/main.rs']);
+});
+
+test('a grant is carried in the order its publisher wrote, unsorted', async (t) => {
+  // `PROTOCOL.md` §5 fixes the order as ascending UTF-16 code units and makes it the
+  // publisher's claim, so a client must not normalise it: an astral path sorts among the
+  // surrogates, before a path beginning with U+FF46 (vector 022).
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  // Ascending by UTF-16 code unit — `R` (U+0052), then the surrogate U+D83D, then U+FF46 —
+  // and the reverse of what a code-point sort would write.
+  const listing = ['README.md', '\u{1F600}.txt', 'ｆ.txt'];
+  await host.grant(listing);
+  await waitFor('the guest to learn the grant', () =>
+    guest.grantedPaths().length > 0 ? guest.grantedPaths() : false,
+  );
+  assert.deepEqual(guest.grantedPaths(), listing);
+  assert.deepEqual(host.grantedPaths(), listing);
+});
+
+test('a republished grant replaces the listing wholesale and a repeat is not news', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const recorded = record(guest);
+  t.after(() => recorded.stop());
+
+  await host.grant(['README.md', 'src/main.rs']);
+  await recorded.waitForEvent('the first listing', (event) => event.type === 'grantChanged');
+
+  // A shorter listing is a smaller grant, not a partial one: nothing names what was removed.
+  await host.grant(['src/main.rs']);
+  const shrunk = await recorded.waitForEvent(
+    'the second listing',
+    (event) => event.type === 'grantChanged' && event.paths.length === 1,
+  );
+  assert.deepEqual(shrunk.type === 'grantChanged' ? shrunk.paths : undefined, ['src/main.rs']);
+  assert.deepEqual(guest.grantedPaths(), ['src/main.rs']);
+
+  // The event reaches the publisher as well, and one that says what this replica already has
+  // is not news (§6.3, the same rule `doc.opened` follows). A later round trip is what makes
+  // the assertion deterministic: the frames arrive in order, so by the time its answer is in,
+  // so is the `doc.granted` before it.
+  const seen = recorded.events.filter((event) => event.type === 'grantChanged').length;
+  await host.grant(['src/main.rs']);
+  await host.open(OTHER);
+  assert.deepEqual(guest.grantedPaths(), ['src/main.rs']);
+  assert.equal(
+    recorded.events.filter((event) => event.type === 'grantChanged').length,
+    seen,
+    'a listing this replica already held was reported as news',
+  );
+});
+
+test('an empty grant is a statement, and clears what the room held', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  const recorded = record(guest);
+  t.after(() => recorded.stop());
+
+  await host.grant(['README.md']);
+  await recorded.waitForEvent('the listing', (event) => event.type === 'grantChanged');
+
+  // §5: a host that grants fewer paths writes the shorter array and never says what was
+  // removed, so an empty listing empties the room's grant.
+  await host.grant([]);
+  const emptied = await recorded.waitForEvent(
+    'the emptying',
+    (event) => event.type === 'grantChanged' && event.paths.length === 0,
+  );
+  assert.deepEqual(emptied.type === 'grantChanged' ? emptied.paths : undefined, []);
+  assert.deepEqual(guest.grantedPaths(), []);
+});
+
+test('a server without doc.grant refuses it without ending the session', async (t) => {
+  // §5: a host learns whether a server has a grant by asking, and `unknown_method` means
+  // "this server has no grant" — no listing to publish to, and no reason to hang up.
+  const session = await fakeSession({ grant: false });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, guest } = session;
+  await assert.rejects(
+    host.grant(['README.md']),
+    (error: unknown) => isProtocolError(error) && error.code === 'unknown_method',
+  );
+  assert.deepEqual(host.grantedPaths(), []);
+  assert.equal(host.session().roomId, guest.session().roomId, 'the session is still up');
+  await host.open(PATH);
+  assert.ok(host.documents().includes(PATH), 'the connection still works');
+});
