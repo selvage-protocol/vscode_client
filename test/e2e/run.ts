@@ -23,11 +23,12 @@
  * its content.
  */
 
-import { spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
@@ -73,9 +74,87 @@ const INSTANCE_DEADLINE_MS = Number(
   process.env.SELVAGE_E2E_INSTANCE_DEADLINE_MS ??
     String(DEADLINE_MS + (RECONNECT ? RECONNECT_DEADLINE_MS : 0) + 180_000),
 );
+/**
+ * The bound on the whole run. Every other deadline above bounds a step; this one covers the
+ * steps that have none, and the shape that produces no output at all — the orchestrator past
+ * its last log line, waiting on something that is no longer there, which reads as a hang
+ * rather than a failure when the output is piped somewhere it is only read at exit. A run that
+ * has to download a build the cache does not hold is doing an announced, one-off transfer, and
+ * can be given room with `SELVAGE_E2E_WATCHDOG_MS`.
+ */
+const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '300000');
+
+/**
+ * What the watchdog reports on: the phase the run is in, the last line it logged, and which
+ * instances are still in flight as far as the orchestrator can tell.
+ */
+let phase = 'startup';
+let lastLogged = '(nothing logged yet)';
+const inFlight = new Set<'host' | 'guest'>();
 
 function log(...parts: unknown[]): void {
+  lastLogged = parts.map((part) => String(part)).join(' ');
   console.log('[e2e]', ...parts);
+}
+
+/**
+ * The editor processes still running, found in `/proc` by the user-data directory each editor
+ * was given. `runTests` does not hand back the child it spawns, and the promise it returns is
+ * the one thing that cannot answer this: the stall worth reporting is the one where that
+ * promise never settles, which says nothing about whether anything is still behind it.
+ */
+function liveEditorProcesses(): { host: number[]; guest: number[] } {
+  const alive: { host: number[]; guest: number[] } = { host: [], guest: [] };
+  const hostUserData = resolve(RUN_DIR, 'host-user-data');
+  const guestUserData = resolve(RUN_DIR, 'guest-user-data');
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch {
+    // No procfs: say nothing rather than guess.
+    return alive;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) {
+      continue;
+    }
+    let cmdline: string;
+    try {
+      cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8');
+    } catch {
+      // It exited between the listing and the read.
+      continue;
+    }
+    if (cmdline.includes(hostUserData)) {
+      alive.host.push(Number(entry));
+    } else if (cmdline.includes(guestUserData)) {
+      alive.guest.push(Number(entry));
+    }
+  }
+  return alive;
+}
+
+/**
+ * The deadline for the whole run. It is armed before `main` starts and cleared once the run is
+ * done — until it is cleared it holds the event loop open itself, which is what keeps a
+ * promise that never settles or a child that never exits from ending the process quietly.
+ */
+function armWatchdog(): ReturnType<typeof setTimeout> {
+  return setTimeout(() => {
+    const alive = liveEditorProcesses();
+    const list = (pids: number[]): string => (pids.length === 0 ? 'none' : pids.join(', '));
+    console.error(`[e2e] WATCHDOG: the run did not finish within ${WATCHDOG_MS}ms; giving up`);
+    console.error(`[e2e] WATCHDOG: phase: ${phase}`);
+    console.error(`[e2e] WATCHDOG: last log line: ${lastLogged}`);
+    console.error(
+      `[e2e] WATCHDOG: instances still in flight: ${inFlight.size === 0 ? 'none' : [...inFlight].join(', ')}`,
+    );
+    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}`);
+    console.error(
+      `[e2e] WATCHDOG: editor output: ${resolve(RUN_DIR, 'host.log')}, ${resolve(RUN_DIR, 'guest.log')}`,
+    );
+    process.exit(1);
+  }, WATCHDOG_MS);
 }
 
 /** A TCP relay a test can cut without touching the process on either end of it — the same
@@ -144,10 +223,28 @@ class DropProxy {
   }
 }
 
+const execFileAsync = promisify(execFile);
+
+/** A step of the run whose output belongs on this run's own stdout, awaited rather than blocked
+ * on: a synchronous spawn would keep the watchdog from firing for as long as it ran. */
+async function inherit(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(command, args, { cwd: ROOT, stdio: 'inherit' });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        reject(new Error(`${command} exited with ${String(code)}`));
+      }
+    });
+  });
+}
+
 /** `nix`'s answer for the shared libraries an Electron binary downloaded outside nix needs on
  * NixOS — `nix-ld` supplies the loader, not the libraries a desktop app links against.
  * Cached, because evaluating it is the slow part of every run. */
-function nixElectronLibraryPath(): string {
+async function nixElectronLibraryPath(): Promise<string> {
   const cacheFile = resolve(TMP, 'e2e-libpath.txt');
   try {
     return readFileSync(cacheFile, 'utf8').trim();
@@ -162,14 +259,17 @@ function nixElectronLibraryPath(): string {
     'libxscrnsaver', 'libxshmfence', 'libgbm', 'libxi', 'libxrender', 'libuuid',
   ];
   const expr = `with import <nixpkgs> {}; lib.makeLibraryPath [${packages.join(' ')}]`;
-  const result = spawnSync('nix', ['eval', '--impure', '--raw', '--expr', expr], {
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
-    throw new Error(`nix eval for the Electron library path failed:\n${result.stderr}`);
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync('nix', ['eval', '--impure', '--raw', '--expr', expr], {
+      encoding: 'utf8',
+    }));
+  } catch (error) {
+    const { stderr } = error as { stderr?: string };
+    throw new Error(`nix eval for the Electron library path failed:\n${stderr ?? String(error)}`);
   }
-  writeFileSync(cacheFile, result.stdout);
-  return result.stdout.trim();
+  writeFileSync(cacheFile, stdout);
+  return stdout.trim();
 }
 
 interface InstanceOutcome {
@@ -214,6 +314,7 @@ async function runInstance(
 ): Promise<{ code: number }> {
   mkdirSync(dirname(logFile), { recursive: true });
   const out = createWriteStream(logFile);
+  inFlight.add(role);
   try {
     await runTests({
       vscodeExecutablePath,
@@ -236,6 +337,7 @@ async function runInstance(
     });
     return { code: 0 };
   } finally {
+    inFlight.delete(role);
     out.end();
   }
 }
@@ -245,12 +347,15 @@ async function main(): Promise<void> {
   mkdirSync(RUN_DIR, { recursive: true });
   mkdirSync(TMP, { recursive: true });
 
+  phase = 'building the extension bundle';
   log('building the extension bundle (npm run build)');
-  const build = spawnSync('npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit' });
-  if (build.status !== 0) {
-    throw new Error('npm run build failed');
+  try {
+    await inherit('npm', ['run', 'build']);
+  } catch (error) {
+    throw new Error(`npm run build failed: ${String(error)}`);
   }
 
+  phase = 'starting the real selvaged';
   log('starting the real selvaged');
   const server = await RealServer.start();
   log('selvaged listening at', server.wsBase);
@@ -264,12 +369,14 @@ async function main(): Promise<void> {
     log('reconnect proxy listening on 127.0.0.1:' + proxy.port, '-> forwards to', server.address);
   }
 
+  phase = 'resolving the VS Code build';
   log(`resolving VS Code ${VSCODE_VERSION} (downloads it the first time that version is used)`);
   const vscodeExecutablePath = await downloadAndUnzipVSCode({
     version: VSCODE_VERSION,
     cachePath: resolve(TMP, 'vscode-test'),
   });
-  const libraryPath = nixElectronLibraryPath();
+  phase = 'working out the Electron library path';
+  const libraryPath = await nixElectronLibraryPath();
   process.env['LD_LIBRARY_PATH'] = [libraryPath, process.env['LD_LIBRARY_PATH'] ?? '']
     .filter((part) => part !== '')
     .join(':');
@@ -311,6 +418,7 @@ async function main(): Promise<void> {
     ...(controlFile === undefined ? {} : { SELVAGE_E2E_CONTROL_FILE: controlFile }),
   };
 
+  phase = 'launching the instances';
   log('launching both real VS Code instances concurrently');
   const hostRun = runInstance(
     'host',
@@ -349,6 +457,7 @@ async function main(): Promise<void> {
 
   // Phase 1 has to actually land in both real editors before anything after it means
   // anything, in both the reconnect run and the plain one.
+  phase = 'waiting for phase 1 in both instances';
   await pollFor(
     'both instances to report phase 1 converged',
     () => {
@@ -365,6 +474,7 @@ async function main(): Promise<void> {
   // once its own copy of that file's text has arrived, so the host's half of the proof —
   // opening the file and finding the guest's marker in it — starts only after the guest has
   // read what the host supplied on request.
+  phase = 'waiting for the guest to read a granted path';
   await pollFor(
     'the guest to converge on a granted path the host never opened',
     () => (existsSync(grantedDoneFile) ? true : undefined),
@@ -373,6 +483,7 @@ async function main(): Promise<void> {
   log('the guest has the granted path; the host will now open the file it never opened');
 
   if (proxy !== undefined && controlFile !== undefined) {
+    phase = 'cutting the relay and reconnecting';
     log('cutting the guest relay (a real TCP close)');
     proxy.dropAll();
     await delay(2000);
@@ -390,6 +501,7 @@ async function main(): Promise<void> {
   // The deadline is cancelled as soon as the instances settle: the timer behind it would
   // otherwise outlive the race and hold the process open for the rest of its budget, which is
   // minutes of wall clock on a run that has already passed.
+  phase = 'waiting for the instances to settle';
   const deadline = new AbortController();
   const [hostResult, guestResult] = await Promise.race([
     Promise.allSettled([hostRun, guestRun]),
@@ -404,6 +516,7 @@ async function main(): Promise<void> {
   await proxy?.stop();
   await server.stop();
 
+  phase = 'checking the outcomes';
   const hostOutcome = readOutcome(hostResultFile);
   const guestOutcome = readOutcome(guestResultFile);
 
@@ -469,6 +582,7 @@ async function main(): Promise<void> {
     'PASSED: two real VS Code instances converged on the shared document, and a guest read a granted path the host never opened' +
       (RECONNECT ? ', and again after a simulated network blip' : ''),
   );
+  phase = 'done';
 }
 
 function scratchDir(): string {
@@ -476,11 +590,16 @@ function scratchDir(): string {
   return RUN_DIR;
 }
 
-main().catch((error: unknown) => {
-  console.error('[e2e] FAILED:', error);
-  // A failed run must end here. The editor processes are `@vscode/test-electron`'s children, and
-  // an exception thrown before they settle leaves them holding the event loop open: the run then
-  // sits silent until whatever started it gives up, which reads like a hang rather than a
-  // failure. The exit code is the report; nothing after this point is worth waiting for.
-  process.exit(1);
-});
+const watchdog = armWatchdog();
+main()
+  .then(() => {
+    clearTimeout(watchdog);
+  })
+  .catch((error: unknown) => {
+    console.error('[e2e] FAILED:', error);
+    // A failed run must end here. The editor processes are `@vscode/test-electron`'s children, and
+    // an exception thrown before they settle leaves them holding the event loop open: the run then
+    // sits silent until whatever started it gives up, which reads like a hang rather than a
+    // failure. The exit code is the report; nothing after this point is worth waiting for.
+    process.exit(1);
+  });
