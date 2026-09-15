@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   applyChange,
   diff,
+  hasCarriageReturn,
   matchesReplica,
   render,
   toBufferOffset,
@@ -273,6 +274,67 @@ test('a buffer offset maps onto the replica and back, CRLF included', () => {
   assert.equal(toBufferOffset('abc', 2), 2);
   assert.equal(toReplicaOffset('', 0), 0);
   assert.equal(toBufferOffset('', 0), 0);
+});
+
+test('an offset conversion told a document has no carriage return is the loop\'s own answer', () => {
+  // `hasCarriageReturn` is what a caller that has already looked at the whole buffer passes
+  // down, and the conversion then has no loop to run. The answer it gives has to be the
+  // answer the loop gives: a mixed document, a lone `\r`, astral characters and an empty one.
+  const mixed = 'one\r\ntwo\nthree\rfour\r\n\u{1f600}five\n';
+  const cases = [mixed, mixed.replaceAll('\r', ''), 'a\rb\r\nc', '', '\r\n\r\n', 'no endings at all'];
+  for (const text of cases) {
+    const carriageReturn = hasCarriageReturn(text);
+    assert.equal(carriageReturn, text.indexOf('\r') !== -1, JSON.stringify(text));
+    for (let offset = 0; offset <= text.length; offset += 1) {
+      assert.equal(
+        toReplicaOffset(text, offset, carriageReturn),
+        toReplicaOffset(text, offset),
+        `toReplicaOffset(${JSON.stringify(text)}, ${offset})`,
+      );
+      assert.equal(
+        toBufferOffset(text, offset, carriageReturn),
+        toBufferOffset(text, offset),
+        `toBufferOffset(${JSON.stringify(text)}, ${offset})`,
+      );
+    }
+  }
+  // A document with no `\r` in it: every offset is its own, no code unit moves.
+  assert.equal(hasCarriageReturn('one\ntwo\n'), false);
+  assert.equal(toReplicaOffset('one\ntwo\n', 7, false), 7);
+  assert.equal(toBufferOffset('one\ntwo\n', 7, false), 7);
+  assert.equal(toReplicaOffset('', 0, false), 0);
+  assert.equal(toBufferOffset('', 0, false), 0);
+  // Past the end of the text is the end of the text, and before its start is its start —
+  // the two bounds the loop cannot walk beyond.
+  assert.equal(toReplicaOffset('one\n', 99, false), 4);
+  assert.equal(toBufferOffset('one\n', 99, false), 4);
+  assert.equal(toReplicaOffset('one\n', -3, false), 0);
+  assert.equal(toBufferOffset('one\n', -3, false), 0);
+});
+
+test('an offset conversion told there is no carriage return does not read the text again', () => {
+  // The whole point of the answer being passed down: a caller that has already looked at the
+  // buffer is not made to look at it again, one code unit at a time, per endpoint per peer.
+  // A text that throws when it is read is what says the conversion read nothing.
+  const reads: string[] = [];
+  const unreadable: Record<string, unknown> = { length: 5 };
+  for (let index = 0; index < 5; index += 1) {
+    Object.defineProperty(unreadable, String(index), {
+      get() {
+        reads.push(String(index));
+        return 'x';
+      },
+    });
+  }
+  Object.defineProperty(unreadable, 'indexOf', {
+    value: () => {
+      reads.push('indexOf');
+      return -1;
+    },
+  });
+  assert.equal(toReplicaOffset(unreadable as unknown as string, 3, false), 3);
+  assert.equal(toBufferOffset(unreadable as unknown as string, 3, false), 3);
+  assert.deepEqual(reads, [], 'the conversion scanned a text it was told needed no scan');
 });
 
 test('a guest document URI round-trips, and its room is not case-folded', () => {
