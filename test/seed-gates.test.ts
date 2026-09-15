@@ -79,6 +79,12 @@ test('opening an excluded file shares nothing and says so once', async (t) => {
     assert.match(refusal.message, /will not share .* with the room/);
     assert.match(refusal.message, /nothing was shared for it/);
   }
+  // Reopening a refused file re-fires the open event (focus, split) but reports nothing
+  // new: one refusal per path per session.
+  host.editor.open('.env', 'SECRET=1\n');
+  host.bridge.documentOpened('.env');
+  await host.editor.settle();
+  assert.equal(host.editor.reportsOf('sessionError').length, 5);
   for (const path of ['.env', 'src/.env.local', '.git/config', 'id_rsa', 'certs/server.pem']) {
     assert.equal(session.host.has(path), false, `${path} entered the replica`);
   }

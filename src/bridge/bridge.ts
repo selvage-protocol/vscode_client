@@ -180,6 +180,8 @@ export class SessionBridge {
   private readonly documents = new Set<string>();
   /** The paths this host has seeded, so reopening a file does not push it in again. */
   private readonly seeded = new Set<string>();
+  /** The paths this host has refused and reported, so reopening one does not nag again. */
+  private readonly refusedSeeds = new Set<string>();
   /** The paths the room has asked for, so a read that was refused is not attempted again. */
   private readonly requested = new Set<string>();
   /** Documents a guest has opened whose room text has not arrived yet. See `documentOpened`. */
@@ -487,15 +489,19 @@ export class SessionBridge {
     // A file the user opened is still one the room has to carry: the grant's own rule and
     // the session's size bound gate this path exactly as they gate a peer's request below,
     // so opening `.env`, a key or a huge log shares nothing and wedges no frame. A refusal
-    // is said once, out loud, rather than seeded as an empty document or left for the user
-    // to discover from a guest's question.
+    // is said once per path, out loud, rather than seeded as an empty document or left for
+    // the user to discover from a guest's question; the editor may re-fire the open event
+    // on focus or split, and that must not nag.
     const refusal = seedRefusal(path, bufferText);
     if (refusal !== undefined) {
-      this.host.report({
-        kind: 'sessionError',
-        code: 'error',
-        message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
-      });
+      if (!this.refusedSeeds.has(path)) {
+        this.refusedSeeds.add(path);
+        this.host.report({
+          kind: 'sessionError',
+          code: 'error',
+          message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
+        });
+      }
       return;
     }
     this.seeded.add(path);
