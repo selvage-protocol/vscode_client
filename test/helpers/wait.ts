@@ -8,7 +8,11 @@ import type { OffsetSelection, Presence } from '../../src/engine/presence.ts';
 import type { PeerInfo } from '../../src/engine/envelope.ts';
 
 /** How long a test is willing to wait for a condition that should hold immediately. */
-export const WAIT_MS = 5000;
+// A shared CI runner is much slower than a developer's machine, and every wait here is a poll of
+// a condition that does hold — the deadline only has to be generous enough not to race a loaded
+// runner. `SELVAGE_WAIT_MS` lets a slower environment say so; the default stays tight so a real
+// failure is reported quickly locally.
+export const WAIT_MS = Number(process.env.SELVAGE_WAIT_MS ?? 5000);
 
 export interface WaitOptions {
   timeoutMs?: number;

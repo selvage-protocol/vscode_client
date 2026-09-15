@@ -16,6 +16,8 @@ export interface Tally {
   syncBytes: number;
   awareness: number;
   awarenessBytes: number;
+  /** Awareness frames whose payload carries a cursor state, not a clear or a removal. */
+  awarenessSelection: number;
   other: number;
   bytes: number;
 }
@@ -26,7 +28,7 @@ export interface FrameTally {
 }
 
 function zero(): Tally {
-  return { text: 0, sync: 0, syncBytes: 0, awareness: 0, awarenessBytes: 0, other: 0, bytes: 0 };
+  return { text: 0, sync: 0, syncBytes: 0, awareness: 0, awarenessBytes: 0, awarenessSelection: 0, other: 0, bytes: 0 };
 }
 
 function toBytes(data: unknown): Uint8Array | undefined {
@@ -69,6 +71,9 @@ function tallyFrame(tally: Tally, data: unknown): void {
   const bytes = toBytes(data);
   const first = bytes?.[0];
   count(tally, bytes?.length ?? 0, first === 0 ? 'sync' : first === 1 ? 'awareness' : 'other');
+  if (first === 1 && bytes !== undefined && Buffer.from(bytes).includes('"selection"')) {
+    tally.awarenessSelection += 1;
+  }
 }
 
 /** A real `ws` socket with a tally in front of it. */
