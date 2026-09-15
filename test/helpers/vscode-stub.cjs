@@ -45,6 +45,14 @@ const registered = {
   inputReply: undefined,
   /** The window's open documents, as a test seeded them before the session started. */
   textDocuments: [],
+  /**
+   * How the editor answers `workspace.applyEdit`. The default applies nothing and answers
+   * `true`; a test that needs an editor which refuses a change — a document whose version moved
+   * under the range — replaces it, and one that needs the change to land applies the edit's own
+   * ranges to its document stand-in. That is what a `WorkspaceEdit` records. See
+   * `test/documents.test.ts`.
+   */
+  applyEditImpl: () => Promise.resolve(true),
 };
 
 /**
@@ -212,6 +220,7 @@ function reset() {
   registered.quickPickReply = undefined;
   registered.inputReply = undefined;
   configured.clear();
+  registered.applyEditImpl = () => Promise.resolve(true);
 }
 
 function disposable() {
@@ -401,9 +410,18 @@ module.exports = {
   },
 
   WorkspaceEdit: class {
-    replace() {}
+    constructor() {
+      /** Every edit, in the order it was added: what an `applyEdit` implementation applies. */
+      this.edits = [];
+    }
 
-    insert() {}
+    replace(uri, range, text) {
+      this.edits.push({ kind: 'replace', uri, range, text });
+    }
+
+    insert(uri, position, text) {
+      this.edits.push({ kind: 'insert', uri, position, text });
+    }
   },
 
   commands: {
@@ -492,7 +510,7 @@ module.exports = {
       registered.opened.push(uri.toString());
       return Promise.resolve(documentFor(uri));
     },
-    applyEdit: () => Promise.resolve(true),
+    applyEdit: (edit) => registered.applyEditImpl(edit),
     registerFileSystemProvider(scheme, provider) {
       registered.schemes.push(scheme);
       registered.files = provider;
