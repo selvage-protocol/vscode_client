@@ -33,6 +33,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
 import { RealServer } from '../helpers/selvaged.ts';
+import { ensureVscodeCache } from './vscode-cache.ts';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
 const TMP = resolve(ROOT, '.tmp');
@@ -512,7 +513,7 @@ async function main(): Promise<void> {
   log(`resolving VS Code ${VSCODE_VERSION} (downloads it the first time that version is used)`);
   const vscodeExecutablePath = await downloadAndUnzipVSCode({
     version: VSCODE_VERSION,
-    cachePath: resolve(TMP, 'vscode-test'),
+    cachePath: ensureVscodeCache(ROOT),
   });
   phase = 'working out the Electron library path';
   const libraryPath = await nixElectronLibraryPath();
