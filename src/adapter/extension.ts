@@ -378,11 +378,7 @@ class Session {
           this.engine.text(path) === '' &&
           this.leftListing(path)
         ) {
-          reject(
-            new Error(
-              `the host no longer shares ${path}; it may have been deleted after the listing was published`,
-            ),
-          );
+          reject(new Error(leftListingNotice(path)));
           return;
         }
         resolve();
@@ -1001,6 +997,15 @@ async function copyInvite(): Promise<void> {
   }
 }
 
+/**
+ * Why a path the listing named and no longer names cannot be opened. One sentence
+ * for both places that report it: the fetch that gives up waiting for its text, and
+ * the open command handed a name the listing just dropped.
+ */
+function leftListingNotice(path: string): string {
+  return `the host no longer shares ${path}; it may have been deleted after the listing was published`;
+}
+
 /** See `HostArgs`: the same programmatic seam for `selvage.openDocument`. */
 export interface OpenDocumentArgs {
   path?: string;
@@ -1024,14 +1029,27 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
     return;
   }
   const paths = session.offered();
-  if (paths.length === 0) {
-    void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
-    return;
-  }
   let picked: string | undefined;
   if (args?.path !== undefined) {
-    picked = paths.includes(args.path) ? args.path : undefined;
+    if (paths.includes(args.path)) {
+      picked = args.path;
+    } else if (session.leftListing(args.path)) {
+      // A click or call naming a path that just left the listing: the gate below
+      // would silently return, so the stale name is refused here with the reason
+      // a fetch that gives up on it reports. The gate never reaches `readFile`.
+      void vscode.window.showErrorMessage(
+        `Selvage: could not open ${args.path} from the room: ${leftListingNotice(args.path)}`,
+      );
+      return;
+    } else if (paths.length === 0) {
+      void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
+      return;
+    }
   } else {
+    if (paths.length === 0) {
+      void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
+      return;
+    }
     picked = await vscode.window.showQuickPick(paths, {
       title: 'Open a document from the room',
       placeHolder: `${paths.length} open in this room`,

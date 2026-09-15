@@ -1174,6 +1174,42 @@ test('a guest is told when a path it opens left the listing, not handed an empty
   assert.equal(tree.getTreeItem(row).description, 'no longer listed');
 });
 
+test('a stale openDocument path that left the listing is refused, not silently dropped', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['doomed.txt']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      ? true
+      : false,
+  );
+  const tree = treeOf(bundle);
+  await waitFor('the listing to reach the window', () =>
+    tree.getChildren().length > 0 ? true : false,
+  );
+
+  // The host takes the path out of the listing while a click on its row is still
+  // in flight — or a caller still names it. The command refuses with the same
+  // reason the fetch give-up reports instead of returning silently, and the
+  // gate never reaches `readFile`, so no document opens either way.
+  await host.grant([]);
+  await waitFor('the smaller listing to reach the window', () =>
+    tree.getChildren().length === 0 ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'doomed.txt' });
+  const refusal = await waitFor('the stale path to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ?? false,
+  );
+  assert.match(refusal, /could not open doomed\.txt from the room/);
+  assert.match(refusal, /the host no longer shares doomed\.txt/);
+  assert.match(refusal, /may have been deleted after the listing was published/);
+  assert.ok(
+    !bundle.stub.registered.opened.includes(virtualUri(roomId, 'doomed.txt')),
+    'the stale path was opened anyway',
+  );
+});
+
 test('a document open when its path leaves the listing keeps its text and is badged', async (t) => {
   const { host, invite, roomId } = await room(t, ['doomed.txt']);
   host.insert('doomed.txt', 0, 'held text\n');
