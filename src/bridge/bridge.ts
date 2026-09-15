@@ -81,6 +81,8 @@ export interface EditorHost {
 export type Report =
   /** The room's open-document set, as the server owns it. */
   | { kind: 'documents'; documents: string[] }
+  /** The room's grant: the host's whole listing, replacing whatever the adapter held. */
+  | { kind: 'grant'; paths: string[] }
   /** Membership changed. */
   | { kind: 'peers'; peers: PeerInfo[] }
   /** The host disconnected; the room survives only until the grace period expires. */
@@ -726,6 +728,10 @@ export class SessionBridge {
       }
       case 'documentsChanged': {
         this.host.report({ kind: 'documents', documents: event.documents });
+        break;
+      }
+      case 'grantChanged': {
+        this.host.report({ kind: 'grant', paths: event.paths });
         break;
       }
       case 'peersChanged': {

@@ -907,3 +907,27 @@ test('the bridge exports the vocabulary an adapter is written against', async ()
     assert.ok(name in bridge, `the bridge's public surface has no ${name}`);
   }
 });
+
+
+test("the room's grant reaches the adapter as a report, whole and in order", async (t) => {
+  const { session, guest } = await twoWindows(t);
+
+  // Ascending by UTF-16 code unit, and the reverse of what a code-point sort would write:
+  // the event is the host's listing, and the bridge is a pass-through, not a re-writer.
+  const paths = ['README.md', '\u{1F600}.txt', 'ｆ.txt'];
+  await session.host.grant(paths);
+
+  const granted = await waitFor('the grant to be reported', () =>
+    guest.editor.reportsOf('grant').at(-1) ?? false,
+  );
+  assert.deepEqual(granted.paths, paths);
+
+  // A shorter listing is a smaller grant, not a partial one: the report replaces the last.
+  await session.host.grant(['src/main.rs']);
+  const shrunk = await waitFor('the smaller grant to be reported', () =>
+    guest.editor.reportsOf('grant').some((report) => report.paths.length === 1)
+      ? guest.editor.reportsOf('grant').at(-1)
+      : false,
+  );
+  assert.deepEqual(shrunk.paths, ['src/main.rs']);
+});
