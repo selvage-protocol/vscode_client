@@ -311,6 +311,16 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   **A listing that shrinks releases nothing**: a path leaving it leaves
   the room's grant and not the room's open-document set, so a document somebody is editing stays
   open and readable (`PROTOCOL.md` §5 against §6 — `doc.close` is how a hold is released).
+- **A file the room asks for is checked before it is read, and the check is not the read.** A
+  peer names a path and the host serves it only when the grant would publish it and every
+  directory on the way is a plain directory of the shared folder — never a link out of it —
+  and only when the leaf itself is a plain file under the size a session will carry. What
+  that narrowing cannot close is the window between the check and the read: a link swapped
+  into the path after the walk is read on the peer's behalf, and `vscode.workspace.fs`
+  exposes no `realpath` to shut it. That window is a stated residual, not a guarantee: a
+  hostile tree the host's own tools can write to (a build, a branch switch) is the threat,
+  and the escape shapes around it — `..`, absolute paths, swapped segments, leaf links —
+  are pinned in `test/serve.test.ts` so the bound they test is the one the code holds.
 - **A guest lands in the room's first document, once and with no input**: joining a room that
   already has files should land in the work, not in a quick-pick, and a room that is empty at
   join still owes that landing to the guest who stays — the first document that arrives opens,

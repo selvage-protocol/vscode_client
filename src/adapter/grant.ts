@@ -114,7 +114,8 @@ export async function isShareableFile(uri: vscode.Uri): Promise<boolean> {
  * The folders are the ones held at invite time, so a folder added to the window afterwards is
  * not quietly added to the grant. Containment is the whole test here: the excludes bound what a
  * session shares *by itself*, while a user opening a file in their own window is the user's own
- * act, and the two are not the same statement.
+ * act, and the two are not the same statement. Whether an opened file then reaches the room
+ * is the bridge's own gate (`seed` in `src/bridge/bridge.ts`), not this function's.
  */
 export function roomPathOf(
   folders: readonly vscode.WorkspaceFolder[],
