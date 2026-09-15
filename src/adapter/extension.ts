@@ -32,6 +32,18 @@ const CLIENT = 'selvage-vscode/0.1.0';
 const SELECTION_INTERVAL_MS = 100;
 
 /**
+ * How long a filesystem event waits before the room is told the listing again. A burst — a
+ * `cargo build`, a branch switch, an editor writing its own files — is tens of thousands of
+ * events, so a trailing throttle turns them into one walk of the folder per interval rather
+ * than one per event, and one frame per interval at most. It bounds the starts and not the
+ * walks: a walk can outlast the interval that began it, and the walk that started last is the
+ * one allowed to publish, so a slower walk is dropped rather than sent over a newer listing.
+ * This is the Neovim client's value, so a peer sees a listing change after the same delay
+ * whichever client is hosting.
+ */
+const GRANT_REFRESH_INTERVAL_MS = 250;
+
+/**
  * How long a read waits for the room to send a path this replica has received nothing for.
  *
  * A listed path is a candidate and not a promise — it names what the host's folder held when
@@ -128,6 +140,30 @@ class Session {
    * on another folder afterwards; what the room holds is the folder it was invited on.
    */
   private readonly folders: readonly vscode.WorkspaceFolder[];
+  /**
+   * The listing the room holds, as this session last established it: what a `grant` was accepted
+   * with, or what a server with no grant answered `unknown_method` to. The engine writes
+   * whatever it is handed and keeps no memory of it, so whether a listing is news is decided
+   * here. Undefined until one has been sent.
+   */
+  private published: string[] | undefined;
+  /**
+   * The listing the server last refused. A walk that enumerates the same listing has nothing
+   * new to offer a server that already refused it, so it is neither sent nor reported again; a
+   * listing that differs is offered and reported as usual, which is what lets a folder that
+   * changed back into what was refused be refused out loud a second time.
+   */
+  private refusedListing: string[] | undefined;
+  /**
+   * How many republish walks this session has started. A walk records the count before it reads
+   * the folder and may publish only while no later walk has started: a walk slower than the one
+   * after it is dropped rather than sent, so the room cannot go backwards to an older listing.
+   */
+  private grantWalks = 0;
+  /** A filesystem event whose republish has not run yet. */
+  private grantTimer: ReturnType<typeof setTimeout> | undefined;
+  /** What makes the listing follow the folders, live only while this session hosts. */
+  private readonly grantWatchers: vscode.Disposable[] = [];
   private peers: PeerInfo[] = [];
   private documents: string[] = [];
   private granted: string[] = [];
@@ -209,10 +245,11 @@ class Session {
     this.refreshStatus();
     this.selection();
     grantTree?.use(this);
-    // The room's shape is the host's to publish, and it is read off the working copy once, when
-    // the session starts: the folder the invite names is the grant, and a later change to what
-    // the window has open is not a statement about the folder.
+    // The room's shape is the host's to publish: the folder the invite names is the grant, read
+    // off the working copy at the start and again whenever a file under it appears, disappears
+    // or changes. What the window has *open* is not a statement about the folder.
     if (this.role() === 'host') {
+      this.watchFolders();
       void this.publishGrant();
     }
     // A guest joins a room that may have documents already, and may join one that has none.
@@ -319,13 +356,30 @@ class Session {
    *
    * A server that does not know `doc.grant` answers `unknown_method`, which means it has no
    * grant rather than that anything failed: the session goes on and the room falls back to its
-   * open-document set. Any other refusal is reported and also changes nothing.
+   * open-document set. Any other refusal is reported and also changes nothing. A listing the
+   * room already holds is not sent; one the server has already refused is neither sent nor
+   * reported again while it says the same thing.
+   *
+   * A walk can outlast the interval that started it, so a second event during one starts a
+   * second walk. Only the walk that started last may publish, and a walk whose session has
+   * ended publishes nothing at all.
    */
   private async publishGrant(): Promise<void> {
+    // A republish the interval had already armed when the session ended has nothing to say to
+    // a room this window has left.
+    if (this.finished) {
+      return;
+    }
+    this.grantWalks += 1;
+    const attempt = this.grantWalks;
     let paths: string[];
     try {
       paths = await enumerateGrant(this.folders);
     } catch (error) {
+      // A later walk describes the folder now, and its own read reports its outcome.
+      if (this.finished || attempt !== this.grantWalks) {
+        return;
+      }
       this.onReport({
         kind: 'sessionError',
         code: 'error',
@@ -333,16 +387,123 @@ class Session {
       });
       return;
     }
-    await this.engine.grant(paths).catch((error: unknown) => {
-      if (isProtocolError(error) && error.code === errCode.unknownMethod) {
+    // The session can end, or a later event start a walk of its own, while this one reads the
+    // folder. Either way this listing is not the one to publish: the window has left the room,
+    // or a walk that started after this one is already saying what the folder holds now.
+    if (this.finished || attempt !== this.grantWalks) {
+      return;
+    }
+    if (this.published !== undefined && sameListing(this.published, paths)) {
+      return;
+    }
+    if (this.refusedListing !== undefined && sameListing(this.refusedListing, paths)) {
+      return;
+    }
+    try {
+      await this.engine.grant(paths);
+      // A later walk that started while this frame was out is the one whose outcome describes
+      // the folder, and its own send has recorded it.
+      if (attempt === this.grantWalks) {
+        this.published = paths;
+        this.refusedListing = undefined;
+      }
+    } catch (error) {
+      // The session can end while the frame is out, and the closed engine answers rather than
+      // the server: there is no room left to be refused by, and nothing to report.
+      if (this.finished) {
         return;
       }
+      if (isProtocolError(error) && error.code === errCode.unknownMethod) {
+        // A server with no grant stores no listing, so repeating one is a frame per change for
+        // nothing. Remembering it here is the same tolerance the first publication gets.
+        if (attempt === this.grantWalks) {
+          this.published = paths;
+          this.refusedListing = undefined;
+        }
+        return;
+      }
+      // A later walk describes the folder now, and its own send reports its outcome.
+      if (attempt !== this.grantWalks) {
+        return;
+      }
+      this.refusedListing = paths;
       this.onReport({
         kind: 'sessionError',
         code: isProtocolError(error) ? error.code : 'error',
         message: `the server refused the listing of the folder this window shares: ${message(error)}`,
       });
-    });
+    }
+  }
+
+  /**
+   * Makes the room's listing follow the folders this session was invited on.
+   *
+   * One watcher per folder, because a `RelativePattern` names one base. The session is the
+   * watchers' owner: a guest publishes nothing and so watches nothing, and nothing outlives
+   * `dispose`.
+   */
+  private watchFolders(): void {
+    for (const folder of this.folders) {
+      let watcher: vscode.FileSystemWatcher;
+      try {
+        watcher = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(folder, '**/*'),
+        );
+      } catch (error) {
+        // An editor that cannot watch one of the folders is not one to half-watch with: the
+        // listing would follow some of what this window shares and silently not the rest, which
+        // is a worse thing to leave running than a listing that is known to be as of session
+        // start. So the watch is dropped and said once, and the session goes on.
+        //
+        // A synchronous throw is the only failure this can see. `vscode.FileSystemWatcher` has
+        // no error channel: an editor that returns a watcher for a folder it then never delivers
+        // an event for leaves the listing frozen, and nothing here can tell that apart from a
+        // folder that did not change.
+        this.stopWatching();
+        this.onReport({
+          kind: 'sessionError',
+          code: 'error',
+          message: `could not watch the folder this window shares: ${message(error)}`,
+        });
+        return;
+      }
+      // A content change is one of the three: a file that grows past what a session will carry
+      // leaves the listing, and one that shrinks back into it returns.
+      const refresh = (): void => {
+        this.scheduleGrant();
+      };
+      this.grantWatchers.push(
+        watcher.onDidCreate(refresh),
+        watcher.onDidChange(refresh),
+        watcher.onDidDelete(refresh),
+        watcher,
+      );
+    }
+  }
+
+  /**
+   * Arms the one republish the interval allows. Further events inside the window do not extend
+   * it, and the flush enumerates when it runs, so what a burst publishes is the folder as it
+   * stands then rather than what each event saw.
+   */
+  private scheduleGrant(): void {
+    if (this.grantTimer !== undefined) {
+      return;
+    }
+    this.grantTimer = setTimeout(() => {
+      this.grantTimer = undefined;
+      void this.publishGrant();
+    }, GRANT_REFRESH_INTERVAL_MS);
+  }
+
+  private stopWatching(): void {
+    for (const disposable of this.grantWatchers.splice(0)) {
+      try {
+        disposable.dispose();
+      } catch {
+        // A watcher the editor will not release must not stop the rest of the session's teardown.
+      }
+    }
   }
 
   names(): string[] {
@@ -409,6 +570,12 @@ class Session {
       return;
     }
     this.finished = true;
+    // A queued republish is dropped rather than sent: the room is not this window's any more.
+    if (this.grantTimer !== undefined) {
+      clearTimeout(this.grantTimer);
+      this.grantTimer = undefined;
+    }
+    this.stopWatching();
     // The position the interval was still holding reaches the room before the session ends.
     this.flushSelection();
     // A guest's tabs keep what the room held for them: the session is over, but nothing a
@@ -1049,6 +1216,11 @@ async function ask(
 
 function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('selvage');
+}
+
+/** Whether two listings say the same thing, in the same order. */
+function sameListing(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
 /** Whether a join puts the room's first document in front of the guest (`selvage.openOnJoin`). */

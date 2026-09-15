@@ -32,10 +32,10 @@ Requirements, as found on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
-$ npm run build                        # → dist/extension.js, 452.8 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 478.4 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 181 tests, no server, no editor
-$ npm test                             # 185 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 246 tests, no server, no editor
+$ npm test                             # 250 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -278,6 +278,34 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   those already open when the session starts; that folder is the grant. A guest shares nothing
   from disk — only the `selvage:` documents the room gave it. There are no exclude globs in
   v1: what a host shares is what it has open, which is visible in its own window.
+- **The room's listing follows the host's folder.** A host watches the folders it was invited on
+  — one watcher per folder, `**/*` under it — and republishes the room's grant when a file under
+  one appears, disappears or changes, so a path a build, a branch switch or another terminal
+  made or removed is in the room's listing without anybody asking. A burst becomes at most one
+  walk of the folder per 250 ms rather than one per event, and one frame per interval at most:
+  the walk that started last is the only one allowed to publish, so a slower walk overtaken by a
+  newer one is dropped rather than sent, and a listing the room already holds is not sent. One
+  the server has already refused is neither offered nor reported again while it says the same
+  thing, so a project over the server's bound is reported once and not once per window. 250 ms is
+  the Neovim client's interval too, so a peer sees a listing change after the same delay
+  whichever client hosts. A server that answers `unknown_method` has no grant and is not a
+  failure — the session goes on and the watch keeps working — while any other refusal is reported
+  and also changes nothing. The only failure the watch can see is a synchronous refusal to
+  create a watcher, which drops the whole watch and says so once; a watcher the editor accepts
+  and then never delivers an event for has no error channel, so a folder that is silently
+  unwatched leaves the listing as of session start and nothing says so. A guest publishes no
+  listing and so watches nothing, and leaving a session or deactivating disposes the watchers and
+  drops a republish that was still queued — though not one whose walk had already begun, which is
+  dropped when it finishes instead. A change made while the connection is down is not re-offered
+  on its own: the room keeps the listing it held across the host's disconnect grace and a
+  re-seated host is sent it again, so the two agree, but nothing republishes *because* of the
+  reconnection, and the room learns of a change made during the blip at the next filesystem event
+  or not at all. An attempt that lands while the socket is down is reported in the refusal
+  sentence (`the server refused the listing of the folder this window shares: the connection is
+  down`) even though the server saw nothing: the engine answers a request it has nowhere to send.
+  **A listing that shrinks releases nothing**: a path leaving it leaves
+  the room's grant and not the room's open-document set, so a document somebody is editing stays
+  open and readable (`PROTOCOL.md` §5 against §6 — `doc.close` is how a hold is released).
 - **A guest lands in the room's first document, once and with no input**: joining a room that
   already has files should land in the work, not in a quick-pick, and a room that is empty at
   join still owes that landing to the guest who stays — the first document that arrives opens,
@@ -318,9 +346,11 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   marker rather than leaving a save prompt at close.
 - **A guest's document is `selvage:/<path>?room=<room id>`**, behind a `FileSystemProvider`
   (a `TextDocumentContentProvider` is read-only by contract, and guests edit). Its provider
-  refuses `delete`, `rename` and `createDirectory` and returns nothing from `readDirectory`:
-  `DESIGN.md` §4.2 has no file tree. The quick-pick in *Open a document from the room* is the
-  only place a room path is offered to open, and it offers the room's own open-document set — a
+  refuses `delete`, `rename` and `createDirectory`, and its `readDirectory` derives a directory
+  tree by splitting the room's listing (`grantChildren`), so the room's Explorer view is a real
+  tree and a tool inside the editor sees the shape of the host's folder. That is a listing and
+  never content: a file's text is fetched when something reads it. The *Selvage* view is the
+  room's tree, and the quick-pick in *Open a document from the room* is the same listing — a
   guest never types a path, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order. *Selvage: List the room's participants*
@@ -422,7 +452,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**185 tests, 0 failures**: 181 server-free and 4 that need a built `selvaged`. Waits are bounded
+**250 tests, 0 failures**: 246 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
@@ -438,8 +468,13 @@ starts a real `selvaged`, resolves a pinned VS Code build (`1.137.0` by default;
 `SELVAGE_E2E_VSCODE_VERSION` to move it), and launches **two independent, real
 Extension Development Host processes** (`@vscode/test-electron`, headless under Xvfb) with the
 real built extension loaded — one hosting a real file, one joining by invite, both editing
-concurrently — and asserts their documents converge. Left running, it also cuts the guest's
-connection through a small relay and checks it reconnects and re-converges.
+concurrently — and asserts their documents converge. It also proves the room's grant end to
+end: the guest opens a file the host's folder holds and the host never opened, so its content
+can only have been read on request. Left running, the host then makes a file under its folder
+and removes another while the room is live and the guest's own view of the room has to gain the
+one and lose the other, and it cuts the guest's connection through a small relay and checks it
+reconnects and re-converges. `SELVAGE_E2E_RECONNECT=0` leaves the reconnect leg out; the watch
+leg runs either way.
 
 Run it with `scripts/e2e/run-two-instance.sh` from the repository root. It has heavier
 prerequisites than everything else here — a network, Xvfb, an internet download the first time,
@@ -449,11 +484,11 @@ into `ci.yml`.
 
 ## Not here
 
-A sidecar or second process, a file tree and create/rename/delete, read-only guests
-(`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond the open workspace
-documents, multi-room windows, and publication (`vsce package`, a Marketplace publisher). Also
-deliberately absent: a `y-websocket` provider (Selvage's envelope is not y-websocket's),
-`terminal/1`, and any default server address.
+A sidecar or second process, and create/rename/delete on the wire (`PROTOCOL.md` §12),
+read-only guests (`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond a granted
+path a peer asked for, multi-room windows, and publication (`vsce package`, a Marketplace
+publisher). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is not
+y-websocket's), `terminal/1`, and any default server address.
 
 ## Licence
 

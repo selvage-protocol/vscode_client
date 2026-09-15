@@ -48,6 +48,11 @@ export interface FakeServerOptions {
    * `unknown_method` and the connection stays open.
    */
   grant?: boolean;
+  /**
+   * Models a server that understands the grant and will not store this listing — one over its
+   * own bound (`PROTOCOL.md` §5) — so `doc.grant` is answered `bad_params`.
+   */
+  refuseGrant?: boolean;
 }
 
 interface Client {
@@ -97,6 +102,16 @@ export class FakeServer {
   readonly renames: Array<{ peerId: string; displayName: string }> = [];
   /** Every `doc.grant` handled, in arrival order: the peer and the listing it published. */
   readonly grants: Array<{ peerId: string; paths: string[] }> = [];
+  /**
+   * How many `doc.grant` frames arrived, whether or not the server applied them: what a host
+   * attempted rather than only what a server kept.
+   */
+  grantAttempts = 0;
+  /**
+   * When set, `doc.grant` answers wait for it first, so a send can be held in flight
+   * while a later walk sends its own. Arrivals are still counted at once.
+   */
+  grantHold: Promise<void> | undefined = undefined;
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
@@ -443,37 +458,16 @@ export class FakeServer {
           });
           return;
         }
-        if (this.options.grant === false) {
-          this.respond(client, id, undefined, {
-            code: code.unknownMethod,
-            message: 'no such method: doc.grant',
+        this.grantAttempts += 1;
+        if (this.grantHold !== undefined) {
+          // The send is in flight until the test releases it; the answer follows then.
+          const held = this.grantHold;
+          void held.then(() => {
+            this.answerGrant(client, id, room, params);
           });
           return;
         }
-        const paths = Array.isArray(params.paths) ? params.paths : undefined;
-        if (
-          paths === undefined ||
-          paths.some((path) => typeof path !== 'string' || path.trim() === '')
-        ) {
-          this.respond(client, id, undefined, {
-            code: code.badParams,
-            message: 'paths is required and every path must be non-blank',
-          });
-          return;
-        }
-        if (room.hostId !== client.id) {
-          this.respond(client, id, undefined, {
-            code: code.badParams,
-            message: "the room's grant is its host's to publish",
-          });
-          return;
-        }
-        const listing = paths as string[];
-        this.grants.push({ peerId: client.id, paths: [...listing] });
-        // Stored and relayed verbatim: the fake server does not sort or deduplicate either.
-        room.grant = [...listing];
-        this.respond(client, id, {});
-        this.broadcast(room, { paths: room.grant }, event.docGranted);
+        this.answerGrant(client, id, room, params);
         return;
       }
       case method.docOpen:
@@ -625,6 +619,56 @@ export class FakeServer {
   }
 
   // -- frames ---------------------------------------------------------------
+
+  /**
+   * Answers one `doc.grant`, at once or once a held send is released. The room is the
+   * one the arrival found: a held send answers for the room as it was sent to.
+   */
+  private answerGrant(
+    client: Client,
+    id: number,
+    room: Room,
+    params: Record<string, unknown>,
+  ): void {
+    if (this.options.grant === false) {
+      this.respond(client, id, undefined, {
+        code: code.unknownMethod,
+        message: 'no such method: doc.grant',
+      });
+      return;
+    }
+    if (this.options.refuseGrant === true) {
+      this.respond(client, id, undefined, {
+        code: code.badParams,
+        message: 'the listing is over the bound this server will store',
+      });
+      return;
+    }
+    const paths = Array.isArray(params.paths) ? params.paths : undefined;
+    if (
+      paths === undefined ||
+      paths.some((path) => typeof path !== 'string' || path.trim() === '')
+    ) {
+      this.respond(client, id, undefined, {
+        code: code.badParams,
+        message: 'paths is required and every path must be non-blank',
+      });
+      return;
+    }
+    if (room.hostId !== client.id) {
+      this.respond(client, id, undefined, {
+        code: code.badParams,
+        message: "the room's grant is its host's to publish",
+      });
+      return;
+    }
+    const listing = paths as string[];
+    this.grants.push({ peerId: client.id, paths: [...listing] });
+    // Stored and relayed verbatim: the fake server does not sort or deduplicate either.
+    room.grant = [...listing];
+    this.respond(client, id, {});
+    this.broadcast(room, { paths: room.grant }, event.docGranted);
+  }
 
   private relay(from: Client, frame: Buffer): void {
     const room = this.rooms.get(from.roomId ?? '');
