@@ -322,6 +322,13 @@ test('a watcher that fails after the first folder stops the watch rather than ha
   assert.equal(created.disposed, true, 'the watcher was left running: the listing follows one folder of two');
   assert.equal(bundle.stub.registered.errors.length, 1, 'the failure was reported more than once');
 
+  // The session's own first publication is a websocket round trip and lands after `host`
+  // resolves; wait for it, so the count below is a count after the room holds the listing and
+  // not a sample taken mid-flight.
+  await waitFor('the session to publish its first listing', () =>
+    server.grants.length > 0 ? true : false,
+  );
+
   // And the watch really is over: an event now walks nothing and publishes nothing.
   const published = server.grants.length;
   bundle.stub.put('/one/src/main.rs', 'fn main() {}\n');
