@@ -79,6 +79,12 @@ export interface EditorStub {
     settingWriteFails: boolean;
     opened: string[];
     shown: string[];
+    /** Every editor `showTextDocument` answered with: the landing is read back from these. */
+    shownEditors: Array<{
+      document: unknown;
+      selection: unknown;
+      revealed: Array<{ range: unknown; kind: unknown }>;
+    }>;
     /** Every decoration type the extension created, as the options it was given. */
     decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown> } }>;
     /** Every status bar item the extension created, as the object it kept drawing into. */
@@ -88,6 +94,8 @@ export interface EditorStub {
     warningReply: unknown;
     quickPickReply: unknown;
     inputReply: unknown;
+    /** How the editor answers `workspace.applyEdit`; a test may replace it to observe applies. */
+    applyEditImpl: (edit: unknown) => Promise<boolean>;
   };
   reset(): void;
   /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
@@ -120,6 +128,7 @@ export interface EditorStub {
     activeTextEditor: unknown;
   };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
+  TextEditorRevealType: { InCenterIfOutsideViewport: number };
   commands: {
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>;
   };
