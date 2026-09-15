@@ -4,10 +4,10 @@
  * real built `dist/extension.js` loaded, one hosting and one joining over a real `selvaged`,
  * editing the same document concurrently.
  *
- * This has heavier prerequisites than `npm test` — a network, Xvfb, an internet-downloaded
- * VS Code build, `nix` for the shared-library path an unpackaged Electron binary needs on
- * NixOS — so it is not part of `npm test`/`test:fast` or CI (see `README.md`). Run it with
- * `scripts/e2e/run-two-instance.sh` from the repository root.
+ * This has heavier prerequisites than `npm test` — a network, Xvfb, a VS Code build pinned
+ * below and downloaded the first time that version is used, `nix` for the shared-library path
+ * an unpackaged Electron binary needs on NixOS — so it is not part of `npm test`/`test:fast` or
+ * CI (see `README.md`). Run it with `scripts/e2e/run-two-instance.sh` from the repository root.
  *
  * The reconnect phase (§4 of the task, optional) proves the bounded-backoff reconnect path
  * for real: a `DropProxy` sits in front of the real server, the guest is routed through it
@@ -47,6 +47,17 @@ const SEED_TEXT = 'a document two real editors are about to share\n';
 // arrived because the host read its own working copy on the guest's request.
 const GRANTED_PATH = 'granted/never-opened.txt';
 const GRANTED_TEXT = 'a file the host never opens in its own window\n';
+
+/**
+ * The VS Code build this proof runs against. Left to `@vscode/test-electron`, that is whatever
+ * the update service calls stable at the moment of the run, so the editor being proved moves
+ * under the proof without anything here changing — and the version is resolved over the
+ * network before the cache is consulted for *what* to run. Pinned, a build already in the
+ * cache is used without a request at all. Move it deliberately with
+ * `SELVAGE_E2E_VSCODE_VERSION`; a version the cache does not hold is downloaded on the next
+ * run.
+ */
+const VSCODE_VERSION = process.env.SELVAGE_E2E_VSCODE_VERSION ?? '1.137.0';
 
 const RECONNECT = process.env.SELVAGE_E2E_RECONNECT !== '0';
 const DEADLINE_MS = Number(process.env.SELVAGE_E2E_DEADLINE_MS ?? '20000');
@@ -253,8 +264,11 @@ async function main(): Promise<void> {
     log('reconnect proxy listening on 127.0.0.1:' + proxy.port, '-> forwards to', server.address);
   }
 
-  log('resolving a real VS Code build (downloads one the first time this runs)');
-  const vscodeExecutablePath = await downloadAndUnzipVSCode({ cachePath: resolve(TMP, 'vscode-test') });
+  log(`resolving VS Code ${VSCODE_VERSION} (downloads it the first time that version is used)`);
+  const vscodeExecutablePath = await downloadAndUnzipVSCode({
+    version: VSCODE_VERSION,
+    cachePath: resolve(TMP, 'vscode-test'),
+  });
   const libraryPath = nixElectronLibraryPath();
   process.env['LD_LIBRARY_PATH'] = [libraryPath, process.env['LD_LIBRARY_PATH'] ?? '']
     .filter((part) => part !== '')
