@@ -58,6 +58,8 @@ export interface EditorStub {
     settingWriteFails: boolean;
     opened: string[];
     shown: string[];
+    /** Every decoration type the extension created, as the options it was given. */
+    decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown> } }>;
     informationReply: unknown;
     warningReply: unknown;
     quickPickReply: unknown;
@@ -66,6 +68,13 @@ export interface EditorStub {
   reset(): void;
   /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
   configure(values: Record<string, unknown>): void;
+  /** Fires an editor event the extension subscribed to, as VS Code would. */
+  fire(name: string, ...args: unknown[]): void;
+  /** The editor state the extension reads: what a test puts in `visibleTextEditors`. */
+  window: {
+    visibleTextEditors: unknown[];
+    activeTextEditor: unknown;
+  };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
   commands: {
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>;

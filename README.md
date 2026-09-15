@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 12 packages, ~47 MB, no native builds
 $ npm run build                        # → dist/extension.js, 443 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 147 tests, no server, no editor
-$ npm test                             # 151 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 154 tests, no server, no editor
+$ npm test                             # 158 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -329,14 +329,19 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   count `[...name].length` would give. The write is what makes the name the next session's, so a
   settings file that will not take it — one a configuration manager owns and leaves read-only —
   is reported rather than swallowed.
-- **A peer is drawn as a caret and a selection, and their name is not drawn over the
-  document** (`selvage.cursorLabel`, default `none`). The caret is a two-pixel bar on the left
-  edge of the peer's position in their colour, the selection a quarter-alpha fill of the same
-  colour, and the overview ruler carries a tick of it on the right. The name is available
-  without covering anything: the caret's `hoverMessage` reads "name · role", and the status
-  bar's tooltip lists *In the room: …*. The glyph margin was considered and dropped — a
-  `gutterIconPath` is an image, the API has no colour for the margin, and the overview ruler
-  already carries the colour to the same lane.
+- **A peer is drawn as a caret, a selection, and their initials on a badge in the gutter.**
+  The caret is a two-pixel bar on the left edge of the peer's position in their colour, the
+  selection a quarter-alpha fill of the same colour, and the overview ruler carries a tick of it
+  on the right. The glyph margin carries the peer's sign — the first two code points of their
+  display name in bold black over their own colour, matching the Neovim client's `sign_text` —
+  as a `gutterIconPath` image: a base64 `data:image/svg+xml` SVG, because the margin exposes no
+  background colour, scaled into the one-line square with `gutterIconSize: 'contain'`. It is on
+  by default and independent of `selvage.cursorLabel`, which is the separate, opt-in name drawn
+  *over* the document. One badge is chosen per line (the lowest peer id), because glyph-margin
+  icons on a line share a lane and draw over one another; the full name is never lost — the
+  caret's `hoverMessage` still reads "name · role" and the status bar still lists the room. The
+  badge needs `editor.glyphMargin`, which is on by default: with it off, no badge is drawn and
+  there is no in-line fallback.
 - **A drawn name is bounded.** The decoration API measures nothing, so any width in a label is
   a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
   clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
@@ -394,12 +399,13 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest opens the room's first document itself, the open command offers the room's own list, the leave-first questions, the display name reported, set, refused over the bound and never sent, the participant list and its colours |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
+| `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, and the `gutterIconPath`/`'contain'` decoration type the built extension creates |
 | `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**151 tests, 0 failures**: 147 server-free and 4 that need a built `selvaged`. Waits are bounded
+**158 tests, 0 failures**: 154 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 

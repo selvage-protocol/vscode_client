@@ -8,6 +8,13 @@
  * of the palette rather than of the peer list. With the default `selvage.cursorLabel: none`
  * it carries nothing.
  *
+ * The gutter badge is a third type, cached per (initials, colour): a `gutterIconPath` image
+ * drawn in the glyph margin, so a peer's name is visible without covering the document. It is
+ * independent of `selvage.cursorLabel`; that setting draws a *text* label over the document and
+ * defaults to none, while the badge is on by default. The image is `gutter.ts`'s; the type is
+ * built here. Several peers on one line would share a glyph lane and overlap, so the lowest
+ * peer id is chosen per line.
+ *
  * A caret is a zero-width range with an `after` attachment. `DecorationOptions` says the
  * range must not be empty; both extensions the study read use one anyway and it renders, so
  * this follows them rather than the comment (`docs/studies/vscode-plugin.md` §3).
@@ -25,12 +32,14 @@ import * as vscode from 'vscode';
 
 import type { Cursor } from '../bridge/index.ts';
 
+import { BADGE_OPTIONS, badgeDataUri, initials, onePerLine } from './gutter.ts';
 import { labelAttachment, labelMode } from './labels.ts';
 
 export class Cursors {
   private readonly carets = new Map<string, vscode.TextEditorDecorationType>();
   private readonly selections = new Map<string, vscode.TextEditorDecorationType>();
   private readonly labels: vscode.TextEditorDecorationType;
+  private readonly badges = new Map<string, vscode.TextEditorDecorationType>();
 
   constructor() {
     this.labels = vscode.window.createTextEditorDecorationType({
@@ -60,8 +69,12 @@ export class Cursors {
     for (const type of this.selections.values()) {
       type.dispose();
     }
+    for (const type of this.badges.values()) {
+      type.dispose();
+    }
     this.carets.clear();
     this.selections.clear();
+    this.badges.clear();
     this.labels.dispose();
   }
 
@@ -69,7 +82,11 @@ export class Cursors {
     const mode = labelMode(vscode.workspace.getConfiguration('selvage').get('cursorLabel'));
     const carets = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
     const selections = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
+    const badges = new Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]>();
     const labels: vscode.DecorationOptions[] = [];
+    // One badge per line: glyph-margin icons on the same line share a lane and overlap, so
+    // the peers are grouped by line and the lowest peer id wins, which is stable across draws.
+    const badged = onePerLine(cursors, (cursor) => editor.document.positionAt(cursor.head).line);
 
     for (const cursor of cursors) {
       const anchor = editor.document.positionAt(cursor.anchor);
@@ -102,6 +119,15 @@ export class Cursors {
     for (const type of this.selections.values()) {
       editor.setDecorations(type, selections.get(type) ?? []);
     }
+    for (const [line, cursor] of badged) {
+      const badge = this.badgeType(cursor);
+      const options = badges.get(badge) ?? [];
+      options.push({ range: new vscode.Range(line, 0, line, 0) });
+      badges.set(badge, options);
+    }
+    for (const type of this.badges.values()) {
+      editor.setDecorations(type, badges.get(type) ?? []);
+    }
     editor.setDecorations(this.labels, labels);
   }
 
@@ -120,6 +146,26 @@ export class Cursors {
       overviewRulerLane: vscode.OverviewRulerLane.Right,
     });
     this.carets.set(colour, type);
+    return type;
+  }
+
+  /**
+   * The glyph-margin badge for one peer, cached per (initials, colour) so a cursor move never
+   * mints a new decoration type. The image is a base64 SVG handed to `Uri.parse`: a plain
+   * string would be read as a file path, and there is no background-colour field to fill it.
+   */
+  private badgeType(cursor: Pick<Cursor, 'label' | 'colour'>): vscode.TextEditorDecorationType {
+    const text = initials(cursor.label);
+    const key = `${text}\u0000${cursor.colour}`;
+    const known = this.badges.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const type = vscode.window.createTextEditorDecorationType({
+      ...BADGE_OPTIONS,
+      gutterIconPath: vscode.Uri.parse(badgeDataUri(text, cursor.colour)),
+    });
+    this.badges.set(key, type);
     return type;
   }
 
