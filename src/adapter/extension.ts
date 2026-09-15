@@ -782,11 +782,7 @@ async function acceptDisplayName(raw: string): Promise<void> {
     );
     return;
   }
-  void vscode.window.showInformationMessage(
-    current === undefined
-      ? `Selvage: display name set to "${name}"; the next session will use it.`
-      : `Selvage: display name set to "${name}"; this session is renamed too, and the room is told.`
-  );
+  void vscode.window.showInformationMessage(`Selvage: display name set to "${name}".`);
 }
 
 /**
