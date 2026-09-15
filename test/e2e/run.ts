@@ -437,6 +437,9 @@ interface InstanceOutcome {
     rootAfter?: string[];
     createdDir?: string[];
     text?: string;
+    /** Whether opening the removed path fresh was refused with the reason, and what it said. */
+    deleteRefused?: boolean;
+    deleteRefusal?: string;
   };
   error?: string;
 }
@@ -748,7 +751,8 @@ async function main(): Promise<void> {
       // The host made a file under its own folder and removed another while the room was live,
       // and the guest's view of the room — its own provider's listing of the grant — gained the
       // one and lost the other. The content travelled because the guest opened a path that was
-      // a name in the listing a moment before.
+      // a name in the listing a moment before. The removed path, opened fresh after the
+      // listing lost it, is refused with the reason instead of a phantom empty document.
       converged:
         hostOutcome?.watch !== undefined &&
         guestOutcome?.watch !== undefined &&
@@ -756,13 +760,16 @@ async function main(): Promise<void> {
         guestOutcome.watch.rootAfter?.includes(WATCH_DOOMED_PATH) === false &&
         guestOutcome.watch.rootAfter?.includes(dirname(WATCH_PATH)) === true &&
         guestOutcome.watch.createdDir?.includes(basename(WATCH_PATH)) === true &&
-        guestOutcome.watch.text === WATCH_TEXT,
+        guestOutcome.watch.text === WATCH_TEXT &&
+        guestOutcome.watch.deleteRefused === true,
       created: guestOutcome?.watch?.created,
       deleted: guestOutcome?.watch?.deleted,
       rootBefore: guestOutcome?.watch?.rootBefore,
       rootAfter: guestOutcome?.watch?.rootAfter,
       createdDir: guestOutcome?.watch?.createdDir,
       guestText: guestOutcome?.watch?.text,
+      deleteRefused: guestOutcome?.watch?.deleteRefused,
+      deleteRefusal: guestOutcome?.watch?.deleteRefusal,
     },
   };
   writeFileSync(resolve(RUN_DIR, 'summary.json'), JSON.stringify(summary, null, 2));
@@ -781,7 +788,7 @@ async function main(): Promise<void> {
   }
   if (!summary.watch.converged) {
     throw new Error(
-      'the room\u2019s listing did not follow the host\u2019s folder: the guest\u2019s view of the room did not gain the path the host made, or did not lose the one it removed',
+      'the room\u2019s listing did not follow the host\u2019s folder: the guest\u2019s view of the room did not gain the path the host made, did not lose the one it removed, or was not told the removed path is gone',
     );
   }
   log(

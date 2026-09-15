@@ -19,6 +19,11 @@ import type { GrantChild } from '../bridge/index.ts';
 export interface GrantTreeSource {
   /** What the room offers, ascending by UTF-16 code unit. */
   offered(): readonly string[];
+  /**
+   * Whether the room's listing named `path` and no longer does. The tree never closes
+   * a buffer for that — an open document stays open — it says so on the row instead.
+   */
+  leftListing(path: string): boolean;
 }
 
 export class GrantTree implements vscode.TreeDataProvider<GrantChild>, vscode.Disposable {
@@ -51,6 +56,12 @@ export class GrantTree implements vscode.TreeDataProvider<GrantChild>, vscode.Di
     );
     item.id = node.path;
     item.tooltip = node.path;
+    if (!node.directory && (this.source?.leftListing(node.path) ?? false)) {
+      // Still offered through the room's open-document set, gone from its listing: the row
+      // carries the badge rather than looking listed, and nothing behind it is closed.
+      item.description = 'no longer listed';
+      item.tooltip = `${node.path} (no longer listed: the room still holds it open)`;
+    }
     if (!node.directory) {
       // A guest opens a granted path the same way it opens an offered one; a host is told that
       // its own files are the room's, which is what the command already says.

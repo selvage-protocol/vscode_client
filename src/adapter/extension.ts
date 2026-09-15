@@ -167,6 +167,12 @@ class Session {
   private peers: PeerInfo[] = [];
   private documents: string[] = [];
   private granted: string[] = [];
+  /**
+   * Every path the room's listing has named while this session is live. A path the
+   * listing named and no longer names is one the host has stopped sharing, which is what
+   * tells a fresh open of it apart from a document the room never wrote to.
+   */
+  private readonly seenListed = new Set<string>();
   private detachedMs: number | undefined;
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
@@ -183,6 +189,9 @@ class Session {
     this.peers = engine.peers();
     this.documents = engine.documents();
     this.granted = engine.grantedPaths();
+    for (const path of this.granted) {
+      this.seenListed.add(path);
+    }
     this.autoOpen = engine.session().role === 'guest';
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
@@ -309,20 +318,42 @@ class Session {
   }
 
   /**
-   * Asks the room for a path and resolves once its text has arrived, or once waiting can no
-   * longer help.
+   * Whether the room's listing named `path` and no longer does: still offered through
+   * the open-document set, gone from the grant. A path the listing never named is not
+   * this, so a server with no grant never reports one and a document nobody wrote to
+   * still reads as an empty document rather than as a deletion.
+   */
+  leftListing(path: string): boolean {
+    return this.seenListed.has(path) && !this.granted.includes(path);
+  }
+
+  /**
+   * Asks the room for a path and resolves once its text has arrived, or once waiting can
+   * no longer help.
    *
    * Holding the path is what makes the room send it: a document does not have to be open for
    * its content to sync, but the hold is what puts it in the room's set and, when the path is
    * the host's to supply, what makes the host read its own working copy. The listener is in
    * place before the hold is asked for, so text that arrives with the answer is not missed.
+   *
+   * A wait that gives up with nothing arriving is not always an empty document: when the
+   * room's listing named the path and no longer does, the host has nothing to serve, so the
+   * fetch is refused with the reason instead of opening a phantom empty document. Arrival
+   * is the room sending the path's content: the change event, or text the replica holds at
+   * the deadline — a sync for a path this window never held carries no event, since the
+   * engine only observes held documents, but its text is still the room's. An empty
+   * replica at the deadline is not arrival, only an empty sync counted as seen. A path the
+   * listing still names may yet arrive — the host may only be slow — and one it never
+   * named is a document nobody wrote to, so both still resolve as before.
    */
   private fetch(path: string): Promise<void> {
     if (this.engine.has(path)) {
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       let settled = false;
+      let opened = false;
+      let contentSeen = false;
       let stop: () => void = () => undefined;
       let timer: ReturnType<typeof setTimeout>;
       const finish = (): void => {
@@ -334,18 +365,39 @@ class Session {
         clearTimeout(timer);
         resolve();
       };
+      const giveUp = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stop();
+        clearTimeout(timer);
+        if (
+          opened &&
+          !contentSeen &&
+          this.engine.text(path) === '' &&
+          this.leftListing(path)
+        ) {
+          reject(
+            new Error(
+              `the host no longer shares ${path}; it may have been deleted after the listing was published`,
+            ),
+          );
+          return;
+        }
+        resolve();
+      };
       stop = this.engine.on((event) => {
         if (event.type === 'documentChanged' && event.path === path) {
+          contentSeen = true;
           finish();
         }
       });
-      timer = setTimeout(finish, FETCH_TIMEOUT_MS);
+      timer = setTimeout(giveUp, FETCH_TIMEOUT_MS);
       void this.engine
         .open(path)
         .then(() => {
-          if (this.engine.has(path)) {
-            finish();
-          }
+          opened = true;
         })
         .catch(finish);
     });
@@ -679,6 +731,9 @@ class Session {
       }
       case 'grant': {
         this.granted = report.paths;
+        for (const path of report.paths) {
+          this.seenListed.add(path);
+        }
         grantTree?.refresh();
         break;
       }

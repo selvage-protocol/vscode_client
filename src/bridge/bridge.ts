@@ -523,7 +523,7 @@ export class SessionBridge {
             this.host.report({
               kind: 'sessionError',
               code: 'error',
-              message: `the room asked for ${path}, which is not a readable file in the folder this window shares; nothing was shared for it`,
+              message: `could not share ${path}: it is not a readable file in the folder this window shares (it may have been deleted after the listing was published); nothing was shared for it`,
             });
             return;
           }
