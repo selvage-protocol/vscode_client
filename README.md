@@ -108,7 +108,7 @@ Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being aske
 
 ## Commands
 
-Ten, the same ten the Neovim client has with `:SelvageHost`, `:SelvageJoin`,
+Ten, the same ten the Neovim client is specified to have with `:SelvageHost`, `:SelvageJoin`,
 `:SelvageDisplayName`, `:SelvageOpen`, `:SelvageCopyInvite`, `:SelvageLeave`,
 `:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and `:SelvageStopFollowing`. Only the
 presentation differs: an editor command is a palette entry here and a `:command` there —
