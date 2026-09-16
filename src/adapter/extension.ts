@@ -1587,10 +1587,16 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
       void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
       return;
     }
-    picked = await vscode.window.showQuickPick(paths, {
-      title: 'Open a document from the room',
-      placeHolder: `${paths.length} open in this room`,
-    });
+    const single = paths[0];
+    if (paths.length === 1 && single !== undefined) {
+      // One document is no choice: reveal it directly rather than drawing a one-row picker.
+      picked = single;
+    } else {
+      picked = await vscode.window.showQuickPick(paths, {
+        title: 'Open a document from the room',
+        placeHolder: `${paths.length} open in this room`,
+      });
+    }
   }
   if (picked === undefined) {
     return;

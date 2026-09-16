@@ -1247,6 +1247,16 @@ test('a programmatic openDocument path the room never shared is refused, not sil
   );
 });
 
+test('a no-arg open with one document reveals it instead of drawing a one-row picker', async (t) => {
+  const { bundle, roomId } = await guest(t, ['workspace/README.md']);
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  await waitFor('the single document to open', () =>
+    bundle.stub.registered.opened.includes(virtualUri(roomId, 'workspace/README.md')),
+  );
+  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'one row was drawn for one document');
+});
+
 test('a document open when its path leaves the listing keeps its text and is badged', async (t) => {
   const { host, invite, roomId } = await room(t, ['doomed.txt']);
   host.insert('doomed.txt', 0, 'held text\n');
