@@ -32,17 +32,10 @@
     }
   },
   "activationEvents": [
-    "onFileSystem:selvage"
+    "onFileSystem:selvage",
+    "workspaceContains:**/.selvage-mirror.json"
   ],
   "contributes": {
-    "views": {
-      "explorer": [
-        {
-          "id": "selvage.grant",
-          "name": "Selvage"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "selvage.host",
@@ -63,6 +56,11 @@
         "command": "selvage.openDocument",
         "category": "Selvage",
         "title": "Open a document from the room"
+      },
+      {
+        "command": "selvage.fetch",
+        "category": "Selvage",
+        "title": "Fetch a path from the room"
       },
       {
         "command": "selvage.leave",

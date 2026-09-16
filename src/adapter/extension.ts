@@ -111,6 +111,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.openDocument', (args?: OpenDocumentArgs) => {
       void openDocument(args);
     }),
+    vscode.commands.registerCommand('selvage.fetch', (args?: FetchArgs) => {
+      void fetchCommand(args);
+    }),
     vscode.commands.registerCommand('selvage.leave', () => {
       leave();
     }),
@@ -404,6 +407,99 @@ class Session {
    */
   leftListing(path: string): boolean {
     return this.seenListed.has(path) && !this.granted.includes(path);
+  }
+
+  /**
+   * The room's listing, as last reported: what a fetch may name. A document the room
+   * holds and its listing does not name has nothing to fetch for it, so the offered
+   * set — the listing unioned with the open documents — is wider than what this answers.
+   */
+  listed(): string[] {
+    return [...this.granted];
+  }
+
+  /**
+   * Fetches the room's content for listed paths: one path, or a directory of them —
+   * the `:SelvageFetch` twin (`nvim_client/README.md`). A fetch is a hold: every path
+   * it names joins the room's open-document set, so every peer receives it, which is
+   * said before it happens because afterwards is too late to choose. The wait itself
+   * is `fetch`'s — the progress notice, the `leftListing` refusal, the still-empty
+   * warning — so this only resolves what to hold and reports what holding it did.
+   */
+  async fetchFromRoom(wanted: string | undefined): Promise<void> {
+    if (this.role() === 'host') {
+      // The Neovim refusal verbatim: a host's disk already holds what a mirror would.
+      void vscode.window.showInformationMessage(
+        'Selvage: you are hosting, so the files a mirror would hold are already on your disk.',
+      );
+      return;
+    }
+    const listed = this.listed();
+    const trimmed = (wanted ?? '').trim();
+    // A named path resolves against the listing as it stands — including an empty one,
+    // where a stale name still earns the reason it left rather than a miss or an empty
+    // room. Only the picker's offer needs a listing to offer from.
+    let targets: string[];
+    if (trimmed !== '') {
+      if (listed.includes(trimmed)) {
+        targets = [trimmed];
+      } else {
+        const under = listed.filter((path) => path.startsWith(`${trimmed}/`));
+        if (under.length === 0) {
+          if (this.leftListing(trimmed)) {
+            void vscode.window.showErrorMessage(
+              `Selvage: could not fetch ${trimmed} from the room: ${leftListingNotice(trimmed)}`,
+            );
+          } else {
+            void vscode.window.showErrorMessage(
+              `Selvage: no file the room lists matches "${trimmed}".`,
+            );
+          }
+          return;
+        }
+        targets = under;
+      }
+    } else {
+      if (listed.length === 0) {
+        void vscode.window.showInformationMessage('Selvage: the room lists no files to fetch.');
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(listed, {
+        title: 'Fetch a path from the room',
+        placeHolder: `${listed.length} listed in this room`,
+      });
+      if (picked === undefined) {
+        return;
+      }
+      targets = [picked];
+    }
+    // A path this window already holds needs no announcement: nothing is asked for.
+    const fresh = targets.filter((target) => !this.engine.has(target));
+    if (fresh.length > 0) {
+      if (targets.length === 1 && targets[0] !== undefined) {
+        void vscode.window.showInformationMessage(
+          `Selvage: fetching opens ${targets[0]} in the room, so every peer receives it.`,
+        );
+      } else {
+        void vscode.window.showInformationMessage(
+          'Selvage: fetching opens them in the room, so every peer receives them.',
+        );
+      }
+    }
+    let failures = 0;
+    for (const target of targets) {
+      try {
+        await this.fetch(target);
+      } catch (error) {
+        failures += 1;
+        void vscode.window.showErrorMessage(
+          `Selvage: could not fetch ${target} from the room: ${message(error)}`,
+        );
+      }
+    }
+    if (failures === 0) {
+      void vscode.window.showInformationMessage('Selvage: fetched the files.');
+    }
   }
 
   /**
@@ -1698,6 +1794,25 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
     return;
   }
   await openRoomDocument(session, picked);
+}
+
+/** See `HostArgs`: the same programmatic seam for `selvage.fetch`. */
+export interface FetchArgs {
+  /** One listed path, or a directory of them; without one the listing is offered. */
+  path?: string;
+}
+
+/**
+ * Fetches a listed path's content into the room's hold, outside a session refused.
+ * A host has no mirror to fill, so the refusal says where its files already are.
+ */
+async function fetchCommand(args?: FetchArgs): Promise<void> {
+  const session = current;
+  if (session === undefined) {
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
+    return;
+  }
+  await session.fetchFromRoom(args?.path);
 }
 
 /** Opens a room path as a guest's virtual document: `selvage:/<path>?room=<room id>`. */
