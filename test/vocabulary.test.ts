@@ -81,6 +81,7 @@ const SENTENCES = [
   "'Selvage: the room has no open documents yet.'",
   "'Selvage: you are hosting, so the files you open are the ones the room has.'",
   '`Selvage: could not open ${} from the room: ${}`',
+  '`Selvage: no shared document matches "${}".`',
   "'Selvage: not in a session.'",
   "'Selvage: left the session.'",
   '`Selvage: room ${}`',

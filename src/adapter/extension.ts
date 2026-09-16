@@ -1576,6 +1576,11 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
     } else if (paths.length === 0) {
       void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
       return;
+    } else {
+      // A caller naming a path the listing never held: the palette cannot offer it,
+      // and the gate below would return silently, so the miss is refused outright.
+      void vscode.window.showErrorMessage(`Selvage: no shared document matches "${args.path}".`);
+      return;
     }
   } else {
     if (paths.length === 0) {

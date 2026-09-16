@@ -1229,6 +1229,24 @@ test('a stale openDocument path that left the listing is refused, not silently d
   );
 });
 
+test('a programmatic openDocument path the room never shared is refused, not silently dropped', async (t) => {
+  // The palette cannot reach this: it only offers paths the room names. A caller naming a
+  // path the listing never held falls past the stale-listing refusal to the same silent
+  // gate, so it is refused with what the other client says for its own miss.
+  const { bundle, roomId } = await guest(t, ['workspace/README.md']);
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'never/shared.md' });
+  const refusal = await waitFor('the unknown path to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('never/shared.md')) ?? false,
+  );
+  assert.equal(refusal, 'Selvage: no shared document matches "never/shared.md".');
+  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a miss drew a picker');
+  assert.ok(
+    !bundle.stub.registered.opened.includes(virtualUri(roomId, 'never/shared.md')),
+    'the unknown path was opened anyway',
+  );
+});
+
 test('a document open when its path leaves the listing keeps its text and is badged', async (t) => {
   const { host, invite, roomId } = await room(t, ['doomed.txt']);
   host.insert('doomed.txt', 0, 'held text\n');
