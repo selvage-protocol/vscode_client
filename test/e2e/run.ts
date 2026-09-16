@@ -659,6 +659,16 @@ async function main(): Promise<void> {
     DEADLINE_MS + 15_000,
   );
 
+  // The follow phase runs before the granted phase in both suites, so it gets its own
+  // gate: otherwise a slow follow is reported as a granted-path failure.
+  phase = 'waiting for the follow phase to finish';
+  await pollFor(
+    'the guest to follow the host and then stop following',
+    () => (existsSync(followStoppedFile) ? true : undefined),
+    DEADLINE_MS + 15_000,
+  );
+  log('the guest tracked the host caret and stopped following');
+
   // The guest opens a granted path the host never opened. The guest writes the control file
   // once its own copy of that file's text has arrived, so the host's half of the proof —
   // opening the file and finding the guest's marker in it — starts only after the guest has

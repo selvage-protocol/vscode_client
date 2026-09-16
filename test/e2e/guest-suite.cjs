@@ -171,7 +171,19 @@ async function run() {
       // `editor.selection` publishes presence: if the event never fires, nothing here moves.
       const movedTo = await waitFor(
         'the host to move its caret to the end',
-        () => (fs.existsSync(FOLLOW_MOVED_FILE) ? Number(fs.readFileSync(FOLLOW_MOVED_FILE, 'utf8')) : false),
+        () => {
+          if (!fs.existsSync(FOLLOW_MOVED_FILE)) {
+            return false;
+          }
+          // The host creates the file before its bytes land; an empty read is a race,
+          // not a caret at offset zero.
+          const raw = fs.readFileSync(FOLLOW_MOVED_FILE, 'utf8').trim();
+          if (raw === '') {
+            return false;
+          }
+          const offset = Number(raw);
+          return Number.isInteger(offset) ? offset : false;
+        },
         DEADLINE_MS,
       );
       await waitFor(
