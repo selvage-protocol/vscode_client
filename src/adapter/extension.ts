@@ -1240,7 +1240,7 @@ class Session {
       }
       case 'disconnected': {
         void vscode.window.showWarningMessage(
-          'Selvage: the connection ended and the session is over.',
+          'Selvage: the connection ended and the session is over; it could not be re-established.',
         );
         this.dispose();
         break;
