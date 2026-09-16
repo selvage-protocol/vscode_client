@@ -249,7 +249,10 @@ export class SessionBridge {
       return;
     }
     this.documents.add(path);
-    this.seed(path, text);
+    if (this.seed(path, text)) {
+      this.documents.delete(path);
+      return;
+    }
     // The replica can hold more than the editor does: a peer may have edited the path before
     // this window opened it. Rendering it here is what keeps the next keystroke from being
     // published as a change back to the disk copy.
@@ -271,7 +274,10 @@ export class SessionBridge {
       return;
     }
     this.documents.add(path);
-    this.seed(path, text);
+    if (this.seed(path, text)) {
+      this.documents.delete(path);
+      return;
+    }
     this.reconcile(path);
   }
 
@@ -482,9 +488,9 @@ export class SessionBridge {
    * empty: a room can legitimately agree on an empty document, and re-seeding that from disk
    * is the one way this rule loses an edit rather than protecting one.
    */
-  private seed(path: string, bufferText: string): void {
+  private seed(path: string, bufferText: string): boolean {
     if (this.role() !== 'host' || this.seeded.has(path)) {
-      return;
+      return false;
     }
     // A file the user opened is still one the room has to carry: the grant's own rule and
     // the session's size bound gate this path exactly as they gate a peer's request below,
@@ -502,16 +508,17 @@ export class SessionBridge {
           message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
         });
       }
-      return;
+      return true;
     }
     this.seeded.add(path);
     if (this.engine.has(path)) {
-      return;
+      return false;
     }
     const incoming = toCrdt(bufferText);
     if (incoming !== '') {
       this.engine.insert(path, 0, incoming);
     }
+    return false;
   }
 
   /**

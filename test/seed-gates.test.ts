@@ -245,3 +245,21 @@ test('one bogus listing is one dialog, never one per path', async (t) => {
   );
   assert.match(single.message, /not a readable file in the folder this window shares/);
 });
+
+test('a refused open leaves no document, no reconcile and no hold', async (t) => {
+  const { session, host } = await twoWindows(t);
+  host.editor.open('.env', 'SECRET=1\n');
+  host.bridge.documentOpened('.env');
+
+  await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError').length === 1 ? true : false,
+  );
+  assert.deepEqual(host.bridge.openDocuments(), [], 'a refused path stayed in documents');
+  assert.equal(host.editor.text('.env'), 'SECRET=1\n', 'reconcile blanked the refused buffer');
+  assert.equal(session.host.has('.env'), false, 'a refused file entered the replica');
+
+  host.editor.type('.env', 'SECRET=2\n');
+  await host.editor.settle();
+  assert.equal(session.host.has('.env'), false, 'a later edit published a refused path');
+  assert.equal(session.guest.text('.env'), '', 'a refused file reached the guest');
+});
