@@ -1,0 +1,405 @@
+/**
+ * The room's mirror on disk: a real directory holding the shape of the room's listing.
+ *
+ * A guest's documents are files under `<globalStorage>/rooms/<room>/<window>/`, so a
+ * language server, ripgrep or a tree plugin — separate processes reading the filesystem —
+ * sees ordinary paths. The room is the truth and the mirror is a cache: files are
+ * materialised empty and never overwritten, content arrives through the buffer, and the
+ * directory goes at leave. The marker `.selvage-mirror.json` at the root names the room,
+ * the window and the process that minted it, which is what tells a stale directory from a
+ * live one and what the window's activation event matches.
+ *
+ * Every path a listing carries is gated by `isGrantedPath` before a byte is written, and
+ * every directory segment the materialiser walks must already be a plain directory — a
+ * symlinked directory on the way is where a walk escapes, not the linked file the guard
+ * already rejects. The leaf is opened `O_NOFOLLOW | O_EXCL`, so a symlink planted between
+ * the check and the use is refused rather than followed; a directory swapped in the same
+ * window still is (Node has no `openat`), which stays a stated residual rather than a
+ * claimed guarantee.
+ */
+
+import * as vscode from 'vscode';
+import { randomUUID } from 'node:crypto';
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import type { Dirent } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+
+import { MAX_GRANT_PATHS, isGrantedPath } from '../bridge/index.ts';
+
+/** The marker at a mirror root: whose room it is, which window owns it, who minted it. */
+export const MIRROR_MARKER = '.selvage-mirror.json';
+
+/** What `mintMirror` wrote, as `readMarker` reads it back. */
+export interface MirrorMarker {
+  room: string;
+  window: string;
+  pid: number;
+  created: string;
+  /** A join the empty-window reload has not finished yet: deleted when it lands. */
+  invite?: string;
+}
+
+/** What applying a listing did: what is on disk now, and what was refused. */
+export interface MirrorReport {
+  mirrored: string[];
+  refused: string[];
+}
+
+/** What a republish did, beside the materialise pass: which files it removed. */
+export interface RepublishReport extends MirrorReport {
+  removed: string[];
+}
+
+/** Options `mintMirror` takes from the caller rather than minting itself. */
+export interface MintOptions {
+  window?: string;
+  pid?: number;
+  invite?: string;
+}
+
+/** A mirror root, minted or opened: the operations a session performs on it. */
+export interface Mirror {
+  readonly room: string;
+  readonly window: string;
+  /** The root on disk. */
+  readonly root: string;
+  /** The root as a `file:` URI: what the window opens its folder on. */
+  readonly uri: vscode.Uri;
+  /** Writes one empty file per listed path, with the directories on the way to it. */
+  materialise(listing: readonly string[]): MirrorReport;
+  /**
+   * Applies a republished listing: the materialise pass, then the removal pass. A file
+   * the listing no longer names is removed unless `held` says a document of this window
+   * still holds it — then it goes when that document closes instead.
+   */
+  republish(listing: readonly string[], held: (path: string) => boolean): RepublishReport;
+  /** Deletes the invite out of the marker: the join it was stashed for has landed. */
+  clearInvite(): void;
+  /** Deletes the directory recursively: leaving the room deletes the whole cache at once. */
+  remove(): void;
+}
+
+/** A room id as one path segment, the way the Neovim mirror names it. */
+export function sanitiseRoom(room: string): string {
+  return room.replace(/[^A-Za-z0-9_-]/g, '-');
+}
+
+/**
+ * Mints `<storage>/rooms/<room>/<window>/`: the directory, and the marker naming it.
+ * A pre-existing symlink at the rooms, room or window segment is refused rather than
+ * followed, so the mirror never lands outside the storage directory.
+ */
+export function mintMirror(storage: vscode.Uri, room: string, options: MintOptions = {}): Mirror {
+  const window = options.window ?? randomUUID();
+  const pid = options.pid ?? process.pid;
+  const segment = sanitiseRoom(room);
+  if (segment === '') {
+    throw new Error(`cannot mirror a room with no name in it: ${JSON.stringify(room)}`);
+  }
+  const rooms = join(storage.fsPath, 'rooms');
+  const roomDir = join(rooms, segment);
+  const root = join(roomDir, window);
+  for (const dir of [rooms, roomDir, root]) {
+    assertPlainDirectoryOrAbsent(dir);
+  }
+  if (isPlainDirectory(root)) {
+    // A window id is minted, never reused — a directory already here is a retry of this
+    // same mint, or someone else's. An unreadable or foreign marker refuses the mint
+    // rather than writing over state this client cannot account for.
+    let marker: MirrorMarker | undefined;
+    try {
+      marker = readMarker(root);
+    } catch {
+      throw new Error(`refusing to mint over the unreadable mirror at ${root}`);
+    }
+    if (marker !== undefined && (marker.room !== room || marker.window !== window)) {
+      throw new Error(`refusing to mint over the mirror at ${root}: owned by another window`);
+    }
+  }
+  mkdirSync(root, { recursive: true });
+  const marker: MirrorMarker = {
+    room,
+    window,
+    pid,
+    created: new Date().toISOString(),
+    ...(options.invite === undefined ? {} : { invite: options.invite }),
+  };
+  writeFileSync(join(root, MIRROR_MARKER), `${JSON.stringify(marker)}\n`);
+  return handle(room, window, root);
+}
+
+/**
+ * Opens an existing mirror: the root with a marker naming this room and window. Anything
+ * else — no directory, no marker, a marker for another room or window — is not this
+ * window's mirror and answers `undefined` rather than throwing.
+ */
+export function openMirror(
+  storage: vscode.Uri,
+  room: string,
+  window: string,
+): Mirror | undefined {
+  const root = join(storage.fsPath, 'rooms', sanitiseRoom(room), window);
+  let marker: MirrorMarker | undefined;
+  try {
+    marker = readMarker(root);
+  } catch {
+    return undefined;
+  }
+  if (marker === undefined || marker.room !== room || marker.window !== window) {
+    return undefined;
+  }
+  return handle(room, window, root);
+}
+
+/** Reads the marker at a mirror root, or `undefined` when it is absent or unreadable. */
+export function readMarker(root: string): MirrorMarker | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(join(root, MIRROR_MARKER), 'utf8');
+  } catch {
+    return undefined;
+  }
+  const parsed = JSON.parse(raw) as Partial<MirrorMarker>;
+  if (
+    typeof parsed.room !== 'string' ||
+    typeof parsed.window !== 'string' ||
+    typeof parsed.pid !== 'number' ||
+    typeof parsed.created !== 'string' ||
+    (parsed.invite !== undefined && typeof parsed.invite !== 'string')
+  ) {
+    throw new Error(`the mirror marker at ${root} is not one this client wrote`);
+  }
+  return {
+    room: parsed.room,
+    window: parsed.window,
+    pid: parsed.pid,
+    created: parsed.created,
+    ...(parsed.invite === undefined ? {} : { invite: parsed.invite }),
+  };
+}
+
+/**
+ * Prunes a room's dead siblings: every `<window>` directory under it whose marker names
+ * this client and whose process is gone. The current window's directory is never pruned —
+ * it is adopted, its marker rewritten with the current pid, because after the reload that
+ * puts the folder in the window the minting process is gone while the directory is in use.
+ * Returns the window ids it removed.
+ */
+export function pruneRoom(
+  storage: vscode.Uri,
+  room: string,
+  currentWindow: string,
+  pid: number = process.pid,
+): string[] {
+  const roomDir = join(storage.fsPath, 'rooms', sanitiseRoom(room));
+  let entries: string[];
+  try {
+    entries = readdirSync(roomDir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const entry of entries) {
+    const dir = join(roomDir, entry);
+    if (!isPlainDirectory(dir)) {
+      continue;
+    }
+    let marker: MirrorMarker | undefined;
+    try {
+      marker = readMarker(dir);
+    } catch {
+      continue;
+    }
+    if (marker === undefined || marker.room !== room) {
+      continue;
+    }
+    if (marker.window === currentWindow) {
+      writeMarker(dir, { ...marker, pid });
+      continue;
+    }
+    if (isAlive(marker.pid)) {
+      continue;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    removed.push(marker.window);
+  }
+  return removed;
+}
+
+function handle(room: string, window: string, root: string): Mirror {
+  return {
+    room,
+    window,
+    root,
+    get uri() {
+      return vscode.Uri.file(root);
+    },
+    materialise(listing: readonly string[]): MirrorReport {
+      const mirrored: string[] = [];
+      const refused: string[] = [];
+      listing.forEach((path, index) => {
+        if (index >= MAX_GRANT_PATHS || !isGrantedPath(path) || path === MIRROR_MARKER) {
+          refused.push(path);
+          return;
+        }
+        if (materialiseOne(root, path)) {
+          mirrored.push(path);
+        } else {
+          refused.push(path);
+        }
+      });
+      return { mirrored, refused };
+    },
+    republish(listing: readonly string[], held: (path: string) => boolean): RepublishReport {
+      const applied = this.materialise(listing);
+      const keep = new Set(listing);
+      const removed: string[] = [];
+      for (const rel of filesUnder(root)) {
+        if (rel === MIRROR_MARKER || keep.has(rel) || held(rel)) {
+          continue;
+        }
+        unlinkSync(join(root, ...rel.split('/')));
+        removed.push(rel);
+      }
+      return { ...applied, removed };
+    },
+    clearInvite(): void {
+      const marker = readMarker(root);
+      if (marker === undefined) {
+        throw new Error(`the mirror at ${root} has no marker to clear the invite from`);
+      }
+      if (marker.invite === undefined) {
+        return;
+      }
+      const { invite: _dropped, ...rest } = marker;
+      writeMarker(root, rest);
+    },
+    remove(): void {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * Writes one empty file, with the directories on the way to it. True when the file is on
+ * disk afterwards — created now, or kept because a republish must never clobber — and
+ * false when the path is refused: a directory on the way that is not a plain directory,
+ * or a leaf a symlink won between the check and the use.
+ */
+function materialiseOne(root: string, path: string): boolean {
+  const segments = path.split('/');
+  const leaf = segments[segments.length - 1] ?? '';
+  let dir = root;
+  for (const segment of segments.slice(0, -1)) {
+    dir = join(dir, segment);
+    if (!isPlainDirectory(dir)) {
+      if (!tryMkdir(dir)) {
+        return false;
+      }
+    }
+  }
+  const file = join(dir, leaf);
+  let stat: ReturnType<typeof lstatSync> | undefined;
+  try {
+    stat = lstatSync(file);
+  } catch {
+    stat = undefined;
+  }
+  if (stat !== undefined) {
+    // Never clobber: whatever is there — the room's text written through the buffer, a
+    // tool's file, a link — stays as it is.
+    return true;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(
+      file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    );
+  } catch {
+    return false;
+  }
+  closeSync(fd);
+  return true;
+}
+
+/** Every file under a mirror root, as `/`-separated room paths. */
+function filesUnder(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        walk(join(dir, entry.name));
+      } else if (entry.isFile()) {
+        found.push(relative(root, join(dir, entry.name)).split(sep).join('/'));
+      }
+    }
+  };
+  walk(root);
+  return found;
+}
+
+/** True when `process.kill(pid, 0)` says the process is there; refusal counts as alive. */
+function isAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/** Refuses what is there unless it is a real directory: a symlink, a file, anything else. */
+function assertPlainDirectoryOrAbsent(dir: string): void {
+  let stat: ReturnType<typeof lstatSync> | undefined;
+  try {
+    stat = lstatSync(dir);
+  } catch {
+    return;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`refusing to mirror under ${dir}: not a plain directory`);
+  }
+}
+
+function isPlainDirectory(dir: string): boolean {
+  try {
+    const stat = lstatSync(dir);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function tryMkdir(dir: string): boolean {
+  try {
+    mkdirSync(dir);
+    return true;
+  } catch {
+    return isPlainDirectory(dir);
+  }
+}
+
+function writeMarker(root: string, marker: MirrorMarker): void {
+  writeFileSync(join(root, MIRROR_MARKER), `${JSON.stringify(marker)}\n`);
+}
