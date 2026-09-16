@@ -54,6 +54,15 @@ export interface Registered {
     ignored: { create: boolean; change: boolean; delete: boolean };
     disposed: boolean;
   }>;
+  /** Every `workspace.updateWorkspaceFolders` call: `{ start, deleteCount, added }` URIs. */
+  folderCalls: Array<{ start: number; deleteCount: number | null | undefined; added: string[] }>;
+  /**
+   * How the editor answers `workspace.updateWorkspaceFolders`: `false` is the silent
+   * refusal, so a test stages what the client does when the folder never lands.
+   */
+  updateFoldersReturn: boolean;
+  /** Every `tabGroups.close` call, as the tabs it was given, in order. */
+  closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
   listings: number;
   /**
@@ -136,6 +145,8 @@ export interface EditorStub {
   window: {
     visibleTextEditors: unknown[];
     activeTextEditor: unknown;
+    /** The window's tabs: leaving a room closes the room's tabs through these. */
+    tabGroups: { all: unknown[]; close(tabs: readonly unknown[]): Promise<boolean> };
   };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
   ProgressLocation: { SourceControl: number; Window: number; Notification: number };

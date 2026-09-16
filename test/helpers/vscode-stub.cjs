@@ -66,6 +66,16 @@ const registered = {
    * watch the folder it shares.
    */
   watcherFailure: undefined,
+  /** Every `workspace.updateWorkspaceFolders` call, as `{ start, deleteCount, added }`. */
+  folderCalls: [],
+  /**
+   * How the editor answers `workspace.updateWorkspaceFolders`. `false` is the API's silent
+   * refusal: the call reports nothing and changes nothing, so the client reads the folders
+   * back rather than trusting the answer.
+   */
+  updateFoldersReturn: true,
+  /** Every `tabGroups.close` call, as the tabs it was given, in order. */
+  closedTabs: [],
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
   listings: 0,
   /**
@@ -337,6 +347,10 @@ function reset() {
   registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
+  registered.folderCalls.length = 0;
+  registered.updateFoldersReturn = true;
+  registered.closedTabs.length = 0;
+  tabGroups.all.length = 0;
   disk.files.clear();
   disk.links.clear();
   disk.unreadable.clear();
@@ -371,6 +385,20 @@ const listeners = new Map();
 
 /** The folders the window is opened on; a session captures these at invite time. */
 const folders = [{ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }];
+
+/**
+ * The window's tabs, as leaving a room finds them: the room's tabs are closed by the
+ * client itself, because removing the folder leaves them open on files nobody owns.
+ */
+const tabGroups = {
+  /** The tabs the window has open; a test seeds these the way a session would leave them. */
+  all: [],
+  /** Closes tabs, recording what was closed. */
+  close(tabs) {
+    registered.closedTabs.push([...tabs]);
+    return Promise.resolve(true);
+  },
+};
 
 function event(name) {
   return (handler) => {
@@ -411,9 +439,12 @@ function parseUri(value) {
   const rest = colon === -1 ? withoutFragment : withoutFragment.slice(colon + 1);
   const question = rest.indexOf('?');
   const rawPath = question === -1 ? rest : rest.slice(0, question);
+  const path = decodedPath(rawPath);
   return {
     scheme,
-    path: decodedPath(rawPath),
+    path,
+    /** The platform path: the decoded path under one leading slash, as `Uri.file` reads. */
+    fsPath: `/${path.replace(/^\/+/, '')}`,
     query: question === -1 ? '' : rest.slice(question + 1),
     toString: () => text,
   };
@@ -685,15 +716,45 @@ module.exports = {
       registered.files = provider;
       return disposable();
     },
+    /**
+     * Adds or removes workspace folders, as establishing or leaving the room's folder
+     * does. An add to a window with no folder answers `true` and changes nothing — the
+     * empty-window shape only `openFolder` reaches — so joining one reloads instead.
+     */
+    updateWorkspaceFolders(start, deleteCount, ...added) {
+      registered.folderCalls.push({
+        start,
+        deleteCount,
+        added: added.map((folder) => folder.uri.toString()),
+      });
+      if (registered.updateFoldersReturn === false) {
+        return false;
+      }
+      if (folders.length === 0 && (deleteCount ?? 0) === 0) {
+        return true;
+      }
+      folders.splice(
+        start,
+        deleteCount ?? 0,
+        ...added.map((folder) => ({ uri: folder.uri, name: folder.name, index: 0 })),
+      );
+      folders.forEach((folder, index) => {
+        folder.index = index;
+      });
+      return true;
+    },
     onDidOpenTextDocument: event('openTextDocument'),
     onDidCloseTextDocument: event('closeTextDocument'),
     onDidChangeTextDocument: event('changeTextDocument'),
+    onDidSaveTextDocument: event('saveTextDocument'),
+    onDidChangeWorkspaceFolders: event('workspaceFolders'),
     onDidChangeConfiguration: event('configuration'),
   },
 
   window: {
     activeTextEditor: undefined,
     visibleTextEditors: [],
+    tabGroups,
     createStatusBarItem: () => {
       const item = {
         text: '',
@@ -821,6 +882,8 @@ module.exports = {
   },
 
   env: {
+    /** The window's own id, as the extension names the mirror's provenance with it. */
+    sessionId: 'stub-session-id',
     clipboard: {
       readText: () => {
         registered.clipboardReads.push(registered.clipboard);
