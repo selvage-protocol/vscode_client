@@ -18,6 +18,8 @@ const registered = {
   /** What the clipboard holds, as the extension last left it. */
   clipboard: '',
   clipboardWrites: [],
+  /** Every clipboard read, in order: joining must leave this empty (see `commands.test.ts`). */
+  clipboardReads: [],
   information: [],
   /** The buttons each information message offered, in order, beside `information`. */
   informationItems: [],
@@ -299,6 +301,7 @@ const configured = new Map();
 function reset() {
   registered.clipboard = '';
   registered.clipboardWrites.length = 0;
+  registered.clipboardReads.length = 0;
   registered.information.length = 0;
   registered.informationItems.length = 0;
   registered.warnings.length = 0;
@@ -787,7 +790,10 @@ module.exports = {
 
   env: {
     clipboard: {
-      readText: () => Promise.resolve(registered.clipboard),
+      readText: () => {
+        registered.clipboardReads.push(registered.clipboard);
+        return Promise.resolve(registered.clipboard);
+      },
       writeText: (value) => {
         registered.clipboard = value;
         registered.clipboardWrites.push(value);

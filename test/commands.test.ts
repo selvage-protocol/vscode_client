@@ -1302,6 +1302,7 @@ test('joining asks for the invite link with an empty box, not the clipboard', as
   );
   assert.equal(asked.title, 'Join a Selvage session');
   assert.equal(asked.value, '', 'the box was prefilled from the clipboard');
+  assert.equal(bundle.stub.registered.clipboardReads.length, 0, 'joining read the clipboard');
   assert.equal(
     bundle.stub.registered.clipboard,
     'the password copied just before joining',

@@ -92,8 +92,7 @@ Then, in the two windows:
    the clipboard, and the status bar shows the session.
 3. Open a file **inside the workspace folder** — it is shared as soon as it is open, and its
    path appears in the room's open-document set.
-4. **Window two** — `Selvage: Join a session from an invite link`, paste the link (it is
-   pre-filled from the clipboard when the clipboard holds one), enter a display name.
+4. **Window two** — `Selvage: Join a session from an invite link`, paste the link, enter a display name.
 5. **Window two** — the room's document opens by itself as `selvage:/<path>?room=<room id>`,
    editable; both windows now type into the same text and see each other's caret as a bar in
    the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
@@ -118,7 +117,7 @@ there, while the three intents stay one-to-one.
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
-| `Selvage: Join a session from an invite link` | Join the room the invite link names, pre-filled from the clipboard when the clipboard holds one. |
+| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. Only a guest has virtual documents to open; a host's open files are the room's. |
 | `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
