@@ -35,6 +35,9 @@ import type { Cursor } from '../bridge/index.ts';
 import { BADGE_OPTIONS, badgeDataUri, initials, onePerLine } from './gutter.ts';
 import { labelAttachment, labelMode } from './labels.ts';
 
+/** How many badge decoration types a rename loop may retain before the oldest goes. */
+export const MAX_BADGE_TYPES = 32;
+
 export class Cursors {
   private readonly carets = new Map<string, vscode.TextEditorDecorationType>();
   private readonly selections = new Map<string, vscode.TextEditorDecorationType>();
@@ -101,7 +104,9 @@ export class Cursors {
       const options = carets.get(caret) ?? [];
       options.push({
         range: new vscode.Range(head, head),
-        hoverMessage: `${cursor.label} · ${cursor.role}`,
+        // A plain string renders as Markdown, so a peer's `[text](url)` name renders as a
+        // link; `appendText` escapes it to plain text.
+        hoverMessage: new vscode.MarkdownString().appendText(`${cursor.label} · ${cursor.role}`),
       });
       carets.set(caret, options);
       const attachment = labelAttachment(cursor, mode);
@@ -153,12 +158,16 @@ export class Cursors {
    * The glyph-margin badge for one peer, cached per (initials, colour) so a cursor move never
    * mints a new decoration type. The image is a base64 SVG handed to `Uri.parse`: a plain
    * string would be read as a file path, and there is no background-colour field to fill it.
+   * Bounded: a rename loop churns types, so the oldest is evicted past the bound, cleared
+   * from every visible editor before it is disposed.
    */
   private badgeType(cursor: Pick<Cursor, 'label' | 'colour'>): vscode.TextEditorDecorationType {
     const text = initials(cursor.label);
     const key = `${text}\u0000${cursor.colour}`;
     const known = this.badges.get(key);
     if (known !== undefined) {
+      this.badges.delete(key);
+      this.badges.set(key, known);
       return known;
     }
     const type = vscode.window.createTextEditorDecorationType({
@@ -166,6 +175,25 @@ export class Cursors {
       gutterIconPath: vscode.Uri.parse(badgeDataUri(text, cursor.colour)),
     });
     this.badges.set(key, type);
+    while (this.badges.size > MAX_BADGE_TYPES) {
+      const oldest = this.badges.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      const oldestKey = oldest.value;
+      if (oldestKey === key) {
+        break;
+      }
+      const evicted = this.badges.get(oldestKey);
+      if (evicted === undefined) {
+        break;
+      }
+      for (const editor of vscode.window.visibleTextEditors) {
+        editor.setDecorations(evicted, []);
+      }
+      evicted.dispose();
+      this.badges.delete(oldestKey);
+    }
     return type;
   }
 

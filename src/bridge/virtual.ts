@@ -1,3 +1,5 @@
+import { isGrantedPath } from './grant.ts';
+
 /**
  * The guest's document URIs.
  *
@@ -43,16 +45,15 @@ function decodeComponent(value: string): string | undefined {
   }
 }
 
-function decodePath(path: string): string | undefined {
-  const decoded: string[] = [];
+function validatePath(path: string): string | undefined {
+  // `vscode.Uri.parse` already percent-decoded the components: decoding again turns a
+  // literal `a%2Fb` filename into `a/b` and refuses it. Segments are judged as given.
   for (const segment of path.split('/')) {
-    const part = decodeComponent(segment);
-    if (part === undefined) {
+    if (segment === '' || segment === '.' || segment === '..') {
       return undefined;
     }
-    decoded.push(part);
   }
-  return decoded.join('/');
+  return path;
 }
 
 /** The URI a guest opens for a room path. */
@@ -83,11 +84,13 @@ export function virtualDocument(
   if (roomId === undefined) {
     return undefined;
   }
-  const decoded = decodePath(path.slice(1));
-  if (decoded === undefined) {
+  const validated = validatePath(path.slice(1));
+  // A URI that names what the grant would never publish mints no document: the receipt
+  // filter keeps such names out of listings, and this keeps them out of hand-made URIs too.
+  if (validated === undefined || !isGrantedPath(validated)) {
     return undefined;
   }
-  return { roomId, path: decoded };
+  return { roomId, path: validated };
 }
 
 /** The room id a URI's query names, `undefined` when it names none or cannot be decoded. */

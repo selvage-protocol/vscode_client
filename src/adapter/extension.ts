@@ -11,7 +11,7 @@ import * as vscode from 'vscode';
 
 import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
-import { SelvageEngine, code as errCode, isProtocolError, parseSessionUrl } from '../engine/index.ts';
+import { SelvageEngine, code as errCode, isProtocolError } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -1205,16 +1205,34 @@ class Session {
     this.status.text = `$(radio-tower) Selvage: ${who} · ${here} here`;
     const lines = [
       `${this.role() === 'host' ? 'Hosting' : 'Guest in'} room ${this.roomId()}`,
-      `In the room: ${[this.names(), 'you'].flat().join(', ')}`,
-      `Documents the room offers: ${this.documents.length === 0 ? 'none' : this.documents.join(', ')}`,
-      `Shared from this window: ${shared.length === 0 ? 'none' : shared.join(', ')}`,
+      `In the room: ${summarise([this.names(), 'you'].flat())}`,
+      `Documents the room offers: ${summarise(this.documents)}`,
+      `Shared from this window: ${summarise(shared)}`,
     ];
-    const invite = this.invite();
-    if (invite !== undefined) {
-      lines.push(`Invite link (click to copy): ${invite}`);
+    if (this.invite() !== undefined) {
+      // The token stays out of the tooltip: a screenshot or screen-share of the status
+      // bar must not carry it. The bar itself copies the link when it is clicked.
+      lines.push('Invite link: click the status bar to copy it.');
     }
     this.status.tooltip = lines.join('\n');
   }
+}
+
+/**
+ * How many names a status tooltip lists before it counts the rest: the listing and the
+ * peer set are a stranger's input, and the tooltip is not where either is read in full.
+ */
+const MAX_TOOLTIP_ENTRIES = 20;
+
+/** At most `MAX_TOOLTIP_ENTRIES` names, however many the room holds. */
+function summarise(names: readonly string[]): string {
+  if (names.length === 0) {
+    return 'none';
+  }
+  const shown = names.slice(0, MAX_TOOLTIP_ENTRIES).join(', ');
+  return names.length > MAX_TOOLTIP_ENTRIES
+    ? `${shown}, … and ${names.length - MAX_TOOLTIP_ENTRIES} more`
+    : shown;
 }
 
 /**
@@ -1328,12 +1346,14 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   if (args?.invite !== undefined) {
     invite = args.invite;
   } else {
-    const clipboard = await vscode.env.clipboard.readText();
+    // The clipboard is not read here: prefilling the box with it would lift whatever the
+    // user last copied — a password, a token — into a field a shoulder-surfer can read,
+    // before any paste asked for it. Joining pastes explicitly, or arrives by argument.
     invite = await vscode.window.showInputBox({
       title: 'Join a Selvage session',
       prompt: 'Paste the invite link the host sent you.',
       placeHolder: 'ws://host:8080/session?room=…&token=…',
-      value: parseSessionUrl(clipboard) === undefined ? '' : clipboard,
+      value: '',
       ignoreFocusOut: true,
     });
   }

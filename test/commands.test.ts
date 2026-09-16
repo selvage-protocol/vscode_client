@@ -1034,33 +1034,47 @@ test('a host serves the path the room asks for, and refuses what the grant leave
   });
   assert.equal(text, 'fn main() {}\n');
 
-  // Everything else the peer asks for is refused and reported, and nothing is seeded empty:
-  // the defaults the grant excludes, a path that resolves out of the folder, a file over the
-  // size a session will carry, and bytes that are not text.
+  // What the grant itself would never publish is dropped silently — a guessed secret buys
+  // no dialog confirming it — and what the grant allows but the room cannot carry is
+  // refused out loud: the two unreadable files, each in the report its own event earns.
+  // Six bogus paths are two dialogs, never six.
   const refused = ['.env', '.git/config', '../etc/passwd', '/etc/passwd', 'assets/big.bin', 'blob.bin'];
   for (const path of refused) {
     await guest.open(path);
   }
-  await waitFor('every refusal to be reported', () =>
-    bundle.stub.registered.errors.length >= refused.length
-      ? bundle.stub.registered.errors
-      : false,
+  const errors = await waitFor('every refusal to be reported', () =>
+    bundle.stub.registered.errors.length >= 2 ? bundle.stub.registered.errors : false,
   );
+  assert.equal(errors.length, 2, `two unreadable files earned more than two dialogs`);
   for (const path of refused) {
     assert.equal(guest.has(path), false, `${path} was seeded anyway`);
   }
   assert.ok(
-    bundle.stub.registered.errors.every((message) => message.includes('not a readable file')),
-    `a refusal was worded differently: ${JSON.stringify(bundle.stub.registered.errors)}`,
+    errors.every((message) => message.includes('not a readable file')),
+    `a refusal was worded differently: ${JSON.stringify(errors)}`,
   );
 
-  // A refusal is not a decision about the file: a host opening it in its own window is the
-  // user's own act, and the room hears about that as it hears about any other open document.
+  // A refusal is a decision about the file now: a host opening an excluded file in its own
+  // window no longer shares it — the open path passes the grant's own gates — and the
+  // refusal is said once instead.
   const own = bundle.stub.openWorkspaceDocument('file:///workspace/.env');
   bundle.stub.fire('openTextDocument', own);
-  await waitFor('the host to share the file it opened itself', () =>
-    guest.text('.env') === 'SECRET=1\n' ? true : false,
+  const gated = await waitFor('the refused open to be reported', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('will not share .env')) ??
+      false,
   );
+  assert.match(gated, /nothing was shared for it/);
+
+  // The room keeps moving while the excluded file stays out of it: a granted file the
+  // host opens next still reaches the guest, which is what shows the first one never will.
+  bundle.stub.put('after.txt', 'after\n');
+  const later = bundle.stub.openWorkspaceDocument('file:///workspace/after.txt');
+  bundle.stub.fire('openTextDocument', later);
+  await waitFor('the later file to reach the guest', () =>
+    guest.text('after.txt') === 'after\n' ? true : false,
+  );
+  assert.equal(guest.text('.env'), '', 'the excluded file reached the guest after all');
+  assert.equal(guest.has('.env'), false);
 });
 
 test('a guest read of a granted path waits for the room to send it', async (t) => {
@@ -1247,4 +1261,63 @@ test('a document open when its path leaves the listing keeps its text and is bad
   });
   assert.equal(new TextDecoder().decode(await files.readFile(document)), 'held text\n');
   assert.equal(row.path, 'doomed.txt');
+});
+
+test('the status tooltip names the room but never the invite token', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const tooltip = await waitFor('the status bar to be drawn', () =>
+    roomOffer(bundle).includes('Hosting room') ? roomOffer(bundle) : false,
+  );
+
+  // The invite itself, fetched the way a click fetches it: the tooltip must hold no part
+  // of it, while still saying where the link is reached from.
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const invite = await waitFor('the invite link', () => {
+    const clipboard = bundle.stub.registered.clipboard;
+    return clipboard.startsWith('ws://') ? clipboard : false;
+  });
+  const token = invite.slice(invite.indexOf('token='));
+  assert.ok(!tooltip.includes(token), 'the token is in the status tooltip');
+  assert.ok(!tooltip.includes('token='), 'the tooltip names the token field');
+  assert.match(tooltip, /click the status bar to copy/);
+});
+
+test('joining asks for the invite link with an empty box, not the clipboard', async (t) => {
+  const bundle = activated(t);
+  bundle.stub.registered.clipboard = 'the password copied just before joining';
+
+  // No arguments, so the command takes the interactive path; no reply, so it is the box
+  // itself under test rather than the session after it.
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const asked = await waitFor('the join question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.title, 'Join a Selvage session');
+  assert.equal(asked.value, '', 'the box was prefilled from the clipboard');
+  assert.equal(bundle.stub.registered.clipboardReads.length, 0, 'joining read the clipboard');
+  assert.equal(
+    bundle.stub.registered.clipboard,
+    'the password copied just before joining',
+    'joining touched the clipboard',
+  );
+});
+
+test('the status tooltip counts the rest instead of listing the room', async (t) => {
+  const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
+  const { bundle } = await guest(t, paths);
+
+  // Twenty-five documents offered: the tooltip is a stranger's input in full, so it shows
+  // twenty and counts the rest rather than joining them all.
+  const tooltip = await waitFor('the tooltip to bound the listing', () =>
+    roomOffer(bundle).includes('… and') ? roomOffer(bundle) : false,
+  );
+  assert.match(tooltip, /… and 5 more/);
 });

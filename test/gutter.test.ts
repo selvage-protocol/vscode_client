@@ -288,10 +288,17 @@ test('the badge is a base64 SVG in the glyph margin, applied at the caret line',
 
 /** Every caret `hoverMessage` the editor was handed, oldest draw first. */
 function hoverLabels(editor: StubEditor): string[] {
+  return hoverRaws(editor).map((hover) =>
+    typeof hover === 'string' ? hover : String((hover as { value: string }).value ?? ''),
+  );
+}
+
+/** The raw `hoverMessage` values, so a test can pin that they are plain-text markdown. */
+function hoverRaws(editor: StubEditor): unknown[] {
   return editor.drawn
     .flatMap((entry) => entry.options as Array<{ hoverMessage?: unknown }>)
     .map((options) => options.hoverMessage)
-    .filter((label): label is string => typeof label === 'string');
+    .filter((hover) => hover !== undefined);
 }
 
 /** The SVG behind the newest non-empty gutter badge the editor was handed. */
@@ -337,4 +344,43 @@ test('a peer that renames itself re-labels its caret and its badge', async (t) =
     bundle.stub.fire('visibleEditors');
     return drawnBadgeSvg(editor).includes('>Gr</text>') ? true : false;
   });
+});
+
+test('a peer-controlled label renders as plain text, never as a link', async (t) => {
+  const { host, invite } = await room(t, [PATH]);
+  host.insert(PATH, 0, 'hello\n');
+  const bundle = await seat(t, invite);
+  host.setSelection(PATH, { anchor: 0, head: 0 });
+  const editor = installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+
+  await host.rename('[Open](https://attacker.example)');
+  const relabelled = await waitFor('the hostile label to be drawn', () => {
+    bundle.stub.fire('visibleEditors');
+    return hoverRaws(editor).length > 0 ? true : false;
+  });
+  assert.ok(relabelled, 'no hover was drawn');
+  const raw = hoverRaws(editor).at(-1);
+  assert.ok(typeof raw !== 'string', 'a string hover renders as Markdown');
+  const value = String((raw as { value: string }).value ?? '');
+  assert.ok(!value.includes('[Open](https://attacker.example)'), `a link survived: ${value}`);
+  assert.ok(value.includes('\\[Open'), `the label was not escaped: ${value}`);
+});
+
+test('a rename loop retains only a bounded number of badge types', async (t) => {
+  const { host, invite } = await room(t, [PATH]);
+  host.insert(PATH, 0, 'hello\n');
+  const bundle = await seat(t, invite);
+  host.setSelection(PATH, { anchor: 0, head: 0 });
+  installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+  bundle.stub.fire('visibleEditors');
+
+  for (let index = 0; index < 50; index += 1) {
+    const name = `${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))} user ${index}`;
+    await host.rename(name);
+    bundle.stub.fire('visibleEditors');
+  }
+  const badges = typesWith(bundle, 'gutterIconPath').filter(
+    (entry) => (entry.handle as unknown as { disposed?: boolean }).disposed !== true,
+  );
+  assert.ok(badges.length <= 32, `a rename loop retained ${badges.length} badge types`);
 });

@@ -114,7 +114,8 @@ export async function isShareableFile(uri: vscode.Uri): Promise<boolean> {
  * The folders are the ones held at invite time, so a folder added to the window afterwards is
  * not quietly added to the grant. Containment is the whole test here: the excludes bound what a
  * session shares *by itself*, while a user opening a file in their own window is the user's own
- * act, and the two are not the same statement.
+ * act, and the two are not the same statement. Whether an opened file then reaches the room
+ * is the bridge's own gate (`seed` in `src/bridge/bridge.ts`), not this function's.
  */
 export function roomPathOf(
   folders: readonly vscode.WorkspaceFolder[],
@@ -161,13 +162,18 @@ export async function grantedFile(
 }
 
 /**
- * True when every directory between the folder and the file is a plain directory of that folder.
+ * True when every segment matches its directory entry exactly and every directory between
+ * the folder and the file is a plain directory of that folder.
  *
  * `vscode.workspace.fs` has no `realpath`, and `Uri.joinPath` resolves nothing: it joins strings.
  * A path that travels through a symbolic link therefore lands on a real file somewhere else
  * entirely, while the leaf's own `stat` reports an ordinary file. A link's own `stat` reports the
  * `SymbolicLink` bit, so the path is walked one segment at a time and every segment has to be
  * exactly a directory. The leaf is left to the caller, which reads it only as a plain file.
+ *
+ * Each segment also has to be spelled as the directory lists it: on a case-insensitive mount
+ * `.GIT` stats as a directory when only `.git` is on disk, and the grant excludes only the
+ * spelling it names. An exact entry check refuses the folded variant before it resolves.
  *
  * What this cannot see, because the API does not expose it: a segment that is followed by the
  * editor's own file system without reporting a link (a mount point, a provider that resolves
@@ -176,13 +182,26 @@ export async function grantedFile(
 async function throughPlainDirectories(folder: vscode.Uri, relative: string): Promise<boolean> {
   const segments = relative.split('/');
   let head = folder;
-  for (const segment of segments.slice(0, -1)) {
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index] ?? '';
+    if (!(await hasExactChild(head, segment))) {
+      return false;
+    }
     head = vscode.Uri.joinPath(head, segment);
-    if (!(await isPlainDirectory(head))) {
+    if (index < segments.length - 1 && !(await isPlainDirectory(head))) {
       return false;
     }
   }
   return true;
+}
+
+async function hasExactChild(dir: vscode.Uri, name: string): Promise<boolean> {
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(dir);
+    return entries.some(([entry]) => entry === name);
+  } catch {
+    return false;
+  }
 }
 
 async function isPlainDirectory(uri: vscode.Uri): Promise<boolean> {

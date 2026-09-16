@@ -40,6 +40,11 @@ export class ControlledSocket implements WebSocketLike {
     this.onmessage?.({ data: text });
   }
 
+  /** The peer sends a binary frame. */
+  deliverBinary(bytes: Uint8Array): void {
+    this.onmessage?.({ data: bytes });
+  }
+
   /** The peer closes the connection. */
   fromPeer(code: number, reason: string): void {
     this.readyState = 3;

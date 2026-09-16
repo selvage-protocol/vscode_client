@@ -222,7 +222,11 @@ export function selection(presence: Presence): Selection | undefined {
   return presence.state?.selection;
 }
 
-/** Reads the JSON state a peer published, tolerating a shape this client does not know. */
+/**
+ * Reads the JSON state a peer published, tolerating a shape this client does not know.
+ * The `path` is kept uncapped and at any length: it is compared, never rendered, so a
+ * hostile length costs memory in one record, not layout anywhere (stated residual).
+ */
 export function parseAwarenessState(raw: unknown): AwarenessState | undefined {
   if (typeof raw !== 'object' || raw === null) {
     return undefined;

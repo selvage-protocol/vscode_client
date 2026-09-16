@@ -92,8 +92,7 @@ Then, in the two windows:
    the clipboard, and the status bar shows the session.
 3. Open a file **inside the workspace folder** — it is shared as soon as it is open, and its
    path appears in the room's open-document set.
-4. **Window two** — `Selvage: Join a session from an invite link`, paste the link (it is
-   pre-filled from the clipboard when the clipboard holds one), enter a display name.
+4. **Window two** — `Selvage: Join a session from an invite link`, paste the link, enter a display name.
 5. **Window two** — the room's document opens by itself as `selvage:/<path>?room=<room id>`,
    editable; both windows now type into the same text and see each other's caret as a bar in
    the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
@@ -118,7 +117,7 @@ there, while the three intents stay one-to-one.
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
-| `Selvage: Join a session from an invite link` | Join the room the invite link names, pre-filled from the clipboard when the clipboard holds one. |
+| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. Only a guest has virtual documents to open; a host's open files are the room's. |
 | `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
@@ -311,6 +310,16 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   **A listing that shrinks releases nothing**: a path leaving it leaves
   the room's grant and not the room's open-document set, so a document somebody is editing stays
   open and readable (`PROTOCOL.md` §5 against §6 — `doc.close` is how a hold is released).
+- **A file the room asks for is checked before it is read, and the check is not the read.** A
+  peer names a path and the host serves it only when the grant would publish it and every
+  directory on the way is a plain directory of the shared folder — never a link out of it —
+  and only when the leaf itself is a plain file under the size a session will carry. What
+  that narrowing cannot close is the window between the check and the read: a link swapped
+  into the path after the walk is read on the peer's behalf, and `vscode.workspace.fs`
+  exposes no `realpath` to shut it. That window is a stated residual, not a guarantee: a
+  hostile tree the host's own tools can write to (a build, a branch switch) is the threat,
+  and the escape shapes around it — `..`, absolute paths, swapped segments, leaf links —
+  are pinned in `test/serve.test.ts` so the bound they test is the one the code holds.
 - **A guest lands in the room's first document, once and with no input**: joining a room that
   already has files should land in the work, not in a quick-pick, and a room that is empty at
   join still owes that landing to the guest who stays — the first document that arrives opens,
@@ -396,7 +405,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
   clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
   holding an astral character is never cut through a surrogate pair. The clip is only on what
-  is *drawn*: the caret's hover and the status bar always carry the whole name.
+  is *drawn*: the caret's hover always carries the whole name, while the status bar lists
+  the first 20 names and counts the rest.
 - **`selvage.cursorLabel: "floating"` is an explicit opt-in** — a small box in the peer's
   colour above their caret, out of the line's flow. The decoration API has no position, layer
   or overlay, so the box is drawn by writing declarations — `position: absolute; top: -1.3em;

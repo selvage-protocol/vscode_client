@@ -18,6 +18,8 @@ const registered = {
   /** What the clipboard holds, as the extension last left it. */
   clipboard: '',
   clipboardWrites: [],
+  /** Every clipboard read, in order: joining must leave this empty (see `commands.test.ts`). */
+  clipboardReads: [],
   information: [],
   /** The buttons each information message offered, in order, beside `information`. */
   informationItems: [],
@@ -299,6 +301,7 @@ const configured = new Map();
 function reset() {
   registered.clipboard = '';
   registered.clipboardWrites.length = 0;
+  registered.clipboardReads.length = 0;
   registered.information.length = 0;
   registered.informationItems.length = 0;
   registered.warnings.length = 0;
@@ -370,6 +373,14 @@ function configure(values) {
 }
 
 /** The URI components an editor hands to a provider, parsed from a URI string. */
+function decodedPath(raw) {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function parseUri(value) {
   const text = String(value);
   const withoutFragment = text.split('#')[0];
@@ -377,9 +388,10 @@ function parseUri(value) {
   const scheme = colon === -1 ? '' : withoutFragment.slice(0, colon);
   const rest = colon === -1 ? withoutFragment : withoutFragment.slice(colon + 1);
   const question = rest.indexOf('?');
+  const rawPath = question === -1 ? rest : rest.slice(0, question);
   return {
     scheme,
-    path: question === -1 ? rest : rest.slice(0, question),
+    path: decodedPath(rawPath),
     query: question === -1 ? '' : rest.slice(question + 1),
     toString: () => text,
   };
@@ -675,6 +687,12 @@ module.exports = {
     createTextEditorDecorationType: (options) => {
       const handle = disposable();
       handle.options = options;
+      handle.disposed = false;
+      const originalDispose = handle.dispose;
+      handle.dispose = () => {
+        handle.disposed = true;
+        originalDispose();
+      };
       registered.decorations.push({ options, handle });
       return handle;
     },
@@ -739,6 +757,20 @@ module.exports = {
     },
   },
 
+  MarkdownString: class {
+    constructor(value = "") {
+      this.value = String(value);
+    }
+    appendText(value) {
+      this.value += String(value).replace(/([\\\`*{}\[\]()#+\-.!])/g, '\\$1');
+      return this;
+    }
+    appendMarkdown(value) {
+      this.value += String(value);
+      return this;
+    }
+  },
+
   Uri: {
     parse: parseUri,
     file: (value) => parseUri(`file://${value}`),
@@ -758,7 +790,10 @@ module.exports = {
 
   env: {
     clipboard: {
-      readText: () => Promise.resolve(registered.clipboard),
+      readText: () => {
+        registered.clipboardReads.push(registered.clipboard);
+        return Promise.resolve(registered.clipboard);
+      },
       writeText: (value) => {
         registered.clipboard = value;
         registered.clipboardWrites.push(value);

@@ -69,6 +69,8 @@ export interface EditorStub {
   registered: Registered & {
     clipboard: string;
     clipboardWrites: string[];
+    /** Every clipboard read, in order: joining must leave this empty. */
+    clipboardReads: string[];
     information: string[];
     informationItems: unknown[][];
     warnings: string[];
