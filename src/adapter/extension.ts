@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, SessionBridge, grantUnion, peerColour, virtualUri } from '../bridge/index.ts';
+import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import { SelvageEngine, code as errCode, isProtocolError, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
@@ -761,6 +761,15 @@ class Session {
    * peer already followed re-lands idempotently; following someone else re-targets and the
    * indicator re-labels. Establishing waits on the frames rather than on the read: a record
    * not yet arrived is awareness lag, and the next frame lands.
+   *
+   * The indicator goes up before the first landing, deliberately: the target is known and a
+   * frame is incoming, so immediate feedback beats silence, and the `following <name>.`
+   * message still marks the landing itself. A programmatic follow of a peer in no document
+   * pends the same way a go-to does rather than refusing: a record not yet arrived reads
+   * exactly like a peer in no document, so refusing here would lie during awareness lag
+   * (the picker owns the refusal instead, where its row displays the staleness). The next
+   * frame tells the two apart — arrival lands, a steady absence keeps pending — and the pend
+   * holds no resources: one slot, overwritten by the next go-to, cleared by follow or stop.
    */
   async follow(peerId: string): Promise<void> {
     if (this.followingPeerId === peerId) {
@@ -1030,14 +1039,17 @@ class Session {
    * A remote edit must not end it, and the comparison tells the two apart without a bridge
    * change: the bridge writes the replica's own text into the buffer when it applies a
    * peer's edit, so the buffer then holds what the room holds, while a keystroke leaves it
-   * holding what only this window has. Compared before the bridge publishes, because
-   * afterwards the replica holds the buffer either way.
+   * holding what only this window has. The comparison is the echo guard's own
+   * (`matchesReplica`): the replica is LF-only while a CRLF buffer holds `\r\n`, so a raw
+   * `===` would read every remote apply in a CRLF document as divergent and end the follow.
+   * Compared before the bridge publishes, because afterwards the replica holds the buffer
+   * either way.
    */
   private localEditEndsFollow(document: vscode.TextDocument, path: string): void {
     if (this.followingPeerId === undefined) {
       return;
     }
-    if (document.getText() === this.engine.text(path)) {
+    if (matchesReplica(document.getText(), this.engine.text(path))) {
       return;
     }
     this.stopFollowingWithMessage();
