@@ -495,10 +495,18 @@ test('the follow ends when the peer leaves, and the name re-labels while they st
   });
   assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Cara');
 
+  // A rename re-labels the indicator rather than ending anything: the target is a peer id,
+  // so only the name it is shown under changes. The leave sentence below then says the new
+  // name, which proves the re-label stuck.
+  await cara.rename('Cora');
+  await waitFor('the indicator to re-label while the follow holds', () =>
+    followItem(seat_)?.text === '$(person) Selvage: following Cora' ? true : false,
+  );
+
   await cara.disconnect();
   await waitFor('the follow to end with the peer', () =>
     seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: Cara left the room, so following stopped.',
+      (message) => message === 'Selvage: Cora left the room, so following stopped.',
     ),
   );
 });
@@ -757,5 +765,270 @@ test('a display name shared by two peers falls through to the pick', async (t) =
   assert.ok(
     !seat_.bundle.stub.registered.information.some((message) => message.startsWith('Selvage: following')),
     'an ambiguous name followed someone',
+  );
+});
+
+test('a remote CRLF apply does not end the follow while local CRLF typing does', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+  );
+
+  // The buffer holds CRLF while the replica holds LF: the steady state of a CRLF document,
+  // which a raw `===` against the replica would read as divergent on every remote apply.
+  const crlf = (text: string): string => text.replaceAll('\n', '\r\n');
+  holder.text = crlf(TEXT_A);
+
+  // Remote: the host's text reaches the buffer first — the apply the bridge stages is the
+  // proof the replica holds it — and only then does the change event carry the room's own
+  // text, rendered with this document's line endings. The follow must survive it, and prove
+  // it by tracking the next move.
+  const remote = `!${TEXT_A}`;
+  let applied = 0;
+  seat_.bundle.stub.registered.applyEditImpl = async () => {
+    applied += 1;
+    return true;
+  };
+  seat_.host.insert(PATH_A, 0, '!');
+  await waitFor('the remote edit to reach the guest buffer', () => applied > 0, {
+    describe: () => ({ applied }),
+  });
+  holder.text = crlf(remote);
+  seat_.bundle.stub.fire('changeTextDocument', { document: editor.document });
+  seat_.host.setSelection(PATH_A, { anchor: 9, head: 9 });
+  await waitFor('the follow to track past the CRLF remote edit', () => caretOf(editor) === 9);
+  await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
+  await waitFor('the follow to still be stoppable after the CRLF remote edit', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+  );
+
+  // Local: the buffer holds what only this window has, and the follow ends at once.
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the second follow to begin', () =>
+    seat_.bundle.stub.registered.information.filter((message) => message === 'Selvage: following Ada.')
+      .length >= 2,
+  );
+  holder.text = `${crlf(remote)}typed here`;
+  seat_.bundle.stub.fire('changeTextDocument', { document: editor.document });
+  await waitFor('the local CRLF edit to end the follow', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
+  await waitFor('the ended follow to be unstoppable', () =>
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
+  );
+});
+
+test('a superseded landing never places', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
+  const holder = { text: TEXT_A };
+  await openHeld(seat_, PATH_A, holder, 5);
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+  );
+
+  // The first landing's open is held across the peer's next move: the older frame must not
+  // place once a newer one exists. Only the first show for the peer document waits; later
+  // frames pass, so the second move lands while the first is still in flight. Draining the
+  // microtasks after the release settles the held frame — its path from there is synchronous
+  // — so what follows observes it rather than racing it.
+  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const windowState = seat_.bundle.stub.window as unknown as Record<string, unknown>;
+  const show = windowState['showTextDocument'] as (
+    document: unknown,
+    options?: unknown,
+  ) => Promise<unknown>;
+  let gated = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  windowState['showTextDocument'] = async (document: unknown, options?: unknown) => {
+    const shown = (document as { uri: { toString(): string } }).uri.toString();
+    if (shown === uriB && gated === 0) {
+      gated += 1;
+      await gate;
+    }
+    return show(document, options);
+  };
+  t.after(() => {
+    windowState['showTextDocument'] = show;
+  });
+  const editorsForB = (): FakeEditor[] =>
+    (seat_.bundle.stub.registered.shownEditors as unknown as FakeEditor[]).filter(
+      (editor) => (editor.document['uri'] as { toString(): string }).toString() === uriB,
+    );
+
+  seat_.host.setSelection(PATH_B, { anchor: 6, head: 6 });
+  await waitFor('the first landing to reach its held open', () => (gated > 0 ? true : false), {
+    describe: () => ({ gated }),
+  });
+  seat_.host.setSelection(PATH_B, { anchor: 9, head: 9 });
+  await waitFor(
+    'the second move to land while the first is held',
+    () => (editorsForB().some((editor) => caretOf(editor) === 9) ? true : false),
+    { describe: () => editorsForB().map((editor) => caretOf(editor)) },
+  );
+
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(
+    editorsForB().every((editor) => caretOf(editor) !== 6),
+    'the superseded landing placed the first offset',
+  );
+  assert.ok(
+    editorsForB().some((editor) => caretOf(editor) === 9),
+    'the follow lost the second offset',
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
+  await waitFor('the follow to still be stoppable after the overlap', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+  );
+});
+
+test('following a peer in no document pends until they enter one', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+  // `Nora` joins and publishes no document: a programmatic follow names her by id, past the
+  // picker that would refuse its own row, and pends on the next frame rather than refusing a
+  // peer whose update may be one frame away.
+  const nora = await SelvageEngine.join(
+    seat_.invite,
+    'Nora',
+    options({ baseUrl: seat_.server.wsBase, displayName: 'Nora', reconnect: false }),
+  );
+  t.after(async () => {
+    await nora.disconnect();
+  });
+  const noraId = nora.session().peer.peer_id;
+
+  // Membership first: following an id the room has never named reads as gone, not as waiting.
+  // Each probe opens a picker that is left unanswered, which establishes nothing.
+  const look = issueUntil(seat_.bundle, 'selvage.followParticipant', undefined);
+  await waitFor('the room to name the peer without a document', () => {
+    const calls = seat_.bundle.stub.registered.quickPicks;
+    const last = calls.at(-1) as { items: Array<{ peerId: string }> } | undefined;
+    if (last?.items.some((item) => item.peerId === noraId) === true) {
+      return true;
+    }
+    look();
+    return false;
+  });
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: noraId });
+
+  // Her entering a document is the next frame the pend waited on: the follow lands there,
+  // which proves the pend held the target instead of refusing or dropping it.
+  await nora.open(PATH_A);
+  await waitFor(`the peer replica to hold ${PATH_A}`, () => (nora.text(PATH_A) === TEXT_A ? true : false), {
+    describe: () => nora.text(PATH_A),
+  });
+  nora.setSelection(PATH_A, { anchor: 7, head: 7 });
+  await waitFor('the pending follow to land once she enters a document', () => caretOf(editor) === 7);
+  await waitFor('the pending follow to begin', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Nora.'),
+  );
+  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Nora');
+});
+
+test('an unknown peer id falls through to the pick', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+  void editor;
+
+  // Membership first: a successful jump proves the room names its peers, so the id below is
+  // provably unknown rather than merely not yet arrived.
+  await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant', { peerId: seat_.hostId });
+  await waitFor('the jump to land at the host caret', () => (caretOf(editor) === 5 ? true : false), {
+    describe: () => caretOf(editor),
+  });
+  const picksBefore = seat_.bundle.stub.registered.quickPicks.length;
+  const warningsBefore = seat_.bundle.stub.registered.warnings.length;
+  const errorsBefore = seat_.bundle.stub.registered.errors.length;
+  const shownBefore = seat_.bundle.stub.registered.shownEditors.length;
+
+  // A stale programmatic id names nobody: the rows carry the names, so the palette answers
+  // instead of an invented sentence, and nothing lands anywhere.
+  await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant', { peerId: 'no-such-peer' });
+  assert.equal(
+    seat_.bundle.stub.registered.quickPicks.length,
+    picksBefore + 1,
+    'the unknown id never reached the palette',
+  );
+  const last = seat_.bundle.stub.registered.quickPicks.at(-1) as { options: { title: string } } | undefined;
+  assert.equal(last?.options.title, 'Go to a participant');
+  assert.equal(seat_.bundle.stub.registered.warnings.length, warningsBefore, 'the unknown id warned');
+  assert.equal(seat_.bundle.stub.registered.errors.length, errorsBefore, 'the unknown id errored');
+  assert.equal(seat_.bundle.stub.registered.shownEditors.length, shownBefore, 'the unknown id landed');
+});
+
+test('a host jump to a path it does not share is refused without opening', async (t) => {
+  // A host holds no virtual documents: the peer path opens as the window's own file, through
+  // the check a read on a peer's behalf goes through. A path the grant deliberately leaves
+  // out — here `.env`, which no listing ever names — fails that check, with the same sentence
+  // a deleted path reports, and opens nothing.
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [] });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await waitFor(
+    'the host invite to reach the clipboard',
+    () => {
+      void bundle.stub.commands.executeCommand('selvage.copyInvite');
+      const text = bundle.stub.registered.clipboard;
+      return text.startsWith('ws://') ? text : false;
+    },
+    { describe: () => bundle.stub.registered.clipboard },
+  );
+  const guest = await SelvageEngine.join(
+    invite,
+    'Cara',
+    options({ baseUrl: server.wsBase, displayName: 'Cara', reconnect: false }),
+  );
+  t.after(async () => {
+    await guest.disconnect();
+  });
+  await guest.open('.env');
+  const guestId = guest.session().peer.peer_id;
+  // No text, so this publishes the path alone: enough for the jump to reach the grant check.
+  guest.setSelection('.env', { anchor: 0, head: 0 });
+  const shownBefore = bundle.stub.registered.shownEditors.length;
+
+  // An attempt from before presence arrives pends before opening anything, so the command is
+  // re-issued until the refusal it stages shows.
+  const retry = issueUntil(bundle, 'selvage.goToParticipant', { peerId: guestId });
+  await waitFor('the refused jump to say it could not open the path', () => {
+    if (
+      bundle.stub.registered.errors.some(
+        (message) =>
+          message === 'Selvage: could not open .env from the room: the path is not one this window shares',
+      )
+    ) {
+      return true;
+    }
+    retry();
+    return false;
+  });
+  assert.equal(
+    bundle.stub.registered.shownEditors.length,
+    shownBefore,
+    'the refused jump opened an editor',
   );
 });
