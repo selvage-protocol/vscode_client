@@ -9,13 +9,13 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, SessionBridge, grantUnion, peerColour, virtualUri } from '../bridge/index.ts';
+import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import { SelvageEngine, code as errCode, isProtocolError, parseSessionUrl } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
-import { enumerateGrant } from './grant.ts';
+import { enumerateGrant, grantedFile } from './grant.ts';
 import { GuestFileSystem } from './guest-fs.ts';
 import { GrantTree } from './tree.ts';
 
@@ -101,6 +101,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.peers', () => {
       void listPeers();
     }),
+    vscode.commands.registerCommand('selvage.goToParticipant', (args?: GoToParticipantArgs) => {
+      void goToParticipant(args);
+    }),
+    vscode.commands.registerCommand('selvage.followParticipant', (args?: FollowParticipantArgs) => {
+      void followParticipant(args);
+    }),
+    vscode.commands.registerCommand('selvage.stopFollowing', () => {
+      stopFollowing();
+    }),
   );
 }
 
@@ -181,6 +190,23 @@ class Session {
   private selectionDirty = false;
   /** The one flush the interval allows, while one is armed. */
   private selectionTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The peer this window follows, by id. A local view state, never advertised: nothing on
+   * the wire carries it, so no other client sees it beyond this window's own caret.
+   */
+  private followingPeerId: string | undefined;
+  /** The followed peer's name as last seen: what the indicator and every sentence say. */
+  private followingName = '';
+  /** Whether the follow has landed once: what says `following <name>` exactly once. */
+  private followingLanded = false;
+  /** The indicator: created when a follow begins, gone when it ends, and the stop control. */
+  private followStatus: vscode.StatusBarItem | undefined;
+  /** A go-to whose document has not arrived yet: re-resolved on every room event. */
+  private pendingGoTo: string | undefined;
+  /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
+  private landingCycle = 0;
+  /** The room events the follow and the pending go-to re-resolve on. */
+  private readonly stopEngine: () => void;
 
   constructor(files: GuestFileSystem, engine: SelvageEngine) {
     this.files = files;
@@ -265,6 +291,26 @@ class Session {
     // Landing in the room's first document is the whole point of "come edit my code with me";
     // the palette round trip is the chore this removes.
     this.openFromRoom();
+    // The follow re-reads presence on every frame, and a go-to whose document has not
+    // arrived yet resolves again on every event that could have brought it: the hold taken
+    // by the open is what makes the room send the text, and the anchors cannot resolve
+    // before it lands. Membership counts too: presence can arrive before the peers report
+    // names its peer, and the landing waits on the join rather than only on the caret.
+    // Listening to the engine directly is the whole hook: the bridge fans presence out
+    // only to the caret drawing, which is not where a landing belongs.
+    this.stopEngine = this.engine.on((event) => {
+      switch (event.type) {
+        case 'presenceChanged':
+        case 'documentChanged':
+        case 'peersChanged':
+        case 'documentsChanged':
+          void this.followTick();
+          void this.retryGoTo();
+          break;
+        default:
+          break;
+      }
+    });
   }
 
   /**
@@ -613,11 +659,325 @@ class Session {
     }));
   }
 
+  /**
+   * The palette's choice of participant: the programmatic id when it names someone in the
+   * room, else the rows the list already uses, with a name shared by two peers disambiguated
+   * by the shortest peer-id prefix that tells them apart. An unknown id falls through to
+   * the palette rather than an invented sentence: the rows carry the names, so a stale
+   * programmatic id still lands by hand.
+   *
+   * A picked row in no document is refused here, where the row itself says so: the row's
+   * detail reads `no shared document open`, so the refusal answers what the user just saw.
+   * Refusing on the landing instead would lie whenever presence lags the pick — a record
+   * not yet arrived reads exactly like a peer in no document — while a programmatic id
+   * pends on the next frame rather than refusing a peer whose update is one frame away.
+   */
+  async pickParticipant(
+    peerIdHint: string | undefined,
+    title: string,
+    verb: 'go to' | 'follow',
+    displayNameHint?: string,
+  ): Promise<string | undefined> {
+    const participants = this.participants();
+    if (participants.length === 0) {
+      void vscode.window.showWarningMessage('Selvage: no other participants yet.');
+      return undefined;
+    }
+    if (peerIdHint !== undefined && participants.some((peer) => peer.peerId === peerIdHint)) {
+      return peerIdHint;
+    }
+    // A name is what the Neovim commands take and what automation can know: an exact,
+    // unambiguous match lands without the palette. Several matches, or none, fall through
+    // to the rows, where the disambiguated names tell them apart by hand.
+    if (displayNameHint !== undefined) {
+      const matches = participants.filter(
+        (peer) => peerName(peer.displayName, peer.peerId) === displayNameHint,
+      );
+      if (matches.length === 1 && matches[0] !== undefined) {
+        return matches[0].peerId;
+      }
+    }
+    const picked = await vscode.window.showQuickPick(
+      participants.map((participant) => ({
+        label: participantLabel(participant, participants),
+        description: participant.role,
+        detail: participant.path ?? 'no shared document open',
+        iconPath: swatch(participant.colour),
+        peerId: participant.peerId,
+        path: participant.path,
+      })),
+      {
+        title,
+        placeHolder: 'Whose document to open, and where they are',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      },
+    );
+    if (picked !== undefined && picked.path === undefined) {
+      if (verb === 'go to') {
+        void vscode.window.showWarningMessage(
+          `Selvage: nothing to go to: ${this.displayLabel(picked.peerId)} is not in a document.`,
+        );
+      } else {
+        void vscode.window.showWarningMessage(
+          `Selvage: nothing to follow: ${this.displayLabel(picked.peerId)} is not in a document.`,
+        );
+      }
+      return undefined;
+    }
+    return picked?.peerId;
+  }
+
+  /**
+   * Go to a participant: land once where they are. A pending landing is a one-shot follow:
+   * the hold taken by the open is what makes the room send the text, so a document that has
+   * not arrived yet resolves again on every room event rather than landing at offset zero.
+   */
+  async goTo(peerId: string): Promise<void> {
+    // A deliberate navigation is the user's own act, the same class as typing: a follow
+    // would yank them back a moment later, so going somewhere stops following first.
+    if (this.followingPeerId !== undefined) {
+      this.stopFollowingWithMessage();
+    }
+    this.pendingGoTo = peerId;
+    await this.retryGoTo();
+  }
+
+  private async retryGoTo(): Promise<void> {
+    const peerId = this.pendingGoTo;
+    if (peerId === undefined) {
+      return;
+    }
+    const cycle = (this.landingCycle += 1);
+    const valid = (): boolean => cycle === this.landingCycle && this.pendingGoTo === peerId;
+    const outcome = await this.landOn(peerId, 'go', valid);
+    if (outcome !== 'waiting' && this.pendingGoTo === peerId) {
+      this.pendingGoTo = undefined;
+    }
+  }
+
+  /**
+   * Follow a participant: land where they are, and again on every frame. Re-running on the
+   * peer already followed re-lands idempotently; following someone else re-targets and the
+   * indicator re-labels. Establishing waits on the frames rather than on the read: a record
+   * not yet arrived is awareness lag, and the next frame lands.
+   *
+   * The indicator goes up before the first landing, deliberately: the target is known and a
+   * frame is incoming, so immediate feedback beats silence, and the `following <name>.`
+   * message still marks the landing itself. A programmatic follow of a peer in no document
+   * pends the same way a go-to does rather than refusing: a record not yet arrived reads
+   * exactly like a peer in no document, so refusing here would lie during awareness lag
+   * (the picker owns the refusal instead, where its row displays the staleness). The next
+   * frame tells the two apart — arrival lands, a steady absence keeps pending — and the pend
+   * holds no resources: one slot, overwritten by the next go-to, cleared by follow or stop.
+   */
+  async follow(peerId: string): Promise<void> {
+    if (this.followingPeerId === peerId) {
+      await this.followTick();
+      return;
+    }
+    this.followingPeerId = peerId;
+    this.followingName = this.displayLabel(peerId);
+    this.followingLanded = false;
+    this.pendingGoTo = undefined;
+    this.showFollowStatus();
+    await this.followTick();
+  }
+
+  /** Stop following, or say there is nothing to stop: the indicator's command lands here. */
+  stopFollowing(): void {
+    if (this.followingPeerId === undefined) {
+      void vscode.window.showWarningMessage('Selvage: not following anyone.');
+      return;
+    }
+    this.stopFollowingWithMessage();
+  }
+
+  /**
+   * Opens a room path in an editor: a guest's virtual document, or a host's own file under
+   * the folders captured at invite time. An editor already showing the path is reused, so a
+   * follow that re-lands moves the caret rather than reopening the document.
+   */
+  async openRoomPath(path: string): Promise<vscode.TextEditor | undefined> {
+    const active = vscode.window.activeTextEditor;
+    if (active !== undefined && this.editor.pathOf(active.document) === path) {
+      return active;
+    }
+    try {
+      if (this.role() === 'guest') {
+        const uri = vscode.Uri.parse(virtualUri(this.roomId(), path));
+        return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+      }
+      // The path came from a peer, so it goes through the check a read on a peer's behalf
+      // does: inside the captured folders, of a publishable shape, through plain directories.
+      // `openTextDocument` will not create a file, so this cannot plant one the way an
+      // unconditional edit could.
+      const file = await grantedFile(this.folders, path);
+      if (file === undefined) {
+        throw new Error('the path is not one this window shares');
+      }
+      return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Selvage: could not open ${path} from the room: ${message(error)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * One landing on a peer's presence: open, resolve, place the caret and reveal it. Never
+   * lands at offset zero for an anchor that does not resolve: without the text that is a
+   * frame still to come, and with the text it is a refusal with a sentence. The follow
+   * moves the follower's caret — the viewport alone is inexpressible in the Neovim client,
+   * so parity decides it for both — and publishes through the coalesced path rather than
+   * depending on the selection event, which no harness here observes firing for a
+   * programmatic move.
+   */
+  private async landOn(
+    peerId: string,
+    mode: 'go' | 'follow',
+    valid: () => boolean,
+  ): Promise<'landed' | 'waiting' | 'refused' | 'gone'> {
+    const record = this.engine.presence().find((candidate) => candidate.peer?.peer_id === peerId);
+    if (record === undefined) {
+      if (this.peers.some((peer) => peer.peer_id === peerId)) {
+        return 'waiting';
+      }
+      if (mode === 'go') {
+        void vscode.window.showWarningMessage(
+          `Selvage: nothing to go to: ${this.displayLabel(peerId)} is not in a document.`,
+        );
+        return 'refused';
+      }
+      return 'gone';
+    }
+    if (record.peer !== undefined && mode === 'follow') {
+      this.followingName = peerName(record.peer.display_name, peerId);
+    }
+    const path = record.state?.path;
+    // No path yet is not a refusal: the record may predate the publish, and the next frame
+    // tells a stale one from a peer in no document. The palette refuses its own rows, where
+    // the row says as much; a programmatic landing waits instead.
+    if (path === undefined) {
+      return 'waiting';
+    }
+    const editor = await this.openRoomPath(path);
+    // A newer frame supersedes this one: placing now would land where the peer was.
+    if (!valid()) {
+      return 'waiting';
+    }
+    if (editor === undefined) {
+      return 'refused';
+    }
+    const selection = record.state?.selection;
+    // A path without a selection is a caret still unknown — an empty document publishes no
+    // anchors — and the next frame brings it. Only a selection that is there and does not
+    // resolve is a refusal, never a landing at offset zero.
+    if (selection === undefined) {
+      return 'waiting';
+    }
+    const resolved = this.engine.resolveSelection(path, selection);
+    if (resolved === undefined) {
+      if (!this.engine.has(path)) {
+        return 'waiting';
+      }
+      if (mode === 'go') {
+        void vscode.window.showWarningMessage(
+          `Selvage: nothing to go to: ${this.displayLabel(peerId)}'s caret does not resolve here.`,
+        );
+      }
+      return 'refused';
+    }
+    const position = editor.document.positionAt(resolved.head);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(
+      new vscode.Range(position, position),
+      vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+    );
+    this.scheduleSelection();
+    return 'landed';
+  }
+
+  /**
+   * The follow's every frame: re-read presence and land again, so a peer's caret move and a
+   * document change both move this window. A frame that does not resolve is a frame with
+   * nothing to do, and the next one will; a peer gone from membership ends the follow.
+   */
+  private async followTick(): Promise<void> {
+    const peerId = this.followingPeerId;
+    if (peerId === undefined) {
+      return;
+    }
+    const cycle = (this.landingCycle += 1);
+    const valid = (): boolean => cycle === this.landingCycle && this.followingPeerId === peerId;
+    const outcome = await this.landOn(peerId, 'follow', valid);
+    if (outcome === 'gone' && this.followingPeerId === peerId) {
+      this.stopForLeftPeer();
+      return;
+    }
+    if (outcome === 'landed' && valid() && !this.followingLanded) {
+      this.followingLanded = true;
+      void vscode.window.showInformationMessage(`Selvage: following ${this.followingName}.`);
+    }
+  }
+
+  private stopFollowingWithMessage(): void {
+    const name = this.followingName;
+    this.clearFollow();
+    void vscode.window.showInformationMessage(`Selvage: stopped following ${name}.`);
+  }
+
+  private stopForLeftPeer(): void {
+    if (this.followingPeerId === undefined) {
+      return;
+    }
+    const name = this.followingName;
+    this.clearFollow();
+    void vscode.window.showWarningMessage(`Selvage: ${name} left the room, so following stopped.`);
+  }
+
+  private clearFollow(): void {
+    this.followingPeerId = undefined;
+    this.followingLanded = false;
+    this.followStatus?.dispose();
+    this.followStatus = undefined;
+  }
+
+  private showFollowStatus(): void {
+    if (this.followStatus === undefined) {
+      const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
+      item.name = 'Selvage follow';
+      // The indicator is the stop control: selecting it runs `selvage.stopFollowing`.
+      item.command = 'selvage.stopFollowing';
+      this.followStatus = item;
+    }
+    this.followStatus.text = `$(person) Selvage: following ${this.followingName}`;
+    this.followStatus.show();
+  }
+
+  /** The name a sentence says: the room's, or the id when the room left it blank. */
+  private displayLabel(peerId: string): string {
+    const peer = this.peers.find((candidate) => candidate.peer_id === peerId);
+    const display =
+      peer?.display_name ??
+      this.engine.presence().find((record) => record.peer?.peer_id === peerId)?.peer?.display_name ??
+      '';
+    return peerName(display, peerId);
+  }
+
   dispose(): void {
     if (this.finished) {
       return;
     }
     this.finished = true;
+    // The follow is session state: it goes with the session, with no sentence, the way the
+    // caret drawing and the room's document set do.
+    this.stopEngine();
+    this.followingPeerId = undefined;
+    this.pendingGoTo = undefined;
+    this.followStatus?.dispose();
+    this.followStatus = undefined;
     // A queued republish is dropped rather than sent: the room is not this window's any more.
     if (this.grantTimer !== undefined) {
       clearTimeout(this.grantTimer);
@@ -666,8 +1026,33 @@ class Session {
   private changed(document: vscode.TextDocument): void {
     const path = this.editor.pathOf(document);
     if (path !== undefined) {
+      this.localEditEndsFollow(document, path);
       this.bridge.documentChanged(path);
     }
+  }
+
+  /**
+   * A local edit of a shared document ends the follow: with the caret moved to the peer's
+   * position, typing while following would otherwise have the next frame yank the caret
+   * back, and the text land where the peer is rather than where it was typed.
+   *
+   * A remote edit must not end it, and the comparison tells the two apart without a bridge
+   * change: the bridge writes the replica's own text into the buffer when it applies a
+   * peer's edit, so the buffer then holds what the room holds, while a keystroke leaves it
+   * holding what only this window has. The comparison is the echo guard's own
+   * (`matchesReplica`): the replica is LF-only while a CRLF buffer holds `\r\n`, so a raw
+   * `===` would read every remote apply in a CRLF document as divergent and end the follow.
+   * Compared before the bridge publishes, because afterwards the replica holds the buffer
+   * either way.
+   */
+  private localEditEndsFollow(document: vscode.TextDocument, path: string): void {
+    if (this.followingPeerId === undefined) {
+      return;
+    }
+    if (matchesReplica(document.getText(), this.engine.text(path))) {
+      return;
+    }
+    this.stopFollowingWithMessage();
   }
 
   /**
@@ -736,6 +1121,19 @@ class Session {
       case 'peers': {
         this.peers = report.peers;
         this.refreshStatus();
+        // The follow target is a peer id, so a rename only re-labels the indicator while a
+        // departure ends the follow: the peer is gone from membership and its awareness state
+        // with it, so there is nothing left to land on.
+        const following = this.followingPeerId;
+        if (following !== undefined) {
+          const peer = report.peers.find((candidate) => candidate.peer_id === following);
+          if (peer === undefined) {
+            this.stopForLeftPeer();
+          } else {
+            this.followingName = peerName(peer.display_name, following);
+            this.showFollowStatus();
+          }
+        }
         break;
       }
       case 'hostDetached': {
@@ -1259,6 +1657,90 @@ async function listPeers(): Promise<void> {
       matchOnDetail: true,
     },
   );
+}
+
+/** See `HostArgs`: the same programmatic seam for `selvage.goToParticipant`. */
+export interface GoToParticipantArgs {
+  peerId?: string;
+  /** A display name to land on without the palette: exact and unambiguous, or the pick. */
+  displayName?: string;
+}
+
+/** See `HostArgs`: the same programmatic seam for `selvage.followParticipant`. */
+export interface FollowParticipantArgs {
+  peerId?: string;
+  /** A display name to follow without the palette: exact and unambiguous, or the pick. */
+  displayName?: string;
+}
+
+async function goToParticipant(args?: GoToParticipantArgs): Promise<void> {
+  const session = current;
+  if (session === undefined) {
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
+    return;
+  }
+  const peerId = await session.pickParticipant(args?.peerId, 'Go to a participant', 'go to', args?.displayName);
+  if (peerId === undefined) {
+    return;
+  }
+  await session.goTo(peerId);
+}
+
+async function followParticipant(args?: FollowParticipantArgs): Promise<void> {
+  const session = current;
+  if (session === undefined) {
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
+    return;
+  }
+  const peerId = await session.pickParticipant(args?.peerId, 'Follow a participant', 'follow', args?.displayName);
+  if (peerId === undefined) {
+    return;
+  }
+  await session.follow(peerId);
+}
+
+function stopFollowing(): void {
+  const session = current;
+  if (session === undefined) {
+    void vscode.window.showWarningMessage('Selvage: join a session first.');
+    return;
+  }
+  session.stopFollowing();
+}
+
+/**
+ * The name a row says: the display name, or the id when the room left the name blank — the
+ * rule the caret's own label follows (`cursors.ts`).
+ */
+function peerName(displayName: string, peerId: string): string {
+  return displayName === '' ? peerId : displayName;
+}
+
+/**
+ * A picker's row label, disambiguated only when it must: one `Ada` reads `Ada`, two read
+ * `Ada (p-3d334f)` and `Ada (p-a91c02)`, where the fragment is the shortest prefix of the
+ * peer id unique among the peers sharing that name. The prefix is a label only — the row
+ * carries the full id, which is what the command lands on.
+ */
+function participantLabel(participant: Participant, all: Participant[]): string {
+  const name = peerName(participant.displayName, participant.peerId);
+  if (participant.displayName === '') {
+    return name;
+  }
+  const shared = all.filter(
+    (other) => other.peerId !== participant.peerId && other.displayName === participant.displayName,
+  );
+  if (shared.length === 0) {
+    return name;
+  }
+  const ids = new Set([participant.peerId, ...shared.map((other) => other.peerId)]);
+  for (let length = 1; length <= participant.peerId.length; length += 1) {
+    const prefix = participant.peerId.slice(0, length);
+    if ([...ids].every((id) => id === participant.peerId || !id.startsWith(prefix))) {
+      return `${name} (${prefix})`;
+    }
+  }
+  return `${name} (${participant.peerId})`;
 }
 
 /**

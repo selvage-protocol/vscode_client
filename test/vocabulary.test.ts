@@ -43,6 +43,9 @@ const TITLES: Record<string, string> = {
   'selvage.leave': 'Leave the session',
   'selvage.displayName': 'Set the name other participants see',
   'selvage.peers': "List the room's participants",
+  'selvage.goToParticipant': 'Go to a participant',
+  'selvage.followParticipant': 'Follow a participant',
+  'selvage.stopFollowing': 'Stop following',
 };
 
 /**
@@ -91,6 +94,14 @@ const SENTENCES = [
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
+  // Going to a participant, and following one.
+  '`Selvage: following ${}.`',
+  '`Selvage: stopped following ${}.`',
+  "'Selvage: not following anyone.'",
+  '`Selvage: ${} left the room, so following stopped.`',
+  '`Selvage: nothing to go to: ${} is not in a document.`',
+  '`Selvage: nothing to follow: ${} is not in a document.`',
+  "`Selvage: nothing to go to: ${}'s caret does not resolve here.`",
 ];
 
 /**

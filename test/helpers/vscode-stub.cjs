@@ -33,6 +33,8 @@ const registered = {
   opened: [],
   /** The URI strings `window.showTextDocument` was given, in order. */
   shown: [],
+  /** Every editor `showTextDocument` answered with, in order. */
+  shownEditors: [],
   /** Every `createTextEditorDecorationType` call: `{ options }`, in order. */
   decorations: [],
   /** Every status bar item the extension created, as the object it kept drawing into. */
@@ -307,6 +309,7 @@ function reset() {
   registered.settingWriteFails = false;
   registered.opened.length = 0;
   registered.shown.length = 0;
+  registered.shownEditors.length = 0;
   registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
@@ -507,6 +510,15 @@ module.exports = {
     }
   },
 
+  Selection: class {
+    constructor(anchor, active) {
+      this.anchor = anchor;
+      this.active = active;
+    }
+  },
+
+  TextEditorRevealType: { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 },
+
   Range: class {
     constructor(startOrLine, startCharacter, endLine, endCharacter) {
       // The real `Range` has both shapes: `(start, end)` positions and `(line, char, line,
@@ -650,9 +662,12 @@ module.exports = {
         tooltip: undefined,
         command: undefined,
         name: '',
+        disposed: false,
         show() {},
         hide() {},
-        dispose() {},
+        dispose() {
+          item.disposed = true;
+        },
       };
       registered.statusBarItems.push(item);
       return item;
@@ -666,9 +681,22 @@ module.exports = {
     onDidChangeTextEditorSelection: event('selection'),
     onDidChangeActiveTextEditor: event('activeEditor'),
     onDidChangeVisibleTextEditors: event('visibleEditors'),
-    showTextDocument: (document) => {
+    showTextDocument: (document, options) => {
       registered.shown.push(document.uri.toString());
-      return Promise.resolve({ document });
+      // The editor the call lands in: what the extension moves and reveals, and what a test
+      // reads the landing back from. Left inactive, as the stub never is the editor: a test
+      // seats `activeTextEditor` itself, the way the passing suites already do.
+      const editor = {
+        document,
+        selection: options?.selection,
+        revealed: [],
+        revealRange(range, kind) {
+          this.revealed.push({ range, kind });
+        },
+        setDecorations: () => undefined,
+      };
+      registered.shownEditors.push(editor);
+      return Promise.resolve(editor);
     },
     showInformationMessage: (message, ...rest) => {
       registered.information.push(message);

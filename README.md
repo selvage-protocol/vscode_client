@@ -108,10 +108,12 @@ Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being aske
 
 ## Commands
 
-Seven, the same seven the Neovim client has with `:SelvageHost`, `:SelvageJoin`,
-`:SelvageDisplayName`, `:SelvageOpen`, `:SelvageCopyInvite`, `:SelvageLeave` and
-`:SelvagePeers`. Only the presentation differs: an editor command is a palette entry here and a
-`:command` there.
+Ten, the same ten the Neovim client is specified to have with `:SelvageHost`, `:SelvageJoin`,
+`:SelvageDisplayName`, `:SelvageOpen`, `:SelvageCopyInvite`, `:SelvageLeave`,
+`:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and `:SelvageStopFollowing`. Only the
+presentation differs: an editor command is a palette entry here and a `:command` there —
+so going to or following a participant is a palette pick here and a completing command
+there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
@@ -122,6 +124,9 @@ Seven, the same seven the Neovim client has with `:SelvageHost`, `:SelvageJoin`,
 | `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
+| `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
+| `Selvage: Follow a participant` | Keep landing where a participant is as they move, until stopping. The status bar shows who is followed and stops the follow when selected. A local edit of a shared document ends it; a remote one does not. |
+| `Selvage: Stop following` | Stop following. Says so when no one is followed. |
 
 The name other participants see is resolved when a session starts, in this order:
 `selvage.displayName`, then a question pre-filled with the login name. **It is bounded at 32

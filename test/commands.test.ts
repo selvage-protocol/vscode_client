@@ -37,9 +37,13 @@ function overBound(units: number): string {
 /**
  * What the status bar says the room offers. The bar is the only place this client publishes the
  * room's own document set, so it is what a test reads to know a `documents` report has landed.
+ * Found by name: the session's item is not the only one the window can hold while a follow
+ * indicator is up.
  */
 function roomOffer(bundle: LoadedExtension): string {
-  return String(bundle.stub.registered.statusBarItems.at(-1)?.tooltip ?? '');
+  return String(
+    bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.tooltip ?? '',
+  );
 }
 
 /** A server with a room, minted by a source engine, and its invite. */
