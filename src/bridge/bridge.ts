@@ -585,10 +585,18 @@ export class SessionBridge {
             refusals.push(
               `could not share ${path}: it is not a readable file in the folder this window shares (it may have been deleted after the listing was published); nothing was shared for it`,
             );
-          } else if (!this.engine.has(path)) {
-            const incoming = toCrdt(text);
-            if (incoming !== '') {
-              this.engine.insert(path, 0, incoming);
+          } else {
+            // The size was checked before the read, so a file that grew in between arrives
+            // over the bound: the read is judged the way an opened buffer is, and an
+            // oversized one is refused rather than published past the sharing bound.
+            const refusal = seedRefusal(path, text);
+            if (refusal !== undefined) {
+              refusals.push(`could not share ${path}: ${refusal}; nothing was shared for it`);
+            } else if (!this.engine.has(path)) {
+              const incoming = toCrdt(text);
+              if (incoming !== '') {
+                this.engine.insert(path, 0, incoming);
+              }
             }
           }
           report();

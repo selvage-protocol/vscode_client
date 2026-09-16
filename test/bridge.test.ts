@@ -16,6 +16,7 @@ import type { TestContext } from 'node:test';
 
 import { SessionBridge, DEFAULT_MAX_APPLY_ATTEMPTS } from '../src/bridge/bridge.ts';
 import type { BridgeOptions, Engine, Timers } from '../src/bridge/bridge.ts';
+import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import type { Cursor } from '../src/bridge/cursors.ts';
 import { render } from '../src/bridge/editing.ts';
@@ -989,6 +990,23 @@ test('a host refuses a requested path that is not a readable file, and seeds not
   );
   assert.deepEqual(host.editor.reads, [OTHER], 'the path was not even offered to the disk');
   assert.equal(session.host.has(OTHER), false, 'a refusal was seeded as an empty document');
+  assert.equal(session.host.text(OTHER), '');
+});
+
+test('a host refuses a requested path whose read outgrew the size a session will carry', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  // The read answers with more than the session carries, as a file that grew between the
+  // size check and the read does. The seed must refuse it rather than publish an oversized
+  // document past the sharing bound.
+  host.editor.disk.set(OTHER, 'x'.repeat(MAX_GRANT_FILE_BYTES + 1));
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  const refusal = await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError')[0] ?? false,
+  );
+  assert.match(refusal.message, /over the .* bytes a session will carry/);
+  assert.equal(session.host.has(OTHER), false, 'an oversized read was seeded');
   assert.equal(session.host.text(OTHER), '');
 });
 
