@@ -73,7 +73,7 @@ const SENTENCES = [
   '`Selvage: ${} is hosting again.`',
   '`Selvage: the host left the room; it closes in ${} unless they come back.`',
   '`Selvage: the room is gone (${}).`',
-  "'Selvage: the connection ended and the session is over.'",
+  "'Selvage: the connection ended and the session is over; it could not be re-established.'",
   // The invite, and the room's documents.
   "'Selvage: the invite link is on the clipboard.'",
   "'Selvage: there is no invite link: only the connection that opened the room has one.'",
@@ -81,6 +81,7 @@ const SENTENCES = [
   "'Selvage: the room has no open documents yet.'",
   "'Selvage: you are hosting, so the files you open are the ones the room has.'",
   '`Selvage: could not open ${} from the room: ${}`',
+  '`Selvage: no shared document matches "${}".`',
   "'Selvage: not in a session.'",
   "'Selvage: left the session.'",
   '`Selvage: room ${}`',

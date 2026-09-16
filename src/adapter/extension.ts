@@ -1240,7 +1240,7 @@ class Session {
       }
       case 'disconnected': {
         void vscode.window.showWarningMessage(
-          'Selvage: the connection ended and the session is over.',
+          'Selvage: the connection ended and the session is over; it could not be re-established.',
         );
         this.dispose();
         break;
@@ -1576,16 +1576,27 @@ async function openDocument(args?: OpenDocumentArgs): Promise<void> {
     } else if (paths.length === 0) {
       void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
       return;
+    } else {
+      // A caller naming a path the listing never held: the palette cannot offer it,
+      // and the gate below would return silently, so the miss is refused outright.
+      void vscode.window.showErrorMessage(`Selvage: no shared document matches "${args.path}".`);
+      return;
     }
   } else {
     if (paths.length === 0) {
       void vscode.window.showInformationMessage('Selvage: the room has no open documents yet.');
       return;
     }
-    picked = await vscode.window.showQuickPick(paths, {
-      title: 'Open a document from the room',
-      placeHolder: `${paths.length} open in this room`,
-    });
+    const single = paths[0];
+    if (paths.length === 1 && single !== undefined) {
+      // One document is no choice: reveal it directly rather than drawing a one-row picker.
+      picked = single;
+    } else {
+      picked = await vscode.window.showQuickPick(paths, {
+        title: 'Open a document from the room',
+        placeHolder: `${paths.length} open in this room`,
+      });
+    }
   }
   if (picked === undefined) {
     return;
