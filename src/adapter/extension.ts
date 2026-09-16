@@ -59,10 +59,24 @@ let current: Session | undefined;
 /** The Explorer's view of the room, created when the extension activates. */
 let grantTree: GrantTree | undefined;
 
-/** The last server a user typed, so the next prompt is a keystroke rather than a paste. */
+/**
+ * The last server a user typed, so the next prompt is a keystroke rather than a paste.
+ * In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for the next
+ * window: a server address is not a secret, and a prefill the user can still edit is not
+ * a commitment, so remembering it is safe.
+ */
 let lastServer: string | undefined;
 
+/** The `globalState` key carrying the last typed server across windows. */
+const LAST_SERVER_KEY = 'selvage.lastServer';
+
+/** The address a window hosts on when nothing was typed or configured. */
+const DEFAULT_SERVER = 'ws://127.0.0.1:8080';
+
 export function activate(context: vscode.ExtensionContext): void {
+  // A window the user typed a server into leaves it behind for the next one. The in-memory
+  // value still wins: it is what this window was told most recently.
+  lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
   const files = new GuestFileSystem();
   context.subscriptions.push(files);
   context.subscriptions.push(
@@ -81,7 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
-      void host(files, args);
+      void host(files, args, context);
     }),
     vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
       void join(files, args);
@@ -1260,7 +1274,11 @@ export interface HostArgs {
   displayName?: string;
 }
 
-async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
+async function host(
+  files: GuestFileSystem,
+  args?: HostArgs,
+  context?: vscode.ExtensionContext,
+): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
     if (inSession.role() === 'host') {
@@ -1289,13 +1307,15 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
     (await ask(
       'serverUrl',
       'The Selvage server to host on',
-      'ws://127.0.0.1:8080 — the address a selvaged prints',
-      lastServer,
+      'The server you and your guest connect to — usually the address it prints when it starts. Set "selvage.serverUrl" to stop being asked.',
+      'The address the server prints when it starts',
+      lastServer ?? DEFAULT_SERVER,
     ));
   if (baseUrl === undefined) {
     return;
   }
   lastServer = baseUrl;
+  await rememberServer(context, baseUrl);
   const displayName = await resolveDisplayName(args?.displayName);
   if (displayName === undefined) {
     return;
@@ -1764,12 +1784,14 @@ function participantLabel(participant: Participant, all: Participant[]): string 
 }
 
 /**
- * A setting when there is one, and a question when there is not. There is no default
- * server: a value baked into the extension would be an endpoint someone else chose.
+ * A setting when there is one, and a question when there is not. The question carries a
+ * prefilled fallback — the last typed server, else the default the server itself prints —
+ * so asking is a keystroke rather than a paste.
  */
 async function ask(
   key: string,
   title: string,
+  prompt: string,
   placeHolder: string,
   fallback?: string,
 ): Promise<string | undefined> {
@@ -1779,7 +1801,7 @@ async function ask(
   }
   const answer = await vscode.window.showInputBox({
     title,
-    prompt: `Set "selvage.${key}" to stop being asked.`,
+    prompt,
     placeHolder,
     value: fallback ?? '',
     ignoreFocusOut: true,
@@ -1787,6 +1809,21 @@ async function ask(
   });
   const trimmed = answer?.trim();
   return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+}
+
+/**
+ * Keeps the typed server for the next window. Memory only: a window that cannot remember
+ * still hosts, so a write that fails is dropped rather than reported.
+ */
+async function rememberServer(
+  context: vscode.ExtensionContext | undefined,
+  baseUrl: string,
+): Promise<void> {
+  try {
+    await context?.globalState?.update(LAST_SERVER_KEY, baseUrl);
+  } catch {
+    // A window that cannot remember still hosts.
+  }
 }
 
 function config(): vscode.WorkspaceConfiguration {

@@ -51,11 +51,11 @@ export function displayNameRefusal(name: string): string | undefined {
 /**
  * The question that asks for one, as `showInputBox` options.
  *
- * The bound is in the `prompt`, before anything is typed, and the count is in `validateInput`,
- * which refuses an over-long answer in the same terms — units used against units allowed —
- * while it is being typed. `value` is what the box starts with, and `current`, when given, is
- * the name in force: the entry point reports it, which is what `:SelvageDisplayName` without a
- * name does.
+ * The bound is in the `prompt`, before anything is typed, in plain words — the refusal behind
+ * `validateInput` still names the protocol's unit, because that sentence is shared with the
+ * sibling client and has to say what the room charges. `value` is what the box starts with,
+ * and `current`, when given, is the name in force: the entry point reports it, which is what
+ * `:SelvageDisplayName` without a name does.
  */
 export function displayNameInput(options: {
   title: string;
@@ -68,7 +68,7 @@ export function displayNameInput(options: {
       : ` The name others see is "${options.current}".`;
   return {
     title: options.title,
-    prompt: `At most ${MAX_DISPLAY_NAME_UNITS} UTF-16 code units; an emoji costs two.${reported}`,
+    prompt: `At most ${MAX_DISPLAY_NAME_UNITS} characters; an emoji counts as two.${reported}`,
     value: options.value,
     ignoreFocusOut: true,
     validateInput: (value: string) => displayNameRefusal(value),

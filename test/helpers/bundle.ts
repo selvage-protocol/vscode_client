@@ -102,6 +102,11 @@ export interface EditorStub {
   reset(): void;
   /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
   configure(values: Record<string, unknown>): void;
+  /** The `globalState` memento, for a test that activates with its own context. */
+  globalState: {
+    get(key: string): unknown;
+    update(key: string, value: unknown): Promise<void>;
+  };
   /** Seeds the window's working copy, as a host's folder: a file a session can enumerate. */
   put(path: string, content: string | Uint8Array, options?: { size?: number }): void;
   /**

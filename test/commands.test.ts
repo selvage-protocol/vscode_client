@@ -12,8 +12,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
+import { createRequire } from 'node:module';
 
-import { loadBundle } from './helpers/bundle.ts';
+import { BUNDLE, loadBundle } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -421,7 +422,7 @@ test('the display-name command reports the name in force and offers to change it
   const asked = await waitFor('the question', () =>
     bundle.stub.registered.inputs[0] ?? false,
   );
-  assert.match(String(asked.prompt), /At most 32 UTF-16 code units/);
+  assert.match(String(asked.prompt), /At most 32 characters/);
 
   const write = await waitFor('the setting to be written', () =>
     bundle.stub.registered.settingWrites[0] ?? false,
@@ -1309,6 +1310,69 @@ test('joining asks for the invite link with an empty box, not the clipboard', as
     'joining touched the clipboard',
   );
 });
+
+test('hosting asks for the server in plain words, prefilled with the default', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [] });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // No arguments and no reply: the box itself is under test, not the session after it.
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const asked = await waitFor('the server question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.title, 'The Selvage server to host on');
+  assert.match(String(asked.prompt), /the address it prints when it starts/);
+  assert.match(String(asked.prompt), /selvage\.serverUrl/);
+  assert.equal(asked.placeHolder, 'The address the server prints when it starts');
+  assert.equal(asked.value, 'ws://127.0.0.1:8080');
+  assert.doesNotMatch(String(asked.placeHolder), /ws:\/\//);
+  assert.doesNotMatch(String(asked.prompt), /selvaged/);
+});
+
+test('the typed server is remembered across windows', async (t) => {
+  const first = freshBundle();
+  first.stub.reset();
+  first.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    first.deactivate();
+  });
+
+  // Typed through the box at an address with nothing on it, so hosting fails — but the
+  // prompt already kept what was typed.
+  first.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  await first.stub.commands.executeCommand('selvage.host');
+  const kept = await waitFor('the server to be remembered', () =>
+    first.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
+  );
+  assert.ok(kept);
+  first.deactivate();
+
+  // A new window is a new module: nothing in memory names the address, only the memento.
+  // The recorded boxes are cleared but the memento is deliberately not reset.
+  const second = freshBundle();
+  second.stub.registered.inputs.length = 0;
+  second.stub.registered.inputReply = undefined;
+  second.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    second.deactivate();
+  });
+  await second.stub.commands.executeCommand('selvage.host');
+  const asked = await waitFor('the server question', () =>
+    second.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.value, 'ws://127.0.0.1:1');
+});
+
+/** The built bundle reloaded with fresh module state, for tests about memory across windows. */
+function freshBundle(): LoadedExtension {
+  const require = createRequire(import.meta.url);
+  delete require.cache[require.resolve(BUNDLE)];
+  return loadBundle();
+}
 
 test('the status tooltip counts the rest instead of listing the room', async (t) => {
   const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);

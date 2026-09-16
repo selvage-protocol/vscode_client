@@ -294,6 +294,24 @@ function isDirectory(path) {
 const configured = new Map();
 
 /**
+ * The `globalState` memento, as the extension's activation context carries it: memory the
+ * windows share, so a test can watch one window remember for the next. `reset` clears it,
+ * which is the one way this stand-in differs from the editor's own — nothing here may rely
+ * on a value surviving a reset except the test that deliberately avoids one.
+ */
+const memento = new Map();
+const globalState = {
+  get(key, fallback) {
+    return memento.has(key) ? memento.get(key) : fallback;
+  },
+  update(key, value) {
+    memento.set(key, value);
+    return Promise.resolve();
+  },
+  setKeysForSync() {},
+};
+
+/**
  * Clears everything a test observed and every setting it wrote, leaving registration in place.
  * A test starts from a window configured with nothing, which is the state the settings are
  * documented against; one that needs a configured value writes it itself.
@@ -332,6 +350,7 @@ function reset() {
   registered.quickPickReply = undefined;
   registered.inputReply = undefined;
   configured.clear();
+  memento.clear();
   registered.applyEditImpl = () => Promise.resolve(true);
 }
 
@@ -430,6 +449,8 @@ module.exports = {
   /** What the extension registered and did, for the tests that look. */
   registered,
   reset,
+  /** The `globalState` memento, for a test that activates with its own context. */
+  globalState,
   configure,
   /** Seeds the window's working copy, as a folder a host opens a session on. */
   put,

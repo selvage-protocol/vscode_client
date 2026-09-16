@@ -76,7 +76,9 @@ test('a blank name is refused before it is sent', () => {
 
 test('the question states the bound and refuses an over-long answer while it is typed', () => {
   const options = displayNameInput({ title: 't', value: 'Ada', current: 'Ada' });
-  assert.match(options.prompt ?? '', /At most 32 UTF-16 code units/);
+  assert.match(options.prompt ?? '', /At most 32 characters/);
+  assert.match(options.prompt ?? '', /an emoji counts as two/);
+  assert.doesNotMatch(options.prompt ?? '', /UTF-16/);
   assert.match(options.prompt ?? '', /The name others see is "Ada"/);
   assert.equal(options.value, 'Ada');
   assert.equal(options.ignoreFocusOut, true);
@@ -92,6 +94,7 @@ test('the question states the bound and refuses an over-long answer while it is 
 
 test('a question with no name in force reports nothing about one', () => {
   const options = displayNameInput({ title: 't', value: '' });
-  assert.match(options.prompt ?? '', /At most 32 UTF-16 code units/);
+  assert.match(options.prompt ?? '', /At most 32 characters/);
+  assert.doesNotMatch(options.prompt ?? '', /UTF-16/);
   assert.doesNotMatch(options.prompt ?? '', /The name others see is/);
 });
