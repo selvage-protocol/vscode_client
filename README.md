@@ -13,7 +13,7 @@ the one below it:
 |---|---|---|
 | `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect | a socket |
 | `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution | a replica and an editor interface |
-| `src/adapter/` | the `vscode` half: documents, `applyEdit`, the `FileSystemProvider`, decorations, commands, status | an editor |
+| `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
 
 **No `vscode` import outside `src/adapter/`, and `test/boundary.test.ts` enforces it** — along
 with "no undeclared dependency", "every module of the editor-independent half is reachable
@@ -35,13 +35,12 @@ $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
 $ npm run build                        # → dist/extension.js, 478.4 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then 246 tests, no server, no editor
-$ npm test                             # 250 tests: the same plus 4 against a real selvaged
+$ npm test                             # 339 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
 source and not a stale one (`test/manifest.test.ts` loads it and activates it against a stub
-`vscode`, which is how CI checks the manifest — and the guest's `FileSystemProvider` — without
-an editor).
+`vscode`, which is how CI checks the manifest without an editor).
 
 The four server-backed tests in `test/selvaged.test.ts` need a `selvaged` binary:
 
@@ -93,8 +92,8 @@ Then, in the two windows:
 3. Open a file **inside the workspace folder** — it is shared as soon as it is open, and its
    path appears in the room's open-document set.
 4. **Window two** — `Selvage: Join a session from an invite link`, paste the link, enter a display name.
-5. **Window two** — the room's document opens by itself as `selvage:/<path>?room=<room id>`,
-   editable; both windows now type into the same text and see each other's caret as a bar in
+5. **Window two** — the room's document opens by itself as a real file under the room's
+   folder in the Explorer, editable; both windows now type into the same text and see each other's caret as a bar in
    the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
    drawn over the text unless `selvage.cursorLabel` asks for it. With several documents in the
    room only the first opens; run *Selvage: Open a document from the room* to reach any of the
@@ -107,19 +106,20 @@ Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being aske
 
 ## Commands
 
-Ten, the same ten the Neovim client is specified to have with `:SelvageHost`, `:SelvageJoin`,
-`:SelvageDisplayName`, `:SelvageOpen`, `:SelvageCopyInvite`, `:SelvageLeave`,
-`:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and `:SelvageStopFollowing`. Only the
-presentation differs: an editor command is a palette entry here and a `:command` there —
-so going to or following a participant is a palette pick here and a completing command
-there, while the three intents stay one-to-one.
+Eleven, the same eleven the Neovim client is specified to have with `:SelvageHost`,
+`:SelvageJoin`, `:SelvageDisplayName`, `:SelvageOpen`, `:SelvageFetch`, `:SelvageCopyInvite`,
+`:SelvageLeave`, `:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and `:SelvageStopFollowing`.
+Only the presentation differs: an editor command is a palette entry here and a `:command`
+there — so going to or following a participant is a palette pick here and a completing
+command there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
 | `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
-| `Selvage: Open a document from the room` | Put one of the room's documents in an editor. Only a guest has virtual documents to open; a host's open files are the room's. |
+| `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
+| `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
 | `Selvage: Copy the invite link` | Put the invite on the clipboard. Only the connection that minted the room has one. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
@@ -187,10 +187,10 @@ files ship in the `.vsix` regardless.
 | `src/bridge/editing.ts` | LF in the replica, the document's own line endings on render, the smallest change between two texts that never cuts a surrogate pair, and the content comparison that stands in for an echo guard |
 | `src/bridge/bridge.ts` | `SessionBridge`: seeding, both directions of the buffer/replica loop, the save policy, the `EditorHost` interface an adapter implements |
 | `src/bridge/cursors.ts` | the remote-cursor model, and the palette a peer's colour is derived from |
-| `src/bridge/virtual.ts` | the guest's `selvage:` URIs: build, parse, refuse |
-| `src/adapter/extension.ts` | `activate`, the seven commands, the status bar, the window's listeners |
+| `src/bridge/virtual.ts` | the `selvage:` URI scheme: build, parse, refuse — no production caller since the mirror; `test/editing.test.ts` keeps it reachable |
+| `src/adapter/extension.ts` | `activate`, the eleven commands, the status bar, the window's listeners |
 | `src/adapter/documents.ts` | `WorkspaceEditor`: which documents are shared, `applyEdit`, save, line endings |
-| `src/adapter/guest-fs.ts` | the `selvage:` `FileSystemProvider`: the replica's text in, writes out |
+| `src/adapter/mirror.ts` | the room's mirror on disk: mint, materialise, republish, prune, remove |
 | `src/adapter/decorations.ts` | remote carets, selections and the overview-ruler lane; the name label when one is opted into |
 | `src/adapter/labels.ts` | what a peer's name is drawn as: nothing by default, the floating box and the documented chip as opt-ins, the bound on a drawn name, and the declarations the box rides |
 | `src/adapter/display-name.ts` | the protocol's bound on a display name, the count in UTF-16 code units, and the question that asks for one |
@@ -279,9 +279,10 @@ clamp or an offset fallback.
 The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client does about each:
 
 - **A host shares the `file:` documents open under its workspace folder**, on open and for
-  those already open when the session starts; that folder is the grant. A guest shares nothing
-  from disk — only the `selvage:` documents the room gave it. There are no exclude globs in
-  v1: what a host shares is what it has open, which is visible in its own window.
+  those already open when the session starts; that folder is the grant. A guest shares the
+  `file:` documents under its mirror root — the room's folder in the Explorer — and nothing
+  outside it. There are no exclude globs in v1: what a host shares is what it has open,
+  which is visible in its own window.
 - **The room's listing follows the host's folder.** A host watches the folders it was invited on
   — one watcher per folder, `**/*` under it — and republishes the room's grant when a file under
   one appears, disappears or changes, so a path a build, a branch switch or another terminal
@@ -355,17 +356,17 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 - **A remote edit is saved once the room settles** (500 ms after the last one, one write per
   document), because the host's working copy is the room's truth and an unsaved buffer leaves
   the file on disk stale. A local edit is the user's own and is never saved for them. Setting
-  `selvage.autoSave` to `false` leaves the buffer dirty and the file alone. A guest's virtual
-  document is saved too — its `writeFile` is a no-op, and the call is what clears the dirty
-  marker rather than leaving a save prompt at close.
-- **A guest's document is `selvage:/<path>?room=<room id>`**, behind a `FileSystemProvider`
-  (a `TextDocumentContentProvider` is read-only by contract, and guests edit). Its provider
-  refuses `delete`, `rename` and `createDirectory`, and its `readDirectory` derives a directory
-  tree by splitting the room's listing (`grantChildren`), so the room's Explorer view is a real
-  tree and a tool inside the editor sees the shape of the host's folder. That is a listing and
-  never content: a file's text is fetched when something reads it. The *Selvage* view is the
-  room's tree, and the quick-pick in *Open a document from the room* is the same listing — a
-  guest never types a path, so it cannot mistype the host's workspace-folder prefix.
+  `selvage.autoSave` to `false` leaves the buffer dirty and the file alone. A guest's mirror
+  file holds what the room already holds — the keystrokes went first — so its save writes
+  the room's own text, and the call is also what clears the dirty marker.
+- **A guest's room is a real directory**: `<globalStorage>/rooms/<room>/<window>/`, opened
+  as the window's folder — beside the person's own, or as the whole window with one reload
+  when the window has none. The listing fills its shape with empty files; content arrives
+  through the buffer, and leaving deletes the whole directory. A file the listing does not
+  name is not shared: opening or saving one says so once per path, and a republished
+  listing removes it. With several documents in the room only the first opens; the
+  quick-pick in *Open a document from the room* lists every path — a guest never types
+  one, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order. *Selvage: List the room's participants*
   prints that same colour beside each peer — the value is `peerColour(peer_id)`, the one the
@@ -457,17 +458,17 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after an empty join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after an empty join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, a join with no folder reloading onto the mirror, leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
-| `test/guest-fs.test.ts` | the guest's `FileSystemProvider` through the built extension: what it serves from the session, what it refuses to name, that a save writes nothing, and that a document outlives the room that produced it |
+| `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker without its invite, opening only our own, leave deleting the directory, and prune with adopt-first |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**250 tests, 0 failures**: 246 server-free and 4 that need a built `selvaged`. Waits are bounded
+**339 tests, 0 failures**: 335 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
