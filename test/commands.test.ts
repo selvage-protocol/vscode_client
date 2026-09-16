@@ -1533,6 +1533,258 @@ test('a fetch that times out names the empty editor instead of leaving it silent
   assert.equal(bytes.length, 0, 'the timed-out read resolved with something');
 });
 
+test('fetch outside a session says to join first', async (t) => {
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
+  const refusal = await waitFor('the join-first refusal', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('join a session first')) ??
+    false,
+  );
+  assert.equal(refusal, 'Selvage: join a session first.');
+});
+
+test('fetch while hosting says the disk already holds what a mirror would', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
+  const refusal = await waitFor('the host refusal', () =>
+    bundle.stub.registered.information.find((message) => message.includes('already on your disk')) ??
+    false,
+  );
+  assert.equal(
+    refusal,
+    'Selvage: you are hosting, so the files a mirror would hold are already on your disk.',
+  );
+});
+
+test('fetch in a room with no listing says there is nothing to fetch', async (t) => {
+  const { bundle } = await guest(t, []);
+  await bundle.stub.commands.executeCommand('selvage.fetch');
+  const said = await waitFor('the empty-listing report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('lists no files')) ??
+    false,
+  );
+  assert.equal(said, 'Selvage: the room lists no files to fetch.');
+});
+
+test('fetch holds one listed path and says what it fetched', async (t) => {
+  const { host, invite } = await room(t, []);
+  await host.grant(['notes/a.md']);
+  const bundle = activated(t);
+  // No landing: the fetch's own hold is what must pull the content, not the join's.
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length > 0 ? true : false,
+  );
+  // The hold runs detached; the host publishes while it waits, as a slow host does.
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
+  await waitFor('the fetch to ask the room', () =>
+    bundle.stub.registered.progress.find(
+      (entry) => entry.title === 'Selvage: fetching notes/a.md…',
+    ) ?? false,
+  );
+  await host.open('notes/a.md');
+  host.insert('notes/a.md', 0, 'fetched\n');
+  const notice = await waitFor('the fetch notice', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetching opens')) ??
+    false,
+  );
+  assert.equal(
+    notice,
+    'Selvage: fetching opens notes/a.md in the room, so every peer receives it.',
+  );
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('still empty')).length,
+    0,
+    'a fetch that landed was marked empty',
+  );
+  assert.equal(bundle.stub.registered.errors.length, 0, 'a fetch that landed errored');
+});
+
+test('fetch of a path the window already holds resolves without asking again', async (t) => {
+  // The room's sync carried the text at join, so there is nothing to wait for: no
+  // notice names the path, no progress runs, and the report still confirms the fetch.
+  const { host, invite } = await room(t, []);
+  await host.grant(['notes/a.md']);
+  await host.open('notes/a.md');
+  host.insert('notes/a.md', 0, 'already here\n');
+  const bundle = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length > 0 ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+  assert.equal(
+    bundle.stub.registered.information.filter((message) => message.includes('fetching opens'))
+      .length,
+    0,
+    'a fetch that asked for nothing announced a hold',
+  );
+  assert.equal(bundle.stub.registered.progress.length, 0, 'a fetch that asked for nothing waited');
+});
+
+test('fetch of a directory holds every listed path under it', async (t) => {
+  const { host, invite } = await room(t, []);
+  await host.grant(['notes/a.md', 'notes/b.md', 'other.md']);
+  const bundle = activated(t);
+  // No landing: the fetch's own holds are what must pull the content, not the join's.
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length === 2 ? true : false,
+  );
+  // One path at a time: the second hold starts once the first has landed.
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes' });
+  await waitFor('the first hold to ask the room', () =>
+    bundle.stub.registered.progress.find(
+      (entry) => entry.title === 'Selvage: fetching notes/a.md…',
+    ) ?? false,
+  );
+  await host.open('notes/a.md');
+  host.insert('notes/a.md', 0, 'held\n');
+  await waitFor('the second hold to ask the room', () =>
+    bundle.stub.registered.progress.find(
+      (entry) => entry.title === 'Selvage: fetching notes/b.md…',
+    ) ?? false,
+  );
+  await host.open('notes/b.md');
+  host.insert('notes/b.md', 0, 'held\n');
+  const notice = await waitFor('the plural fetch notice', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetching opens')) ??
+    false,
+  );
+  assert.equal(
+    notice,
+    'Selvage: fetching opens them in the room, so every peer receives them.',
+  );
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('still empty')).length,
+    0,
+    'a fetch that landed was marked empty',
+  );
+});
+
+test('fetch refuses a name the listing never held', async (t) => {
+  const { host, invite } = await room(t, []);
+  await host.grant(['a.md']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length > 0 ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'missing.md' });
+  const refusal = await waitFor('the miss to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('missing.md')) ?? false,
+  );
+  assert.equal(refusal, 'Selvage: no file the room lists matches "missing.md".');
+  assert.equal(
+    bundle.stub.registered.opened.length,
+    0,
+    'a refused fetch opened an editor anyway',
+  );
+});
+
+test('fetch of a path that left the listing reports the reason', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['doomed.txt']);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length > 0 ? true : false,
+  );
+  await host.grant([]);
+  await waitFor('the smaller listing to reach the window', () =>
+    treeOf(bundle).getChildren().length === 0 ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'doomed.txt' });
+  const refusal = await waitFor('the stale path to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ?? false,
+  );
+  assert.match(refusal, /could not fetch doomed\.txt from the room/);
+  assert.match(refusal, /the host no longer shares doomed\.txt/);
+  assert.ok(
+    !bundle.stub.registered.opened.includes(virtualUri(roomId, 'doomed.txt')),
+    'the stale path was opened anyway',
+  );
+});
+
+test('fetch without a path offers the listing to pick from', async (t) => {
+  const { host, invite } = await room(t, []);
+  await host.grant(['picked.md']);
+  const bundle = activated(t);
+  // No landing: the fetch's own hold is what must pull the content, not the join's.
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitFor('the listing to reach the window', () =>
+    treeOf(bundle).getChildren().length > 0 ? true : false,
+  );
+  bundle.stub.registered.quickPickReply = 'picked.md';
+  await bundle.stub.commands.executeCommand('selvage.fetch');
+  await waitFor('the picked hold to ask the room', () =>
+    bundle.stub.registered.progress.find(
+      (entry) => entry.title === 'Selvage: fetching picked.md…',
+    ) ?? false,
+  );
+  await host.open('picked.md');
+  host.insert('picked.md', 0, 'picked\n');
+  const asked = await waitFor('the listing prompt', () =>
+    bundle.stub.registered.quickPicks.find(
+      (entry) => (entry.options as { title?: string }).title === 'Fetch a path from the room',
+    ) ?? false,
+  );
+  assert.deepEqual(asked.items, ['picked.md']);
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+});
+
 /**
  * Reads a room path through the guest provider, as the editor opening it does. The read
  * must wait on the room — a path the replica already holds would answer synchronously
