@@ -156,3 +156,36 @@ test('the listing names only what the room may serve', async (t) => {
   assert.deepEqual(paths, ['src/main.rs']);
   assert.ok(await isShareableFile((await grantedFile(folders(), 'src/main.rs'))!));
 });
+
+test('a case-folded variant is not servable on a case-insensitive mount', async (t) => {
+  stub.reset();
+  const fs = vscode.workspace.fs as unknown as Record<string, unknown>;
+  const originalStat = fs['stat'] as (uri: unknown) => Promise<unknown>;
+  t.after(() => {
+    stub.reset();
+    fs['stat'] = originalStat;
+  });
+  stub.put('.git/config', 'secret\n');
+  stub.put('.env', 'SECRET=1\n');
+  stub.put('id_rsa', 'secret\n');
+  stub.put('src/main.rs', 'inside\n');
+
+  fs['stat'] = (async (uri: unknown) => {
+    try {
+      return await (originalStat as (uri: unknown) => Promise<unknown>)(uri);
+    } catch {
+      const lowered = String(uri).toLowerCase();
+      const fake = {
+        ...(typeof uri === 'object' && uri !== null ? (uri as Record<string, unknown>) : {}),
+        toString: () => lowered,
+        path: lowered.replace(/^file:\/\//, ''),
+      };
+      return await (originalStat as (uri: unknown) => Promise<unknown>)(fake);
+    }
+  }) as unknown;
+
+  assert.equal(await grantedFile(folders(), '.GIT/config'), undefined);
+  assert.equal(await grantedFile(folders(), '.ENV'), undefined);
+  assert.equal(await grantedFile(folders(), 'ID_RSA'), undefined);
+  assert.ok((await grantedFile(folders(), 'src/main.rs')) !== undefined);
+});
