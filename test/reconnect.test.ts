@@ -98,6 +98,27 @@ test('a dropped guest re-hellos under a fresh awareness client id', async (t) =>
   assert.notEqual(secondAwarenessId, firstAwarenessId);
 });
 
+test('a dropped socket reports reconnecting before it rejoins', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { guest } = session;
+  const events = record(guest);
+  session.server.drop('Bob');
+
+  // The engine owns the backoff, and the adapter cannot infer it from silence — so the
+  // retry is an event of its own, ahead of the re-seat.
+  await events.waitForEvent('the reconnecting report', (event) => event.type === 'reconnecting');
+  assert.deepEqual(
+    events.types().filter((type) => type === 'disconnected'),
+    [],
+    'a reconnectable drop is not a lost session',
+  );
+});
+
 test('a host that dropped reclaims its room rather than minting a second one', async (t) => {
   const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
   t.after(async () => {

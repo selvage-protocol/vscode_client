@@ -817,6 +817,8 @@ export class SelvageEngine {
       this.reconnect.maxDelayMs,
     );
     this.attempts += 1;
+    // Said out loud, so an adapter can show the retry without inferring it from silence.
+    this.emit({ type: 'reconnecting' });
     this.retryTimer = setTimeout(() => {
       void this.reopen();
     }, delay);

@@ -202,6 +202,8 @@ class Session {
    */
   private readonly seenListed = new Set<string>();
   private detachedMs: number | undefined;
+  /** The socket dropped and the engine's bounded retry is running. */
+  private reconnecting = false;
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
   private autoOpen: boolean;
@@ -1148,6 +1150,9 @@ class Session {
     switch (report.kind) {
       case 'documents': {
         this.documents = report.documents;
+        // A seat reports the document set — the first one and every re-seat — so the
+        // retry is over whenever this arrives.
+        this.reconnecting = false;
         this.refreshStatus();
         grantTree?.refresh();
         this.openFromRoom();
@@ -1226,6 +1231,11 @@ class Session {
         );
         break;
       }
+      case 'reconnecting': {
+        this.reconnecting = true;
+        this.refreshStatus();
+        break;
+      }
       case 'disconnected': {
         void vscode.window.showWarningMessage(
           'Selvage: the connection ended and the session is over.',
@@ -1238,6 +1248,11 @@ class Session {
 
   private refreshStatus(): void {
     const shared = this.bridge.openDocuments();
+    if (this.reconnecting) {
+      this.status.text = '$(sync~spin) Selvage: reconnecting…';
+      this.status.tooltip = 'The connection dropped; trying to rejoin the room.';
+      return;
+    }
     if (this.detachedMs !== undefined) {
       this.status.text = '$(warning) Selvage: the host is away';
       this.status.tooltip = `The room closes in ${seconds(this.detachedMs)} if the host does not come back.`;

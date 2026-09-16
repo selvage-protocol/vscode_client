@@ -1518,6 +1518,38 @@ function readRoomFile(bundle: LoadedExtension, roomId: string, path: string): Pr
   return bytes;
 }
 
+test('a dropped connection shows reconnecting in the status bar', async (t) => {
+  const server = await FakeServer.start();
+  let stopped = false;
+  t.after(async () => {
+    if (!stopped) {
+      await server.stop();
+    }
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  const bar = (): string =>
+    String(
+      bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+    );
+  assert.match(bar(), /hosting/, 'the steady state was never shown');
+
+  // The drop is the server going away mid-session; the bounded retry is the engine's, and
+  // the bar must say so instead of holding the steady-state text while retries run.
+  await server.stop();
+  stopped = true;
+  const retrying = await waitFor('the reconnecting state', () =>
+    bar().includes('reconnecting') ? bar() : false,
+  );
+  assert.match(retrying, /reconnecting…/);
+});
+
 test('the status tooltip counts the rest instead of listing the room', async (t) => {
   const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
   const { bundle } = await guest(t, paths);

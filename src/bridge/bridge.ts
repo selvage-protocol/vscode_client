@@ -106,6 +106,8 @@ export type Report =
   | { kind: 'divergence'; path: string }
   /** The document could not be written; the file on disk is stale. */
   | { kind: 'saveFailed'; path: string; message?: string }
+  /** The socket dropped mid-session and the bounded retry is running. */
+  | { kind: 'reconnecting' }
   | { kind: 'disconnected' };
 
 /** Timers, so the save policy is testable without waiting for one. */
@@ -909,6 +911,10 @@ export class SessionBridge {
           code: event.code,
           message: event.message,
         });
+        break;
+      }
+      case 'reconnecting': {
+        this.host.report({ kind: 'reconnecting' });
         break;
       }
       case 'disconnected': {
