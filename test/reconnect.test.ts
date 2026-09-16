@@ -98,6 +98,53 @@ test('a dropped guest re-hellos under a fresh awareness client id', async (t) =>
   assert.notEqual(secondAwarenessId, firstAwarenessId);
 });
 
+test('a dropped socket reports reconnecting before it rejoins', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { guest } = session;
+  const events = record(guest);
+  session.server.drop('Bob');
+
+  // The engine owns the backoff, and the adapter cannot infer it from silence — so the
+  // retry is an event of its own, ahead of the re-seat.
+  await events.waitForEvent('the reconnecting report', (event) => event.type === 'reconnecting');
+  assert.deepEqual(
+    events.types().filter((type) => type === 'disconnected'),
+    [],
+    'a reconnectable drop is not a lost session',
+  );
+});
+
+test('a disconnect from a reconnecting listener schedules no retry', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { guest, server } = session;
+  const accepted = server.acceptedConnections;
+  const events = record(guest);
+  guest.on((event) => {
+    if (event.type === 'reconnecting') {
+      void guest.disconnect();
+    }
+  });
+  server.drop('Bob');
+  await events.waitForEvent('the reconnecting report', (event) => event.type === 'reconnecting');
+  // Several backoff windows pass: a leaked retry would open a connection in the first.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(
+    server.acceptedConnections,
+    accepted,
+    'a retry reached the server after the session ended',
+  );
+});
+
 test('a host that dropped reclaims its room rather than minting a second one', async (t) => {
   const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
   t.after(async () => {

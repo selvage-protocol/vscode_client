@@ -12,8 +12,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
+import { createRequire } from 'node:module';
 
-import { loadBundle } from './helpers/bundle.ts';
+import { BUNDLE, loadBundle } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -421,7 +422,7 @@ test('the display-name command reports the name in force and offers to change it
   const asked = await waitFor('the question', () =>
     bundle.stub.registered.inputs[0] ?? false,
   );
-  assert.match(String(asked.prompt), /At most 32 UTF-16 code units/);
+  assert.match(String(asked.prompt), /some emoji and accented characters count as more than one/);
 
   const write = await waitFor('the setting to be written', () =>
     bundle.stub.registered.settingWrites[0] ?? false,
@@ -1308,6 +1309,252 @@ test('joining asks for the invite link with an empty box, not the clipboard', as
     'the password copied just before joining',
     'joining touched the clipboard',
   );
+});
+
+test('hosting asks for the server in plain words, prefilled with the default', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [] });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // No arguments and no reply: the box itself is under test, not the session after it.
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const asked = await waitFor('the server question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.title, 'The Selvage server to host on');
+  assert.match(String(asked.prompt), /the address it prints when it starts/);
+  assert.match(String(asked.prompt), /selvage\.serverUrl/);
+  assert.equal(asked.placeHolder, 'The address the server prints when it starts');
+  assert.equal(asked.value, 'ws://127.0.0.1:8080');
+  assert.doesNotMatch(String(asked.placeHolder), /ws:\/\//);
+  assert.doesNotMatch(String(asked.prompt), /selvaged/);
+});
+
+test('the typed server is remembered across windows', async (t) => {
+  const first = freshBundle();
+  first.stub.reset();
+  first.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    first.deactivate();
+  });
+
+  // Typed through the box at an address with nothing on it, so hosting fails — but the
+  // prompt already kept what was typed.
+  first.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  await first.stub.commands.executeCommand('selvage.host');
+  const kept = await waitFor('the server to be remembered', () =>
+    first.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
+  );
+  assert.ok(kept);
+  first.deactivate();
+
+  // A new window is a new module: nothing in memory names the address, only the memento.
+  // The recorded boxes are cleared but the memento is deliberately not reset.
+  const second = freshBundle();
+  second.stub.registered.inputs.length = 0;
+  second.stub.registered.inputReply = undefined;
+  second.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    second.deactivate();
+  });
+  await second.stub.commands.executeCommand('selvage.host');
+  const asked = await waitFor('the server question', () =>
+    second.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.value, 'ws://127.0.0.1:1');
+});
+
+/** The built bundle reloaded with fresh module state, for tests about memory across windows. */
+function freshBundle(): LoadedExtension {
+  const require = createRequire(import.meta.url);
+  delete require.cache[require.resolve(BUNDLE)];
+  return loadBundle();
+}
+
+test('joining refuses a bad link in the box, before connecting', async (t) => {
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const asked = await waitFor('the join question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  const validate = asked.validateInput as (value: string) => string | undefined;
+  assert.equal(
+    validate('ws://127.0.0.1:8080/session?room=r&token=t'),
+    undefined,
+    'a whole invite link was refused',
+  );
+  // A truncated paste, a server address, and nothing at all: all fail here, in plain
+  // words, rather than later as whatever the engine said.
+  assert.equal(
+    validate('wss://host:8080/session?room=r&token=t'),
+    undefined,
+    'a secure invite link was refused',
+  );
+  for (const bad of [
+    'ws://127.0.0.1:8080/session?room=r',
+    'ws://127.0.0.1:8080/not-a-session',
+    'ws://127.0.0.1:8080',
+    'not-a-url/session?room=r&token=t',
+    'https://host/session?room=r&token=t',
+    '',
+  ]) {
+    const refusal = validate(bad);
+    assert.match(String(refusal), /does not look like a Selvage invite link/);
+    assert.match(String(refusal), /Paste the whole link the host sent you/);
+    assert.match(String(refusal), /\/session\?room=/);
+  }
+  assert.equal(
+    bundle.stub.registered.errors.length,
+    0,
+    'validating the box opened a connection',
+  );
+});
+
+test('a join to a dead server says what to check, not just the engine error', async (t) => {
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: 'ws://127.0.0.1:1/session?room=r&token=t',
+    displayName: 'Bob',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
+  );
+  assert.match(said, /check the link is complete and the server is running/);
+  assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
+});
+
+test('a host to a dead server says what to check, not just the engine error', async (t) => {
+  const bundle = activated(t);
+  bundle.stub.registered.inputReply = 'Ada';
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: 'ws://127.0.0.1:1',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not host')) ?? false,
+  );
+  assert.match(said, /ws:\/\/127\.0\.0\.1:1/);
+  assert.match(said, /is the server running at that address/);
+  assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
+});
+
+test('joining names the rest of the room the landing does not open', async (t) => {
+  const { bundle, roomId } = await guest(t, ['workspace/README.md', 'workspace/src/main.rs']);
+  const joined = await waitFor('the join sentence', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.equal(
+    joined,
+    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more in the Selvage view.`,
+  );
+});
+
+test('a guest sees a fetch loading, and no empty warning when it lands', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+
+  const reading = readRoomFile(bundle, roomId, 'workspace/fresh.md');
+  const notice = await waitFor('the fetching notice', () =>
+    bundle.stub.registered.progress.find((entry) =>
+      entry.title === 'Selvage: fetching workspace/fresh.md…',
+    ) ?? false,
+  );
+  assert.equal(notice.location, bundle.stub.ProgressLocation.Notification);
+
+  await host.open('workspace/fresh.md');
+  host.insert('workspace/fresh.md', 0, 'hello\n');
+  const bytes = await reading;
+  assert.equal(new TextDecoder().decode(bytes), 'hello\n');
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('still empty')).length,
+    0,
+    'a fetch that landed was marked empty',
+  );
+});
+
+test('a fetch that times out names the empty editor instead of leaving it silent', async (t) => {
+  // The host holds nothing, so nothing can arrive: the read waits out the whole bounded wait.
+  const { invite, roomId } = await room(t, []);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+
+  const reading = readRoomFile(bundle, roomId, 'workspace/lonely.md');
+  const warned = await waitFor(
+    'the still-empty warning',
+    () =>
+      bundle.stub.registered.warnings.find((message) => message.includes('is still empty')) ?? false,
+    { timeoutMs: 15000 },
+  );
+  assert.equal(
+    warned,
+    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet.',
+  );
+  const bytes = await reading;
+  assert.equal(bytes.length, 0, 'the timed-out read resolved with something');
+});
+
+/**
+ * Reads a room path through the guest provider, as the editor opening it does. The read
+ * must wait on the room — a path the replica already holds would answer synchronously
+ * and say nothing about loading.
+ */
+function readRoomFile(bundle: LoadedExtension, roomId: string, path: string): Promise<Uint8Array> {
+  const files = bundle.stub.registered.files;
+  assert.ok(files !== undefined, 'the guest file system was never registered');
+  const uriString = virtualUri(roomId, path);
+  const question = uriString.indexOf('?');
+  const bytes = files.readFile({
+    scheme: 'selvage',
+    path: uriString.slice(uriString.indexOf('/'), question),
+    query: uriString.slice(question + 1),
+    toString: () => uriString,
+  });
+  assert.ok(bytes instanceof Promise, 'a read that must ask the room answered synchronously');
+  return bytes;
+}
+
+test('a dropped connection shows reconnecting in the status bar', async (t) => {
+  const server = await FakeServer.start();
+  let stopped = false;
+  t.after(async () => {
+    if (!stopped) {
+      await server.stop();
+    }
+  });
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  const bar = (): string =>
+    String(
+      bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+    );
+  assert.match(bar(), /hosting/, 'the steady state was never shown');
+
+  // The drop is the server going away mid-session; the bounded retry is the engine's, and
+  // the bar must say so instead of holding the steady-state text while retries run.
+  await server.stop();
+  stopped = true;
+  const retrying = await waitFor('the reconnecting state', () =>
+    bar().includes('reconnecting') ? bar() : false,
+  );
+  assert.match(retrying, /reconnecting…/);
 });
 
 test('the status tooltip counts the rest instead of listing the room', async (t) => {

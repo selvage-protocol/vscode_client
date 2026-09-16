@@ -76,7 +76,9 @@ test('a blank name is refused before it is sent', () => {
 
 test('the question states the bound and refuses an over-long answer while it is typed', () => {
   const options = displayNameInput({ title: 't', value: 'Ada', current: 'Ada' });
-  assert.match(options.prompt ?? '', /At most 32 UTF-16 code units/);
+  assert.match(options.prompt ?? '', /At most 32 characters/);
+  assert.match(options.prompt ?? '', /some emoji and accented characters count as more than one/);
+  assert.doesNotMatch(options.prompt ?? '', /UTF-16/);
   assert.match(options.prompt ?? '', /The name others see is "Ada"/);
   assert.equal(options.value, 'Ada');
   assert.equal(options.ignoreFocusOut, true);
@@ -86,12 +88,16 @@ test('the question states the bound and refuses an over-long answer while it is 
   assert.equal(validate('a'.repeat(MAX_DISPLAY_NAME_UNITS)), undefined);
   assert.match(validate('a'.repeat(33)) ?? '', /33 UTF-16 code units/);
   assert.match(validate(EMOJI.repeat(17)) ?? '', /34 UTF-16 code units/);
+  // A flag is one displayed character and four of the room's units: the prompt must not
+  // promise that every emoji costs two.
+  assert.match(validate(`${'a'.repeat(29)}\u{1f1fa}\u{1f1f8}`) ?? '', /33 UTF-16 code units/);
   // Enter cannot accept a refusal: what comes back is a message and the box stays open.
   assert.match(validate('   ') ?? '', /a name is needed/);
 });
 
 test('a question with no name in force reports nothing about one', () => {
   const options = displayNameInput({ title: 't', value: '' });
-  assert.match(options.prompt ?? '', /At most 32 UTF-16 code units/);
+  assert.match(options.prompt ?? '', /At most 32 characters/);
+  assert.doesNotMatch(options.prompt ?? '', /UTF-16/);
   assert.doesNotMatch(options.prompt ?? '', /The name others see is/);
 });

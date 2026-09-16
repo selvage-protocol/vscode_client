@@ -11,7 +11,12 @@ import * as vscode from 'vscode';
 
 import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
-import { SelvageEngine, code as errCode, isProtocolError } from '../engine/index.ts';
+import {
+  SelvageEngine,
+  code as errCode,
+  isProtocolError,
+  parseSessionUrl,
+} from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -59,10 +64,24 @@ let current: Session | undefined;
 /** The Explorer's view of the room, created when the extension activates. */
 let grantTree: GrantTree | undefined;
 
-/** The last server a user typed, so the next prompt is a keystroke rather than a paste. */
+/**
+ * The last server a user typed, so the next prompt is a keystroke rather than a paste.
+ * In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for the next
+ * window: a server address is not a secret, and a prefill the user can still edit is not
+ * a commitment, so remembering it is safe.
+ */
 let lastServer: string | undefined;
 
+/** The `globalState` key carrying the last typed server across windows. */
+const LAST_SERVER_KEY = 'selvage.lastServer';
+
+/** The address a window hosts on when nothing was typed or configured. */
+const DEFAULT_SERVER = 'ws://127.0.0.1:8080';
+
 export function activate(context: vscode.ExtensionContext): void {
+  // A window the user typed a server into leaves it behind for the next one. The in-memory
+  // value still wins: it is what this window was told most recently.
+  lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
   const files = new GuestFileSystem();
   context.subscriptions.push(files);
   context.subscriptions.push(
@@ -81,7 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
-      void host(files, args);
+      void host(files, args, context);
     }),
     vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
       void join(files, args);
@@ -183,6 +202,8 @@ class Session {
    */
   private readonly seenListed = new Set<string>();
   private detachedMs: number | undefined;
+  /** The socket dropped and the engine's bounded retry is running. */
+  private reconnecting = false;
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
   private autoOpen: boolean;
@@ -396,6 +417,25 @@ class Session {
     if (this.engine.has(path)) {
       return Promise.resolve();
     }
+    // A read that has to ask the room says so while it waits: without the notice the tab
+    // opens when the wait is over and nothing says it was ever loading.
+    return Promise.resolve(
+      vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Selvage: fetching ${path}…`,
+        },
+        () => this.waitForText(path),
+      ),
+    );
+  }
+
+  /**
+   * The wait `fetch` shows its notice over: the hold, the listener, and the bounded wait.
+   * A wait that gives up with the replica still holding nothing is named out loud rather
+   * than left as a silent empty editor: the host has not sent the text yet.
+   */
+  private waitForText(path: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       let opened = false;
@@ -426,6 +466,13 @@ class Session {
         ) {
           reject(new Error(leftListingNotice(path)));
           return;
+        }
+        // A session that ended mid-wait owes no marker: the tab it leaves behind keeps
+        // whatever the freeze gave it, and a warning about a room already left misleads.
+        if (!this.finished && !this.engine.has(path)) {
+          void vscode.window.showWarningMessage(
+            `Selvage: ${path} is still empty: the host has not sent its text yet.`,
+          );
         }
         resolve();
       };
@@ -1105,6 +1152,9 @@ class Session {
     switch (report.kind) {
       case 'documents': {
         this.documents = report.documents;
+        // A seat reports the document set — the first one and every re-seat — so the
+        // retry is over whenever this arrives.
+        this.reconnecting = false;
         this.refreshStatus();
         grantTree?.refresh();
         this.openFromRoom();
@@ -1183,6 +1233,11 @@ class Session {
         );
         break;
       }
+      case 'reconnecting': {
+        this.reconnecting = true;
+        this.refreshStatus();
+        break;
+      }
       case 'disconnected': {
         void vscode.window.showWarningMessage(
           'Selvage: the connection ended and the session is over.',
@@ -1195,6 +1250,11 @@ class Session {
 
   private refreshStatus(): void {
     const shared = this.bridge.openDocuments();
+    if (this.reconnecting) {
+      this.status.text = '$(sync~spin) Selvage: reconnecting…';
+      this.status.tooltip = 'The connection dropped; trying to rejoin the room.';
+      return;
+    }
     if (this.detachedMs !== undefined) {
       this.status.text = '$(warning) Selvage: the host is away';
       this.status.tooltip = `The room closes in ${seconds(this.detachedMs)} if the host does not come back.`;
@@ -1260,7 +1320,11 @@ export interface HostArgs {
   displayName?: string;
 }
 
-async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
+async function host(
+  files: GuestFileSystem,
+  args?: HostArgs,
+  context?: vscode.ExtensionContext,
+): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
     if (inSession.role() === 'host') {
@@ -1289,13 +1353,15 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
     (await ask(
       'serverUrl',
       'The Selvage server to host on',
-      'ws://127.0.0.1:8080 — the address a selvaged prints',
-      lastServer,
+      'The server you and your guest connect to — usually the address it prints when it starts. Set "selvage.serverUrl" to stop being asked.',
+      'The address the server prints when it starts',
+      lastServer ?? DEFAULT_SERVER,
     ));
   if (baseUrl === undefined) {
     return;
   }
   lastServer = baseUrl;
+  await rememberServer(context, baseUrl);
   const displayName = await resolveDisplayName(args?.displayName);
   if (displayName === undefined) {
     return;
@@ -1304,7 +1370,9 @@ async function host(files: GuestFileSystem, args?: HostArgs): Promise<void> {
   try {
     engine = await SelvageEngine.host(baseUrl, displayName, { client: CLIENT });
   } catch (error) {
-    void vscode.window.showErrorMessage(`Selvage: ${message(error)}`);
+    void vscode.window.showErrorMessage(
+      `Selvage: could not host on ${baseUrl} (${message(error)}); is the server running at that address?`,
+    );
     return;
   }
   current = new Session(files, engine);
@@ -1355,6 +1423,7 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
       placeHolder: 'ws://host:8080/session?room=…&token=…',
       value: '',
       ignoreFocusOut: true,
+      validateInput: (value) => inviteLinkRefusal(value),
     });
   }
   if (invite === undefined) {
@@ -1368,13 +1437,53 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   try {
     engine = await SelvageEngine.join(invite, displayName, { client: CLIENT });
   } catch (error) {
-    void vscode.window.showErrorMessage(`Selvage: ${message(error)}`);
+    void vscode.window.showErrorMessage(
+      `Selvage: could not join the session (${message(error)}); check the link is complete and the server is running.`,
+    );
     return;
   }
   current = new Session(files, engine);
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
+}
+
+/**
+ * Why a join box value is not an invite link, or `undefined` when it is. A truncated paste
+ * fails here, in plain words saying what a good link looks like, rather than later as
+ * whatever the engine said: a newcomer cannot tell "bad paste" from "server down" from
+ * an ECONNREFUSED. The engine still refuses one that arrives by argument.
+ */
+function inviteLinkRefusal(value: string): string | undefined {
+  const invite = value.trim();
+  // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
+  // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
+  // pass this box and fail later inside the engine.
+  let url: URL;
+  try {
+    url = new URL(invite);
+  } catch {
+    return inviteLinkHint();
+  }
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+    return inviteLinkHint();
+  }
+  const parsed = parseSessionUrl(invite);
+  if (
+    parsed === undefined ||
+    parsed.join.room === undefined ||
+    parsed.join.room === '' ||
+    parsed.join.token === undefined ||
+    parsed.join.token === ''
+  ) {
+    return inviteLinkHint();
+  }
+  return undefined;
+}
+
+/** What a good invite link looks like, for the join box refusal. */
+function inviteLinkHint(): string {
+  return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like ws://host:8080/session?room=…&token=….';
 }
 
 /**
@@ -1387,9 +1496,14 @@ function joinedMessage(roomId: string, documents: string[]): string {
   if (first === undefined) {
     return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
   }
-  return opensOnJoin()
-    ? `Selvage: joined room ${roomId}; opening ${first}.`
-    : `Selvage: joined room ${roomId}.`;
+  if (!opensOnJoin()) {
+    return `Selvage: joined room ${roomId}.`;
+  }
+  // The landing opens one document; the rest wait behind the picker and the tree, so the
+  // join names them rather than leaving the guest to assume the room is one file.
+  const rest = documents.length - 1;
+  const more = rest > 0 ? ` and ${rest} more in the Selvage view` : '';
+  return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
 }
 
 /**
@@ -1764,12 +1878,14 @@ function participantLabel(participant: Participant, all: Participant[]): string 
 }
 
 /**
- * A setting when there is one, and a question when there is not. There is no default
- * server: a value baked into the extension would be an endpoint someone else chose.
+ * A setting when there is one, and a question when there is not. The question carries a
+ * prefilled fallback — the last typed server, else the default the server itself prints —
+ * so asking is a keystroke rather than a paste.
  */
 async function ask(
   key: string,
   title: string,
+  prompt: string,
   placeHolder: string,
   fallback?: string,
 ): Promise<string | undefined> {
@@ -1779,7 +1895,7 @@ async function ask(
   }
   const answer = await vscode.window.showInputBox({
     title,
-    prompt: `Set "selvage.${key}" to stop being asked.`,
+    prompt,
     placeHolder,
     value: fallback ?? '',
     ignoreFocusOut: true,
@@ -1787,6 +1903,21 @@ async function ask(
   });
   const trimmed = answer?.trim();
   return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+}
+
+/**
+ * Keeps the typed server for the next window. Memory only: a window that cannot remember
+ * still hosts, so a write that fails is dropped rather than reported.
+ */
+async function rememberServer(
+  context: vscode.ExtensionContext | undefined,
+  baseUrl: string,
+): Promise<void> {
+  try {
+    await context?.globalState?.update(LAST_SERVER_KEY, baseUrl);
+  } catch {
+    // A window that cannot remember still hosts.
+  }
 }
 
 function config(): vscode.WorkspaceConfiguration {

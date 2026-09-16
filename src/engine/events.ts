@@ -27,6 +27,12 @@ export type EngineEvent =
   | { type: 'roomGone'; reason: string }
   /** A fault the server could not attach to a request: `session.error`. */
   | { type: 'sessionError'; code: string; message: string }
+  /**
+   * The socket dropped mid-session and the bounded retry (§9.1) is running. An adapter
+   * shows this instead of inferring it from silence; the re-seat or the give-up follows
+   * as its own event.
+   */
+  | { type: 'reconnecting' }
   /** The connection ended for another reason, or reconnection gave up. */
   | { type: 'disconnected' };
 

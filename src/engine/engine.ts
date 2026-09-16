@@ -817,6 +817,13 @@ export class SelvageEngine {
       this.reconnect.maxDelayMs,
     );
     this.attempts += 1;
+    // Said out loud, so an adapter can show the retry without inferring it from silence.
+    this.emit({ type: 'reconnecting' });
+    // A listener may have ended the session from the event above; scheduling the retry
+    // after it would reopen a destroyed engine.
+    if (this.disposed || this.finished) {
+      return;
+    }
     this.retryTimer = setTimeout(() => {
       void this.reopen();
     }, delay);

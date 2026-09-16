@@ -26,6 +26,8 @@ const registered = {
   warnings: [],
   errors: [],
   quickPicks: [],
+  /** Every progress notice the extension showed, in order: a fetch in flight names its path. */
+  progress: [],
   inputs: [],
   /** Every configuration write: `{ key, value, target }`, in order. */
   settingWrites: [],
@@ -294,6 +296,24 @@ function isDirectory(path) {
 const configured = new Map();
 
 /**
+ * The `globalState` memento, as the extension's activation context carries it: memory the
+ * windows share, so a test can watch one window remember for the next. `reset` clears it,
+ * which is the one way this stand-in differs from the editor's own — nothing here may rely
+ * on a value surviving a reset except the test that deliberately avoids one.
+ */
+const memento = new Map();
+const globalState = {
+  get(key, fallback) {
+    return memento.has(key) ? memento.get(key) : fallback;
+  },
+  update(key, value) {
+    memento.set(key, value);
+    return Promise.resolve();
+  },
+  setKeysForSync() {},
+};
+
+/**
  * Clears everything a test observed and every setting it wrote, leaving registration in place.
  * A test starts from a window configured with nothing, which is the state the settings are
  * documented against; one that needs a configured value writes it itself.
@@ -307,6 +327,7 @@ function reset() {
   registered.warnings.length = 0;
   registered.errors.length = 0;
   registered.quickPicks.length = 0;
+  registered.progress.length = 0;
   registered.inputs.length = 0;
   registered.settingWrites.length = 0;
   registered.settingWriteFails = false;
@@ -332,6 +353,7 @@ function reset() {
   registered.quickPickReply = undefined;
   registered.inputReply = undefined;
   configured.clear();
+  memento.clear();
   registered.applyEditImpl = () => Promise.resolve(true);
 }
 
@@ -430,6 +452,8 @@ module.exports = {
   /** What the extension registered and did, for the tests that look. */
   registered,
   reset,
+  /** The `globalState` memento, for a test that activates with its own context. */
+  globalState,
   configure,
   /** Seeds the window's working copy, as a folder a host opens a session on. */
   put,
@@ -490,6 +514,8 @@ module.exports = {
   },
 
   StatusBarAlignment: { Left: 1, Right: 2 },
+
+  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
 
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
 
@@ -737,6 +763,12 @@ module.exports = {
     showInputBox: (options) => {
       registered.inputs.push(options);
       return Promise.resolve(registered.inputReply);
+    },
+    withProgress: (options, task) => {
+      registered.progress.push(options);
+      return Promise.resolve().then(() =>
+        task({ report() {} }, { isCancellationRequested: false }),
+      );
     },
     /** A tree view, with the provider the extension registered for it. */
     createTreeView: (id, options) => {
