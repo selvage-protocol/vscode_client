@@ -17,8 +17,7 @@ import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
-import { virtualUri } from '../src/bridge/virtual.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { options } from './helpers/session.ts';
@@ -31,11 +30,16 @@ const TEXT_B = 'xxx\nyyy\nzzz\n';
 
 interface Seat {
   bundle: LoadedExtension;
+  storage: string;
   server: FakeServer;
   host: SelvageEngine;
   invite: string;
   roomId: string;
   hostId: string;
+  /** The guest's mirror root: every room file the tests open lives under it. */
+  mirrorRoot: string;
+  /** A `file:` URI string for a room path, as the adapter opens it. */
+  roomFile(path: string): string;
 }
 
 /** A room with text in every path, and the bundle joined to it as `Bob`. */
@@ -55,7 +59,12 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
 
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(() => {
     bundle.deactivate();
   });
@@ -67,7 +76,19 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
   await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
   );
-  return { bundle, server, host, invite, roomId: host.session().roomId, hostId: host.session().peer.peer_id };
+  const roomId = host.session().roomId;
+  const mirrorRoot = mirrorWindowDir(storage, roomId);
+  return {
+    bundle,
+    storage,
+    server,
+    host,
+    invite,
+    roomId,
+    hostId: host.session().peer.peer_id,
+    mirrorRoot,
+    roomFile: (path: string) => `file://${mirrorRoot}/${path}`,
+  };
 }
 
 /**
@@ -110,19 +131,13 @@ interface FakeEditor {
 
 /** A guest document stand-in over mutable text: what the room applied, or what was typed. */
 function guestDocument(
-  roomId: string,
+  seat_: Seat,
   path: string,
   holder: { text: string },
 ): Record<string, unknown> {
-  const uriString = virtualUri(roomId, path);
-  const question = uriString.indexOf('?');
+  const uriString = seat_.roomFile(path);
   return {
-    uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
-      toString: () => uriString,
-    },
+    uri: seat_.bundle.stub.Uri.parse(uriString),
     eol: 1,
     isDirty: false,
     getText: () => holder.text,
@@ -153,6 +168,22 @@ function guestEditor(document: Record<string, unknown>): FakeEditor {
   return editor;
 }
 
+/** Whether a `setDecorations` call paints a zero-width caret at `at` on line zero. */
+function hasCaretAt(args: unknown, at: number): boolean {
+  const options = (args as Array<unknown>)[1];
+  if (!Array.isArray(options)) {
+    return false;
+  }
+  return (options as Array<{ range?: { start?: { character?: number }; end?: { character?: number } } }>).some(
+    (option) => option.range?.start?.character === at && option.range?.end?.character === at,
+  );
+}
+
+/** Whether the editor was ever told to draw a zero-width caret at `at`. */
+function drawnCaretAt(editor: FakeEditor, at: number): boolean {
+  return editor.decorated.some((args) => hasCaretAt(args, at));
+}
+
 /**
  * Stages a held document the way the editor would: the document opens first, and the host's
  * caret moves only once the replica holds the room's text — drawn then means presence
@@ -164,39 +195,43 @@ async function openHeld(
   holder: { text: string },
   hostAt: number,
 ): Promise<FakeEditor> {
-  const { bundle, roomId } = seat_;
-  const document = guestDocument(roomId, path, holder);
+  const { bundle } = seat_;
+  const document = guestDocument(seat_, path, holder);
   const editor = guestEditor(document);
   bundle.stub.window.activeTextEditor = editor;
   bundle.stub.window.visibleTextEditors = [editor];
+  // The open reports the document, which is what holds it in the room: the host seeing
+  // the hold is the room settled around this window.
   bundle.stub.fire('openTextDocument', document);
-  // The hold the open took is what makes the room send the text: poll the provider the way
-  // the editor reads, until the synchronous answer holds it.
-  const uri = document['uri'] as { scheme: string; path: string; query: string; toString(): string };
-  await waitFor(
-    `the guest replica to hold ${path}`,
-    () => {
-      const files = bundle.registered.files;
-      if (files === undefined) {
-        return false;
-      }
-      try {
-        const bytes = files.readFile(uri);
-        return bytes instanceof Uint8Array && new TextDecoder().decode(bytes) === holder.text;
-      } catch {
-        return false;
-      }
-    },
-    { describe: () => holder.text },
+  await waitFor(`the room to hold ${path} open`, () =>
+    seat_.host.documents().includes(path) ? true : false,
   );
-  seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
+  // A first frame the guest drops — presence racing the peers it names, the text its
+  // anchors resolve against — never comes again on its own, and an identical repeat
+  // dedups in awareness without a new broadcast. Alternating two adjacent carets keeps
+  // every repeat a genuine change, until a draw at the seated offset proves the pipeline.
+  let at = hostAt;
+  seat_.host.setSelection(path, { anchor: at, head: at });
   await waitFor(
     `the host caret at ${hostAt} to be drawn in ${path}`,
-    () =>
-      editor.decorated.some(
-        (args) => Array.isArray(args[1]) && (args[1] as unknown[]).length > 0,
-      ),
+    () => {
+      if (drawnCaretAt(editor, hostAt)) {
+        return true;
+      }
+      at = at === hostAt ? hostAt + 1 : hostAt;
+      seat_.host.setSelection(path, { anchor: at, head: at });
+      return false;
+    },
     { describe: () => ({ decorated: editor.decorated.length }) },
+  );
+  // The alternation ends on whichever offset drew: two ordered broadcasts ending at the
+  // seated offset, then a fresh draw there, is what makes the caret that offset for what
+  // follows rather than whichever one the draw above saw.
+  const seen = editor.decorated.length;
+  seat_.host.setSelection(path, { anchor: hostAt + 1, head: hostAt + 1 });
+  seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
+  await waitFor(`the host caret to settle at ${hostAt} in ${path}`, () =>
+    editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt)) ? true : false,
   );
   return editor;
 }
@@ -298,7 +333,7 @@ test('go to fetches a document this window does not hold, and never lands at off
   const holder = { text: TEXT_A };
   await openHeld(seat_, PATH_A, holder, 2);
   seat_.host.setSelection(PATH_B, { anchor: 0, head: 0 });
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
 
   // An attempt from before presence arrives refuses before opening anything, so the command
   // is re-issued until the open it stages shows.
@@ -361,7 +396,7 @@ test('follow tracks the peer across caret moves and a document change', async (t
 
   // A document change opens the peer document through the ordinary path and lands there.
   seat_.host.setSelection(PATH_B, { anchor: 3, head: 3 });
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the follow to open the peer document',
     () => {
@@ -483,7 +518,7 @@ test('a window switch paints no banner on any editor', async (t) => {
   // Another visible editor, showing a document the room never named: the repaint the
   // switch runs is synchronous, so what follows observes it rather than racing it — and
   // no editor in the window carries a whole-line paint.
-  const other = guestEditor(guestDocument(seat_.roomId, 'src/elsewhere.rs', { text: 'zzz\n' }));
+  const other = guestEditor(guestDocument(seat_, 'src/elsewhere.rs', { text: 'zzz\n' }));
   seat_.bundle.stub.window.visibleTextEditors = [editor, other];
   seat_.bundle.stub.fire('visibleEditors', [editor, other]);
   assert.deepEqual(
@@ -559,7 +594,7 @@ test('going somewhere stops following first', async (t) => {
   await waitFor('the go-to to stop the follow', () =>
     followItem(seat_) === undefined ? true : false,
   );
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the go-to to open the other peer document',
     () => {
@@ -678,7 +713,7 @@ test('two peers sharing a name are told apart in the picker', async (t) => {
   assert.ok(fresh !== undefined, 'the picker never saw the chosen peer document');
   seat_.bundle.stub.registered.quickPickReply = fresh;
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the follow to open the chosen peer document',
     () => {
@@ -745,7 +780,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
 });
 
 test('a host jumps to a peer through its own working copy', async (t) => {
-  // A host holds no virtual documents: the peer path opens as the window's own file, through
+  // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through rather than a bare join.
   const server = await FakeServer.start();
   t.after(async () => {
@@ -944,7 +979,7 @@ test('a superseded landing never places', async (t) => {
   // frames pass, so the second move lands while the first is still in flight. Draining the
   // microtasks after the release settles the held frame — its path from there is synchronous
   // — so what follows observes it rather than racing it.
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const windowState = seat_.bundle.stub.window as unknown as Record<string, unknown>;
   const show = windowState['showTextDocument'] as (
     document: unknown,
@@ -1076,7 +1111,7 @@ test('an unknown peer id falls through to the pick', async (t) => {
 });
 
 test('a host jump to a path it does not share is refused without opening', async (t) => {
-  // A host holds no virtual documents: the peer path opens as the window's own file, through
+  // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through. A path the grant deliberately leaves
   // out — here `.env`, which no listing ever names — fails that check, with the same sentence
   // a deleted path reports, and opens nothing.

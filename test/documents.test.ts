@@ -24,7 +24,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { SessionBridge } from '../src/bridge/bridge.ts';
 import type { Engine, Report } from '../src/bridge/bridge.ts';
 import { applyChange, diff } from '../src/bridge/editing.ts';
-import { virtualUri } from '../src/bridge/virtual.ts';
+
 import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import { waitFor } from './helpers/wait.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
@@ -33,9 +33,11 @@ import * as vscodeLoader from './helpers/vscode-loader.ts';
 // answered for the ESM resolver too.
 registerHooks(vscodeLoader);
 const { WorkspaceEditor } = await import('../src/adapter/documents.ts');
+const { MIRROR_MARKER } = await import('../src/adapter/mirror.ts');
 
-const ROOM = 'r-dropped-edit';
 const PATH = 'src/main.rs';
+/** The mirror root the seated guest resolves its documents under. */
+const MIRROR_ROOT = '/mirror';
 
 /** A position in the document, as an editor reports one. */
 interface StubPosition {
@@ -116,13 +118,15 @@ function seat(
   answer: (window: Window) => Promise<boolean>,
 ): Window {
   let text = initial;
-  const uriString = virtualUri(ROOM, PATH);
-  const question = uriString.indexOf('?');
+  // A guest's document is a file under the mirror root: the room path is the root's
+  // suffix, and nothing outside it — nor the mirror's own marker — is shared.
+  const uriString = `file://${MIRROR_ROOT}/${PATH}`;
   const document = {
     uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
+      scheme: 'file',
+      path: `${MIRROR_ROOT}/${PATH}`,
+      fsPath: `${MIRROR_ROOT}/${PATH}`,
+      query: '',
       toString: () => uriString,
     },
     eol: 1,
@@ -142,6 +146,7 @@ function seat(
   let completed = 0;
   const editor = new WorkspaceEditor({
     role: 'guest',
+    mirrorRoot: MIRROR_ROOT,
     folders: [],
     report: (report) => reports.push(report),
   });
@@ -401,6 +406,48 @@ test('a change given up on at the bound reaches the person instead of going quie
   // a reconcile works away. The report is what makes that visible rather than silent.
   assert.equal(window.text(), 'base\nREMOTE\n');
   assert.equal(window.room(), 'base\nREMOTE\n');
+});
+
+/**
+ * A guest shares the mirror root and nothing else: the room path is the root's
+ * suffix, and a path outside it — beside it, above it, or the mirror's own marker —
+ * is not shared. Each guard names the shape it refuses.
+ */
+test('a guest shares the mirror root and nothing else', () => {
+  const editor = new WorkspaceEditor({
+    role: 'guest',
+    mirrorRoot: '/mirror',
+    folders: [],
+    report: () => undefined,
+  });
+  type Document = Parameters<typeof editor.register>[0];
+  const doc = (scheme: string, fsPath: string): Document =>
+    ({ uri: { scheme, path: fsPath, fsPath, query: '', toString: () => `${scheme}://${fsPath}` } }) as unknown as Document;
+  assert.equal(editor.register(doc('file', '/mirror/a.md')), 'a.md');
+  assert.equal(editor.register(doc('file', '/mirror/notes/b.md')), 'notes/b.md');
+  // Beside the root, not under it: a prefix is not containment.
+  assert.equal(editor.register(doc('file', '/mirror-sibling/a.md')), undefined);
+  assert.equal(editor.register(doc('file', '/other/a.md')), undefined);
+  assert.equal(editor.register(doc('file', '/mirror')), undefined);
+  assert.equal(editor.register(doc('file', '/mirror/../escape.md')), undefined);
+  // The mirror's own marker is bookkeeping, never a document.
+  assert.equal(editor.register(doc('file', `/mirror/${MIRROR_MARKER}`)), undefined);
+  // No scheme from the old world names a document anymore.
+  assert.equal(editor.register(doc('selvage', '/mirror/a.md')), undefined);
+});
+
+test('a guest with no mirror shares nothing', () => {
+  const editor = new WorkspaceEditor({ role: 'guest', folders: [], report: () => undefined });
+  const document = {
+    uri: {
+      scheme: 'file',
+      path: '/mirror/a.md',
+      fsPath: '/mirror/a.md',
+      query: '',
+      toString: () => 'file:///mirror/a.md',
+    },
+  } as unknown as Parameters<typeof editor.register>[0];
+  assert.equal(editor.register(document), undefined);
 });
 
 /** A small deterministic generator, so a failure here replays from the same seed exactly. */

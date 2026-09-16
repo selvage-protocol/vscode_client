@@ -13,8 +13,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
-import { virtualUri } from '../src/bridge/virtual.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { counting } from './helpers/counting-socket.ts';
@@ -57,7 +56,12 @@ async function seat(t: TestContext): Promise<Adapter> {
 
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(async () => {
     bundle.deactivate();
     await host.disconnect();
@@ -69,15 +73,13 @@ async function seat(t: TestContext): Promise<Adapter> {
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
   );
 
-  const uriString = virtualUri(host.session().roomId, PATH);
-  const question = uriString.indexOf('?');
+  // The room's file under the guest's mirror: opening it reports the document, which is
+  // what holds it in the room. The text arrived with the sync, so no wait precedes the
+  // caret: the first presence this window publishes already carries the path.
+  const roomId = host.session().roomId;
+  const mirrorRoot = mirrorWindowDir(storage, roomId);
   const document = {
-    uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
-      toString: () => uriString,
-    },
+    uri: bundle.stub.Uri.parse(`file://${mirrorRoot}/${PATH}`),
     eol: 1,
     isDirty: false,
     getText: () => TEXT,
@@ -92,21 +94,6 @@ async function seat(t: TestContext): Promise<Adapter> {
   };
   bundle.stub.fire('openTextDocument', document);
   bundle.stub.window.activeTextEditor = editor;
-  // The replica has to hold the room's text before an offset in it means anything.
-  await waitFor('the guest replica to hold the room text', () => {
-    const files = bundle.registered.files;
-    if (files === undefined) {
-      return false;
-    }
-    try {
-      const bytes = files.readFile(document.uri);
-      // A read of a path the replica has not received answers with a promise, which is not
-      // yet the room's text: the wait polls until the synchronous answer holds it.
-      return bytes instanceof Uint8Array && new TextDecoder().decode(bytes) === TEXT;
-    } catch {
-      return false;
-    }
-  });
   // Counted from here: seating published its own presence before the room had a caret in it.
   tap.reset();
 

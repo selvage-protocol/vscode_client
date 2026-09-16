@@ -23,9 +23,9 @@ import {
   initials,
   onePerLine,
 } from '../src/adapter/gutter.ts';
-import { peerColour, virtualUri } from '../src/bridge/index.ts';
+import { peerColour } from '../src/bridge/index.ts';
 import { SelvageEngine } from '../src/engine/index.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -129,6 +129,7 @@ test('one badge is chosen per line, deterministically', () => {
 interface StubUri {
   scheme: string;
   path: string;
+  fsPath: string;
   query: string;
   toString(): string;
 }
@@ -176,49 +177,52 @@ async function room(
   return { server, host, invite };
 }
 
-/** The bundle, activated, with its recorded state cleared. */
-function activated(t: TestContext): LoadedExtension {
+/** The bundle, activated with its own storage, with its recorded state cleared. */
+function activated(t: TestContext): { bundle: LoadedExtension; storage: string } {
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(() => {
     bundle.deactivate();
   });
-  return bundle;
+  return { bundle, storage };
 }
 
-/** A guest seated in `bundle`, waiting for the room to name it. */
-async function seat(t: TestContext, invite: string): Promise<LoadedExtension> {
-  const bundle = activated(t);
+/** A guest seated in `bundle`, waiting for the room to name it, with its storage. */
+async function seat(
+  t: TestContext,
+  invite: string,
+): Promise<{ bundle: LoadedExtension; storage: string }> {
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
   await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('joined room'))
       ? true
       : false,
   );
-  return bundle;
+  return { bundle, storage };
 }
 
 /**
- * An editor on the room's virtual document, as the extension sees one: registered when the
+ * An editor on the room's mirror file, as the extension sees one: registered when the
  * editor reports it open, then visible. Returns the editor so a test can look at what was
  * drawn on it.
  */
 function installEditor(
   bundle: LoadedExtension,
+  storage: string,
   roomId: string,
   path: string,
   text: string,
 ): StubEditor {
-  const uriString = virtualUri(roomId, path);
-  const question = uriString.indexOf('?');
+  const root = mirrorWindowDir(storage, roomId);
   const document: StubDocument = {
-    uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
-      toString: () => uriString,
-    },
+    uri: bundle.stub.Uri.parse(`file://${root}/${path}`),
     eol: 1,
     isDirty: false,
     getText: () => text,
@@ -251,11 +255,11 @@ function typesWith(bundle: LoadedExtension, field: string): Decoration[] {
 test('the badge is a base64 SVG in the glyph margin, applied at the caret line', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const bundle = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite);
   // Published after the guest is seated: awareness reaches later arrivals only as it changes.
   // Offset 6 is the empty line after "hello\n", so the badge line is not always 0.
   host.setSelection(PATH, { anchor: 6, head: 6 });
-  const editor = installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
 
   const badge = await waitFor('the gutter badge to be drawn', () => {
     bundle.stub.fire('visibleEditors');
@@ -317,9 +321,9 @@ function drawnBadgeSvg(editor: StubEditor): string {
 test('a peer that renames itself re-labels its caret and its badge', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const bundle = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  const editor = installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
 
   // The host's caret is drawn under its first name, its hover and its badge alike.
   await waitFor('the caret to be drawn', () => {
@@ -349,9 +353,9 @@ test('a peer that renames itself re-labels its caret and its badge', async (t) =
 test('a peer-controlled label renders as plain text, never as a link', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const bundle = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  const editor = installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
 
   await host.rename('[Open](https://attacker.example)');
   const relabelled = await waitFor('the hostile label to be drawn', () => {
@@ -369,9 +373,9 @@ test('a peer-controlled label renders as plain text, never as a link', async (t)
 test('a rename loop retains only a bounded number of badge types', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const bundle = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  installEditor(bundle, host.session().roomId, PATH, 'hello\n');
+  installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
   bundle.stub.fire('visibleEditors');
 
   for (let index = 0; index < 50; index += 1) {

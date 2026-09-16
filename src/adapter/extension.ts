@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
+import { SessionBridge, grantUnion, matchesReplica, peerColour } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
@@ -21,8 +21,17 @@ import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
-import { GuestFileSystem } from './guest-fs.ts';
-import { GrantTree } from './tree.ts';
+import type { Mirror } from './mirror.ts';
+import {
+  MIRROR_MARKER,
+  mintMirror,
+  mirrorRelative,
+  openMirror,
+  processAlive,
+  pruneRoom,
+  readMarker,
+  scanStorage,
+} from './mirror.ts';
 
 /** Identifies this client in `session.hello`, for diagnostics (`PROTOCOL.md` §5). */
 const CLIENT = 'selvage-vscode/0.1.0';
@@ -61,8 +70,12 @@ const FETCH_TIMEOUT_MS = 5000;
 /** The session this window is in. One per window: multi-room is a v1 non-goal. */
 let current: Session | undefined;
 
-/** The Explorer's view of the room, created when the extension activates. */
-let grantTree: GrantTree | undefined;
+/**
+ * Where this window mirrors rooms, from the activation context. Commands fail loudly
+ * without it, which is unreachable in a real window — the editor always provides one —
+ * and only a test activates with a context that has none.
+ */
+let storageUri: vscode.Uri | undefined;
 
 /**
  * The last server a user typed, so the next prompt is a keystroke rather than a paste.
@@ -82,28 +95,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // A window the user typed a server into leaves it behind for the next one. The in-memory
   // value still wins: it is what this window was told most recently.
   lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
-  const files = new GuestFileSystem();
-  context.subscriptions.push(files);
-  context.subscriptions.push(
-    vscode.workspace.registerFileSystemProvider(SCHEME, files, {
-      isCaseSensitive: true,
-      isReadonly: false,
-    }),
-  );
-  grantTree = new GrantTree();
-  context.subscriptions.push(
-    grantTree,
-    vscode.window.createTreeView('selvage.grant', {
-      treeDataProvider: grantTree,
-      showCollapseAll: true,
-    }),
-  );
+  storageUri = context.globalStorageUri;
   context.subscriptions.push(
     vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
-      void host(files, args, context);
+      void host(args, context);
     }),
     vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
-      void join(files, args);
+      void join(args);
     }),
     vscode.commands.registerCommand('selvage.copyInvite', () => {
       void copyInvite();
@@ -133,12 +131,16 @@ export function activate(context: vscode.ExtensionContext): void {
       stopFollowing();
     }),
   );
+  // A reload onto a mirror, or a crash that left one: the window's own triage runs
+  // detached, because a pending invite finishes by joining and joining is async.
+  if (storageUri !== undefined) {
+    void triageMirrors(storageUri);
+  }
 }
 
 export function deactivate(): void {
-  current?.dispose();
+  void current?.dispose();
   current = undefined;
-  grantTree = undefined;
 }
 
 /**
@@ -160,7 +162,8 @@ interface Participant {
  * the user watches.
  */
 class Session {
-  private readonly files: GuestFileSystem;
+  /** A guest's mirror: the directory the room's listing fills, gone at leave. */
+  readonly mirror: Mirror | undefined;
   private readonly engine: SelvageEngine;
   private readonly editor: WorkspaceEditor;
   private readonly bridge: SessionBridge;
@@ -210,6 +213,13 @@ class Session {
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
   private autoOpen: boolean;
+  /**
+   * Unlisted mirror paths already said once this session: an open and a save each say
+   * their own sentence once per path, and the person's own action is the only thing
+   * that could clear them — nothing does, so they stand for the session.
+   */
+  private readonly unlistedOpened = new Set<string>();
+  private readonly unlistedSaved = new Set<string>();
   /** A caret event that has not reached the room yet. */
   private selectionDirty = false;
   /** The one flush the interval allows, while one is armed. */
@@ -230,8 +240,8 @@ class Session {
   /** The room events the follow and the pending go-to re-resolve on. */
   private readonly stopEngine: () => void;
 
-  constructor(files: GuestFileSystem, engine: SelvageEngine) {
-    this.files = files;
+  constructor(engine: SelvageEngine, options: { mirror?: Mirror } = {}) {
+    this.mirror = engine.session().role === 'guest' ? options.mirror : undefined;
     this.engine = engine;
     this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
@@ -243,6 +253,7 @@ class Session {
     this.autoOpen = engine.session().role === 'guest';
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
+      mirrorRoot: this.mirror?.root,
       folders: this.folders,
       report: (report) => {
         this.onReport(report);
@@ -257,13 +268,6 @@ class Session {
     this.status.name = 'Selvage';
     this.status.command = engine.session().role === 'host' ? 'selvage.copyInvite' : undefined;
 
-    this.files.use({
-      roomId: engine.session().roomId,
-      text: (path) => engine.text(path),
-      paths: () => this.offered(),
-      has: (path) => engine.has(path),
-      fetch: (path) => this.fetch(path),
-    });
     // A document that was already open when the session started is shared too.
     for (const document of vscode.workspace.textDocuments) {
       this.open(document);
@@ -277,6 +281,11 @@ class Session {
       }),
       vscode.workspace.onDidChangeTextDocument((event) => {
         this.changed(event.document);
+      }),
+      // A save writes the mirror file — the room already holds the text — and only the
+      // save of a file the room does not list has anything to say.
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        this.saved(document);
       }),
       vscode.window.onDidChangeTextEditorSelection(() => {
         this.scheduleSelection();
@@ -301,7 +310,6 @@ class Session {
     this.status.show();
     this.refreshStatus();
     this.selection();
-    grantTree?.use(this);
     // The room's shape is the host's to publish: the folder the invite names is the grant, read
     // off the working copy at the start and again whenever a file under it appears, disappears
     // or changes. What the window has *open* is not a statement about the folder.
@@ -309,6 +317,9 @@ class Session {
       this.watchFolders();
       void this.publishGrant();
     }
+    // The join already carried a listing: fill the mirror before anything opens into it,
+    // so the landing reads placeholders rather than missing files.
+    this.applyListing(this.granted);
     // A guest joins a room that may have documents already, and may join one that has none.
     // Landing in the room's first document is the whole point of "come edit my code with me";
     // the palette round trip is the chore this removes.
@@ -474,6 +485,29 @@ class Session {
     }
     let failures = 0;
     for (const target of targets) {
+      // The file comes before the hold: the editor reads the placeholder, the hold
+      // brings the room's text, and the save that follows writes it into the file —
+      // the loop §4.1 walks for every open. Never a clobber: a file that is there stays.
+      if (this.mirror !== undefined) {
+        try {
+          const uri = this.mirrorUri(target);
+          if (uri === undefined) {
+            throw new Error('this window has no mirror for the room');
+          }
+          if (!this.mirror.materialise([target]).mirrored.includes(target)) {
+            throw new Error('the file could not be mirrored');
+          }
+          // Open, not shown: the fetch fills the mirror the way Neovim's does, without
+          // taking the window. The open reports the document, which is what holds it.
+          await vscode.workspace.openTextDocument(uri);
+        } catch (error) {
+          failures += 1;
+          void vscode.window.showErrorMessage(
+            `Selvage: could not fetch ${target} from the room: ${message(error)}`,
+          );
+          continue;
+        }
+      }
       try {
         await this.fetch(target);
       } catch (error) {
@@ -483,7 +517,10 @@ class Session {
         );
       }
     }
-    if (failures === 0) {
+    // The report confirms an arrival, not a wait: a path the replica holds nothing for
+    // already earned its still-empty warning, and naming it fetched would lie about it.
+    const missing = targets.filter((target) => !this.engine.has(target));
+    if (failures === 0 && missing.length === 0) {
       void vscode.window.showInformationMessage('Selvage: fetched the files.');
     }
   }
@@ -934,7 +971,18 @@ class Session {
   }
 
   /**
-   * Opens a room path in an editor: a guest's virtual document, or a host's own file under
+   * The mirror file a room path lives at, or `undefined` outside a guest's mirror: the
+   * one address a guest's document has, whether the editor opens it or a tool reads it.
+   */
+  mirrorUri(path: string): vscode.Uri | undefined {
+    if (this.mirror === undefined) {
+      return undefined;
+    }
+    return vscode.Uri.joinPath(this.mirror.uri, ...path.split('/'));
+  }
+
+  /**
+   * Opens a room path in an editor: a guest's mirror file, or a host's own file under
    * the folders captured at invite time. An editor already showing the path is reused, so a
    * follow that re-lands moves the caret rather than reopening the document.
    */
@@ -945,7 +993,10 @@ class Session {
     }
     try {
       if (this.role() === 'guest') {
-        const uri = vscode.Uri.parse(virtualUri(this.roomId(), path));
+        const uri = this.mirrorUri(path);
+        if (uri === undefined) {
+          throw new Error('this window has no mirror for the room');
+        }
         return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
       }
       // The path came from a peer, so it goes through the check a read on a peer's behalf
@@ -1126,14 +1177,39 @@ class Session {
     this.stopWatching();
     // The position the interval was still holding reaches the room before the session ends.
     this.flushSelection();
-    // A guest's tabs keep what the room held for them: the session is over, but nothing a
-    // user is looking at should turn into an error.
-    const frozen: Array<[uri: string, content: string]> = this.editor
-      .virtualDocuments()
-      .map(([uri, path]) => [uri, this.engine.text(path)]);
-    this.files.freeze(frozen);
-    if (grantTree !== undefined) {
-      grantTree.use(undefined);
+    // Leaving takes the mirror with it: the room's tabs close first, or they point at
+    // files nobody owns and a save would recreate them. The folder goes between the tabs
+    // and the directory in a shared window, and last in a window that is only the room —
+    // removing the only folder reloads the window, so there must be no session left to
+    // lose. The close is requested, not awaited: teardown is synchronous, and the stub
+    // records the request order, which is the order the editor honours them in.
+    if (this.mirror !== undefined) {
+      const mirror = this.mirror;
+      const tabs = (vscode.window.tabGroups?.all ?? [])
+        .flatMap((group) => group.tabs)
+        .filter((tab) => {
+          const uri = (tab.input as { uri?: vscode.Uri } | undefined)?.uri;
+          return (
+            uri?.scheme === 'file' &&
+            mirrorRelative(mirror.root, uri.fsPath) !== undefined
+          );
+        });
+      if (tabs.length > 0) {
+        void vscode.window.tabGroups?.close(tabs);
+      }
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      const at = folders.findIndex(
+        (folder) => folder.uri.toString() === mirror.uri.toString(),
+      );
+      if (at !== -1 && folders.length > 1) {
+        vscode.workspace.updateWorkspaceFolders(at, 1);
+        mirror.remove();
+      } else {
+        mirror.remove();
+        if (at !== -1) {
+          vscode.workspace.updateWorkspaceFolders(at, 1);
+        }
+      }
     }
     this.bridge.dispose();
     this.editor.dispose();
@@ -1147,12 +1223,78 @@ class Session {
     }
   }
 
+  /** Whether a document of this window still holds `path`: what keeps a removed file. */
+  private held(path: string): boolean {
+    return this.editor.text(path) !== undefined;
+  }
+
+  /**
+   * Fills the mirror's shape from a listing: new paths materialise empty, files that
+   * left it are removed unless a document of this window still holds them, and what
+   * could not be mirrored is said out loud rather than left missing in silence. Runs
+   * on every grant report and once for the listing the join already carried — state
+   * syncs without an event, so the report alone would miss what was there at seating.
+   */
+  private applyListing(paths: readonly string[]): void {
+    if (this.mirror === undefined) {
+      return;
+    }
+    const applied = this.mirror.republish(paths, (path) => this.held(path));
+    if (applied.refused.length > 0) {
+      const first = applied.refused[0] ?? '';
+      void vscode.window.showWarningMessage(
+        `Selvage: ${applied.refused.length} of the room's files could not be mirrored, starting with ${first}.`,
+      );
+    }
+  }
+
   private open(document: vscode.TextDocument): void {
     const path = this.editor.register(document);
-    if (path !== undefined) {
-      this.bridge.documentOpened(path);
-      this.refreshStatus();
+    if (path === undefined) {
+      return;
     }
+    // A mirror file the listing does not name is not shared: the registration is
+    // dropped again — otherwise its edits would publish — and the sentence says so,
+    // once per path. (`roomPath` already refuses the mirror's own marker, so an
+    // unlisted path here is always a real file worth naming.)
+    if (this.role() === 'guest' && this.mirror !== undefined && !this.offered().includes(path)) {
+      this.editor.forget(document.uri);
+      if (!this.unlistedOpened.has(path)) {
+        this.unlistedOpened.add(path);
+        void vscode.window.showWarningMessage(
+          `Selvage: ${path} is not in the room, so it is not shared; the mirror holds the room's files and is removed when the session ends.`,
+        );
+      }
+      return;
+    }
+    this.bridge.documentOpened(path);
+    this.refreshStatus();
+  }
+
+  /**
+   * A save writes the mirror file even when the room has no path for it — the editor
+   * writes what it is told to, and there is no provider left to refuse with. The
+   * sentence afterwards is the honest half of that: the save is not shared, said once
+   * per path, with what to do instead.
+   */
+  private saved(document: vscode.TextDocument): void {
+    if (this.role() !== 'guest' || this.mirror === undefined) {
+      return;
+    }
+    const rel =
+      document.uri.scheme === 'file'
+        ? mirrorRelative(this.mirror.root, document.uri.fsPath)
+        : undefined;
+    if (rel === undefined || rel === MIRROR_MARKER || this.offered().includes(rel)) {
+      return;
+    }
+    if (this.unlistedSaved.has(rel)) {
+      return;
+    }
+    this.unlistedSaved.add(rel);
+    void vscode.window.showWarningMessage(
+      `Selvage: ${rel} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`,
+    );
   }
 
   private close(document: vscode.TextDocument): void {
@@ -1249,7 +1391,6 @@ class Session {
         // retry is over whenever this arrives.
         this.reconnecting = false;
         this.refreshStatus();
-        grantTree?.refresh();
         this.openFromRoom();
         break;
       }
@@ -1258,7 +1399,7 @@ class Session {
         for (const path of report.paths) {
           this.seenListed.add(path);
         }
-        grantTree?.refresh();
+        this.applyListing(report.paths);
         break;
       }
       case 'peers': {
@@ -1414,7 +1555,6 @@ export interface HostArgs {
 }
 
 async function host(
-  files: GuestFileSystem,
   args?: HostArgs,
   context?: vscode.ExtensionContext,
 ): Promise<void> {
@@ -1468,7 +1608,7 @@ async function host(
     );
     return;
   }
-  current = new Session(files, engine);
+  current = new Session(engine);
   const invite = engine.inviteUrl();
   if (invite === undefined) {
     return;
@@ -1489,7 +1629,7 @@ export interface JoinArgs {
   displayName?: string;
 }
 
-async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
+async function join(args?: JoinArgs): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
     const leave = 'Leave and join';
@@ -1526,19 +1666,205 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   if (displayName === undefined) {
     return;
   }
+  await joinGuestRoom({ invite, displayName });
+}
+
+/**
+ * Joins a room as a guest: the mirror first, the session second.
+ *
+ * The window's folder count at join time chooses the shape. With at least one folder the
+ * room's folder is added beside the person's own — no reload, nothing else moves — and the
+ * add is read back rather than trusted. With none, the invite is stashed in the fresh
+ * marker and the window reopens on the mirror: the extension host after the reload is new,
+ * so a session started before it would be lost, and the stashed invite is what finishes
+ * the join there. A resumed mirror — the reload's own — only wants its folder ensured.
+ */
+async function joinGuestRoom(options: {
+  invite: string;
+  displayName: string;
+  resume?: Mirror;
+}): Promise<void> {
+  const room = parseSessionUrl(options.invite)?.join.room ?? 'room';
+  let mirror = options.resume;
+  if (mirror === undefined) {
+    if (storageUri === undefined) {
+      void vscode.window.showErrorMessage(
+        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+      );
+      return;
+    }
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) {
+      let fresh: Mirror;
+      try {
+        fresh = mintMirror(storageUri, room, { invite: options.invite });
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          `Selvage: could not add the room's folder to this window (${message(error)}); join again.`,
+        );
+        return;
+      }
+      try {
+        await vscode.commands.executeCommand('vscode.openFolder', fresh.uri, {
+          forceReuseWindow: true,
+        });
+      } catch {
+        fresh.remove();
+        void vscode.window.showErrorMessage(
+          `Selvage: could not open the room's folder in this empty window; open a folder first and join again.`,
+        );
+      }
+      return;
+    }
+    try {
+      mirror = mintMirror(storageUri, room);
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Selvage: could not add the room's folder to this window (${message(error)}); join again.`,
+      );
+      return;
+    }
+    pruneRoom(storageUri, room, mirror.window);
+    if (!(await addRoomFolder(mirror))) {
+      mirror.remove();
+      return;
+    }
+  } else {
+    if (storageUri === undefined) {
+      void vscode.window.showErrorMessage(
+        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+      );
+      return;
+    }
+    // The reload's own mirror: its folder is the window, or is added beside the rest.
+    // The invite leaves the marker now — the join below either lands, or its failure
+    // path deletes the directory, so a failed join never rejoins itself.
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const resumed: Mirror = mirror;
+    if (!folders.some((folder) => folder.uri.toString() === resumed.uri.toString())) {
+      if (folders.length === 0) {
+        try {
+          await vscode.commands.executeCommand('vscode.openFolder', mirror.uri, {
+            forceReuseWindow: true,
+          });
+        } catch {
+          mirror.remove();
+          void vscode.window.showErrorMessage(
+            `Selvage: could not open the room's folder in this empty window; open a folder first and join again.`,
+          );
+        }
+        return;
+      }
+      if (!(await addRoomFolder(mirror))) {
+        mirror.remove();
+        return;
+      }
+    }
+    mirror.clearInvite();
+  }
+  const live: Mirror = mirror;
   let engine: SelvageEngine;
   try {
-    engine = await SelvageEngine.join(invite, displayName, { client: CLIENT });
+    engine = await SelvageEngine.join(options.invite, options.displayName, { client: CLIENT });
   } catch (error) {
+    // A failed join leaves no room-shaped folder behind: the folder goes first in a
+    // shared window, and the directory with it either way.
+    removeRoomFolder(live);
+    live.remove();
     void vscode.window.showErrorMessage(
       `Selvage: could not join the session (${message(error)}); check the link is complete and the server is running.`,
     );
     return;
   }
-  current = new Session(files, engine);
+  current = new Session(engine, { mirror: live });
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
+}
+
+/** The room's folder beside the person's own, confirmed present rather than trusted. */
+async function addRoomFolder(mirror: Mirror): Promise<boolean> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const room = mirror.room;
+  // The reason is a value, not a second sentence: the vocabulary pins the one template.
+  let refusal: string | undefined = 'the editor refused the folder';
+  try {
+    if (
+      vscode.workspace.updateWorkspaceFolders(folders.length, 0, {
+        uri: mirror.uri,
+        name: `Selvage room ${room}`,
+      }) === true
+    ) {
+      refusal = (vscode.workspace.workspaceFolders ?? []).some(
+        (folder) => folder.uri.toString() === mirror.uri.toString(),
+      )
+        ? undefined
+        : 'the folder never landed';
+    }
+  } catch {
+    refusal = 'the editor refused the folder';
+  }
+  if (refusal !== undefined) {
+    void vscode.window.showErrorMessage(
+      `Selvage: could not add the room's folder to this window (${refusal}); join again.`,
+    );
+    return false;
+  }
+  return true;
+}
+
+/** Takes the room's folder back out of the window, where one was put. Best effort. */
+function removeRoomFolder(mirror: Mirror): void {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const at = folders.findIndex((folder) => folder.uri.toString() === mirror.uri.toString());
+  if (at !== -1) {
+    try {
+      vscode.workspace.updateWorkspaceFolders(at, 1);
+    } catch {
+      // Teardown already reports its outcome; a folder that will not leave is the
+      // window's to close by hand.
+    }
+  }
+}
+
+/**
+ * The window's own triage at activation: a reload onto a mirror, or a crash that left
+ * one. A marker with a pending invite finishes the join it was stashed for; a marker
+ * with no invite and no session is a cache with no room — the directory goes, the folder
+ * goes with it, and one sentence says what went. A live sibling's directory, and anything
+ * without a marker of ours, is untouched.
+ */
+async function triageMirrors(storage: vscode.Uri): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  for (const stored of scanStorage(storage)) {
+    if (current !== undefined) {
+      return;
+    }
+    const mirror = openMirror(storage, stored.room, stored.window);
+    if (mirror === undefined) {
+      continue;
+    }
+    if (stored.invite !== undefined) {
+      const displayName = await resolveDisplayName();
+      if (displayName === undefined || current !== undefined) {
+        return;
+      }
+      await joinGuestRoom({ invite: stored.invite, displayName, resume: mirror });
+      return;
+    }
+    const inWindow = folders.some(
+      (folder) => folder.uri.toString() === mirror.uri.toString(),
+    );
+    if (!inWindow && processAlive(readMarker(mirror.root)?.pid ?? 0)) {
+      continue;
+    }
+    // Stale either way: restored onto it with no session, or owned by nobody anywhere.
+    removeRoomFolder(mirror);
+    mirror.remove();
+    void vscode.window.showWarningMessage(
+      `Selvage: removed room ${stored.room}'s leftover files from the last session; they were the room's text, not unsaved work.`,
+    );
+  }
 }
 
 /**
@@ -1592,10 +1918,11 @@ function joinedMessage(roomId: string, documents: string[]): string {
   if (!opensOnJoin()) {
     return `Selvage: joined room ${roomId}.`;
   }
-  // The landing opens one document; the rest wait behind the picker and the tree, so the
-  // join names them rather than leaving the guest to assume the room is one file.
+  // The landing opens one document; the rest wait behind the palette, so the join names
+  // them rather than leaving the guest to assume the room is one file.
   const rest = documents.length - 1;
-  const more = rest > 0 ? ` and ${rest} more in the Selvage view` : '';
+  const more =
+    rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path` : '';
   return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
 }
 
@@ -1716,10 +2043,13 @@ async function fetchCommand(args?: FetchArgs): Promise<void> {
   await session.fetchFromRoom(args?.path);
 }
 
-/** Opens a room path as a guest's virtual document: `selvage:/<path>?room=<room id>`. */
+/** Opens a room path as a guest's mirror file: what the editor reads and tools see. */
 async function openRoomDocument(session: Session, path: string): Promise<void> {
-  const uri = vscode.Uri.parse(virtualUri(session.roomId(), path));
   try {
+    const uri = session.mirrorUri(path);
+    if (uri === undefined) {
+      throw new Error('this window has no mirror for the room');
+    }
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
   } catch (error) {
     void vscode.window.showErrorMessage(
@@ -1734,7 +2064,7 @@ function leave(): void {
     void vscode.window.showWarningMessage('Selvage: not in a session.');
     return;
   }
-  session.dispose();
+  void session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
 }
 

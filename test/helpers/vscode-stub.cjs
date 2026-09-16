@@ -11,8 +11,8 @@
 
 const registered = {
   commands: [],
-  schemes: [],
-  files: undefined,
+  /** Every `executeCommand` call, as `{ id, args }`, handled or not. */
+  executed: [],
   /** The handler each `registerCommand` was given, so `executeCommand` can run it. */
   handlers: new Map(),
   /** What the clipboard holds, as the extension last left it. */
@@ -43,8 +43,6 @@ const registered = {
   decorations: [],
   /** Every status bar item the extension created, as the object it kept drawing into. */
   statusBarItems: [],
-  /** Every tree view the extension created, with the provider it was given. */
-  treeViews: [],
   informationReply: undefined,
   warningReply: undefined,
   quickPickReply: undefined,
@@ -329,6 +327,7 @@ const globalState = {
  * documented against; one that needs a configured value writes it itself.
  */
 function reset() {
+  registered.executed.length = 0;
   registered.clipboard = '';
   registered.clipboardWrites.length = 0;
   registered.clipboardReads.length = 0;
@@ -387,15 +386,19 @@ const listeners = new Map();
 const folders = [{ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }];
 
 /**
- * The window's tabs, as leaving a room finds them: the room's tabs are closed by the
- * client itself, because removing the folder leaves them open on files nobody owns.
+ * The window's tab groups, as leaving a room finds them: the room's tabs are closed by
+ * the client itself, because removing the folder leaves them open on files nobody owns.
+ * One group is enough to stage that: a test seeds its tabs the way a session leaves them.
  */
 const tabGroups = {
-  /** The tabs the window has open; a test seeds these the way a session would leave them. */
+  /** The groups the window has open, each with the tabs it holds. */
   all: [],
   /** Closes tabs, recording what was closed. */
   close(tabs) {
     registered.closedTabs.push([...tabs]);
+    for (const group of tabGroups.all) {
+      group.tabs = group.tabs.filter((tab) => !tabs.includes(tab));
+    }
     return Promise.resolve(true);
   },
 };
@@ -464,14 +467,10 @@ function documentFor(uri) {
           return new TextDecoder().decode(file.bytes);
         }
       }
-      try {
-        const bytes = registered.files.readFile(uri);
-        // A read that has to ask the room answers with a promise; a document stand-in cannot
-        // hold a promise as text, and reads again when it settles.
-        return bytes instanceof Uint8Array ? new TextDecoder().decode(bytes) : '';
-      } catch {
-        return '';
-      }
+      // A `file:` document the working copy does not hold: the mirror lives on the real
+      // filesystem, which this stand-in cannot read, so it opens empty and the room's
+      // text arrives through the hold the open takes.
+      return '';
     },
     positionAt: (offset) => offset,
     offsetAt: (position) => position,
@@ -624,6 +623,9 @@ module.exports = {
       return disposable();
     },
     executeCommand(id, ...args) {
+      // Every command call, handled or not: the reload a join stages is one the stub
+      // has no handler for, and the call order is what the test asserts.
+      registered.executed.push({ id, args });
       const handler = registered.handlers.get(id);
       return Promise.resolve(handler === undefined ? undefined : handler(...args));
     },
@@ -711,11 +713,6 @@ module.exports = {
     },
     applyEdit: (edit) => registered.applyEditImpl(edit),
     createFileSystemWatcher,
-    registerFileSystemProvider(scheme, provider) {
-      registered.schemes.push(scheme);
-      registered.files = provider;
-      return disposable();
-    },
     /**
      * Adds or removes workspace folders, as establishing or leaving the room's folder
      * does. An add to a window with no folder answers `true` and changes nothing — the
@@ -830,23 +827,6 @@ module.exports = {
       return Promise.resolve().then(() =>
         task({ report() {} }, { isCancellationRequested: false }),
       );
-    },
-    /** A tree view, with the provider the extension registered for it. */
-    createTreeView: (id, options) => {
-      // One view per id, as the editor has: activating again replaces it rather than adding a
-      // second, which is what makes the recorded view the one a session is bound to.
-      const existing = registered.treeViews.findIndex((entry) => entry.id === id);
-      const entry = { id, options };
-      if (existing === -1) {
-        registered.treeViews.push(entry);
-      } else {
-        registered.treeViews[existing] = entry;
-      }
-      return {
-        title: undefined,
-        message: undefined,
-        dispose() {},
-      };
     },
   },
 

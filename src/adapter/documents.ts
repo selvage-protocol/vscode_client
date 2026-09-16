@@ -9,15 +9,21 @@
 
 import * as vscode from 'vscode';
 
-import { diff, SCHEME, virtualDocument } from '../bridge/index.ts';
+import { diff } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 import { decodableText, grantedFile, isShareableFile, roomPathOf } from './grant.ts';
+import { MIRROR_MARKER, mirrorRelative } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
 
 export interface WorkspaceEditorOptions {
   role: Role;
+  /**
+   * A guest's mirror root on disk. A guest shares the `file:` documents under it;
+   * without one a guest shares nothing, which is the state before the join mints it.
+   */
+  mirrorRoot?: string;
   /** Something the user has to see. */
   report: (report: Report) => void;
   /**
@@ -61,6 +67,7 @@ function rebase(change: TextChange, local: TextChange): TextChange | undefined {
 
 export class WorkspaceEditor implements EditorHost {
   private readonly role: Role;
+  private readonly mirrorRoot: string | undefined;
   private readonly onReport: (report: Report) => void;
   private readonly folders: readonly vscode.WorkspaceFolder[];
   private readonly cursors = new Cursors();
@@ -70,6 +77,7 @@ export class WorkspaceEditor implements EditorHost {
 
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
+    this.mirrorRoot = options.mirrorRoot;
     this.onReport = options.report;
     this.folders = options.folders;
   }
@@ -77,9 +85,9 @@ export class WorkspaceEditor implements EditorHost {
   /**
    * The room path this document is shared under, or `undefined` when the session does not
    * share it. A host shares the `file:` documents open under a folder it captured — the
-   * folder chosen at invite time is the grant (`DESIGN.md` §4.2) — and a guest shares only
-   * the `selvage:` documents the room gave it. Recording it here is what makes the reverse
-   * lookup in `pathOf` possible.
+   * folder chosen at invite time is the grant (`DESIGN.md` §4.2) — and a guest shares the
+   * `file:` documents under its mirror root, never outside it and never the mirror's own
+   * marker. Recording it here is what makes the reverse lookup in `pathOf` possible.
    */
   register(document: vscode.TextDocument): string | undefined {
     const path = this.roomPath(document.uri);
@@ -109,12 +117,6 @@ export class WorkspaceEditor implements EditorHost {
     this.paths.delete(uri.toString());
     this.documents.delete(path);
     return path;
-  }
-
-  /** The guest documents this window has open, as their URI strings and room paths. */
-  virtualDocuments(): Array<[uri: string, path: string]> {
-    const prefix = `${SCHEME}:`;
-    return [...this.paths.entries()].filter(([uri]) => uri.startsWith(prefix));
   }
 
   // -- EditorHost ------------------------------------------------------------
@@ -183,10 +185,10 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined || !document.isDirty) {
       return true;
     }
-    // A guest's virtual document has nowhere to be written, so its provider's `writeFile` is
-    // a no-op. The call is made all the same: it is what clears the dirty marker. A host's
-    // save is an ordinary write, and the room's content is what it writes. `false` means the
-    // write failed and the file is stale; the bridge reports it rather than swallowing it.
+    // A guest's mirror file holds what the room already holds — the keystrokes went first,
+    // so the save writes the room's own text. The call is also what clears the dirty
+    // marker. A host's save is the same ordinary write. `false` means the write failed and
+    // the file is stale; the bridge reports it rather than swallowing it.
     return document.save();
   }
 
@@ -235,11 +237,16 @@ export class WorkspaceEditor implements EditorHost {
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {
-    const virtual = virtualDocument(uri.scheme, uri.path, uri.query);
-    if (virtual !== undefined) {
-      return this.role === 'guest' ? virtual.path : undefined;
+    if (this.role === 'guest') {
+      // The mirror's own marker is the client's bookkeeping, not a document: it must
+      // never publish, or a join's invite would reach the room it names.
+      if (uri.scheme !== 'file' || this.mirrorRoot === undefined) {
+        return undefined;
+      }
+      const rel = mirrorRelative(this.mirrorRoot, uri.fsPath);
+      return rel === undefined || rel === MIRROR_MARKER ? undefined : rel;
     }
-    if (this.role !== 'host' || uri.scheme !== 'file') {
+    if (uri.scheme !== 'file') {
       return undefined;
     }
     // The captured folders, not the live ones: a folder added to the window mid-session must

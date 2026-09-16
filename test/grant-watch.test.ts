@@ -15,10 +15,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { SelvageEngine, parseSessionUrl } from '../src/engine/index.ts';
-import { virtualUri } from '../src/bridge/index.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import {
+  loadBundle,
+  mirrorFileUri,
+  mirrorWindowDir,
+  testStoragePath,
+  waitForMirrorFiles,
+  waitForMirrorGone,
+} from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -31,22 +39,27 @@ const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
  */
 const REFRESH_MS = 250;
 
-/** The room an invite names, so a virtual document's URI can be built out of it. */
+/** The room an invite names, for the sentences that have to name it. */
 function roomOf(invite: string): string {
   const room = parseSessionUrl(invite)?.join.room;
   assert.ok(room !== undefined, `the invite names no room: ${invite}`);
   return room;
 }
 
-/** The bundle, activated, with its recorded state cleared. */
-function activated(t: TestContext): LoadedExtension {
+/** The bundle, activated with its own storage, with its recorded state cleared. */
+function activated(t: TestContext): { bundle: LoadedExtension; storage: string } {
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(() => {
     bundle.deactivate();
   });
-  return bundle;
+  return { bundle, storage };
 }
 
 /** The invite a host bundle copied, read off the clipboard as a user's click would leave it. */
@@ -66,6 +79,8 @@ function listing(guest: SelvageEngine): string[] {
 interface Hosted {
   /** The window hosting: the built extension, which is the side that watches the folder. */
   bundle: LoadedExtension;
+  /** The window's storage: a guest mirror is never minted here, but joins use it. */
+  storage: string;
   server: FakeServer;
   /** A second engine in the room: what the host published, as the room received it. */
   guest: SelvageEngine;
@@ -78,7 +93,7 @@ async function hosted(t: TestContext, contents: Record<string, string>): Promise
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle, storage } = activated(t);
   for (const [path, content] of Object.entries(contents)) {
     bundle.stub.put(path, content);
   }
@@ -91,7 +106,7 @@ async function hosted(t: TestContext, contents: Record<string, string>): Promise
   t.after(async () => {
     await guest.disconnect();
   });
-  return { bundle, server, guest, invite };
+  return { bundle, storage, server, guest, invite };
 }
 
 /** Waits until the guest's listing holds `path`, and answers with the listing it then held. */
@@ -264,7 +279,7 @@ test('a guest watches nothing and publishes no listing', async (t) => {
   const invite = host.inviteUrl();
   assert.ok(invite !== undefined, 'the host was given no invite link');
 
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
   await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
@@ -358,7 +373,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.setWorkspaceFolders(['/one', '/two']);
   bundle.stub.put('/one/README.md', 'the readme\n');
   bundle.stub.put('/two/notes.md', 'notes\n');
@@ -395,7 +410,7 @@ test('a watcher that fails after the first folder stops the watch rather than ha
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.setWorkspaceFolders(['/one', '/two']);
   bundle.stub.put('/one/README.md', 'the readme\n');
   bundle.stub.put('/two/notes.md', 'notes\n');
@@ -433,7 +448,7 @@ test('a server with no grant is not a failure, and the watch goes on', async (t)
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -483,7 +498,7 @@ test('a refused listing is reported, and the session goes on', async (t) => {
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -527,7 +542,7 @@ test('a refused listing is offered and reported once while it says the same thin
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -573,7 +588,7 @@ test('a walk overtaken by a later one reports no refusal of its own', async (t) 
   t.after(async () => {
     await server.stop();
   });
-  const bundle = activated(t);
+  const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -640,47 +655,52 @@ test('a path that leaves the listing is a listing that shrank, not a hold releas
   assert.ok(invite !== undefined, 'the host was given no invite link');
   await host.grant(['README.md', 'docs/notes.md', 'src/main.rs']);
 
-  const bundle = activated(t);
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  const tree = treeOf(bundle);
-  await waitFor('the listing to reach the window', () =>
-    tree.getChildren().length === 3 ? true : false,
-    { describe: () => tree.getChildren() },
-  );
+  const roomId = roomOf(invite);
+  await waitForMirrorFiles(storage, roomId, ['README.md', 'docs/notes.md', 'src/main.rs']);
 
   // The guest opens one of the granted paths: the room holds it from here on, and its text
   // arrives because the host put it in the room.
   await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'src/main.rs' });
-  const roomId = roomOf(invite);
-  const document = {
-    scheme: 'selvage',
-    path: '/src/main.rs',
-    query: `room=${roomId}`,
-    toString: () => virtualUri(roomId, 'src/main.rs'),
+  const uri = mirrorFileUri(storage, roomId, 'src/main.rs');
+  await waitFor('the granted path to open', () =>
+    bundle.stub.registered.opened.includes(uri) ? true : false,
+  );
+  const holder = { text: '' };
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      holder.text += change.text;
+    }
+    return true;
   };
+  bundle.stub.fire('openTextDocument', {
+    uri: bundle.stub.Uri.parse(uri),
+    eol: 1,
+    isDirty: false,
+    getText: () => holder.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    save: () => Promise.resolve(true),
+  });
+  await waitFor('the hold to reach the room', () =>
+    host.documents().includes('src/main.rs') ? true : false,
+  );
   host.insert('src/main.rs', 0, 'fn main() {}\n');
-  await waitFor('the guest to hold the room text', () => {
-    const bytes = bundle.registered.files?.readFile(document);
-    return bytes instanceof Uint8Array &&
-      new TextDecoder().decode(bytes) === 'fn main() {}\n'
-      ? true
-      : false;
-  }, { describe: () => bundle.stub.registered.opened });
-
-  // The folder as a watcher now finds it: the file the guest has open is gone from disk, and so
-  // is a path nobody holds. Both leave the listing in the same frame.
-  await host.grant(['README.md']);
-  await waitFor('the shrink to reach the window', () =>
-    tree.getChildren().some((node) => node.name === 'docs') ? false : true,
-    { describe: () => tree.getChildren() },
+  await waitFor('the guest to hold the room text', () =>
+    holder.text === 'fn main() {}\n' ? true : false,
   );
 
-  assert.deepEqual(
-    tree.getChildren().map((node) => [node.name, node.directory]),
-    [
-      ['src', true],
-      ['README.md', false],
-    ],
+  // The folder as a watcher now finds it: the file the guest has open is gone from disk,
+  // and so is a path nobody holds. Both leave the listing in the same frame.
+  await host.grant(['README.md']);
+  await waitForMirrorGone(storage, roomId, ['docs/notes.md']);
+
+  // A republished listing removes what nobody holds and keeps what a document holds: the
+  // held file stays on disk, with its hold, while the unheld one goes.
+  assert.equal(
+    existsSync(join(mirrorWindowDir(storage, roomId), 'src', 'main.rs')),
+    true,
     'the window dropped a document whose path left the listing',
   );
   assert.equal(
@@ -688,21 +708,5 @@ test('a path that leaves the listing is a listing that shrank, not a hold releas
     true,
     'the hold on the path was released with the listing',
   );
-  const bytes = bundle.registered.files?.readFile(document);
-  assert.ok(bytes instanceof Uint8Array, 'an open document whose path left the listing errored');
-  assert.equal(new TextDecoder().decode(bytes), 'fn main() {}\n');
+  assert.equal(holder.text, 'fn main() {}\n', 'an open document whose path left the listing lost its text');
 });
-
-interface GrantTreeLike {
-  getChildren(node?: { path: string }): Array<{
-    name: string;
-    path: string;
-    directory: boolean;
-  }>;
-}
-
-function treeOf(bundle: LoadedExtension): GrantTreeLike {
-  const view = bundle.registered.treeViews.find((entry) => entry.id === 'selvage.grant');
-  assert.ok(view !== undefined, 'activating registered no Explorer view');
-  return view.options['treeDataProvider'] as GrantTreeLike;
-}

@@ -35,10 +35,98 @@ import {
 import type { Dirent } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
+
 import { MAX_GRANT_PATHS, isGrantedPath } from '../bridge/index.ts';
 
 /** The marker at a mirror root: whose room it is, which window owns it, who minted it. */
 export const MIRROR_MARKER = '.selvage-mirror.json';
+
+/**
+ * A filesystem path as the room path it names under a mirror root, or `undefined` when
+ * it names nothing there: outside the root, the root itself, or a `..` that escaped it.
+ * A URI normalises `..` away before this ever sees it; the check is defence in depth.
+ */
+export function mirrorRelative(root: string, fsPath: string): string | undefined {
+  const base = root.endsWith('/') ? root : `${root}/`;
+  if (!fsPath.startsWith(base)) {
+    return undefined;
+  }
+  const rel = fsPath.slice(base.length);
+  if (rel === '' || rel.split('/').includes('..')) {
+    return undefined;
+  }
+  return rel;
+}
+
+/** True when `process.kill(pid, 0)` says the process is there; refusal counts as alive. */
+export function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/** A mirror directory the storage scan found, with what its marker says. */
+export interface StoredMirror {
+  room: string;
+  window: string;
+  root: string;
+  invite?: string;
+}
+
+/**
+ * Every room window directory under `<storage>/rooms` carrying a marker this client wrote.
+ * A directory with no marker, an unreadable one, or a symlink at any level is not
+ * positively ours and is never listed: pruning only ever deletes what this returns.
+ */
+export function scanStorage(storage: vscode.Uri): StoredMirror[] {
+  const rooms = join(storage.fsPath, 'rooms');
+  let roomDirs: Dirent[];
+  try {
+    roomDirs = readdirSync(rooms, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found: StoredMirror[] = [];
+  for (const roomDir of roomDirs) {
+    if (!roomDir.isDirectory() || roomDir.isSymbolicLink()) {
+      continue;
+    }
+    let windows: Dirent[];
+    try {
+      windows = readdirSync(join(rooms, roomDir.name), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const windowDir of windows) {
+      if (!windowDir.isDirectory() || windowDir.isSymbolicLink()) {
+        continue;
+      }
+      const root = join(rooms, roomDir.name, windowDir.name);
+      let marker: MirrorMarker | undefined;
+      try {
+        marker = readMarker(root);
+      } catch {
+        continue;
+      }
+      if (marker === undefined) {
+        continue;
+      }
+      found.push({
+        room: marker.room,
+        window: marker.window,
+        root,
+        ...(marker.invite === undefined ? {} : { invite: marker.invite }),
+      });
+    }
+  }
+  return found;
+}
 
 /** What `mintMirror` wrote, as `readMarker` reads it back. */
 export interface MirrorMarker {
@@ -228,7 +316,7 @@ export function pruneRoom(
       writeMarker(dir, { ...marker, pid });
       continue;
     }
-    if (isAlive(marker.pid)) {
+    if (processAlive(marker.pid)) {
       continue;
     }
     rmSync(dir, { recursive: true, force: true });
@@ -356,18 +444,7 @@ function filesUnder(root: string): string[] {
   return found;
 }
 
-/** True when `process.kill(pid, 0)` says the process is there; refusal counts as alive. */
-function isAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
+
 
 /** Refuses what is there unless it is a real directory: a symlink, a file, anything else. */
 function assertPlainDirectoryOrAbsent(dir: string): void {

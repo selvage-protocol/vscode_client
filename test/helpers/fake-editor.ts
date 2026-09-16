@@ -33,7 +33,7 @@ export class FakeEditor implements EditorHost {
   /**
    * `true` models an editor that reports an apply as landed while the buffer still holds what
    * it held before — the window between `applyEdit` resolving and the editor's own text
-   * catching up, which is what a virtual document looks like while it materialises.
+   * catching up, which is what a mirror placeholder looks like while its text arrives.
    */
   stallApply = false;
   /** `false` models `document.save()` resolving `false`: the write failed and the file is stale. */

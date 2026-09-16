@@ -65,7 +65,7 @@ test('activating registers exactly the commands the manifest contributes', () =>
 });
 
 test('every setting the manifest declares is one the adapter reads', () => {
-  const source = ['extension.ts', 'documents.ts', 'guest-fs.ts', 'decorations.ts']
+  const source = ['extension.ts', 'documents.ts', 'mirror.ts', 'decorations.ts']
     .map((name) => readFileSync(resolve(ADAPTER, name), 'utf8'))
     .join('\n');
   const properties = Object.keys(manifest.contributes?.configuration?.properties ?? {});
@@ -110,14 +110,10 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
   );
 });
 
-test('activation stays lazy: a command starts the extension, a mirror or guest tab restores it', () => {
+test('activation stays lazy: a command starts the extension, a mirror restores it', () => {
   // A command activation event is generated from `contributes.commands` since VS Code
   // 1.74, so the extension starts when a user runs one of its commands and not before. A
   // window opened on a mirror directory is the way back in after the reload that put the
-  // room's folder there; the file-system event is the way back for a restored `selvage:`
-  // tab, until the provider goes and takes the scheme — and the event — with it.
-  assert.deepEqual(manifest.activationEvents ?? [], [
-    'onFileSystem:selvage',
-    'workspaceContains:**/.selvage-mirror.json',
-  ]);
+  // room's folder there — and after a crash that left one behind.
+  assert.deepEqual(manifest.activationEvents ?? [], ['workspaceContains:**/.selvage-mirror.json']);
 });
