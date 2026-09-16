@@ -461,14 +461,37 @@ class Session {
         void vscode.window.showInformationMessage('Selvage: the room lists no files to fetch.');
         return;
       }
-      const picked = await vscode.window.showQuickPick(listed, {
+      // The whole listing leads the offer: bare `:SelvageFetch` fetches it all, and the
+      // palette's equivalent is one row down. A row is not a path, so picking it takes
+      // the confirm below rather than the single-path flow.
+      const whole: vscode.QuickPickItem = {
+        label: 'Fetch the whole listing',
+        description: `${listed.length} files`,
+      };
+      const picked = await vscode.window.showQuickPick([whole, ...listed], {
         title: 'Fetch a path from the room',
         placeHolder: `${listed.length} listed in this room`,
       });
       if (picked === undefined) {
         return;
       }
-      targets = [picked];
+      if (typeof picked !== 'string') {
+        // A whole listing is a whole project held at once — unbounded mirror growth for
+        // an unbounded room (R5) — so it asks first, with what the yes means, and a
+        // dismissal or any other answer leaves the room unheld.
+        const fetchAll = 'Fetch the whole listing';
+        const confirmed = await vscode.window.showWarningMessage(
+          `Selvage: fetch all ${listed.length} listed files into the mirror? Each is held in the room so every peer receives it, and the mirror holds whatever arrives.`,
+          { modal: true },
+          fetchAll,
+        );
+        if (confirmed !== fetchAll) {
+          return;
+        }
+        targets = [...listed];
+      } else {
+        targets = [picked];
+      }
     }
     // A path this window already holds needs no announcement: nothing is asked for.
     const fresh = targets.filter((target) => !this.engine.has(target));

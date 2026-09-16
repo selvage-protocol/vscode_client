@@ -1665,7 +1665,10 @@ test('fetch without a path offers the listing to pick from', async (t) => {
       (entry) => (entry.options as { title?: string }).title === 'Fetch a path from the room',
     ) ?? false,
   );
-  assert.deepEqual(asked.items, ['picked.md']);
+  assert.deepEqual(asked.items, [
+    { label: 'Fetch the whole listing', description: '1 files' },
+    'picked.md',
+  ]);
   const done = await waitFor('the fetched report', () =>
     bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
     false,
@@ -2077,3 +2080,75 @@ function isFile(path: string): boolean {
     return false;
   }
 }
+
+test('fetch offers the whole listing first and confirms before holding it', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['a.md', 'notes/b.md']);
+  const { bundle, storage } = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitForMirrorFiles(storage, roomId, ['a.md', 'notes/b.md']);
+
+  // The picker's first row is the whole listing; choosing it asks what the yes means.
+  bundle.stub.registered.quickPickReply = { label: 'Fetch the whole listing' };
+  bundle.stub.registered.warningReply = 'Fetch the whole listing';
+  await bundle.stub.commands.executeCommand('selvage.fetch');
+  const confirmed = await waitFor('the whole-listing confirm', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('fetch all 2 listed files')) ??
+    false,
+  );
+  assert.equal(
+    confirmed,
+    'Selvage: fetch all 2 listed files into the mirror? Each is held in the room so every peer receives it, and the mirror holds whatever arrives.',
+  );
+  await waitFor('the first hold to ask the room', () =>
+    bundle.stub.registered.progress.some((entry) => entry.title === 'Selvage: fetching a.md…') ? true : false,
+  );
+  await host.open('a.md');
+  host.insert('a.md', 0, 'a\n');
+  await waitFor('the second hold to ask the room', () =>
+    bundle.stub.registered.progress.some((entry) => entry.title === 'Selvage: fetching notes/b.md…')
+      ? true
+      : false,
+  );
+  await host.open('notes/b.md');
+  host.insert('notes/b.md', 0, 'b\n');
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+});
+
+test('a whole-listing fetch dismissed at the confirm holds nothing', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['a.md']);
+  const { bundle, storage } = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitForMirrorFiles(storage, roomId, ['a.md']);
+
+  // The row is chosen and the confirm dismissed: no hold, no wait, no report.
+  bundle.stub.registered.quickPickReply = { label: 'Fetch the whole listing' };
+  bundle.stub.registered.warningReply = undefined;
+  await bundle.stub.commands.executeCommand('selvage.fetch');
+  await waitFor('the whole-listing confirm', () =>
+    bundle.stub.registered.warnings.some((message) => message.includes('fetch all 1 listed files'))
+      ? true
+      : false,
+  );
+  assert.equal(bundle.stub.registered.progress.length, 0, 'a dismissed fetch held a path');
+  assert.equal(
+    bundle.stub.registered.information.filter((message) => message.includes('fetched the files'))
+      .length,
+    0,
+    'a dismissed fetch reported a fetch',
+  );
+  assert.equal(host.documents().length, 0, 'a dismissed fetch holds a path in the room');
+});

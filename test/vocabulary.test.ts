@@ -91,6 +91,7 @@ const SENTENCES = [
   "'Selvage: fetching opens them in the room, so every peer receives them.'",
   "'Selvage: fetched the files.'",
   '`Selvage: could not fetch ${} from the room: ${}`',
+  '`Selvage: fetch all ${} listed files into the mirror? Each is held in the room so every peer receives it, and the mirror holds whatever arrives.`',
   // The mirror's refusals: what the room cannot do, said where the client is present.
   '`Selvage: ${} is not in the room, so it is not shared; the mirror holds the room\'s files and is removed when the session ends.`',
   '`Selvage: ${} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`',
