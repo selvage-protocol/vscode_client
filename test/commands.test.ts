@@ -422,7 +422,7 @@ test('the display-name command reports the name in force and offers to change it
   const asked = await waitFor('the question', () =>
     bundle.stub.registered.inputs[0] ?? false,
   );
-  assert.match(String(asked.prompt), /At most 32 characters/);
+  assert.match(String(asked.prompt), /some emoji and accented characters count as more than one/);
 
   const write = await waitFor('the setting to be written', () =>
     bundle.stub.registered.settingWrites[0] ?? false,
@@ -1389,10 +1389,17 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
   );
   // A truncated paste, a server address, and nothing at all: all fail here, in plain
   // words, rather than later as whatever the engine said.
+  assert.equal(
+    validate('wss://host:8080/session?room=r&token=t'),
+    undefined,
+    'a secure invite link was refused',
+  );
   for (const bad of [
     'ws://127.0.0.1:8080/session?room=r',
     'ws://127.0.0.1:8080/not-a-session',
     'ws://127.0.0.1:8080',
+    'not-a-url/session?room=r&token=t',
+    'https://host/session?room=r&token=t',
     '',
   ]) {
     const refusal = validate(bad);

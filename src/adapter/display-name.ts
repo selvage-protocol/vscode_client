@@ -68,7 +68,7 @@ export function displayNameInput(options: {
       : ` The name others see is "${options.current}".`;
   return {
     title: options.title,
-    prompt: `At most ${MAX_DISPLAY_NAME_UNITS} characters; an emoji counts as two.${reported}`,
+    prompt: `At most ${MAX_DISPLAY_NAME_UNITS} characters; some emoji and accented characters count as more than one.${reported}`,
     value: options.value,
     ignoreFocusOut: true,
     validateInput: (value: string) => displayNameRefusal(value),

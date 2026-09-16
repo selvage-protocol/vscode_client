@@ -1455,7 +1455,20 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
  * an ECONNREFUSED. The engine still refuses one that arrives by argument.
  */
 function inviteLinkRefusal(value: string): string | undefined {
-  const parsed = parseSessionUrl(value.trim());
+  const invite = value.trim();
+  // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
+  // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
+  // pass this box and fail later inside the engine.
+  let url: URL;
+  try {
+    url = new URL(invite);
+  } catch {
+    return inviteLinkHint();
+  }
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+    return inviteLinkHint();
+  }
+  const parsed = parseSessionUrl(invite);
   if (
     parsed === undefined ||
     parsed.join.room === undefined ||
@@ -1463,9 +1476,14 @@ function inviteLinkRefusal(value: string): string | undefined {
     parsed.join.token === undefined ||
     parsed.join.token === ''
   ) {
-    return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like ws://host:8080/session?room=…&token=….';
+    return inviteLinkHint();
   }
   return undefined;
+}
+
+/** What a good invite link looks like, for the join box refusal. */
+function inviteLinkHint(): string {
+  return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like ws://host:8080/session?room=…&token=….';
 }
 
 /**

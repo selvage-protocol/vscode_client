@@ -119,6 +119,32 @@ test('a dropped socket reports reconnecting before it rejoins', async (t) => {
   );
 });
 
+test('a disconnect from a reconnecting listener schedules no retry', async (t) => {
+  const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { guest, server } = session;
+  const accepted = server.acceptedConnections;
+  const events = record(guest);
+  guest.on((event) => {
+    if (event.type === 'reconnecting') {
+      void guest.disconnect();
+    }
+  });
+  server.drop('Bob');
+  await events.waitForEvent('the reconnecting report', (event) => event.type === 'reconnecting');
+  // Several backoff windows pass: a leaked retry would open a connection in the first.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(
+    server.acceptedConnections,
+    accepted,
+    'a retry reached the server after the session ended',
+  );
+});
+
 test('a host that dropped reclaims its room rather than minting a second one', async (t) => {
   const session = await fakeSession({}, { reconnect: FAST_RECONNECT });
   t.after(async () => {
