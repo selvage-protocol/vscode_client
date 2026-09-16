@@ -364,7 +364,11 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   when the window has none. The listing fills its shape with empty files; content arrives
   through the buffer, and leaving deletes the whole directory. A file the listing does not
   name is not shared: opening or saving one says so once per path, and a republished
-  listing removes it. With several documents in the room only the first opens; the
+  listing removes it. A document the room holds without listing has no file to open, so it
+  is not openable here the way it is in Neovim; a save the room does not list is written —
+  the editor cannot refuse it — and said about afterwards, where Neovim refuses it upfront.
+  Leaving a window that is only the room reloads it, the way joining an empty window does.
+  With several documents in the room only the first opens; the
   quick-pick in *Open a document from the room* lists every path — a guest never types
   one, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
