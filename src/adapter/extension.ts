@@ -415,6 +415,25 @@ class Session {
     if (this.engine.has(path)) {
       return Promise.resolve();
     }
+    // A read that has to ask the room says so while it waits: without the notice the tab
+    // opens when the wait is over and nothing says it was ever loading.
+    return Promise.resolve(
+      vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Selvage: fetching ${path}…`,
+        },
+        () => this.waitForText(path),
+      ),
+    );
+  }
+
+  /**
+   * The wait `fetch` shows its notice over: the hold, the listener, and the bounded wait.
+   * A wait that gives up with the replica still holding nothing is named out loud rather
+   * than left as a silent empty editor: the host has not sent the text yet.
+   */
+  private waitForText(path: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       let opened = false;
@@ -445,6 +464,11 @@ class Session {
         ) {
           reject(new Error(leftListingNotice(path)));
           return;
+        }
+        if (!this.engine.has(path)) {
+          void vscode.window.showWarningMessage(
+            `Selvage: ${path} is still empty: the host has not sent its text yet.`,
+          );
         }
         resolve();
       };
@@ -1437,9 +1461,14 @@ function joinedMessage(roomId: string, documents: string[]): string {
   if (first === undefined) {
     return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
   }
-  return opensOnJoin()
-    ? `Selvage: joined room ${roomId}; opening ${first}.`
-    : `Selvage: joined room ${roomId}.`;
+  if (!opensOnJoin()) {
+    return `Selvage: joined room ${roomId}.`;
+  }
+  // The landing opens one document; the rest wait behind the picker and the tree, so the
+  // join names them rather than leaving the guest to assume the room is one file.
+  const rest = documents.length - 1;
+  const more = rest > 0 ? ` and ${rest} more in the Selvage view` : '';
+  return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
 }
 
 /**

@@ -1436,6 +1436,88 @@ test('a host to a dead server says what to check, not just the engine error', as
   assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
 });
 
+test('joining names the rest of the room the landing does not open', async (t) => {
+  const { bundle, roomId } = await guest(t, ['workspace/README.md', 'workspace/src/main.rs']);
+  const joined = await waitFor('the join sentence', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.equal(
+    joined,
+    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more in the Selvage view.`,
+  );
+});
+
+test('a guest sees a fetch loading, and no empty warning when it lands', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+
+  const reading = readRoomFile(bundle, roomId, 'workspace/fresh.md');
+  const notice = await waitFor('the fetching notice', () =>
+    bundle.stub.registered.progress.find((entry) =>
+      entry.title === 'Selvage: fetching workspace/fresh.md…',
+    ) ?? false,
+  );
+  assert.equal(notice.location, bundle.stub.ProgressLocation.Notification);
+
+  await host.open('workspace/fresh.md');
+  host.insert('workspace/fresh.md', 0, 'hello\n');
+  const bytes = await reading;
+  assert.equal(new TextDecoder().decode(bytes), 'hello\n');
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('still empty')).length,
+    0,
+    'a fetch that landed was marked empty',
+  );
+});
+
+test('a fetch that times out names the empty editor instead of leaving it silent', async (t) => {
+  // The host holds nothing, so nothing can arrive: the read waits out the whole bounded wait.
+  const { invite, roomId } = await room(t, []);
+  const bundle = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+
+  const reading = readRoomFile(bundle, roomId, 'workspace/lonely.md');
+  const warned = await waitFor(
+    'the still-empty warning',
+    () =>
+      bundle.stub.registered.warnings.find((message) => message.includes('is still empty')) ?? false,
+    { timeoutMs: 15000 },
+  );
+  assert.equal(
+    warned,
+    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet.',
+  );
+  const bytes = await reading;
+  assert.equal(bytes.length, 0, 'the timed-out read resolved with something');
+});
+
+/**
+ * Reads a room path through the guest provider, as the editor opening it does. The read
+ * must wait on the room — a path the replica already holds would answer synchronously
+ * and say nothing about loading.
+ */
+function readRoomFile(bundle: LoadedExtension, roomId: string, path: string): Promise<Uint8Array> {
+  const files = bundle.stub.registered.files;
+  assert.ok(files !== undefined, 'the guest file system was never registered');
+  const uriString = virtualUri(roomId, path);
+  const question = uriString.indexOf('?');
+  const bytes = files.readFile({
+    scheme: 'selvage',
+    path: uriString.slice(uriString.indexOf('/'), question),
+    query: uriString.slice(question + 1),
+    toString: () => uriString,
+  });
+  assert.ok(bytes instanceof Promise, 'a read that must ask the room answered synchronously');
+  return bytes;
+}
+
 test('the status tooltip counts the rest instead of listing the room', async (t) => {
   const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
   const { bundle } = await guest(t, paths);

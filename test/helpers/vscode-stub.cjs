@@ -26,6 +26,8 @@ const registered = {
   warnings: [],
   errors: [],
   quickPicks: [],
+  /** Every progress notice the extension showed, in order: a fetch in flight names its path. */
+  progress: [],
   inputs: [],
   /** Every configuration write: `{ key, value, target }`, in order. */
   settingWrites: [],
@@ -325,6 +327,7 @@ function reset() {
   registered.warnings.length = 0;
   registered.errors.length = 0;
   registered.quickPicks.length = 0;
+  registered.progress.length = 0;
   registered.inputs.length = 0;
   registered.settingWrites.length = 0;
   registered.settingWriteFails = false;
@@ -511,6 +514,8 @@ module.exports = {
   },
 
   StatusBarAlignment: { Left: 1, Right: 2 },
+
+  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
 
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
 
@@ -758,6 +763,12 @@ module.exports = {
     showInputBox: (options) => {
       registered.inputs.push(options);
       return Promise.resolve(registered.inputReply);
+    },
+    withProgress: (options, task) => {
+      registered.progress.push(options);
+      return Promise.resolve().then(() =>
+        task({ report() {} }, { isCancellationRequested: false }),
+      );
     },
     /** A tree view, with the provider the extension registered for it. */
     createTreeView: (id, options) => {

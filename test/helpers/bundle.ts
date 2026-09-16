@@ -77,6 +77,8 @@ export interface EditorStub {
     errors: string[];
     quickPicks: Array<{ items: unknown[]; options: unknown }>;
     inputs: Array<Record<string, unknown>>;
+    /** Every progress notice the extension showed, in order. */
+    progress: Array<{ title?: string; location?: number }>;
     settingWrites: Array<{ key: string; value: unknown; target: number }>;
     settingWriteFails: boolean;
     opened: string[];
@@ -135,6 +137,7 @@ export interface EditorStub {
     activeTextEditor: unknown;
   };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
+  ProgressLocation: { SourceControl: number; Window: number; Notification: number };
   TextEditorRevealType: { InCenterIfOutsideViewport: number };
   commands: {
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>;
