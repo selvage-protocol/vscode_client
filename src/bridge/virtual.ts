@@ -45,29 +45,15 @@ function decodeComponent(value: string): string | undefined {
   }
 }
 
-function decodePath(path: string): string | undefined {
-  const decoded: string[] = [];
+function validatePath(path: string): string | undefined {
+  // `vscode.Uri.parse` already percent-decoded the components: decoding again turns a
+  // literal `a%2Fb` filename into `a/b` and refuses it. Segments are judged as given.
   for (const segment of path.split('/')) {
-    const part = decodeComponent(segment);
-    if (part === undefined) {
-      return undefined;
-    }
-    // A decoded separator is not a segment: `%2F` never becomes one, so one encoded
-    // segment can never address two paths. Single decode only: `%252F` stays literal.
-    if (part.includes('/')) {
-      return undefined;
-    }
-    decoded.push(part);
-  }
-  const full = decoded.join('/');
-  // Decoding can reintroduce escapes (`%2e%2e`): the name this client would actually open
-  // is judged, not the encoded form.
-  for (const piece of full.split('/')) {
-    if (piece === '' || piece === '.' || piece === '..') {
+    if (segment === '' || segment === '.' || segment === '..') {
       return undefined;
     }
   }
-  return full;
+  return path;
 }
 
 /** The URI a guest opens for a room path. */
@@ -98,13 +84,13 @@ export function virtualDocument(
   if (roomId === undefined) {
     return undefined;
   }
-  const decoded = decodePath(path.slice(1));
+  const validated = validatePath(path.slice(1));
   // A URI that names what the grant would never publish mints no document: the receipt
   // filter keeps such names out of listings, and this keeps them out of hand-made URIs too.
-  if (decoded === undefined || !isGrantedPath(decoded)) {
+  if (validated === undefined || !isGrantedPath(validated)) {
     return undefined;
   }
-  return { roomId, path: decoded };
+  return { roomId, path: validated };
 }
 
 /** The room id a URI's query names, `undefined` when it names none or cannot be decoded. */

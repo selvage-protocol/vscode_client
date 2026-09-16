@@ -370,6 +370,14 @@ function configure(values) {
 }
 
 /** The URI components an editor hands to a provider, parsed from a URI string. */
+function decodedPath(raw) {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function parseUri(value) {
   const text = String(value);
   const withoutFragment = text.split('#')[0];
@@ -377,9 +385,10 @@ function parseUri(value) {
   const scheme = colon === -1 ? '' : withoutFragment.slice(0, colon);
   const rest = colon === -1 ? withoutFragment : withoutFragment.slice(colon + 1);
   const question = rest.indexOf('?');
+  const rawPath = question === -1 ? rest : rest.slice(0, question);
   return {
     scheme,
-    path: question === -1 ? rest : rest.slice(0, question),
+    path: decodedPath(rawPath),
     query: question === -1 ? '' : rest.slice(question + 1),
     toString: () => text,
   };

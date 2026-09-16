@@ -346,13 +346,15 @@ test('a guest document URI round-trips, and its room is not case-folded', () => 
 
   // A path and a room are not this client's to normalise: a name with a space, a `?`, a
   // `#` or a non-ASCII character has to come back exactly, or the provider reads the wrong
-  // document. The URI an editor hands the provider is split into scheme, path and query the
-  // way every editor does it, and those are the parts this reads.
+  // document. The URI an editor hands the provider is already percent-decoded by `Uri.parse`,
+  // so those parts are read as given rather than decoded again.
   for (const path of ['a b/c?d#e.txt', 'ünïcode/日本語.md', 'x%20y/z', 'dir/sub/file.ts']) {
     const uri = virtualUri('r-CASE', path);
     const at = uri.indexOf('?');
+    const rawPath = uri.slice(uri.indexOf(':') + 1, at);
+    const decodedPath = decodeURIComponent(rawPath);
     assert.deepEqual(
-      virtualDocument(uri.slice(0, uri.indexOf(':')), uri.slice(uri.indexOf(':') + 1, at), uri.slice(at + 1)),
+      virtualDocument(uri.slice(0, uri.indexOf(':')), decodedPath, uri.slice(at + 1)),
       { roomId: 'r-CASE', path },
       uri,
     );
@@ -364,26 +366,29 @@ test('a guest document URI round-trips, and its room is not case-folded', () => 
   assert.equal(virtualDocument('selvage', '/a.ts', 'room='), undefined);
   assert.equal(virtualDocument('selvage', '/', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', 'a.ts', 'room=r-1'), undefined);
-  // A stray `%` is not valid percent-encoding, and a URI is untrusted input: the component
-  // is unreadable rather than a `URIError` thrown out of the change-event listener.
-  assert.equal(virtualDocument('selvage', '/a%2.ts', 'room=r-1'), undefined);
+  // The query is still percent-decoded: a room that cannot be decoded names no document,
+  // rather than throwing out of a listener.
   assert.equal(virtualDocument('selvage', '/a.ts', 'room=%'), undefined);
   // A server-supplied listing becomes URIs: a name that resolves elsewhere is one this
-  // client cannot name, however it is encoded.
+  // client cannot name.
   assert.equal(virtualDocument('selvage', '/..', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/../etc/passwd', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/src/../../x', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/src//x', 'room=r-1'), undefined);
   assert.equal(virtualDocument('selvage', '/./x', 'room=r-1'), undefined);
-  assert.equal(virtualDocument('selvage', '/%2e%2e/x', 'room=r-1'), undefined);
-  assert.equal(virtualDocument('selvage', '/%2E%2E%2Fx', 'room=r-1'), undefined);
-  // One encoded segment is one path segment: a decoded `%2F` never becomes a separator.
-  assert.equal(virtualDocument('selvage', '/a%2Fb', 'room=r-1'), undefined);
-  assert.equal(virtualDocument('selvage', '/a%2fb', 'room=r-1'), undefined);
-  // Single decode only: `%252F` stays a literal `%2F` in the name, not a separator.
-  assert.deepEqual(virtualDocument('selvage', '/a%252Fb', 'room=r-1'), {
+  // Decoded components are literal: `%2e` is text, not `.`, and `%2F` is text, not `/`.
+  // A literal `a%2Fb` filename is one the grant may publish, so it mints a document.
+  assert.deepEqual(virtualDocument('selvage', '/a%2Fb', 'room=r-1'), {
     roomId: 'r-1',
     path: 'a%2Fb',
+  });
+  assert.deepEqual(virtualDocument('selvage', '/%2e%2e/x', 'room=r-1'), {
+    roomId: 'r-1',
+    path: '%2e%2e/x',
+  });
+  assert.deepEqual(virtualDocument('selvage', '/a%252Fb', 'room=r-1'), {
+    roomId: 'r-1',
+    path: 'a%252Fb',
   });
   // A URI that names what the grant would never publish mints no document.
   assert.equal(virtualDocument('selvage', '/.env', 'room=r-1'), undefined);
@@ -406,4 +411,17 @@ test('a peer colour is a function of the peer id, the same on every client', () 
   assert.equal(translucent('#e06c75', 1), '#e06c75ff');
   assert.equal(translucent('#e06c75', 0.25), '#e06c7540');
   assert.equal(translucent('#e06c75', 0), '#e06c7500');
+});
+
+test('a literal percent-encoded separator survives Uri.parse', async () => {
+  const { createRequire } = await import('node:module');
+  const stub = createRequire(import.meta.url)('./helpers/vscode-stub.cjs') as {
+    Uri: { parse(uri: string): { scheme: string; path: string; query: string } };
+  };
+  const uriString = virtualUri('r-1', 'a%2Fb');
+  const parsed = stub.Uri.parse(uriString);
+  assert.deepEqual(virtualDocument(parsed.scheme, parsed.path, parsed.query), {
+    roomId: 'r-1',
+    path: 'a%2Fb',
+  });
 });
