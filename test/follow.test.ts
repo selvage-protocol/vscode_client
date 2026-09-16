@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
+import { peerColour } from '../src/bridge/cursors.ts';
 import { virtualUri } from '../src/bridge/virtual.ts';
 import { loadBundle } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -210,9 +211,16 @@ function caretOf(editor: FakeEditor): number | undefined {
 }
 
 /** The follow indicator, when one is up: a disposed item reads as gone. */
-function followItem(seat_: Seat): { text: string; command?: string } | undefined {
+function followItem(seat_: Seat): { text: string; command?: string; color?: string } | undefined {
   return seat_.bundle.stub.registered.statusBarItems.find(
     (item) => item.command === 'selvage.stopFollowing' && (item as { disposed?: boolean }).disposed !== true,
+  );
+}
+
+/** The follow banner type, when one is up: a disposed type reads as gone. */
+function followBanner(seat_: Seat, colour: string): { handle: { disposed?: boolean } } | undefined {
+  return (seat_.bundle.stub.registered.decorations as Array<{ options: Record<string, unknown>; handle: { disposed?: boolean } }>).find(
+    (entry) => entry.options['backgroundColor'] === colour && (entry.handle.disposed ?? false) !== true,
   );
 }
 
@@ -384,6 +392,83 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   await waitFor('the empty stop to be refused', () =>
     seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
   );
+});
+
+test('the indicator wears the peer colour, and a banner lands with the follow', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+  const colour = peerColour(seat_.hostId);
+
+  // No banner before anything is followed: the indicator is follow state, not chrome.
+  assert.equal(followBanner(seat_, colour), undefined, 'a follow banner is up with no follow');
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+  );
+  const item = followItem(seat_);
+  assert.ok(item !== undefined, 'no follow indicator while following');
+  // The indicator's colour is the peer's marker colour: the mapping the caret wears.
+  assert.equal(item.color, colour);
+  // The indicator doubles as the stop control: selecting it runs the stop command.
+  assert.equal(item.command, 'selvage.stopFollowing');
+
+  await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
+  const banner = followBanner(seat_, colour);
+  assert.ok(banner !== undefined, 'no follow banner once the follow landed');
+  const painted = editor.decorated.some(
+    (args) => args[0] === (banner as { handle: unknown }).handle && Array.isArray(args[1]) && (args[1] as unknown[]).length > 0,
+  );
+  assert.ok(painted, 'the banner never reached the followed editor');
+
+  // A caret move re-lands without rebuilding the banner: one follow, one banner.
+  seat_.host.setSelection(PATH_A, { anchor: 8, head: 8 });
+  await waitFor('the follow to track the caret move', () => caretOf(editor) === 8);
+  const banners = (seat_.bundle.stub.registered.decorations as Array<{ options: Record<string, unknown> }>).filter(
+    (entry) => entry.options['backgroundColor'] === colour,
+  );
+  assert.equal(banners.length, 1, 'the follow rebuilt its banner mid-track');
+
+  // By the indicator: what a click runs stops the follow and takes the banner down.
+  await seat_.bundle.stub.commands.executeCommand(item.command as string);
+  await waitFor('the follow to stop', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+  );
+  assert.equal(followItem(seat_), undefined, 'the indicator survived the stop');
+  assert.equal(followBanner(seat_, colour), undefined, 'the banner survived the stop');
+});
+
+test('the banner sits only on the followed editor and survives a window switch', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+  const colour = peerColour(seat_.hostId);
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+  );
+  await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
+  const banner = followBanner(seat_, colour);
+  assert.ok(banner !== undefined, 'no follow banner once the follow landed');
+  const handle = (banner as { handle: unknown }).handle;
+
+  // Another visible editor, showing a document the room never named, stays unpainted: the
+  // banner is the top of the followed editor, not of the window.
+  const other = guestEditor(guestDocument(seat_.roomId, 'src/elsewhere.rs', { text: 'zzz\n' }));
+  seat_.bundle.stub.window.visibleTextEditors = [editor, other];
+  seat_.bundle.stub.fire('visibleEditors', [editor, other]);
+  await waitFor('the banner to be repainted over the switch', () =>
+    other.decorated.some((args) => args[0] === handle) ? true : false,
+  );
+  for (const args of other.decorated) {
+    if (args[0] === handle) {
+      assert.equal((args[1] as unknown[]).length, 0, 'the banner painted an unfollowed editor');
+    }
+  }
+  assert.ok(followItem(seat_) !== undefined, 'a window switch ended the follow');
+  assert.ok(followBanner(seat_, colour) !== undefined, 'a window switch took the banner down');
 });
 
 test('a local edit ends the follow while a remote one does not', async (t) => {
