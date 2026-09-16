@@ -11,7 +11,12 @@ import * as vscode from 'vscode';
 
 import { SCHEME, SessionBridge, grantUnion, matchesReplica, peerColour, virtualUri } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
-import { SelvageEngine, code as errCode, isProtocolError } from '../engine/index.ts';
+import {
+  SelvageEngine,
+  code as errCode,
+  isProtocolError,
+  parseSessionUrl,
+} from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -1324,7 +1329,9 @@ async function host(
   try {
     engine = await SelvageEngine.host(baseUrl, displayName, { client: CLIENT });
   } catch (error) {
-    void vscode.window.showErrorMessage(`Selvage: ${message(error)}`);
+    void vscode.window.showErrorMessage(
+      `Selvage: could not host on ${baseUrl} (${message(error)}); is the server running at that address?`,
+    );
     return;
   }
   current = new Session(files, engine);
@@ -1375,6 +1382,7 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
       placeHolder: 'ws://host:8080/session?room=…&token=…',
       value: '',
       ignoreFocusOut: true,
+      validateInput: (value) => inviteLinkRefusal(value),
     });
   }
   if (invite === undefined) {
@@ -1388,13 +1396,35 @@ async function join(files: GuestFileSystem, args?: JoinArgs): Promise<void> {
   try {
     engine = await SelvageEngine.join(invite, displayName, { client: CLIENT });
   } catch (error) {
-    void vscode.window.showErrorMessage(`Selvage: ${message(error)}`);
+    void vscode.window.showErrorMessage(
+      `Selvage: could not join the session (${message(error)}); check the link is complete and the server is running.`,
+    );
     return;
   }
   current = new Session(files, engine);
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
+}
+
+/**
+ * Why a join box value is not an invite link, or `undefined` when it is. A truncated paste
+ * fails here, in plain words saying what a good link looks like, rather than later as
+ * whatever the engine said: a newcomer cannot tell "bad paste" from "server down" from
+ * an ECONNREFUSED. The engine still refuses one that arrives by argument.
+ */
+function inviteLinkRefusal(value: string): string | undefined {
+  const parsed = parseSessionUrl(value.trim());
+  if (
+    parsed === undefined ||
+    parsed.join.room === undefined ||
+    parsed.join.room === '' ||
+    parsed.join.token === undefined ||
+    parsed.join.token === ''
+  ) {
+    return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like ws://host:8080/session?room=…&token=….';
+  }
+  return undefined;
 }
 
 /**

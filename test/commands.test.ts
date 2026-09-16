@@ -1374,6 +1374,68 @@ function freshBundle(): LoadedExtension {
   return loadBundle();
 }
 
+test('joining refuses a bad link in the box, before connecting', async (t) => {
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const asked = await waitFor('the join question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  const validate = asked.validateInput as (value: string) => string | undefined;
+  assert.equal(
+    validate('ws://127.0.0.1:8080/session?room=r&token=t'),
+    undefined,
+    'a whole invite link was refused',
+  );
+  // A truncated paste, a server address, and nothing at all: all fail here, in plain
+  // words, rather than later as whatever the engine said.
+  for (const bad of [
+    'ws://127.0.0.1:8080/session?room=r',
+    'ws://127.0.0.1:8080/not-a-session',
+    'ws://127.0.0.1:8080',
+    '',
+  ]) {
+    const refusal = validate(bad);
+    assert.match(String(refusal), /does not look like a Selvage invite link/);
+    assert.match(String(refusal), /Paste the whole link the host sent you/);
+    assert.match(String(refusal), /\/session\?room=/);
+  }
+  assert.equal(
+    bundle.stub.registered.errors.length,
+    0,
+    'validating the box opened a connection',
+  );
+});
+
+test('a join to a dead server says what to check, not just the engine error', async (t) => {
+  const bundle = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: 'ws://127.0.0.1:1/session?room=r&token=t',
+    displayName: 'Bob',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
+  );
+  assert.match(said, /check the link is complete and the server is running/);
+  assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
+});
+
+test('a host to a dead server says what to check, not just the engine error', async (t) => {
+  const bundle = activated(t);
+  bundle.stub.registered.inputReply = 'Ada';
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: 'ws://127.0.0.1:1',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not host')) ?? false,
+  );
+  assert.match(said, /ws:\/\/127\.0\.0\.1:1/);
+  assert.match(said, /is the server running at that address/);
+  assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
+});
+
 test('the status tooltip counts the rest instead of listing the room', async (t) => {
   const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
   const { bundle } = await guest(t, paths);

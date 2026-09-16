@@ -65,6 +65,8 @@ const SENTENCES = [
   '`Selvage: you are in room ${}; hosting a session means leaving it first.`',
   '`Selvage: joined room ${}; opening ${}.`',
   '`Selvage: joined room ${}.`',
+  '`Selvage: could not host on ${} (${}); is the server running at that address?`',
+  '`Selvage: could not join the session (${}); check the link is complete and the server is running.`',
   '`Selvage: joined room ${}; the room has no open documents yet.`',
   '`Selvage: ${} is hosting again.`',
   '`Selvage: the host left the room; it closes in ${} unless they come back.`',
