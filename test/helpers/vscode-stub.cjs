@@ -675,6 +675,12 @@ module.exports = {
     createTextEditorDecorationType: (options) => {
       const handle = disposable();
       handle.options = options;
+      handle.disposed = false;
+      const originalDispose = handle.dispose;
+      handle.dispose = () => {
+        handle.disposed = true;
+        originalDispose();
+      };
       registered.decorations.push({ options, handle });
       return handle;
     },
@@ -737,6 +743,20 @@ module.exports = {
         dispose() {},
       };
     },
+  },
+
+  MarkdownString: class {
+    constructor(value = "") {
+      this.value = String(value);
+    }
+    appendText(value) {
+      this.value += String(value).replace(/([\\\`*{}\[\]()#+\-.!])/g, '\\$1');
+      return this;
+    }
+    appendMarkdown(value) {
+      this.value += String(value);
+      return this;
+    }
   },
 
   Uri: {
