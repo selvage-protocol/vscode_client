@@ -467,7 +467,9 @@ class Session {
           reject(new Error(leftListingNotice(path)));
           return;
         }
-        if (!this.engine.has(path)) {
+        // A session that ended mid-wait owes no marker: the tab it leaves behind keeps
+        // whatever the freeze gave it, and a warning about a room already left misleads.
+        if (!this.finished && !this.engine.has(path)) {
           void vscode.window.showWarningMessage(
             `Selvage: ${path} is still empty: the host has not sent its text yet.`,
           );
