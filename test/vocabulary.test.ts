@@ -108,9 +108,8 @@ const SENTENCES = [
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
-  // Going to a participant, and following one.
-  '`Selvage: following ${}.`',
-  '`Selvage: stopped following ${}.`',
+  // Going to a participant, and following one. Start and stop live in the status item:
+  // the indicator going up and down is the whole announcement, so there is no toast.
   "'Selvage: not following anyone.'",
   '`Selvage: ${} left the room, so following stopped.`',
   '`Selvage: nothing to go to: ${} is not in a document.`',

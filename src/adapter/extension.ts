@@ -219,23 +219,10 @@ class Session {
    * the wire carries it, so no other client sees it beyond this window's own caret.
    */
   private followingPeerId: string | undefined;
-  /** The followed peer's name as last seen: what the indicator and every sentence say. */
+  /** The followed peer's name as last seen: what the indicator says. */
   private followingName = '';
-  /** Whether the follow has landed once: what says `following <name>` exactly once. */
-  private followingLanded = false;
   /** The indicator: created when a follow begins, gone when it ends, and the stop control. */
   private followStatus: vscode.StatusBarItem | undefined;
-  /**
-   * The banner: one whole-line decoration type in the followed peer's colour, drawn across
-   * the top of the editor showing their document. Display-only — decorations take no
-   * commands — so the status bar stays the stop control. Created on the first landing (that
-   * is when the followed editor is known) and gone when the follow ends.
-   */
-  private followBanner: vscode.TextEditorDecorationType | undefined;
-  /** The colour the banner type was built with: a re-target in another palette slot rebuilds it. */
-  private followBannerColour: string | undefined;
-  /** The room path the banner is drawn for: only editors showing it are painted. */
-  private followBannerPath: string | undefined;
   /** A go-to whose document has not arrived yet: re-resolved on every room event. */
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
@@ -299,7 +286,6 @@ class Session {
       }),
       vscode.window.onDidChangeVisibleTextEditors(() => {
         this.editor.renderCursors(this.bridge.cursors());
-        this.paintFollowBanner();
       }),
       // The label is chosen per draw, so a window that is told the setting changed only has to
       // draw again. Without this the choice would appear to do nothing until a peer moved.
@@ -892,7 +878,7 @@ class Session {
     // A deliberate navigation is the user's own act, the same class as typing: a follow
     // would yank them back a moment later, so going somewhere stops following first.
     if (this.followingPeerId !== undefined) {
-      this.stopFollowingWithMessage();
+      this.clearFollow();
     }
     this.pendingGoTo = peerId;
     await this.retryGoTo();
@@ -918,8 +904,8 @@ class Session {
    * not yet arrived is awareness lag, and the next frame lands.
    *
    * The indicator goes up before the first landing, deliberately: the target is known and a
-   * frame is incoming, so immediate feedback beats silence, and the `following <name>.`
-   * message still marks the landing itself. A programmatic follow of a peer in no document
+   * frame is incoming, so immediate feedback beats silence, and no toast marks the landing
+   * itself — the indicator is the whole announcement. A programmatic follow of a peer in no document
    * pends the same way a go-to does rather than refusing: a record not yet arrived reads
    * exactly like a peer in no document, so refusing here would lie during awareness lag
    * (the picker owns the refusal instead, where its row displays the staleness). The next
@@ -933,7 +919,6 @@ class Session {
     }
     this.followingPeerId = peerId;
     this.followingName = this.displayLabel(peerId);
-    this.followingLanded = false;
     this.pendingGoTo = undefined;
     this.showFollowStatus();
     await this.followTick();
@@ -945,7 +930,7 @@ class Session {
       void vscode.window.showWarningMessage('Selvage: not following anyone.');
       return;
     }
-    this.stopFollowingWithMessage();
+    this.clearFollow();
   }
 
   /**
@@ -1051,10 +1036,6 @@ class Session {
       vscode.TextEditorRevealType.InCenterIfOutsideViewport,
     );
     this.scheduleSelection();
-    if (mode === 'follow') {
-      // The landing names the followed editor: that is when the banner can go up.
-      this.showFollowBanner(path);
-    }
     return 'landed';
   }
 
@@ -1075,16 +1056,6 @@ class Session {
       this.stopForLeftPeer();
       return;
     }
-    if (outcome === 'landed' && valid() && !this.followingLanded) {
-      this.followingLanded = true;
-      void vscode.window.showInformationMessage(`Selvage: following ${this.followingName}.`);
-    }
-  }
-
-  private stopFollowingWithMessage(): void {
-    const name = this.followingName;
-    this.clearFollow();
-    void vscode.window.showInformationMessage(`Selvage: stopped following ${name}.`);
   }
 
   private stopForLeftPeer(): void {
@@ -1096,12 +1067,14 @@ class Session {
     void vscode.window.showWarningMessage(`Selvage: ${name} left the room, so following stopped.`);
   }
 
+  /**
+   * Ends the follow silently: the indicator going down is the whole announcement, the way
+   * its going up is. Only a stop the user did not ask for — the peer leaving — says why.
+   */
   private clearFollow(): void {
     this.followingPeerId = undefined;
-    this.followingLanded = false;
     this.followStatus?.dispose();
     this.followStatus = undefined;
-    this.clearFollowBanner();
   }
 
   private showFollowStatus(): void {
@@ -1121,76 +1094,6 @@ class Session {
     }
     this.followStatus.tooltip = `Following ${this.followingName} — select to stop following`;
     this.followStatus.show();
-  }
-
-  /**
-   * Draws the banner for the follow's landing: one whole-line type in the peer's colour,
-   * painted on every visible editor showing the followed document. Reuses the type while the
-   * colour holds, so a follow that re-lands paints rather than rebuilds.
-   */
-  private showFollowBanner(path: string): void {
-    const peerId = this.followingPeerId;
-    if (peerId === undefined) {
-      return;
-    }
-    const colour = peerColour(peerId);
-    if (this.followBanner === undefined || this.followBannerColour !== colour) {
-      this.followBanner?.dispose();
-      this.followBanner = vscode.window.createTextEditorDecorationType({
-        isWholeLine: true,
-        backgroundColor: colour,
-        color: '#000000',
-        rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
-      });
-      this.followBannerColour = colour;
-    }
-    this.followBannerPath = path;
-    this.paintFollowBanner();
-  }
-
-  /**
-   * Paints the banner where it belongs and clears it everywhere else: the top line of each
-   * visible editor showing the followed document, nothing else. A zero-length range with
-   * `isWholeLine` paints the whole first line, the way the caret's own zero-width ranges do.
-   */
-  private paintFollowBanner(): void {
-    const banner = this.followBanner;
-    const path = this.followBannerPath;
-    if (banner === undefined || path === undefined) {
-      return;
-    }
-    for (const editor of vscode.window.visibleTextEditors) {
-      if (this.editor.pathOf(editor.document) === path) {
-        const top = editor.document.positionAt(0);
-        editor.setDecorations(banner, [
-          {
-            range: new vscode.Range(top, top),
-            // A plain string renders as Markdown; `appendText` keeps a peer's name literal,
-            // the way the caret's hover does.
-            hoverMessage: new vscode.MarkdownString().appendText(
-              `Following ${this.followingName} — select the status bar item to stop`,
-            ),
-          },
-        ]);
-      } else {
-        editor.setDecorations(banner, []);
-      }
-    }
-  }
-
-  /** Takes the banner down wherever it stands: cleared off every editor, then disposed. */
-  private clearFollowBanner(): void {
-    const banner = this.followBanner;
-    this.followBanner = undefined;
-    this.followBannerColour = undefined;
-    this.followBannerPath = undefined;
-    if (banner === undefined) {
-      return;
-    }
-    for (const editor of vscode.window.visibleTextEditors) {
-      editor.setDecorations(banner, []);
-    }
-    banner.dispose();
   }
 
   /** The name a sentence says: the room's, or the id when the room left it blank. */
@@ -1215,7 +1118,6 @@ class Session {
     this.pendingGoTo = undefined;
     this.followStatus?.dispose();
     this.followStatus = undefined;
-    this.clearFollowBanner();
     // A queued republish is dropped rather than sent: the room is not this window's any more.
     if (this.grantTimer !== undefined) {
       clearTimeout(this.grantTimer);
@@ -1290,7 +1192,7 @@ class Session {
     if (matchesReplica(document.getText(), this.engine.text(path))) {
       return;
     }
-    this.stopFollowingWithMessage();
+    this.clearFollow();
   }
 
   /**
@@ -1373,7 +1275,6 @@ class Session {
           } else {
             this.followingName = peerName(peer.display_name, following);
             this.showFollowStatus();
-            this.paintFollowBanner();
           }
         }
         break;

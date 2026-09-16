@@ -124,7 +124,7 @@ there, while the three intents stay one-to-one.
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
-| `Selvage: Follow a participant` | Keep landing where a participant is as they move, until stopping. The status bar shows who is followed in their caret colour and stops the follow when selected; a banner in the same colour marks the top of the followed editor. A local edit of a shared document ends it; a remote one does not. |
+| `Selvage: Follow a participant` | Keep landing where a participant is as they move, until stopping. The status bar shows who is followed in their caret colour and stops the follow when selected; starting and stopping live in that item, with no toast. Nothing is ever painted over document text. A local edit of a shared document ends it; a remote one does not. |
 | `Selvage: Stop following` | Stop following. Says so when no one is followed. |
 
 The name other participants see is resolved when a session starts, in this order:
