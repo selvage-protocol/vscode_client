@@ -144,7 +144,7 @@
     "test:extension": "npm run build && node --test test/manifest.test.ts test/guest-fs.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/guest-fs.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
+    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/guest-fs.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",
