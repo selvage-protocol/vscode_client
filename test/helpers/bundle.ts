@@ -90,9 +90,10 @@ export interface EditorStub {
       revealed: Array<{ range: unknown; kind: unknown }>;
     }>;
     /** Every decoration type the extension created, as the options it was given. */
-    decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown> } }>;
+    decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown>; disposed?: boolean } }>;
+
     /** Every status bar item the extension created, as the object it kept drawing into. */
-    statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string }>;
+    statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string; color?: string }>;
     watcherFailure: string | undefined;
     informationReply: unknown;
     warningReply: unknown;
