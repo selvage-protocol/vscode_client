@@ -1680,8 +1680,11 @@ test('fetch holds one listed path and says what it fetched', async (t) => {
 });
 
 test('fetch of a path the window already holds resolves without asking again', async (t) => {
-  // The room's sync carried the text at join, so there is nothing to wait for: no
-  // notice names the path, no progress runs, and the report still confirms the fetch.
+  // The hold is what the fetch checks, not the arrival order behind it: opening
+  // the path holds it, and the room's text arriving through that hold proves it
+  // before the fetch runs. Fetching straight after the listing would race the
+  // join sync still in flight — a hold taken there is correct, not silent — so
+  // the test never fetches on timing.
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['notes/a.md']);
   await host.open('notes/a.md');
@@ -1690,6 +1693,34 @@ test('fetch of a path the window already holds resolves without asking again', a
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
   await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
+  const holder = { text: '' };
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      holder.text += change.text;
+    }
+    return true;
+  };
+  // Opening holds the path; the room's text arriving through that hold proves it
+  // before the fetch runs. The open is reported the way the editor reports one,
+  // so both orders converge: text already here renders at open, text still on
+  // the wire renders when its sync arrives.
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'notes/a.md' });
+  const uri = mirrorFileUri(storage, roomId, 'notes/a.md');
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes(uri) ? true : false,
+  );
+  bundle.stub.fire('openTextDocument', {
+    uri: bundle.stub.Uri.parse(uri),
+    eol: 1,
+    isDirty: false,
+    getText: () => holder.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    save: () => Promise.resolve(true),
+  });
+  await waitFor('the opened path to hold the room text', () =>
+    holder.text === 'already here\n' ? true : false,
+  );
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
   const done = await waitFor('the fetched report', () =>
     bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
