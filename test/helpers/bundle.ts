@@ -228,9 +228,10 @@ export async function landStashedJoin(
   const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
   assert.equal(reloads.length, 1, `expected one staged reload, found ${reloads.length}`);
   const reload = reloads[0] as { args: unknown[] };
-  assert.ok(
-    String(reload.args[0]).startsWith('file:'),
-    'the staged reload names no mirror folder',
+  assert.equal(
+    String(reload.args[0]),
+    bundle.stub.Uri.file(root).toString(),
+    'the staged reload names no mirror folder of its own',
   );
   assert.deepEqual(reload.args[1], { forceReuseWindow: true });
   assert.equal(

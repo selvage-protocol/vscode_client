@@ -158,10 +158,16 @@ function log(...parts: unknown[]): void {
  * the one thing that cannot answer this: the stall worth reporting is the one where that
  * promise never settles, which says nothing about whether anything is still behind it.
  */
-function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number[] } {
-  const alive: { host: number[]; guest: number[]; empty: number[] } = { host: [], guest: [], empty: [] };
+function liveEditorProcesses(): { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } {
+  const alive: { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } = {
+    host: [],
+    guest: [],
+    guestPhases: [],
+    empty: [],
+  };
   const hostUserData = resolve(RUN_DIR, 'host-user-data');
   const guestUserData = resolve(RUN_DIR, 'guest-user-data');
+  const guestPhasesUserData = resolve(RUN_DIR, 'guest-phases-user-data');
   const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
   let entries: string[];
   try {
@@ -183,6 +189,8 @@ function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number
     }
     if (cmdline.includes(hostUserData)) {
       alive.host.push(Number(entry));
+    } else if (cmdline.includes(guestPhasesUserData)) {
+      alive.guestPhases.push(Number(entry));
     } else if (cmdline.includes(guestUserData)) {
       alive.guest.push(Number(entry));
     } else if (cmdline.includes(emptyUserData)) {
@@ -200,7 +208,7 @@ function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number
  */
 function killLiveEditors(reason: string): void {
   const alive = liveEditorProcesses();
-  const pids = [...alive.host, ...alive.guest, ...alive.empty];
+  const pids = [...alive.host, ...alive.guest, ...alive.guestPhases, ...alive.empty];
   if (pids.length > 0) {
     log(`killing live editors (${reason}): ${pids.join(', ')}`);
   }
@@ -269,7 +277,7 @@ function armWatchdog(): ReturnType<typeof setTimeout> {
     console.error(
       `[e2e] WATCHDOG: instances still in flight: ${inFlight.size === 0 ? 'none' : [...inFlight].join(', ')}`,
     );
-    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}; empty ${list(alive.empty)}`);
+    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}; guest-phases ${list(alive.guestPhases)}; empty ${list(alive.empty)}`);
     console.error(
       `[e2e] WATCHDOG: editor output: ${resolve(RUN_DIR, 'host.log')}, ${resolve(RUN_DIR, 'guest.log')}`,
     );

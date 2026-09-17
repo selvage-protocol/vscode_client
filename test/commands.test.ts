@@ -2093,6 +2093,44 @@ test('a reload onto the mirror finishes the stashed join', async (t) => {
   assert.equal(marker.invite, undefined, 'the landed join kept its invite');
 });
 
+test('the landed join adopts the mirror into the reloaded window', async (t) => {
+  // The marker still names the minting process, which the reload tore down: landing
+  // rewrites it with the live pid, so a second window reading a dead pid cannot take
+  // a live room for a stale cache. The invite leaves with the landing as usual.
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const storage = testStoragePath(t);
+  const root = join(storage, 'rooms', roomId, 'w-adopted');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, '.selvage-mirror.json'),
+    `${JSON.stringify({ room: roomId, window: 'w-adopted', pid: 2147483647, created: new Date(0).toISOString(), invite, displayName: 'Bob' })}\n`,
+  );
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  const joined = await waitFor('the stashed join to land', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.match(joined, /the room has no open documents yet/);
+  const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+    invite?: string;
+    displayName?: string;
+    pid?: number;
+  };
+  assert.equal(marker.invite, undefined, 'the landed join kept its invite');
+  assert.equal(marker.displayName, undefined, 'the landed join kept its name');
+  assert.equal(marker.pid, process.pid, 'the landed join kept the dead minting pid');
+});
+
 test('a join whose reload the editor refuses reports joining again', async (t) => {
   const { invite } = await room(t, []);
   const roomId = roomOf(invite);

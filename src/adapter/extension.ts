@@ -1956,6 +1956,10 @@ async function joinGuestRoom(options: {
       }
       return;
     }
+    // Adopt the mirror into this window: the marker still names the minting process,
+    // which the reload tore down, so a second window reading a dead pid would take
+    // a live room for a stale cache. Pruning keeps dead siblings out with it.
+    pruneRoom(storageUri, room, resumed.window);
     mirror.clearInvite();
   }
   const live: Mirror = mirror;
