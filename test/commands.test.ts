@@ -1364,6 +1364,35 @@ test('a configured server address answers without asking', async (t) => {
   assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
 });
 
+test('a configured server address beats the remembered server', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // Seed memory, then configure: the setting answers, not the memory.
+  bundle.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const kept = await waitFor('the server to be remembered', () =>
+    bundle.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
+  );
+  assert.ok(kept);
+
+  bundle.stub.registered.inputs.length = 0;
+  bundle.stub.registered.inputReply = undefined;
+  bundle.stub.configure({ serverUrl: 'ws://127.0.0.1:9', displayName: 'Ada' });
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) =>
+      message.includes('could not host on ws://127.0.0.1:9'),
+    ) ?? false,
+  );
+  assert.ok(said, 'hosting did not use the configured address');
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
+});
+
 /** The built bundle reloaded with fresh module state, for tests about memory across windows. */
 function freshBundle(): LoadedExtension {
   const require = createRequire(import.meta.url);
