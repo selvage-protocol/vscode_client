@@ -66,8 +66,8 @@ const SENTENCES = [
   '`Selvage: you are in room ${}; hosting a session means leaving it first.`',
   '`Selvage: joined room ${}; opening ${}${}.`',
   '`Selvage: fetching ${}…`',
-  '`Selvage: ${} is still empty: the host has not sent its text yet.`',
-  '`Selvage: joined room ${}.`',
+  '`Selvage: ${} is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.`',
+  '`Selvage: joined room ${}. Selvage: Open a document from the room lists every path.`',
   '`Selvage: could not host on ${} (${}); is the server running at that address?`',
   '`Selvage: could not join the session (${}); check the link is complete and the server is running.`',
   '`Selvage: joined room ${}; the room has no open documents yet.`',
@@ -119,10 +119,12 @@ const SENTENCES = [
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
-  // Going to a participant, and following one. Start and stop live in the status item:
-  // the indicator going up and down is the whole announcement, so there is no toast.
+  // Going to a participant, and following one. Start and an asked-for stop live in the
+  // status item: the indicator going up and down is the whole announcement, so there is
+  // no toast for those. A stop the user did not ask for — a local edit, a go-to — says so.
   "'Selvage: not following anyone.'",
   '`Selvage: ${} left the room, so following stopped.`',
+  '`Selvage: Stopped following ${}.`',
   '`Selvage: nothing to go to: ${} is not in a document.`',
   '`Selvage: nothing to follow: ${} is not in a document.`',
   "`Selvage: nothing to go to: ${}'s caret does not resolve here.`",

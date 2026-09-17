@@ -451,6 +451,15 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   await waitFor('the empty stop to be refused', () =>
     seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
   );
+  // An asked-for stop stays silent, the way the indicator going down always has: only a
+  // stop the user did not ask for says so.
+  assert.deepEqual(
+    seat_.bundle.stub.registered.information.filter((message) =>
+      message.startsWith('Selvage: Stopped following'),
+    ),
+    [],
+    'an explicit stop said so',
+  );
 });
 
 test('the indicator wears the peer colour, and no banner paints the document', async (t) => {
@@ -571,6 +580,14 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   await waitFor('the local edit to end the follow', () =>
     followItem(seat_) === undefined ? true : false,
   );
+  // Typing ends the follow the user did not ask to end, so it says so — the twin's
+  // sentence, which the indicator going down alone does not carry.
+  assert.ok(
+    seat_.bundle.stub.registered.information.some(
+      (message) => message === 'Selvage: Stopped following Ada.',
+    ),
+    'the local edit ended the follow silently',
+  );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
     seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
@@ -593,6 +610,13 @@ test('going somewhere stops following first', async (t) => {
   const retryGoTo = issueUntil(seat_.bundle, 'selvage.goToParticipant', { peerId: caraId });
   await waitFor('the go-to to stop the follow', () =>
     followItem(seat_) === undefined ? true : false,
+  );
+  // The navigation supersedes the follow the user did not ask to end, so it says so.
+  assert.ok(
+    seat_.bundle.stub.registered.information.some(
+      (message) => message === 'Selvage: Stopped following Ada.',
+    ),
+    'the go-to superseded the follow silently',
   );
   const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(

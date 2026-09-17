@@ -262,7 +262,7 @@ test('selvage.openOnJoin off keeps a join from taking the window', async (t) => 
   const joined = await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
   );
-  assert.equal(joined, `Selvage: joined room ${roomId}.`);
+  assert.equal(joined, `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`);
 
   // A second document is witness that the room's own report reached this window — the set the
   // join arrived with included — and neither document may have taken the window.
@@ -1476,7 +1476,7 @@ test('joining names the rest of the room the landing does not open', async (t) =
   );
   assert.equal(
     joined,
-    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more; Selvage: Open a document from the room lists every path.`,
+    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk.`,
   );
 });
 
@@ -1502,7 +1502,7 @@ test('a fetch that times out names the empty path and reports no fetch', async (
   );
   assert.equal(
     warned,
-    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet.',
+    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.',
   );
   // A wait that gave up is not a fetch: the warning is the wait's terminal state, and the
   // report stays silent about files that never arrived rather than naming them fetched.

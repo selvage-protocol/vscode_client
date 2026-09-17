@@ -682,7 +682,7 @@ class Session {
         // whatever the freeze gave it, and a warning about a room already left misleads.
         if (!this.finished && !this.engine.has(path)) {
           void vscode.window.showWarningMessage(
-            `Selvage: ${path} is still empty: the host has not sent its text yet.`,
+            `Selvage: ${path} is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.`,
           );
         }
         resolve();
@@ -993,9 +993,12 @@ class Session {
    */
   async goTo(peerId: string): Promise<void> {
     // A deliberate navigation is the user's own act, the same class as typing: a follow
-    // would yank them back a moment later, so going somewhere stops following first.
+    // would yank them back a moment later, so going somewhere stops following first, and
+    // says so — the stop is a side effect the user did not ask for.
     if (this.followingPeerId !== undefined) {
+      const name = this.followingName;
       this.clearFollow();
+      void vscode.window.showInformationMessage(`Selvage: Stopped following ${name}.`);
     }
     this.pendingGoTo = peerId;
     await this.retryGoTo();
@@ -1442,7 +1445,12 @@ class Session {
     if (matchesReplica(document.getText(), this.engine.text(path))) {
       return;
     }
+    // Typing ends a follow the user did not ask to end, so it says so, in the twin's
+    // sentence: the indicator going down alone does not carry the news to eyes on the
+    // document. An asked-for stop stays silent.
+    const name = this.followingName;
     this.clearFollow();
+    void vscode.window.showInformationMessage(`Selvage: Stopped following ${name}.`);
   }
 
   /**
@@ -2017,7 +2025,7 @@ function inviteLinkHint(): string {
 
 /**
  * The join's sentence: the room the window joined, and the landing it is about to make in it —
- * which is nothing to name when the room has no documents yet, and nothing to claim when
+ * which is nothing to name when the room has no documents yet, and the palette when
  * `selvage.openOnJoin` has turned the landing off.
  */
 function joinedMessage(roomId: string, documents: string[]): string {
@@ -2026,13 +2034,13 @@ function joinedMessage(roomId: string, documents: string[]): string {
     return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
   }
   if (!opensOnJoin()) {
-    return `Selvage: joined room ${roomId}.`;
+    return `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`;
   }
   // The landing opens one document; the rest wait behind the palette, so the join names
   // them rather than leaving the guest to assume the room is one file.
   const rest = documents.length - 1;
   const more =
-    rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path` : '';
+    rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk` : '';
   return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
 }
 
