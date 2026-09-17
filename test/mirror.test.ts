@@ -284,6 +284,13 @@ test('mirror paths compare on one separator form', () => {
 });
 
 test('a removal the filesystem refuses does not abort the republish', (t) => {
+  // Permission bits bind unlink on POSIX as non-root only: root ignores them and
+  // Windows ACLs do not emulate them. Skipping there is honest — the test proves
+  // nothing it cannot stage — while the `try/catch` still ships everywhere.
+  if (process.platform === 'win32' || process.getuid?.() === 0) {
+    t.skip('permission bits do not bind unlink on this platform or user');
+    return;
+  }
   const keep = storage(t);
   const mirror = mintMirror(keep, 'r-unlink', { window: 'w-unlink', pid: process.pid });
   mirror.materialise(['gone.md', 'stuck.md']);
