@@ -109,7 +109,7 @@ async function stageReloaded() {
       'the listing to fill the reloaded mirror',
       () => {
         try {
-          return fs.statSync(path.join(found.root, SEED_PATH)).size >= 0 ? true : false;
+          return fs.statSync(path.join(found.root, SEED_PATH)).isFile() ? true : false;
         } catch {
           return false;
         }

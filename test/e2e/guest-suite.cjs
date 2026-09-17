@@ -429,19 +429,31 @@ async function run() {
 
       // The removed path is gone from the mirror: the republish took the file, so no
       // phantom empty document can open in its place, and asking for it opens nothing.
-      // (The refusal sentence itself goes to a message the test API cannot read.)
+      // (The refusal sentence itself goes to a message the test API cannot read.) The
+      // command runs detached, so the absence is polled rather than read off the call:
+      // an editor for the path appearing at any point in the window fails it.
       const doomedFile = path.join(watchRoot, WATCH_DOOMED_PATH);
-      let deleteRefused = !fs.existsSync(doomedFile);
-      let deleteRefusal = deleteRefused
-        ? 'the republish removed the de-listed file from the mirror'
-        : `the de-listed file is still on disk: ${doomedFile}`;
+      if (fs.existsSync(doomedFile)) {
+        throw new Error(`the de-listed file is still on disk: ${doomedFile}`);
+      }
       await vscode.commands.executeCommand('selvage.openDocument', { path: WATCH_DOOMED_PATH });
-      const openedDoomed = vscode.window.visibleTextEditors.some(
-        (candidate) => candidate.document.uri.fsPath === doomedFile,
-      );
-      deleteRefused = deleteRefused && !openedDoomed;
-      if (openedDoomed) {
-        deleteRefusal = 'the de-listed path opened an editor anyway';
+      const start = Date.now();
+      let deleteRefused = false;
+      let deleteRefusal = 'the republish removed the de-listed file from the mirror';
+      for (;;) {
+        const openedDoomed = vscode.window.visibleTextEditors.some(
+          (candidate) => candidate.document.uri.fsPath === doomedFile,
+        );
+        if (openedDoomed) {
+          deleteRefused = false;
+          deleteRefusal = 'the de-listed path opened an editor anyway';
+          break;
+        }
+        if (Date.now() - start > 3000) {
+          deleteRefused = true;
+          break;
+        }
+        await delay(50);
       }
       result.watch.deleteRefused = deleteRefused;
       result.watch.deleteRefusal = deleteRefusal;

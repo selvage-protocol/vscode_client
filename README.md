@@ -32,9 +32,9 @@ Requirements, as found on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
-$ npm run build                        # → dist/extension.js, 478.4 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 519.7 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 246 tests, no server, no editor
+$ npm run test:fast                    # builds, then 335 tests, no server, no editor
 $ npm test                             # 339 tests: the same plus 4 against a real selvaged
 ```
 

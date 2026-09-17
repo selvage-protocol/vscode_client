@@ -5,7 +5,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -163,6 +163,9 @@ export interface LoadedExtension {
  * finds again.
  */
 export function testStoragePath(t: { after(callback: () => void): void }): string {
+  // A clean checkout has no `.tmp` until something needs scratch: make the parent,
+  // or the mkdtemp below fails with ENOENT instead of a storage directory.
+  mkdirSync(join(ROOT, '.tmp'), { recursive: true });
   const dir = mkdtempSync(join(ROOT, '.tmp', 'storage-'));
   t.after(() => {
     rmSync(dir, { recursive: true, force: true });

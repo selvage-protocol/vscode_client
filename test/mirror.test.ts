@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire, registerHooks } from 'node:module';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -35,7 +36,7 @@ import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 // The adapter module loaded directly, with the editor API stubbed for its `Uri.file`.
 registerHooks(vscodeLoader);
-const { MIRROR_MARKER, mintMirror, openMirror, pruneRoom, readMarker, sanitiseRoom } =
+const { MIRROR_MARKER, mintMirror, mirrorRelative, openMirror, pruneRoom, readMarker, sanitiseRoom } =
   await import('../src/adapter/mirror.ts');
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
@@ -270,4 +271,34 @@ test('pruning removes dead siblings, keeps the live, and adopts the current wind
   );
   assert.equal(existsSync(foreign.root), true, 'another room was pruned');
   assert.deepEqual(pruneRoom(keep, 'r-missing', 'w-current'), [], 'a missing room errored');
+});
+
+test('mirror paths compare on one separator form', () => {
+  // `fsPath` uses the platform's separators and a listing never carries a backslash:
+  // without the normalisation every mirror file is outside the root on Windows.
+  assert.equal(mirrorRelative('C:\\mirror', 'C:\\mirror\\notes\\a.md'), 'notes/a.md');
+  assert.equal(mirrorRelative('C:\\mirror\\', 'C:\\mirror\\a.md'), 'a.md');
+  assert.equal(mirrorRelative('C:\\mirror', 'C:\\other\\a.md'), undefined);
+  assert.equal(mirrorRelative('C:\\mirror', 'C:\\mirror'), undefined);
+  assert.equal(mirrorRelative('/mirror', '/mirror/../escape.md'), undefined);
+});
+
+test('a removal the filesystem refuses does not abort the republish', (t) => {
+  const keep = storage(t);
+  const mirror = mintMirror(keep, 'r-unlink', { window: 'w-unlink', pid: process.pid });
+  mirror.materialise(['gone.md', 'stuck.md']);
+  // An uncooperative mode on the directory: the removal fails, the republish must not.
+  chmodSync(mirror.root, 0o555);
+  let report;
+  try {
+    report = mirror.republish([], () => false);
+  } finally {
+    chmodSync(mirror.root, 0o755);
+  }
+  // Red without the guard: the first failure throws and `gone.md` stays with it.
+  assert.deepEqual(report.removed.sort(), []);
+  assert.equal(isFile(join(mirror.root, 'gone.md')), true);
+  assert.equal(isFile(join(mirror.root, 'stuck.md')), true);
+  const retry = mirror.republish([], () => false);
+  assert.deepEqual(retry.removed.sort(), ['gone.md', 'stuck.md']);
 });

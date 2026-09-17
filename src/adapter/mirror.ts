@@ -45,13 +45,17 @@ export const MIRROR_MARKER = '.selvage-mirror.json';
  * A filesystem path as the room path it names under a mirror root, or `undefined` when
  * it names nothing there: outside the root, the root itself, or a `..` that escaped it.
  * A URI normalises `..` away before this ever sees it; the check is defence in depth.
+ * Backslashes normalise to slashes on both sides: `fsPath` uses the platform's
+ * separators, and a listing never carries a backslash, so the comparison is on one form.
  */
 export function mirrorRelative(root: string, fsPath: string): string | undefined {
-  const base = root.endsWith('/') ? root : `${root}/`;
-  if (!fsPath.startsWith(base)) {
+  const normalRoot = root.replace(/\\/g, '/');
+  const normalPath = fsPath.replace(/\\/g, '/');
+  const base = normalRoot.endsWith('/') ? normalRoot : `${normalRoot}/`;
+  if (!normalPath.startsWith(base)) {
     return undefined;
   }
-  const rel = fsPath.slice(base.length);
+  const rel = normalPath.slice(base.length);
   if (rel === '' || rel.split('/').includes('..')) {
     return undefined;
   }
@@ -357,7 +361,13 @@ function handle(room: string, window: string, root: string): Mirror {
         if (rel === MIRROR_MARKER || keep.has(rel) || held(rel)) {
           continue;
         }
-        unlinkSync(join(root, ...rel.split('/')));
+        try {
+          unlinkSync(join(root, ...rel.split('/')));
+        } catch {
+          // A concurrent delete or an uncooperative mode leaves the file for the next
+          // republish, which still names it as long as the listing does not.
+          continue;
+        }
         removed.push(rel);
       }
       return { ...applied, removed };
