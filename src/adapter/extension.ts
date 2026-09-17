@@ -971,11 +971,16 @@ class Session {
 
   /**
    * The file a room path lives at, for the badges: a guest's mirror file, or a host's
-   * own file under the folders captured at invite time. Synchronous and unchecked — a
-   * badge on a URI nothing holds is simply never seen — unlike `openRoomPath`, which
-   * a peer's path reaches only through the grant's gates.
+   * own file under the folders captured at invite time. Synchronous and unchecked
+   * against the file system — a badge on a URI nothing holds is simply never
+   * seen — but never untrusted: a peer names the path, so the grant's shape rule
+   * gates it first, the way `mirrorUri` gates the opens. Without that, `..` in a
+   * presence path would badge a real file outside the room.
    */
   private roomFileUri(path: string): vscode.Uri | undefined {
+    if (!isGrantedPath(path)) {
+      return undefined;
+    }
     try {
       if (this.mirror !== undefined) {
         return this.mirrorUri(path);
@@ -1125,6 +1130,7 @@ class Session {
     this.followingName = this.displayLabel(peerId);
     this.pendingGoTo = undefined;
     this.showFollowStatus();
+    refreshParticipants();
     await this.followTick();
   }
 
@@ -1306,6 +1312,7 @@ class Session {
     this.followingPeerId = undefined;
     this.followStatus?.dispose();
     this.followStatus = undefined;
+    refreshParticipants();
   }
 
   private showFollowStatus(): void {
@@ -1813,6 +1820,9 @@ async function host(
     return;
   }
   current = new Session(engine);
+  // The seat's own reports predate the session's listener, and an empty room sends no
+  // later ones — without this the view keeps whatever the window showed before.
+  refreshParticipants();
   const invite = pageInviteFor(engine);
   if (invite === undefined) {
     return;
@@ -1981,6 +1991,8 @@ async function joinGuestRoom(options: {
     return;
   }
   current = new Session(engine, { mirror: live });
+  // As above: the seat's reports predate the listener, so the view is told directly.
+  refreshParticipants();
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
@@ -2556,7 +2568,7 @@ function refreshParticipants(): void {
       continue;
     }
     const names = byUri.get(uri) ?? [];
-    names.push(peerName(entry.displayName, entry.peerId));
+    names.push(participantLabel(entry, snapshot.entries));
     byUri.set(uri, names);
   }
   const files: FilePresence[] = [...byUri].map(([uri, names]) => ({ uri, names }));

@@ -116,7 +116,7 @@
         },
         {
           "command": "selvage.followParticipant",
-          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",
+          "when": "view == selvage.participants && viewItem == selvageParticipant",
           "group": "1_selvage@2"
         },
         {

@@ -100,6 +100,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
+import { sessionUrl } from '../src/engine/urls.ts';
 import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
@@ -441,6 +442,155 @@ test('a peer file wears their badge until they leave', async (t) => {
   );
 });
 
+test('two peers sharing a name badge their file with the count, not one dot', async (t) => {
+  const seat_ = await seat(t);
+  await peerIn(t, seat_, 'Cy', 5);
+  await peerIn(t, seat_, 'Cy', 6);
+  const badges = decorationsProvider(seat_.bundle);
+  const uri = seat_.bundle.stub.Uri.parse(seat_.roomFile(PATH_A));
+  const badge = await waitFor('the shared file to badge the count', () => {
+    const current = badges.provideFileDecoration(uri) as { badge?: string } | undefined;
+    return current?.badge === '2' ? (current as { badge: string; tooltip: string }) : false;
+  });
+  assert.ok(
+    badge.tooltip.includes('Cy (') && badge.tooltip.endsWith('are here'),
+    `two Adas collapsed into one name: ${badge.tooltip}`,
+  );
+});
+/** The bundle's pure helpers, read off the built bundle like the invite tests do. */
+function bundleExports(): {
+  parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+} {
+  const require = createRequire(import.meta.url);
+  const Module = require('node:module') as {
+    _resolveFilename: (...args: unknown[]) => string;
+  };
+  const resolveModule = Module._resolveFilename;
+  const stub = resolve(HERE, 'test', 'helpers', 'vscode-stub.cjs');
+  Module._resolveFilename = (...args: unknown[]): string =>
+    args[0] === 'vscode' ? stub : resolveModule(...args);
+  try {
+    return require(resolve(HERE, 'dist', 'extension.js')) as {
+      parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+    };
+  } finally {
+    Module._resolveFilename = resolveModule;
+  }
+}
+
+test('a presence path outside the grant badges nothing, nowhere', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host room to open', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open'))
+      ? true
+      : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const page = bundleExports().parsePageLink(bundle.stub.registered.clipboard);
+  assert.ok(page !== undefined, 'the host copied no invite link');
+  const wire = sessionUrl(page.server ?? server.wsBase, page.room, page.token);
+  const mallory = await SelvageEngine.join(
+    wire,
+    'Mallory',
+    options({ baseUrl: server.wsBase, displayName: 'Mallory', reconnect: false }),
+  );
+  t.after(async () => {
+    await mallory.disconnect();
+  });
+  const badges = decorationsProvider(bundle);
+  const fired: string[] = [];
+  badges.onDidChangeFileDecorations((changed) => {
+    fired.push(String(changed));
+  });
+  // A peer names its presence path, so it can name one outside the room: the row
+  // still says what presence said, but no file anywhere wears a badge for it.
+  mallory.setSelection('../evil', { anchor: 0, head: 0 });
+  await waitFor('the hostile path to reach the view', () =>
+    viewNodes(bundle).some((node) => node.tooltip?.includes('evil')) ? true : false,
+  );
+  const folder = bundle.stub.Uri.parse('file:///workspace');
+  const escaped = bundle.stub.Uri.joinPath(folder, '..', 'evil');
+  assert.equal(
+    badges.provideFileDecoration(escaped) as unknown,
+    undefined,
+    'a presence path escaped the room onto a real file row',
+  );
+  assert.ok(
+    fired.every((changed) => !changed.endsWith('/evil')),
+    'a presence path escaped the room onto a real file row',
+  );
+});
+
+
+test('hosting an empty room retires the join-first row at once', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  assert.deepEqual(
+    viewNodes(bundle).map((node) => node.label),
+    ['Selvage: join a session first.'],
+  );
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host room to open', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open'))
+      ? true
+      : false,
+  );
+  assert.deepEqual(
+    viewNodes(bundle).map((node) => node.label),
+    ["Selvage: you're the only one here — copy the invite link."],
+  );
+});
+
+test('following and stopping mark the row at once, with no frame to wait for', async (t) => {
+  const seat_ = await seat(t);
+  const { bundle } = seat_;
+  const adaRow = await waitFor('Ada to list', () => {
+    const current = viewNodes(bundle);
+    return current.length === 1 && current[0]?.peerId !== undefined ? current[0] : false;
+  });
+  await bundle.stub.commands.executeCommand('selvage.followParticipant', adaRow);
+  await waitFor('the follow to mark the row', () =>
+    viewNodes(bundle).find((node) => node.label === 'Ada')?.description === 'Following'
+      ? true
+      : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.stopFollowing');
+  await waitFor('the stop to unmark the row', () =>
+    viewNodes(bundle).find((node) => node.label === 'Ada')?.description !== 'Following'
+      ? true
+      : false,
+  );
+});
+
 test('the manifest contributes the view, with actions on the commands it already has', () => {
   const manifest = JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')) as {
     contributes?: {
@@ -467,17 +617,21 @@ test('the manifest contributes the view, with actions on the commands it already
   for (const entry of viewMenus) {
     assert.ok(ids.has(entry.command), `${entry.command} is no contributed command`);
   }
-  const stop = viewMenus.find((entry) => entry.command === 'selvage.stopFollowing');
-  assert.ok(
-    stop?.when?.includes('selvageParticipantFollowing'),
-    'stop shows on rows that are not being followed',
-  );
-  for (const command of ['selvage.goToParticipant', 'selvage.followParticipant']) {
+  const whenOf = (command: string): string => {
     const entry = viewMenus.find((item) => item.command === command);
-    assert.ok(
-      (entry?.when ?? '').includes('selvageParticipant') &&
-        !(entry?.when ?? '').includes('selvageParticipantAway'),
-      'go and follow show on a peer in no document, where there is nowhere to land',
-    );
-  }
+    assert.ok(entry !== undefined, `${command} has no row action`);
+    return entry.when ?? '';
+  };
+  assert.equal(
+    whenOf('selvage.goToParticipant'),
+    'view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)',
+  );
+  assert.equal(
+    whenOf('selvage.followParticipant'),
+    'view == selvage.participants && viewItem == selvageParticipant',
+  );
+  assert.equal(
+    whenOf('selvage.stopFollowing'),
+    'view == selvage.participants && viewItem == selvageParticipantFollowing',
+  );
 });

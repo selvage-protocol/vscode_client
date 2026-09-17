@@ -148,6 +148,7 @@ export interface EditorStub {
   Uri: {
     parse(value: string): StubUri;
     file(path: string): StubUri;
+    joinPath(base: unknown, ...parts: string[]): StubUri;
   };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
   ProgressLocation: { SourceControl: number; Window: number; Notification: number };
