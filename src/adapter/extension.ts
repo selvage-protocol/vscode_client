@@ -2017,7 +2017,7 @@ function inviteLinkHint(): string {
 
 /**
  * The join's sentence: the room the window joined, and the landing it is about to make in it —
- * which is nothing to name when the room has no documents yet, and nothing to claim when
+ * which is nothing to name when the room has no documents yet, and the palette when
  * `selvage.openOnJoin` has turned the landing off.
  */
 function joinedMessage(roomId: string, documents: string[]): string {
@@ -2026,7 +2026,7 @@ function joinedMessage(roomId: string, documents: string[]): string {
     return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
   }
   if (!opensOnJoin()) {
-    return `Selvage: joined room ${roomId}.`;
+    return `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`;
   }
   // The landing opens one document; the rest wait behind the palette, so the join names
   // them rather than leaving the guest to assume the room is one file.

@@ -262,7 +262,7 @@ test('selvage.openOnJoin off keeps a join from taking the window', async (t) => 
   const joined = await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
   );
-  assert.equal(joined, `Selvage: joined room ${roomId}.`);
+  assert.equal(joined, `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`);
 
   // A second document is witness that the room's own report reached this window — the set the
   // join arrived with included — and neither document may have taken the window.
