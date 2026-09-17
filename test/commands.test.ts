@@ -1479,6 +1479,72 @@ test('fetch in a room with no listing says there is nothing to fetch', async (t)
   assert.equal(said, 'Selvage: the room lists no files to fetch.');
 });
 
+test('fetch with a trailing slash names the directory', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.grant(['notes/a.md']);
+  const { bundle, storage } = activated(t);
+  // No landing: the fetch's own hold is what must pull the content, not the join's.
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
+  // The slash is stripped before the prefix match: without it the directory misses the
+  // listing and the fetch reports no match. The hold runs detached; the host publishes
+  // while it waits, as a slow host does.
+  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/' });
+  await waitFor('the fetch to ask the room', () =>
+    bundle.stub.registered.progress.find(
+      (entry) => entry.title === 'Selvage: fetching notes/a.md…',
+    ) ?? false,
+  );
+  await host.open('notes/a.md');
+  host.insert('notes/a.md', 0, 'fetched\n');
+  const done = await waitFor('the fetched report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
+    false,
+  );
+  assert.equal(done, 'Selvage: fetched the files.');
+  assert.equal(bundle.stub.registered.errors.length, 0, 'the slashed directory errored');
+});
+
+test('fetch refuses a listing past what one fetch holds', async (t) => {
+  // Every held path is a `doc.open` every peer absorbs and a `Y.Text` every replica
+  // keeps: past the bound the fetch refuses with a narrower target rather than holding
+  // the room sequentially, each path up to the fetch timeout.
+  const { host, invite, roomId } = await room(t, []);
+  const paths = Array.from({ length: 101 }, (_, index) => `dir/file${index}.md`);
+  await host.grant(paths);
+  const { bundle, storage } = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  // The mirror materialises from the grant report, so every file on disk proves the
+  // guest sees the whole listing the refusal counts.
+  await waitForMirrorFiles(storage, roomId, paths);
+  const picksBefore = bundle.stub.registered.quickPicks.length;
+  await bundle.stub.commands.executeCommand('selvage.fetch');
+  const refusal = await waitFor('the fetch-all refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('would hold every one')) ??
+    false,
+  );
+  assert.match(refusal, /fetching all 101 listed files/);
+  assert.match(refusal, /fetch a file or a directory instead/);
+  assert.equal(
+    bundle.stub.registered.quickPicks.length,
+    picksBefore,
+    'the refused fetch-all offered the picker',
+  );
+  assert.equal(
+    bundle.stub.registered.progress.length,
+    0,
+    'the refused fetch-all held anything',
+  );
+});
+
 test('fetch holds one listed path and says what it fetched', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['notes/a.md']);

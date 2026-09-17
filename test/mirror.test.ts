@@ -280,6 +280,10 @@ test('mirror paths compare on one separator form', () => {
   assert.equal(mirrorRelative('C:\\mirror', 'C:\\other\\a.md'), undefined);
   assert.equal(mirrorRelative('C:\\mirror', 'C:\\mirror'), undefined);
   assert.equal(mirrorRelative('/mirror', '/mirror/../escape.md'), undefined);
+  // Empty and `.` segments name no room path, for symmetry with the grant's shape rule.
+  assert.equal(mirrorRelative('/mirror', '/mirror/./a.md'), undefined);
+  assert.equal(mirrorRelative('/mirror', '/mirror//a.md'), undefined);
+  assert.equal(mirrorRelative('/mirror', '/mirror/a.md'), 'a.md');
 });
 
 test('a file deleted under the republish does not abort it', (t) => {

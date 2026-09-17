@@ -125,6 +125,21 @@ test('a refusal is reported with its session error code', async (t) => {
     })),
     (error: unknown) => isProtocolError(error, 'bad_params'),
   );
+
+  // A truncated paste's refusal must not echo the paste: the invite carries the room's
+  // token, so the sentence names the missing part rather than the link.
+  for (const secret of [
+    'https://example.test/join?room=r-secret&token=t-secret',
+    'https://example.test/session?token=t-secret',
+  ]) {
+    await assert.rejects(
+      SelvageEngine.join(secret, 'Eve', options({ baseUrl: server.wsBase, displayName: 'Eve' })),
+      (error: unknown) =>
+        isProtocolError(error, 'bad_params') &&
+        !error.message.includes('t-secret') &&
+        !error.message.includes('r-secret'),
+    );
+  }
 });
 
 test('a handshake refused with close 4000 keeps the code the server named', async (t) => {
@@ -978,6 +993,76 @@ test('the room lifecycle reaches the adapter: host detached, room gone, disconne
     })),
     (error: unknown) => isProtocolError(error, 'room_unknown'),
   );
+});
+
+test('unbounded server diagnostics are cut before they reach the adapter', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const events = record(session.guest);
+  const flood = 'x'.repeat(2000);
+
+  // A relay putting megabytes in `message` is shown verbatim by the adapter, so the
+  // engine truncates what no dialog can show rather than passing it whole.
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'session.error',
+    params: { code: 'error', message: flood },
+  }));
+  const fault = await events.waitForEvent(
+    'the fault to arrive',
+    (event) => event.type === 'sessionError',
+  );
+  assert.ok(fault.type === 'sessionError');
+  assert.equal(fault.message.length, 500);
+  assert.ok(fault.message.endsWith('...'));
+
+  // A grace of 1e15 renders as a 31-million-second tooltip: clamped to the hour.
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'host.detached',
+    params: { grace_ms: 1e15 },
+  }));
+  const detached = await events.waitForEvent(
+    'the detach to arrive',
+    (event) => event.type === 'hostDetached',
+  );
+  assert.ok(detached.type === 'hostDetached');
+  assert.equal(detached.graceMs, 3_600_000);
+
+  session.server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'room.gone',
+    params: { reason: flood },
+  }));
+  const gone = await events.waitForEvent(
+    'the room end to arrive',
+    (event) => event.type === 'roomGone',
+  );
+  assert.ok(gone.type === 'roomGone');
+  assert.equal(gone.reason.length, 500);
+});
+
+test('a room gone mid-handshake fails the join at once, not at the deadline', async () => {
+  const socket = new ControlledSocket();
+  const joining = SelvageEngine.join('ws://controlled.test/session?room=r-1&token=t-1', 'Eve', {
+    meta: 'skip',
+    reconnect: false,
+    webSocketFactory: () => socket,
+  });
+  await waitFor('the engine to attach its handlers', () => socket.onopen !== null);
+  socket.open();
+  // The server answers the handshake with the room's end rather than its seat: the join
+  // fails with what the server named instead of waiting out the handshake timeout.
+  socket.deliver(JSON.stringify({
+    v: 'selvage/1',
+    event: 'room.gone',
+    params: { reason: 'the host left' },
+  }));
+  await assert.rejects(joining, (error: unknown) => isProtocolError(error, 'room_gone'));
 });
 
 test('frames this client does not understand are ignored, not fatal', async (t) => {
