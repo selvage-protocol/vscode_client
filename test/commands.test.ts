@@ -1275,7 +1275,8 @@ test('hosting asks for the server in plain words, prefilled with the default', a
   assert.match(String(asked.prompt), /the address it prints when it starts/);
   assert.match(String(asked.prompt), /selvage\.serverUrl/);
   assert.equal(asked.placeHolder, 'The address the server prints when it starts');
-  assert.equal(asked.value, 'ws://127.0.0.1:8080');
+  // Nothing configured and nothing remembered: the box starts from the demo server.
+  assert.equal(asked.value, 'ws://100.64.0.3:8080');
   assert.doesNotMatch(String(asked.placeHolder), /ws:\/\//);
   assert.doesNotMatch(String(asked.prompt), /selvaged/);
 });
@@ -1312,6 +1313,55 @@ test('the typed server is remembered across windows', async (t) => {
     second.stub.registered.inputs[0] ?? false,
   );
   assert.equal(asked.value, 'ws://127.0.0.1:1');
+});
+
+test('an explicit server address beats the remembered server', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // Seed memory: a typed address on a dead server fails to host, but is still kept.
+  bundle.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const kept = await waitFor('the server to be remembered', () =>
+    bundle.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
+  );
+  assert.ok(kept);
+
+  // The explicit address wins over the remembered one, with no question asked —
+  // and what was explicit is what is remembered next.
+  bundle.stub.registered.inputs.length = 0;
+  bundle.stub.registered.inputReply = undefined;
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: 'ws://127.0.0.1:2',
+    displayName: 'Ada',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) =>
+      message.includes('could not host on ws://127.0.0.1:2'),
+    ) ?? false,
+  );
+  assert.ok(said, 'hosting did not use the explicit address');
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'the remembered server was asked about');
+  assert.equal(bundle.stub.globalState.get('selvage.lastServer'), 'ws://127.0.0.1:2');
+});
+
+test('a configured server address answers without asking', async (t) => {
+  const { bundle } = activated(t);
+  bundle.stub.configure({ serverUrl: 'ws://127.0.0.1:9', displayName: 'Ada' });
+
+  // The setting answers: no box opens, and the failure names the configured address.
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) =>
+      message.includes('could not host on ws://127.0.0.1:9'),
+    ) ?? false,
+  );
+  assert.ok(said, 'hosting did not use the configured address');
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
 });
 
 /** The built bundle reloaded with fresh module state, for tests about memory across windows. */

@@ -102,8 +102,13 @@ let lastServer: string | undefined;
 /** The `globalState` key carrying the last typed server across windows. */
 const LAST_SERVER_KEY = 'selvage.lastServer';
 
-/** The address a window hosts on when nothing was typed or configured. */
-const DEFAULT_SERVER = 'ws://127.0.0.1:8080';
+/**
+ * The server a window hosts on when nothing was typed, remembered or configured: the Pi
+ * demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment —
+ * the prompt still asks, explicit arguments and the `selvage.serverUrl` setting always win —
+ * so moving the demo is this one line.
+ */
+const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
 export function activate(context: vscode.ExtensionContext): void {
   // A window the user typed a server into leaves it behind for the next one. The in-memory
@@ -1693,7 +1698,7 @@ async function host(
       'The Selvage server to host on',
       'The server you and your guest connect to — usually the address it prints when it starts. Set "selvage.serverUrl" to stop being asked.',
       'The address the server prints when it starts',
-      lastServer ?? DEFAULT_SERVER,
+      lastServer ?? DEFAULT_SERVER_URL,
     ));
   if (baseUrl === undefined) {
     return;
@@ -2437,7 +2442,7 @@ function participantLabel(participant: Participant, all: Participant[]): string 
 
 /**
  * A setting when there is one, and a question when there is not. The question carries a
- * prefilled fallback — the last typed server, else the default the server itself prints —
+ * prefilled fallback — the last typed server, else the demo default (`DEFAULT_SERVER_URL`) —
  * so asking is a keystroke rather than a paste.
  */
 async function ask(
