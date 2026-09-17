@@ -964,11 +964,6 @@ class Session {
     };
   }
 
-  /** The peer this window follows, if any: what marks their row `Following`. */
-  following(): string | undefined {
-    return this.followingPeerId;
-  }
-
   /**
    * The file a room path lives at, for the badges: a guest's mirror file, or a host's
    * own file under the folders captured at invite time. Synchronous and unchecked

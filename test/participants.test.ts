@@ -614,6 +614,14 @@ test('the manifest contributes the view, with actions on the commands it already
     ['selvage.followParticipant', 'selvage.goToParticipant', 'selvage.stopFollowing'],
     'a view action the palette cannot reach, or a contributed one that is not a command',
   );
+  const titleMenus = (contributed.menus?.['view/title'] ?? []).filter((entry) =>
+    (entry.when ?? '').includes('selvage.participants'),
+  );
+  assert.deepEqual(
+    titleMenus.map((entry) => entry.command),
+    ['selvage.copyInvite'],
+    'the view menu reaches past the commands the palette has',
+  );
   for (const entry of viewMenus) {
     assert.ok(ids.has(entry.command), `${entry.command} is no contributed command`);
   }

@@ -154,6 +154,12 @@ the list cannot disagree with what it explains. The list is drawn as a quick pic
 coloured dot per row, because `QuickPickItem.iconPath` is the only field an editor renders a
 colour from — and nothing in this repository can see that dot.
 
+The same roster also lives as a persistent `Selvage: Participants` view beside the explorer:
+one row per peer with their colour dot and current state, and nothing else as row text. The
+file each peer is in is badged on that file's own row instead, with the names in the hover;
+a peer's row menu offers going to them, following them, and — while they are followed —
+stopping. An empty room says it is alone and offers the invite copy on click.
+
 ## Packaging it
 
 The extension is not published to the Marketplace; installing a built `.vsix` is the path for
