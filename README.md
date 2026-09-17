@@ -34,8 +34,8 @@ Requirements, as found on this host:
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
 $ npm run build                        # → dist/extension.js, 519.7 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then 335 tests, no server, no editor
-$ npm test                             # 339 tests: the same plus 4 against a real selvaged
+$ npm run test:fast                    # builds, then 377 tests, no server, no editor
+$ npm test                             # 381 tests: the same plus 4 against a real selvaged
 ```
 
 `test:fast` and `test` build `dist/` first, so the extension bundle under test is the current
@@ -92,6 +92,9 @@ Then, in the two windows:
 3. Open a file **inside the workspace folder** — it is shared as soon as it is open, and its
    path appears in the room's open-document set.
 4. **Window two** — `Selvage: Join a session from an invite link`, paste the link, enter a display name.
+   The window reloads onto the room's folder: joining replaces the window's tree with
+   the room mirror, whatever the window held before. The invite and the name cross
+   the reload, so there is no second question after it.
 5. **Window two** — the room's document opens by itself as a real file under the room's
    folder in the Explorer, editable; both windows now type into the same text and see each other's caret as a bar in
    the peer's colour, with their selection tinted. Hovering a caret names the peer; nothing is
@@ -121,7 +124,7 @@ command there, while the three intents stay one-to-one.
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
-| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user. Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. |
+| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
@@ -371,15 +374,15 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   file holds what the room already holds — the keystrokes went first — so its save writes
   the room's own text, and the call is also what clears the dirty marker.
 - **A guest's room is a real directory**: `<globalStorage>/rooms/<room>/<window>/`, opened
-  as the window's folder — beside the person's own, or as the whole window with one reload
-  when the window has none. The listing fills its shape with empty files; content arrives
+  as the window's folder — the join reloads the window onto it, replacing whatever tree
+  the window held. The listing fills its shape with empty files; content arrives
   through the buffer, and leaving deletes the whole directory. A file the listing does not
   name is not shared: opening or saving one says so once per path, and a republished
   listing removes it. A document the room holds without listing has no file to open, so it
   is not openable here the way it is in Neovim; a save the room does not list is written —
   the editor cannot refuse it — and said about afterwards, where Neovim refuses it upfront.
-  Leaving a window that is only the room reloads it, the way joining an empty window does.
-  With several documents in the room only the first opens; the
+  Leaving deletes the room's folder from the window — the mirror was the whole tree, so a
+  window left with no folder reloads to empty. With several documents in the room only the first opens; the
   quick-pick in *Open a document from the room* lists every path — a guest never types
   one, so it cannot mistype the host's workspace-folder prefix.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
@@ -474,17 +477,17 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
 | `test/https-invite.test.ts` | the invite is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after an empty join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, a join with no folder reloading onto the mirror, leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after the join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, every join reloading the window onto the mirror (including host-leave-join on the first attempt, with the stashed name and never a second root), leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
-| `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker without its invite, opening only our own, leave deleting the directory, and prune with adopt-first |
+| `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker with its stashed invite and name, opening only our own, leave deleting the directory, and prune with adopt-first |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**339 tests, 0 failures**: 335 server-free and 4 that need a built `selvaged`. Waits are bounded
+**381 tests, 0 failures**: 377 server-free and 4 that need a built `selvaged`. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
@@ -499,13 +502,19 @@ Everything above stubs the editor or runs one process. `test/e2e/run.ts` does ne
 starts a real `selvaged`, resolves a pinned VS Code build (`1.137.0` by default; set
 `SELVAGE_E2E_VSCODE_VERSION` to move it), and launches **two independent, real
 Extension Development Host processes** (`@vscode/test-electron`, headless under Xvfb) with the
-real built extension loaded — one hosting a real file, one joining by invite, both editing
-concurrently — and asserts their documents converge. It also proves the room's grant end to
+real built extension loaded — one hosting a real file, one joining by invite through
+ a window reload, both editing
+concurrently — and asserts their documents converge. The guest runs in two windows:
+the first joins on its own folder and the reload tears that run down (resolving instead
+fails the stage); the run then opens a second window straight onto a freshly stashed
+mirror in its own profile, where the activation triage lands the join and the suite
+proves the window is the mirror alone before running every phase. It also proves the room's grant end to
 end: the guest opens a file the host's folder holds and the host never opened, so its content
 can only have been read on request. Left running, the host then makes a file under its folder
 and removes another while the room is live and the guest's mirror on disk has to gain the
-one and lose the other; a third window joins with no folder, reloads onto the mirror, and
-proves the stashed join landed there; and it cuts the guest's connection through a small
+one and lose the other; another window joins with no folder, reloads onto the mirror,
+lands there, and a further window proves the landing again from a freshly stashed
+mirror with no command run at all; and it cuts the guest's connection through a small
 relay and checks it reconnects and re-converges. `SELVAGE_E2E_RECONNECT=0` leaves the
 reconnect leg out; the watch and empty-window legs run either way.
 

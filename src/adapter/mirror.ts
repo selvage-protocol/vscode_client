@@ -83,6 +83,7 @@ export interface StoredMirror {
   window: string;
   root: string;
   invite?: string;
+  displayName?: string;
 }
 
 /**
@@ -128,6 +129,7 @@ export function scanStorage(storage: vscode.Uri): StoredMirror[] {
         window: marker.window,
         root,
         ...(marker.invite === undefined ? {} : { invite: marker.invite }),
+        ...(marker.displayName === undefined ? {} : { displayName: marker.displayName }),
       });
     }
   }
@@ -140,8 +142,14 @@ export interface MirrorMarker {
   window: string;
   pid: number;
   created: string;
-  /** A join the empty-window reload has not finished yet: deleted when it lands. */
+  /** A join the reload has not finished yet: deleted when it lands. */
   invite?: string;
+  /**
+   * The name the join was started with, stashed beside the invite so the
+   * reload's window does not ask again: the answer given seconds ago stands.
+   * Deleted with the invite when the join lands.
+   */
+  displayName?: string;
 }
 
 /** What applying a listing did: what is on disk now, and what was refused. */
@@ -160,6 +168,7 @@ export interface MintOptions {
   window?: string;
   pid?: number;
   invite?: string;
+  displayName?: string;
 }
 
 /** A mirror root, minted or opened: the operations a session performs on it. */
@@ -178,7 +187,7 @@ export interface Mirror {
    * still holds it — then it goes when that document closes instead.
    */
   republish(listing: readonly string[], held: (path: string) => boolean): RepublishReport;
-  /** Deletes the invite out of the marker: the join it was stashed for has landed. */
+  /** Deletes the stashed join — the invite and the name — out of the marker: it has landed. */
   clearInvite(): void;
   /** Deletes the directory recursively: leaving the room deletes the whole cache at once. */
   remove(): void;
@@ -228,6 +237,7 @@ export function mintMirror(storage: vscode.Uri, room: string, options: MintOptio
     pid,
     created: new Date().toISOString(),
     ...(options.invite === undefined ? {} : { invite: options.invite }),
+    ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
   };
   writeFileSync(join(root, MIRROR_MARKER), `${JSON.stringify(marker)}\n`);
   return handle(room, window, root);
@@ -270,7 +280,8 @@ export function readMarker(root: string): MirrorMarker | undefined {
     typeof parsed.window !== 'string' ||
     typeof parsed.pid !== 'number' ||
     typeof parsed.created !== 'string' ||
-    (parsed.invite !== undefined && typeof parsed.invite !== 'string')
+    (parsed.invite !== undefined && typeof parsed.invite !== 'string') ||
+    (parsed.displayName !== undefined && typeof parsed.displayName !== 'string')
   ) {
     throw new Error(`the mirror marker at ${root} is not one this client wrote`);
   }
@@ -280,6 +291,7 @@ export function readMarker(root: string): MirrorMarker | undefined {
     pid: parsed.pid,
     created: parsed.created,
     ...(parsed.invite === undefined ? {} : { invite: parsed.invite }),
+    ...(parsed.displayName === undefined ? {} : { displayName: parsed.displayName }),
   };
 }
 
@@ -382,7 +394,7 @@ function handle(room: string, window: string, root: string): Mirror {
       if (marker.invite === undefined) {
         return;
       }
-      const { invite: _dropped, ...rest } = marker;
+      const { invite: _dropped, displayName: _alsoDropped, ...rest } = marker;
       writeMarker(root, rest);
     },
     remove(): void {

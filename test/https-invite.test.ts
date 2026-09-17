@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   BUNDLE as BUNDLE_PATH,
+  landStashedJoin,
   loadBundle,
   testStoragePath,
 } from './helpers/bundle.ts';
@@ -172,6 +173,55 @@ test('CopyInvite copies exactly the page link, never the wire address', async (t
   }
 });
 
+test('a remembered non-default server survives host-leave-host into the copied link', async (t) => {
+  // The trap's mechanism, pinned at the seam: hosting on an address remembers it,
+  // the next server question is prefilled with it, and accepting the prefill
+  // copies a link whose `&server=` names it — the guest then asks that server.
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the first host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the leave to be said', () =>
+    bundle.stub.registered.information.some((message) => message.includes('left the session'))
+      ? true
+      : false,
+  );
+  // No address: the question must carry the remembered one, and the reply accepts it
+  // the way a person hitting enter on the prefill does. The reset clears what was
+  // said so the waits below can only pass on the second host; the remembered
+  // address lives in the module, not in the cleared memento.
+  bundle.stub.reset();
+  bundle.stub.registered.inputReply = server.wsBase;
+  await bundle.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  const asked = await waitFor('the server question', () =>
+    bundle.stub.registered.inputs.find((input) => input['title'] === 'The Selvage server to host on') ??
+      false,
+  );
+  assert.equal(asked['value'], server.wsBase, 'the question forgot the last server used');
+  await waitFor('the second host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const link = await waitFor('the invite link', () => {
+    const clipboard = bundle.stub.registered.clipboard;
+    return clipboard.startsWith('https://') ? clipboard : false;
+  });
+  assert.equal(
+    new URL(link).searchParams.get('server'),
+    server.wsBase,
+    'the copied link lost the remembered server',
+  );
+});
+
 test('a pasted page link joins the room it names', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
@@ -185,11 +235,10 @@ test('a pasted page link joins the room it names', async (t) => {
     invite: link,
     displayName: 'Bob',
   });
-  const joined = await waitFor('the guest to be seated', () =>
-    second.bundle.stub.registered.information.find((message) =>
-      message.includes('joined room'),
-    ) ?? false,
-  );
+  await landStashedJoin(second.bundle, second.storage, roomId, 'Bob');
+  const joined = second.bundle.stub.registered.information.find((message) =>
+    message.includes('joined room'),
+  ) ?? false;
   assert.equal(joined, `Selvage: joined room ${roomId}; the room has no open documents yet.`);
 });
 
@@ -204,15 +253,16 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   const wire = new URL(link).searchParams.get('server');
   assert.ok(wire !== null && wire !== '', `the copied link carries no server: ${link}`);
   const guest = freshActivated(t);
+  const wireRoom = new URL(link).searchParams.get('room');
+  assert.ok(wireRoom !== null && wireRoom !== '', `the copied link names no room: ${link}`);
   await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    invite: `${wire}/session?room=${new URL(link).searchParams.get('room')}&token=${new URL(link).searchParams.get('token')}`,
+    invite: `${wire}/session?room=${wireRoom}&token=${new URL(link).searchParams.get('token')}`,
     displayName: 'Bob',
   });
-  const joined = await waitFor('the guest to be seated', () =>
-    guest.bundle.stub.registered.information.find((message) =>
-      message.includes('joined room'),
-    ) ?? false,
-  );
+  await landStashedJoin(guest.bundle, guest.storage, wireRoom, 'Bob');
+  const joined = guest.bundle.stub.registered.information.find((message) =>
+    message.includes('joined room'),
+  ) ?? 'no join landed';
   assert.match(joined, /Selvage: joined room \S+/);
 });
 

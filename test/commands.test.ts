@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 import {
   BUNDLE,
+  landStashedJoin,
   loadBundle,
   mirrorFileUri,
   mirrorWindowDir,
@@ -116,6 +117,11 @@ function activated(t: TestContext): { bundle: LoadedExtension; storage: string }
 }
 
 /** A guest session in `bundle`, seated and with its first document opened by the adapter. */
+/**
+ * A guest session in `bundle`: the join stashes the invite and stages the
+ * reload, and the reactivation onto the mirror lands it — the two halves a
+ * real window is split into, staged back to back in the stub.
+ */
 async function guest(
   t: TestContext,
   paths: string[],
@@ -129,9 +135,7 @@ async function guest(
   const { server, invite, roomId } = await room(t, paths);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   return { bundle, storage, server, invite, roomId };
 }
 
@@ -243,9 +247,8 @@ test('a guest lands in the room\'s first document, even one that arrives after t
   const { host, invite, roomId } = await room(t, []);
   const { bundle, storage: landingStorage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  const joined = await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
-  );
+  await landStashedJoin(bundle, landingStorage, roomId, 'Bob');
+  const joined = bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false;
   assert.equal(joined, `Selvage: joined room ${roomId}; the room has no open documents yet.`);
   assert.deepEqual(bundle.stub.registered.shown, [], 'an empty room put something in the window');
 
@@ -272,12 +275,10 @@ test('a guest lands in the room\'s first document, even one that arrives after t
 
 test('selvage.openOnJoin off keeps a join from taking the window', async (t) => {
   const { host, invite, roomId } = await room(t, ['workspace/README.md']);
-  const { bundle } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  const joined = await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
+  const joined = bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false;
   assert.equal(joined, `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`);
 
   // A second document is witness that the room's own report reached this window — the set the
@@ -341,7 +342,7 @@ test('the open command offers the room\'s document list, not a path to type', as
 });
 
 test('the open command refuses outside a session and in a room with nothing in it', async (t) => {
-  const { bundle } = activated(t);
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.openDocument');
   const outside = await waitFor('the warning', () =>
     bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
@@ -351,11 +352,7 @@ test('the open command refuses outside a session and in a room with nothing in i
   const { invite } = await room(t, []);
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
 
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.openDocument');
@@ -700,13 +697,9 @@ interface PeerRow {
 
 test('the peers command lists the room in the colours the carets are drawn in', async (t) => {
   const { host, invite } = await room(t, ['workspace/README.md']);
-  const { bundle } = activated(t);
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
   // Published after the guest is seated: awareness converges peer to peer through a relay
   // that forgets, so a state sent before the guest arrived was forwarded to nobody.
   await host.setSelection('workspace/README.md', { anchor: 0, head: 0 });
@@ -782,13 +775,9 @@ test('a room that is gone is named before the session ends', async (t) => {
   const invite = host.inviteUrl();
   assert.ok(invite !== undefined, 'the host was given no invite link');
 
-  const { bundle } = activated(t);
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
 
   bundle.stub.reset();
   await host.disconnect();
@@ -913,6 +902,7 @@ test("the mirror is the room's listing, as files", async (t) => {
   await host.grant(['README.md', 'src/deep/nested.rs', 'src/main.rs']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
 
   // The room's shape on disk: one file per listed path, with the directories on the way.
   await waitForMirrorFiles(storage, roomId, ['README.md', 'src/deep/nested.rs', 'src/main.rs']);
@@ -947,6 +937,7 @@ test('the open command offers the grant, not only what the room has open', async
   await host.grant(['README.md', 'src/deep/nested.rs']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['README.md', 'src/deep/nested.rs']);
 
   await bundle.stub.commands.executeCommand('selvage.openDocument');
@@ -1113,11 +1104,7 @@ test('a stale openDocument path that left the listing is refused, not silently d
   await host.grant(['doomed.txt']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['doomed.txt']);
 
   // The host takes the path out of the listing while a caller still names it. The
@@ -1174,7 +1161,11 @@ test('a document open when its path leaves the listing keeps its file and its ho
   await host.grant(['doomed.txt', 'gone.txt']);
   const { bundle, storage } = activated(t);
   // The room's text is applied to the holder, as the editor's own model would apply it.
+  // Set after the landing: the reload clears what the stub recorded, and what fills
+  // the holder is the open below, not the landing.
   const holder = { text: '' };
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
     const changes = (edit as { edits: Array<{ text: string }> }).edits;
     for (const change of changes) {
@@ -1182,12 +1173,6 @@ test('a document open when its path leaves the listing keeps its file and its ho
     }
     return true;
   };
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
   await waitForMirrorFiles(storage, roomId, ['doomed.txt', 'gone.txt']);
   // The guest opens the granted path the way the editor reports one: the hold the open
   // takes is what keeps the file past the listing, and the room's text arrives through it.
@@ -1463,17 +1448,36 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
 });
 
 test('a join to a dead server says what to check, not just the engine error', async (t) => {
-  const { bundle } = activated(t);
+  const { bundle, storage } = activated(t);
 
   await bundle.stub.commands.executeCommand('selvage.join', {
     invite: 'ws://127.0.0.1:1/session?room=r&token=t',
     displayName: 'Bob',
+  });
+  // The reload is staged first; the failure lands after it, when the room is dialled.
+  const root = mirrorWindowDir(storage, 'r');
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
   });
   const said = await waitFor('the failure', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
   );
   assert.match(said, /check the link is complete and the server is running/);
   assert.match(said, /\(the WebSocket reported an error\)/, 'the cause was dropped');
+  assert.equal(
+    bundle.stub.registered.information.some((message) => message.includes('joined room')),
+    false,
+    'a session started without its room',
+  );
+  assert.equal(
+    bundle.stub.registered.folderCalls.some((call) => call.deleteCount === 1),
+    true,
+    'the failed join kept its room-shaped folder',
+  );
 });
 
 test('a host to a dead server says what to check, not just the engine error', async (t) => {
@@ -1508,11 +1512,8 @@ test('a fetch that times out names the empty path and reports no fetch', async (
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['workspace/lonely.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['workspace/lonely.md']);
 
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'workspace/lonely.md' });
@@ -1585,11 +1586,8 @@ test('fetch with a trailing slash names the directory', async (t) => {
   await host.grant(['notes/a.md']);
   const { bundle, storage } = activated(t);
   // No landing: the fetch's own hold is what must pull the content, not the join's.
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
   // The slash is stripped before the prefix match: without it the directory misses the
   // listing and the fetch reports no match. The hold runs detached; the host publishes
@@ -1618,11 +1616,8 @@ test('fetch refuses a listing past what one fetch holds', async (t) => {
   const paths = Array.from({ length: 101 }, (_, index) => `dir/file${index}.md`);
   await host.grant(paths);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   // The mirror materialises from the grant report, so every file on disk proves the
   // guest sees the whole listing the refusal counts.
   await waitForMirrorFiles(storage, roomId, paths);
@@ -1651,11 +1646,8 @@ test('fetch holds one listed path and says what it fetched', async (t) => {
   await host.grant(['notes/a.md']);
   const { bundle, storage } = activated(t);
   // No landing: the fetch's own hold is what must pull the content, not the join's.
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
   // The hold runs detached; the host publishes while it waits, as a slow host does.
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
@@ -1688,19 +1680,47 @@ test('fetch holds one listed path and says what it fetched', async (t) => {
 });
 
 test('fetch of a path the window already holds resolves without asking again', async (t) => {
-  // The room's sync carried the text at join, so there is nothing to wait for: no
-  // notice names the path, no progress runs, and the report still confirms the fetch.
+  // The hold is what the fetch checks, not the arrival order behind it: opening
+  // the path holds it, and the room's text arriving through that hold proves it
+  // before the fetch runs. Fetching straight after the listing would race the
+  // join sync still in flight — a hold taken there is correct, not silent — so
+  // the test never fetches on timing.
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['notes/a.md']);
   await host.open('notes/a.md');
   host.insert('notes/a.md', 0, 'already here\n');
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
+  const holder = { text: '' };
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      holder.text += change.text;
+    }
+    return true;
+  };
+  // Opening holds the path; the room's text arriving through that hold proves it
+  // before the fetch runs. The open is reported the way the editor reports one,
+  // so both orders converge: text already here renders at open, text still on
+  // the wire renders when its sync arrives.
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'notes/a.md' });
+  const uri = mirrorFileUri(storage, roomId, 'notes/a.md');
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes(uri) ? true : false,
+  );
+  bundle.stub.fire('openTextDocument', {
+    uri: bundle.stub.Uri.parse(uri),
+    eol: 1,
+    isDirty: false,
+    getText: () => holder.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    save: () => Promise.resolve(true),
+  });
+  await waitFor('the opened path to hold the room text', () =>
+    holder.text === 'already here\n' ? true : false,
+  );
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
   const done = await waitFor('the fetched report', () =>
     bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
@@ -1721,11 +1741,8 @@ test('fetch of a directory holds every listed path under it', async (t) => {
   await host.grant(['notes/a.md', 'notes/b.md', 'other.md']);
   const { bundle, storage } = activated(t);
   // No landing: the fetch's own holds are what must pull the content, not the join's.
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['notes/a.md', 'notes/b.md', 'other.md']);
   // One path at a time: the second hold starts once the first has landed.
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes' });
@@ -1768,9 +1785,7 @@ test('fetch refuses a name the listing never held', async (t) => {
   await host.grant(['a.md']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['a.md']);
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'missing.md' });
   const refusal = await waitFor('the miss to be refused', () =>
@@ -1789,9 +1804,7 @@ test('fetch of a path that left the listing reports the reason', async (t) => {
   await host.grant(['doomed.txt']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['doomed.txt']);
   await host.grant([]);
   await waitForMirrorGone(storage, roomId, ['doomed.txt']);
@@ -1812,11 +1825,8 @@ test('fetch without a path offers the listing to pick from', async (t) => {
   await host.grant(['picked.md']);
   const { bundle, storage } = activated(t);
   // No landing: the fetch's own hold is what must pull the content, not the join's.
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['picked.md']);
   bundle.stub.registered.quickPickReply = 'picked.md';
   await bundle.stub.commands.executeCommand('selvage.fetch');
@@ -1938,6 +1948,114 @@ test('joining with no folder stashes the invite and reloads onto the mirror', as
   assert.equal(marker.invite, invite, 'the reload carries no invite to finish with');
 });
 
+test('a join reloads the window onto the mirror, never a second root beside it', async (t) => {
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  // The stub window holds the person's own folder: the owner's shape, not the empty one.
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  // The reload is staged first — exactly one, with no folder added beside anything —
+  // and the reactivation lands the session the reload carried across.
+  const root = await landStashedJoin(bundle, storage, roomId, 'Bob');
+  const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+    invite?: string;
+  };
+  assert.equal(marker.invite, undefined, 'the landed join kept its invite');
+});
+
+test('host, leave, join: the first join lands', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  const left = await waitFor('the leave to be said', () =>
+    bundle.stub.registered.information.find((message) => message.includes('left the session')) ?? false,
+  );
+  assert.equal(left, 'Selvage: left the session.');
+  // A second room on the same server: the invite names what the first join must land in.
+  const host = await SelvageEngine.host(server.wsBase, 'Zed', OPTIONS);
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the second room minted no invite');
+  const roomId = roomOf(invite);
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
+});
+
+test('the stashed name joins without a second question', async (t) => {
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const root = mirrorWindowDir(storage, roomId);
+  const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
+  assert.equal(reloads.length, 1, 'the join staged no reload to carry the name across');
+  // The reload's window: no setting, no answer — the stashed name is the whole join.
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  await waitFor('the stashed join to land', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'the landing asked for the name again');
+  const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+    invite?: string;
+  };
+  assert.equal(marker.invite, undefined, 'the landed join kept its invite');
+});
+
+test('a reloaded window holding more than the mirror reloads again, never beside it', async (t) => {
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const root = mirrorWindowDir(storage, roomId);
+  // The reload landed somewhere else: the room's folder plus the person's own.
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root, '/elsewhere']);
+  bundle.stub.configure({ displayName: 'Bob' });
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  await waitFor('the second reload', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
+  assert.equal(reloads.length, 1, 'the resume staged no second reload');
+  assert.equal(
+    bundle.stub.registered.folderCalls.length,
+    0,
+    'the resume added the mirror beside the window',
+  );
+  assert.equal(
+    bundle.stub.registered.information.some((message) => message.includes('joined room')),
+    false,
+    'a session started in half a window',
+  );
+  const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+    invite?: string;
+  };
+  assert.equal(marker.invite, invite, 'the retry dropped the stashed invite');
+});
+
 test('a reload onto the mirror finishes the stashed join', async (t) => {
   const { invite } = await room(t, []);
   const roomId = roomOf(invite);
@@ -1975,32 +2093,69 @@ test('a reload onto the mirror finishes the stashed join', async (t) => {
   assert.equal(marker.invite, undefined, 'the landed join kept its invite');
 });
 
-test('a join whose folder the editor refuses reports joining again', async (t) => {
+test('the landed join adopts the mirror into the reloaded window', async (t) => {
+  // The marker still names the minting process, which the reload tore down: landing
+  // rewrites it with the live pid, so a second window reading a dead pid cannot take
+  // a live room for a stale cache. The invite leaves with the landing as usual.
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const storage = testStoragePath(t);
+  const root = join(storage, 'rooms', roomId, 'w-adopted');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, '.selvage-mirror.json'),
+    `${JSON.stringify({ room: roomId, window: 'w-adopted', pid: 2147483647, created: new Date(0).toISOString(), invite, displayName: 'Bob' })}\n`,
+  );
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  const joined = await waitFor('the stashed join to land', () =>
+    bundle.stub.registered.information.find((message) => message.includes('joined room')) ?? false,
+  );
+  assert.match(joined, /the room has no open documents yet/);
+  const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+    invite?: string;
+    displayName?: string;
+    pid?: number;
+  };
+  assert.equal(marker.invite, undefined, 'the landed join kept its invite');
+  assert.equal(marker.displayName, undefined, 'the landed join kept its name');
+  assert.equal(marker.pid, process.pid, 'the landed join kept the dead minting pid');
+});
+
+test('a join whose reload the editor refuses reports joining again', async (t) => {
   const { invite } = await room(t, []);
   const roomId = roomOf(invite);
   const { bundle, storage } = activated(t);
-  bundle.stub.registered.updateFoldersReturn = false;
+  bundle.stub.registered.openFolderThrows = 'the editor refused the reload';
 
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  const refusal = await waitFor('the refused folder to be reported', () =>
+  const refusal = await waitFor('the refused reload to be reported', () =>
     bundle.stub.registered.errors.find((message) => message.includes("room's folder")) ?? false,
   );
   assert.equal(
     refusal,
-    `Selvage: could not add the room's folder to this window (the editor refused the folder); join again.`,
+    `Selvage: could not open the room's folder in this window (the editor refused the reload); join again.`,
   );
-  // The add was attempted and read back, not trusted — and a failed join leaves no
-  // room-shaped folder, and no mirror directory, behind.
-  assert.equal(bundle.stub.registered.folderCalls.length, 1, 'the folder was never attempted');
-  assert.deepEqual(
-    bundle.stub.registered.folderCalls[0]?.added.length,
+  // The reload was staged and refused — and a failed join leaves no session and no
+  // mirror directory behind.
+  assert.equal(
+    bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder').length,
     1,
-    'the refused add carried no folder',
+    'the reload was never staged',
   );
   assert.equal(
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
     false,
-    'a session started without its folder',
+    'a session started without its window',
   );
   assert.equal(dirEntries(join(storage, 'rooms', roomId)).length, 0, 'the failed join kept its mirror');
 });
@@ -2062,17 +2217,52 @@ test('activation clears a stale mirror and leaves a live sibling alone', async (
   );
 });
 
+test("activation leaves a live room's mirror alone, even in this window", async (t) => {
+  // A second window onto a live room's mirror — or a person opening the mirror by
+  // hand — must not take the room out from under the live owner: no warning, no
+  // removal, no folder call. A dead sibling proves the triage pass ran, so the
+  // live one's survival is observed, not hoped for.
+  const storage = testStoragePath(t);
+  const liveRoot = join(storage, 'rooms', 'r-live', 'w-live');
+  const deadRoot = join(storage, 'rooms', 'r-live', 'w-dead');
+  mkdirSync(liveRoot, { recursive: true });
+  mkdirSync(deadRoot, { recursive: true });
+  const marker = (window: string, pid: number): string =>
+    `${JSON.stringify({ room: 'r-live', window, pid, created: new Date(0).toISOString() })}\n`;
+  writeFileSync(join(liveRoot, '.selvage-mirror.json'), marker('w-live', process.pid));
+  writeFileSync(join(deadRoot, '.selvage-mirror.json'), marker('w-dead', 2147483647));
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([liveRoot]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  await waitFor('the dead sibling to be reported', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('leftover files')) ?? false,
+  );
+  assert.equal(existsSync(liveRoot), true, "a live room's mirror was cleared");
+  assert.equal(bundle.stub.registered.folderCalls.length, 0, "a live room's folder was taken");
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('leftover files')).length,
+    1,
+    'the live room earned its own sentence',
+  );
+});
+
 test('leaving closes the room tabs, the folder, and the directory', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['notes/a.md']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
   const root = mirrorWindowDir(storage, roomId);
-  // One tab in the room, one in the window's own folder: only the room's closes.
+  // One tab in the room, one outside it: only the room's closes.
   const roomTab = { input: { uri: bundle.stub.Uri.parse(mirrorFileUri(storage, roomId, 'notes/a.md')) } };
   const ownTab = { input: { uri: bundle.stub.Uri.parse('file:///workspace/own.md') } };
   bundle.stub.window.tabGroups.all.push({ tabs: [roomTab, ownTab] });
@@ -2086,7 +2276,7 @@ test('leaving closes the room tabs, the folder, and the directory', async (t) =>
   const closed = bundle.stub.registered.closedTabs.flat();
   assert.ok(closed.includes(roomTab), 'the room tab stayed open on a deleted directory');
   assert.ok(!closed.includes(ownTab), 'the window\'s own tab was closed with the room');
-  // The folder added at join is removed, and the directory goes with it.
+  // The room's folder is removed, and the directory goes with it.
   const removals = bundle.stub.registered.folderCalls.filter((call) => call.deleteCount === 1);
   assert.equal(removals.length, 1, 'the room folder stayed in the window');
   assert.equal(existsSync(root), false, 'the mirror survived the leave');
@@ -2097,9 +2287,7 @@ test('leaving a window that is only the room deletes before removing the folder'
   await host.grant(['notes/a.md']);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
   const root = mirrorWindowDir(storage, roomId);
   // The window narrowed to the room: removing its only folder reloads it, so the
@@ -2128,11 +2316,8 @@ test('opening a file the room does not list says so once and shares nothing', as
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['a.md']);
 
   // A tool's file in the mirror: opened twice, said once, and never shared — the room's
@@ -2190,11 +2375,8 @@ test('a document the room opens joins even with no listing at all', async (t) =>
   const { host, invite } = await room(t, []);
   const roomId = roomOf(invite);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   const holder = { text: '' };
   const document = mirrorDocument(bundle, storage, roomId, 'late.md', holder);
   bundle.stub.registered.textDocuments.push(document);
@@ -2222,11 +2404,8 @@ test('saving a file the room does not list says so once', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['a.md']);
 
   // The editor writes the file — no provider refuses it anymore — and the client says
@@ -2267,11 +2446,8 @@ test('a listing the mirror cannot hold is said out loud', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['.selvage-mirror.json', 'a.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   const said = await waitFor('the refused listing to be reported', () =>
     bundle.stub.registered.warnings.find((message) => message.includes('could not be mirrored')) ??
     false,
@@ -2303,11 +2479,8 @@ test('fetch offers the whole listing first and confirms before holding it', asyn
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md', 'notes/b.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['a.md', 'notes/b.md']);
 
   // The picker's first row is the whole listing; choosing it asks what the yes means.
@@ -2345,11 +2518,8 @@ test('a whole-listing fetch dismissed at the confirm holds nothing', async (t) =
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md']);
   const { bundle, storage } = activated(t);
-  bundle.stub.configure({ openOnJoin: false });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['a.md']);
 
   // The row is chosen and the confirm dismissed: no hold, no wait, no report.

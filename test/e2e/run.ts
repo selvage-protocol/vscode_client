@@ -4,6 +4,13 @@
  * real built `dist/extension.js` loaded, one hosting and one joining over a real `selvaged`,
  * editing the same document concurrently.
  *
+ * A join replaces the window's tree with the room mirror — one reload, never a second
+ * root — so the guest runs in two windows: the first joins on its own folder and the
+ * reload tears that run down (resolving instead would fail the stage), and the second
+ * opens straight onto a freshly stashed mirror in its own profile, where the
+ * activation triage lands the join and the suite proves the window is the mirror
+ * alone before running every phase.
+ *
  * This has heavier prerequisites than `npm test` — a network, Xvfb, a VS Code build pinned
  * below and downloaded the first time that version is used, `nix` for the shared-library path
  * an unpackaged Electron binary needs on NixOS — so it is not part of `npm test`/`test:fast` or
@@ -35,14 +42,16 @@
  * event never fires, the guest never tracks.
  *
  * The empty-window stage proves the join from a window with no folder: the first instance
- * joins and the reload that puts the room's folder in the window tears the run down, which
- * counts only with the stashed invite on disk to show for it. The second instance launches
- * on the mirror folder itself and proves the stashed join landed — the invite left the
- * marker, the listing filled the mirror, and no second folder was added — with no command
- * run at all.
+ * joins and the reload that puts the room's folder in the window tears the run down,
+ * which counts only with the landed join on disk to show for it — the marker without
+ * its invite and the listing filled. The second instance opens straight onto a freshly
+ * stashed mirror in the same profile and proves the landing again — the invite left
+ * the marker, the listing filled the mirror, and no second folder was added — with no
+ * command run at all.
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import net from 'node:net';
@@ -89,7 +98,13 @@ const WATCH_DOOMED_TEXT = 'a file the host removes while the room is live\n';
 const VSCODE_VERSION = process.env.SELVAGE_E2E_VSCODE_VERSION ?? '1.137.0';
 
 const RECONNECT = process.env.SELVAGE_E2E_RECONNECT !== '0';
-const DEADLINE_MS = Number(process.env.SELVAGE_E2E_DEADLINE_MS ?? '20000');
+/**
+ * How long one poll may take. The guest joins in two windows — the join stage
+ * reloads, the phases stage boots fresh — so two editor startups and a reload
+ * stand between the host seating and the first guest marker; the bound leaves
+ * room for all three with a slow boot.
+ */
+const DEADLINE_MS = Number(process.env.SELVAGE_E2E_DEADLINE_MS ?? '60000');
 const RECONNECT_DEADLINE_MS = Number(process.env.SELVAGE_E2E_RECONNECT_DEADLINE_MS ?? '40000');
 /**
  * How long one editor may take to finish on its own before the run gives up on it. Startup,
@@ -100,7 +115,7 @@ const RECONNECT_DEADLINE_MS = Number(process.env.SELVAGE_E2E_RECONNECT_DEADLINE_
  */
 const INSTANCE_DEADLINE_MS = Number(
   process.env.SELVAGE_E2E_INSTANCE_DEADLINE_MS ??
-    String(DEADLINE_MS + (RECONNECT ? RECONNECT_DEADLINE_MS : 0) + 180_000),
+    String(DEADLINE_MS + (RECONNECT ? RECONNECT_DEADLINE_MS : 0) + 420_000),
 );
 /**
  * The bound on the whole run. Every other deadline above bounds a step; this one covers the
@@ -110,7 +125,7 @@ const INSTANCE_DEADLINE_MS = Number(
  * has to download a build the cache does not hold is doing an announced, one-off transfer, and
  * can be given room with `SELVAGE_E2E_WATCHDOG_MS`.
  */
-const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '300000');
+const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '900000');
 /**
  * How long the one `nix eval` below may take. It resolves and evaluates `<nixpkgs>`, which can
  * block on an evaluation, a fetch or a store lock, so it is bounded like every other step: an
@@ -143,10 +158,16 @@ function log(...parts: unknown[]): void {
  * the one thing that cannot answer this: the stall worth reporting is the one where that
  * promise never settles, which says nothing about whether anything is still behind it.
  */
-function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number[] } {
-  const alive: { host: number[]; guest: number[]; empty: number[] } = { host: [], guest: [], empty: [] };
+function liveEditorProcesses(): { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } {
+  const alive: { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } = {
+    host: [],
+    guest: [],
+    guestPhases: [],
+    empty: [],
+  };
   const hostUserData = resolve(RUN_DIR, 'host-user-data');
   const guestUserData = resolve(RUN_DIR, 'guest-user-data');
+  const guestPhasesUserData = resolve(RUN_DIR, 'guest-phases-user-data');
   const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
   let entries: string[];
   try {
@@ -168,6 +189,8 @@ function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number
     }
     if (cmdline.includes(hostUserData)) {
       alive.host.push(Number(entry));
+    } else if (cmdline.includes(guestPhasesUserData)) {
+      alive.guestPhases.push(Number(entry));
     } else if (cmdline.includes(guestUserData)) {
       alive.guest.push(Number(entry));
     } else if (cmdline.includes(emptyUserData)) {
@@ -185,7 +208,7 @@ function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number
  */
 function killLiveEditors(reason: string): void {
   const alive = liveEditorProcesses();
-  const pids = [...alive.host, ...alive.guest, ...alive.empty];
+  const pids = [...alive.host, ...alive.guest, ...alive.guestPhases, ...alive.empty];
   if (pids.length > 0) {
     log(`killing live editors (${reason}): ${pids.join(', ')}`);
   }
@@ -199,9 +222,10 @@ function killLiveEditors(reason: string): void {
 }
 
 /**
- * Takes down only the empty-window stage's windows: the reload left one behind whose
- * triage hangs on a display-name question, and the run's own host and guest must keep
- * running for the legs after this one. Killing by profile, not by everything alive.
+ * Takes down only the empty-window stage's windows: the join run is over and the
+ * reloaded window proves the landing again, while the run's own host and guest
+ * must keep running for the legs after this one. Killing by profile, not by
+ * everything alive.
  */
 function killEmptyEditors(reason: string): void {
   const alive = liveEditorProcesses();
@@ -253,7 +277,7 @@ function armWatchdog(): ReturnType<typeof setTimeout> {
     console.error(
       `[e2e] WATCHDOG: instances still in flight: ${inFlight.size === 0 ? 'none' : [...inFlight].join(', ')}`,
     );
-    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}; empty ${list(alive.empty)}`);
+    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}; guest-phases ${list(alive.guestPhases)}; empty ${list(alive.empty)}`);
     console.error(
       `[e2e] WATCHDOG: editor output: ${resolve(RUN_DIR, 'host.log')}, ${resolve(RUN_DIR, 'guest.log')}`,
     );
@@ -484,6 +508,8 @@ interface InstanceOutcome {
     deleteRefused?: boolean;
     deleteRefusal?: string;
   };
+  /** Whether the window that ran the phases is the room mirror and nothing else. */
+  singleFolder?: boolean;
   error?: string;
 }
 
@@ -510,15 +536,20 @@ async function pollFor<T>(label: string, check: () => T | undefined, deadlineMs:
 }
 
 /**
- * The mirror root under a user-data dir whose marker carries `invite`, when the join
- * stashed one: the empty-window reload's proof, read off the orchestrator's own disk.
+ * Every mirror window directory for `room` under a user-data dir, as `{ publisher,
+ * window, root, marker }`: what the orchestrator reads off its own disk instead of
+ * driving a window it cannot click through.
  */
-function stashedMirrorRoot(userDataDir: string, room: string, invite: string): string | undefined {
+function roomMirrors(
+  userDataDir: string,
+  room: string,
+): Array<{ publisher: string; window: string; root: string; marker: { invite?: string } }> {
+  const found: Array<{ publisher: string; window: string; root: string; marker: { invite?: string } }> = [];
   let publishers: Dirent[];
   try {
     publishers = readdirSync(join(userDataDir, 'User', 'globalStorage'), { withFileTypes: true });
   } catch {
-    return undefined;
+    return found;
   }
   for (const publisher of publishers) {
     if (!publisher.isDirectory()) {
@@ -541,15 +572,88 @@ function stashedMirrorRoot(userDataDir: string, room: string, invite: string): s
         const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
           invite?: string;
         };
-        if (marker.invite === invite) {
-          return root;
-        }
+        found.push({ publisher: publisher.name, window: window.name, root, marker });
       } catch {
-        // Not a stashed join yet.
+        // Not a mirror yet.
       }
     }
   }
+  return found;
+}
+
+/**
+ * The mirror whose marker still carries a pending join: the join stashed it, and
+ * the reload tore the joining run down before any triage could finish it — under
+ * the test runner the reloaded window never boots, so a stashed marker is the
+ * whole proof the reload staged, read off the orchestrator's disk.
+ */
+function stashedMirror(
+  userDataDir: string,
+  room: string,
+): { publisher: string; root: string; invite: string; displayName?: string } | undefined {
+  for (const mirror of roomMirrors(userDataDir, room)) {
+    if (mirror.marker.invite === undefined) {
+      continue;
+    }
+    try {
+      const marker = JSON.parse(readFileSync(join(mirror.root, '.selvage-mirror.json'), 'utf8')) as {
+        invite: string;
+        displayName?: string;
+      };
+      return { publisher: mirror.publisher, root: mirror.root, invite: marker.invite, displayName: marker.displayName };
+    } catch {
+      return undefined;
+    }
+  }
   return undefined;
+}
+
+/**
+ * Stashes a join the way `mintMirror` writes it — the marker a reload's triage
+ * finishes — so a window opened straight onto the mirror lands without joining.
+ * The invite is the one the join stage wrote down verbatim (proxy rewrite and
+ * all); the name rides beside it so no question interrupts the landing. The room
+ * is alive on the server either way: minting here mints no room, it stages one.
+ */
+function mintStash(
+  userDataDir: string,
+  publisher: string,
+  room: string,
+  invite: string,
+  displayName: string,
+): string {
+  const window = randomUUID();
+  const root = join(userDataDir, 'User', 'globalStorage', publisher, 'rooms', room, window);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, '.selvage-mirror.json'),
+    `${JSON.stringify({
+      room,
+      window,
+      pid: process.pid,
+      created: new Date().toISOString(),
+      invite,
+      displayName,
+    })}\n`,
+  );
+  return root;
+}
+
+/** Takes down only the guest's join-stage window: its reload landed and the phases
+ * run in another window, so the undriven guest leaves before it can add presence
+ * noise. Scoped to the join profile, never the phases one. */
+function killGuestJoinEditors(reason: string): void {
+  const alive = liveEditorProcesses();
+  if (alive.guest.length > 0) {
+    log(`killing guest join-stage editors (${reason}): ${alive.guest.join(', ')}`);
+  }
+  for (const pid of alive.guest) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // It exited between the scan and the signal.
+    }
+  }
 }
 
 async function runInstance(
@@ -685,8 +789,8 @@ async function main(): Promise<void> {
     ...(controlFile === undefined ? {} : { SELVAGE_E2E_CONTROL_FILE: controlFile }),
   };
 
-  phase = 'launching the instances';
-  log('launching both real VS Code instances concurrently');
+  phase = 'launching the host and the guest join stage';
+  log('launching the host and the guest join stage concurrently');
   const hostRun = runInstance(
     'host',
     vscodeExecutablePath,
@@ -702,7 +806,9 @@ async function main(): Promise<void> {
     },
     resolve(RUN_DIR, 'host.log'),
   );
-  const guestRun = runInstance(
+  const guestStagedFile = resolve(RUN_DIR, 'guest-staged.txt');
+  const guestStageErrorFile = resolve(RUN_DIR, 'guest-stage-error.txt');
+  const guestJoinRun = runInstance(
     'guest',
     vscodeExecutablePath,
     [guestWorkspace],
@@ -710,16 +816,90 @@ async function main(): Promise<void> {
     guestExtensions,
     {
       ...sharedEnv,
+      SELVAGE_E2E_STAGE: 'join',
+      SELVAGE_E2E_STAGED_FILE: guestStagedFile,
+      SELVAGE_E2E_STAGE_ERROR_FILE: guestStageErrorFile,
+      SELVAGE_E2E_DISPLAY_NAME: 'Bob',
+      ...(proxy === undefined ? {} : { SELVAGE_E2E_PROXY_ADDR: `127.0.0.1:${proxy.port}` }),
+    },
+    resolve(RUN_DIR, 'guest-join.log'),
+    'guest-suite.cjs',
+  );
+  // Neither promise is awaited until its own gate below, which can be a while (the
+  // phase-1 poll and the blip); attach a no-op rejection handler now so Node does not
+  // treat an early failure as unhandled in the meantime.
+  hostRun.catch(() => {});
+  guestJoinRun.catch(() => {});
+
+  // The join stage proves the reload: the run tears itself down, which rejects.
+  // Resolving means the reload never came.
+  phase = 'waiting for the guest join to reload';
+  let guestReloaded = false;
+  try {
+    await guestJoinRun;
+  } catch {
+    guestReloaded = true;
+  }
+  if (!guestReloaded) {
+    throw new Error('orchestrator: the guest join resolved instead of reloading onto the mirror');
+  }
+  log('the guest join reloaded instead of resolving');
+  // The teardown rejects either way, so the staged file is what tells a staged
+  // reload from a join that never got that far — with the cause beside it.
+  if (!existsSync(guestStagedFile)) {
+    const cause = existsSync(guestStageErrorFile) ? readFileSync(guestStageErrorFile, 'utf8') : '(no cause left)';
+    throw new Error(`orchestrator: the guest join tore down without staging the reload: ${cause}`);
+  }
+
+  // The join's own stash, read off disk: the reload without it fails here loudly,
+  // which is what tells a torn-down run from a failed join apart. The invite the
+  // phases window re-stashes is the marker's own — the wire form the client
+  // stashed, byte for byte — never re-derived here.
+  const guestInvite = existsSync(inviteFile) ? readFileSync(inviteFile, 'utf8') : undefined;
+  if (guestInvite === undefined) {
+    throw new Error('orchestrator: the host published no invite for the guest join');
+  }
+  const guestRoom = decodeURIComponent(/[?&]room=([^&]+)/.exec(guestInvite)?.[1] ?? '');
+  if (guestRoom === '') {
+    throw new Error('orchestrator: the invite names no room for the guest join');
+  }
+  const guestStash = await pollFor(
+    'the guest join to stash its mirror',
+    () => stashedMirror(guestUserData, guestRoom) ?? undefined,
+    DEADLINE_MS,
+  );
+  const guestStashInvite = guestStash.invite;
+  if (guestStash === undefined) {
+    throw new Error('orchestrator: the guest stash vanished after the reload');
+  }
+  log('the guest join stashed its mirror at', guestStash.root);
+  if (guestStash.displayName !== 'Bob') {
+    throw new Error('orchestrator: the stashed join carries no name to land with');
+  }
+  const guestPublisher = guestStash.publisher;
+  const guestPhasesUserData = resolve(RUN_DIR, 'guest-phases-user-data');
+  const guestPhasesExtensions = resolve(RUN_DIR, 'guest-phases-extensions');
+  const phasesMirror = mintStash(guestPhasesUserData, guestPublisher, guestRoom, guestStashInvite, 'Bob');
+  log('the phases window opens straight onto', phasesMirror);
+  killGuestJoinEditors('join stage stashed; phases run in their own window');
+
+  phase = 'launching the guest phases window';
+  const guestRun = runInstance(
+    'guest',
+    vscodeExecutablePath,
+    [phasesMirror],
+    guestPhasesUserData,
+    guestPhasesExtensions,
+    {
+      ...sharedEnv,
+      SELVAGE_E2E_STAGE: 'phases',
       SELVAGE_E2E_RESULT_FILE: guestResultFile,
       SELVAGE_E2E_DISPLAY_NAME: 'Bob',
       ...(proxy === undefined ? {} : { SELVAGE_E2E_PROXY_ADDR: `127.0.0.1:${proxy.port}` }),
     },
     resolve(RUN_DIR, 'guest.log'),
+    'guest-suite.cjs',
   );
-  // Neither promise is awaited until `Promise.allSettled` below, which can be a while (the
-  // phase-1 poll and the blip); attach a no-op rejection handler now so Node does not treat
-  // an early failure as unhandled in the meantime.
-  hostRun.catch(() => {});
   guestRun.catch(() => {});
 
   // Phase 1 has to actually land in both real editors before anything after it means
@@ -771,8 +951,8 @@ async function main(): Promise<void> {
   log('the guest has walked the room\u2019s listing the host\u2019s folder now stands for');
 
   // The empty-window stage: joining with no folder reloads the window onto the mirror,
-  // which tears the first run down, and the second run on that folder proves the stashed
-  // join landed with no command run at all.
+  // which tears the first run down; the landed state is read off disk, and a second
+  // window on a freshly stashed mirror proves the landing again with no command run.
   phase = 'empty window: joining with no folder';
   const emptyInvite = readFileSync(inviteFile, 'utf8');
   const emptyRoom = decodeURIComponent(/[?&]room=([^&]+)/.exec(emptyInvite)?.[1] ?? '');
@@ -781,6 +961,8 @@ async function main(): Promise<void> {
   }
   const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
   const emptyExtensions = resolve(RUN_DIR, 'empty-extensions');
+  const emptyStagedFile = resolve(RUN_DIR, 'empty-staged.txt');
+  const emptyStageErrorFile = resolve(RUN_DIR, 'empty-stage-error.txt');
   const emptyJoinRun = runInstance(
     'empty',
     vscodeExecutablePath,
@@ -790,6 +972,8 @@ async function main(): Promise<void> {
     {
       ...sharedEnv,
       SELVAGE_E2E_EMPTY_STAGE: 'join',
+      SELVAGE_E2E_STAGED_FILE: emptyStagedFile,
+      SELVAGE_E2E_STAGE_ERROR_FILE: emptyStageErrorFile,
       SELVAGE_E2E_EMPTY_INVITE: emptyInvite,
       SELVAGE_E2E_DISPLAY_NAME: 'Empty',
     },
@@ -806,32 +990,38 @@ async function main(): Promise<void> {
   if (!emptyReloaded) {
     throw new Error('orchestrator: the empty-window join resolved instead of reloading');
   }
-  const emptyMirror = await pollFor(
-    'the empty-window join to stash its invite',
-    () => stashedMirrorRoot(emptyUserData, emptyRoom, emptyInvite) ?? undefined,
+  if (!existsSync(emptyStagedFile)) {
+    const cause = existsSync(emptyStageErrorFile) ? readFileSync(emptyStageErrorFile, 'utf8') : '(no cause left)';
+    throw new Error(`orchestrator: the empty-window join tore down without staging the reload: ${cause}`);
+  }
+  const emptyStash = await pollFor(
+    'the empty-window join to stash its mirror',
+    () => stashedMirror(emptyUserData, emptyRoom) ?? undefined,
     DEADLINE_MS,
   );
-  log('the empty-window join stashed its invite at', emptyMirror);
-  // Let the reload land, then take down whatever of the first window is still alive: its
-  // triage would otherwise hang on a display-name question with nobody to answer it.
-  await delay(3000);
-  killEmptyEditors('empty-window reload leftovers');
+  log('the empty-window join stashed its mirror at', emptyStash.root);
+  if (emptyStash.displayName !== 'Empty') {
+    throw new Error('orchestrator: the stashed join carries no name to land with');
+  }
+  const emptyPublisher = emptyStash.publisher;
+  // Take the join run's leftovers down, then re-stash for the second window: leaving
+  // removed the directory with the session, so the reloaded window proves the same
+  // landing again from the fresh stash, in this same profile.
+  killEmptyEditors('empty-window join stashed; the reloaded window proves it again');
+  // The join's own stash goes first: triage finishes the first pending invite it
+  // finds, so a dead stash beside the fresh one would hijack the landing into a
+  // reload somewhere else. The reload it proved is already on record.
+  rmSync(emptyStash.root, { recursive: true, force: true });
+  const emptyRestash = mintStash(emptyUserData, emptyPublisher, emptyRoom, emptyStash.invite, 'Empty');
+  log('the reloaded window opens straight onto', emptyRestash);
 
   phase = 'empty window: proving the stashed join landed';
-  // The second window reuses the first window's profile: the mirror lives in that
-  // profile's storage, and only a window on that storage can triage it. The display
-  // name goes in as a setting, so the stashed join lands without a question.
-  mkdirSync(join(emptyUserData, 'User'), { recursive: true });
-  writeFileSync(
-    join(emptyUserData, 'User', 'settings.json'),
-    JSON.stringify({ 'selvage.displayName': 'Empty' }),
-  );
   const emptyDoneFile = resolve(RUN_DIR, 'empty-done.txt');
   const emptyResultFile = resolve(RUN_DIR, 'empty-result.json');
   const emptyReloadRun = runInstance(
     'empty',
     vscodeExecutablePath,
-    [emptyMirror],
+    [emptyRestash],
     emptyUserData,
     emptyExtensions,
     {
@@ -954,9 +1144,10 @@ async function main(): Promise<void> {
       heldBeforeGuest: hostOutcome?.granted?.heldBeforeGuest,
     },
     empty: {
-      // The empty-window join reloaded instead of resolving, the invite was stashed, and
-      // the window reopened on the mirror proved the stashed join landed — invite gone,
-      // listing filled, no second folder — with no command run at all.
+      // The empty-window join reloaded instead of resolving and landed in the
+      // reloaded window, and the window reopened on a freshly stashed mirror
+      // proved the landing again — invite gone, listing filled, no second
+      // folder — with no command run at all.
       converged:
         emptyOutcome.joined === true &&
         emptyOutcome.materialised === true &&
@@ -965,6 +1156,11 @@ async function main(): Promise<void> {
       joined: emptyOutcome.joined,
       materialised: emptyOutcome.materialised,
       singleFolder: emptyOutcome.singleFolder,
+    },
+    singleFolder: {
+      // The phases window is the mirror and nothing else: the join replaced the
+      // tree rather than adding a second root beside it.
+      converged: guestOutcome?.singleFolder === true,
     },
     watch: {
       // The host made a file under its own folder and removed another while the room was live,
@@ -1020,8 +1216,13 @@ async function main(): Promise<void> {
       'the empty-window join did not reload onto a mirror whose stashed join landed',
     );
   }
+  if (!summary.singleFolder.converged) {
+    throw new Error(
+      'the guest phases window holds more than the room mirror: the join added a second root instead of replacing the tree',
+    );
+  }
   log(
-    'PASSED: two real VS Code instances converged on the shared document, the guest tracked the host caret while following and held its position after stopping, a guest read a granted path the host never opened, the room\u2019s listing followed the host\u2019s folder, and an empty window joined by reloading onto the mirror' +
+    'PASSED: two real VS Code instances converged on the shared document, the guest joined by reloading its window onto the room mirror alone, the guest tracked the host caret while following and held its position after stopping, a guest read a granted path the host never opened, the room\u2019s listing followed the host\u2019s folder, and an empty window joined by reloading onto the mirror' +
       (RECONNECT ? ', and the guest re-converged after a simulated network blip' : ''),
   );
   phase = 'done';

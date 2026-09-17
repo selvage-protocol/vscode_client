@@ -212,16 +212,19 @@ test('the marker names the room and holds no invite once the join has landed', (
     window: 'w-invite',
     pid: 4242,
     invite,
+    displayName: 'Bob',
   });
   const stashed = readMarker(mirror.root);
   assert.equal(stashed?.room, 'r-invite');
   assert.equal(stashed?.window, 'w-invite');
   assert.equal(stashed?.pid, 4242);
-  assert.equal(stashed?.invite, invite, 'the empty-window join stashed no invite');
-  // Red with the invite left in place: the next activation joins the room again.
+  assert.equal(stashed?.invite, invite, 'the join stashed no invite to finish with');
+  assert.equal(stashed?.displayName, 'Bob', 'the join stashed no name to land with');
+  // Red with either left in place: the next activation joins the room again.
   mirror.clearInvite();
   const landed = readMarker(mirror.root);
   assert.equal(landed?.invite, undefined, 'the landed join kept its invite');
+  assert.equal(landed?.displayName, undefined, 'the landed join kept its name');
   assert.equal(landed?.room, 'r-invite');
   assert.equal(landed?.window, 'w-invite');
   assert.equal(landed?.pid, 4242);

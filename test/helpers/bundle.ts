@@ -43,6 +43,11 @@ export interface Registered {
    * refusal, so a test stages what the client does when the folder never lands.
    */
   updateFoldersReturn: boolean;
+  /**
+   * When set, `vscode.openFolder` rejects with this message: the reload a join
+   * stages never happens, so the test stages what the client says instead.
+   */
+  openFolderThrows: string | undefined;
   /** Every `tabGroups.close` call, as the tabs it was given, in order. */
   closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
@@ -201,6 +206,55 @@ export function mirrorWindowDir(storagePath: string, room: string): string {
   const entries = readdirSync(roomDir);
   assert.equal(entries.length, 1, `expected one window in ${roomDir}, found ${entries.length}`);
   return join(roomDir, entries[0] as string);
+}
+
+/**
+ * Lands the join a command stashed: the reload's half, as the stub can stage it.
+ *
+ * A join always reloads the window onto the mirror, which a stubbed editor cannot
+ * do — so the test asserts the staged reload first (`vscode.openFolder` on the
+ * fresh mirror, exactly once, with no folder added beside anything), then moves
+ * the window onto the mirror and reactivates, the way the empty-window e2e
+ * stage does for real. Returns the mirror root the window reopens on.
+ */
+export async function landStashedJoin(
+  bundle: LoadedExtension,
+  storagePath: string,
+  roomId: string,
+  displayName: string,
+  extraConfig: Record<string, unknown> = {},
+): Promise<string> {
+  const root = mirrorWindowDir(storagePath, roomId);
+  const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
+  assert.equal(reloads.length, 1, `expected one staged reload, found ${reloads.length}`);
+  const reload = reloads[0] as { args: unknown[] };
+  assert.equal(
+    String(reload.args[0]),
+    bundle.stub.Uri.file(root).toString(),
+    'the staged reload names no mirror folder of its own',
+  );
+  assert.deepEqual(reload.args[1], { forceReuseWindow: true });
+  assert.equal(
+    bundle.stub.registered.folderCalls.length,
+    0,
+    'the join added a folder beside the window instead of reloading it',
+  );
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.stub.configure({ displayName, ...extraConfig });
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storagePath),
+  });
+  await waitFor(
+    'the stashed join to land',
+    () =>
+      bundle.stub.registered.information.some((message) => message.includes('joined room'))
+        ? true
+        : false,
+  );
+  return root;
 }
 
 /** A `file:` URI string for a mirror path, as the adapter opens it. */
