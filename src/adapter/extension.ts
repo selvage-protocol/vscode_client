@@ -993,9 +993,12 @@ class Session {
    */
   async goTo(peerId: string): Promise<void> {
     // A deliberate navigation is the user's own act, the same class as typing: a follow
-    // would yank them back a moment later, so going somewhere stops following first.
+    // would yank them back a moment later, so going somewhere stops following first, and
+    // says so — the stop is a side effect the user did not ask for.
     if (this.followingPeerId !== undefined) {
+      const name = this.followingName;
       this.clearFollow();
+      void vscode.window.showInformationMessage(`Selvage: Stopped following ${name}.`);
     }
     this.pendingGoTo = peerId;
     await this.retryGoTo();
@@ -1442,7 +1445,12 @@ class Session {
     if (matchesReplica(document.getText(), this.engine.text(path))) {
       return;
     }
+    // Typing ends a follow the user did not ask to end, so it says so, in the twin's
+    // sentence: the indicator going down alone does not carry the news to eyes on the
+    // document. An asked-for stop stays silent.
+    const name = this.followingName;
     this.clearFollow();
+    void vscode.window.showInformationMessage(`Selvage: Stopped following ${name}.`);
   }
 
   /**
