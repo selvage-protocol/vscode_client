@@ -101,8 +101,10 @@ Then, in the two windows:
 6. `Selvage: Leave the session` on either side. Closing window one — the host — ends the room
    after the server's grace period, and window two is told.
 
-Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. There is
-**no default server**: a baked-in endpoint would be one someone else chose.
+Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. The server is
+resolved in this order: an explicit address given to the command, then the `selvage.serverUrl`
+setting, then the last server used — and with none of those, the question starts from the demo
+server `ws://100.64.0.3:8080`, a prefill, not a commitment.
 
 ## Commands
 
@@ -509,7 +511,8 @@ A sidecar or second process, and create/rename/delete on the wire (`PROTOCOL.md`
 read-only guests (`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond a granted
 path a peer asked for, multi-room windows, and publication (`vsce package`, a Marketplace
 publisher). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is not
-y-websocket's), `terminal/1`, and any default server address.
+y-websocket's), `terminal/1`, and any server address used without asking — the host question
+prefills the demo server, and nothing dials one silently.
 
 ## Licence
 
