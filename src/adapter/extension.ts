@@ -9,8 +9,8 @@
 
 import * as vscode from 'vscode';
 
-import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, peerColour } from '../bridge/index.ts';
-import type { Report } from '../bridge/index.ts';
+import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
+import type { FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
   code as errCode,
@@ -23,6 +23,14 @@ import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
 import type { Mirror } from './mirror.ts';
+import {
+  ParticipantsProvider,
+  PeerFileDecorations,
+  resolveViewRows,
+  swatch,
+} from './participants.ts';
+
+export { resolveViewRows };
 import {
   MIRROR_MARKER,
   mintMirror,
@@ -159,6 +167,14 @@ export function activate(context: vscode.ExtensionContext): void {
       stopFollowing();
     }),
   );
+  participantsView = new ParticipantsProvider();
+  peerBadges = new PeerFileDecorations();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('selvage.participants', participantsView),
+    vscode.window.registerFileDecorationProvider(peerBadges),
+  );
+  participantsSource = () => current?.participantsSnapshot();
+  refreshParticipants();
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
   // detached, because a pending invite finishes by joining and joining is async.
   if (storageUri !== undefined) {
@@ -169,6 +185,9 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   void current?.dispose();
   current = undefined;
+  participantsSource = () => undefined;
+  participantsView = undefined;
+  peerBadges = undefined;
 }
 
 /**
@@ -369,6 +388,7 @@ class Session {
         case 'documentsChanged':
           void this.followTick();
           void this.retryGoTo();
+          refreshParticipants();
           break;
         default:
           break;
@@ -927,6 +947,61 @@ class Session {
   }
 
   /**
+   * What the Participants view reads: membership with presence paths, file URIs for the
+   * badges, and the followed peer. Presence arrives between membership and caret, so a
+   * path here is the peer's latest word — exactly what the rows and badges show.
+   */
+  participantsSnapshot(): ParticipantsSnapshot {
+    return {
+      entries: this.participants().map((peer) => ({
+        peerId: peer.peerId,
+        displayName: peer.displayName,
+        role: peer.role,
+        path: peer.path,
+      })),
+      fileUriOf: (path) => this.roomFileUri(path)?.toString(),
+      followingPeerId: this.followingPeerId,
+    };
+  }
+
+  /**
+   * The file a room path lives at, for the badges: a guest's mirror file, or a host's
+   * own file under the folders captured at invite time. Synchronous and unchecked
+   * against the file system — a badge on a URI nothing holds is simply never
+   * seen — but never untrusted: a peer names the path, so the grant's shape rule
+   * gates it first, the way `mirrorUri` gates the opens. Without that, `..` in a
+   * presence path would badge a real file outside the room.
+   */
+  private roomFileUri(path: string): vscode.Uri | undefined {
+    if (!isGrantedPath(path)) {
+      return undefined;
+    }
+    try {
+      if (this.mirror !== undefined) {
+        return this.mirrorUri(path);
+      }
+      if (this.folders.length === 1) {
+        const folder = this.folders[0];
+        if (folder === undefined) {
+          return undefined;
+        }
+        return vscode.Uri.joinPath(folder.uri, ...path.split('/'));
+      }
+      const slash = path.indexOf('/');
+      if (slash === -1) {
+        return undefined;
+      }
+      const folder = this.folders.find((candidate) => candidate.name === path.slice(0, slash));
+      if (folder === undefined) {
+        return undefined;
+      }
+      return vscode.Uri.joinPath(folder.uri, ...path.slice(slash + 1).split('/'));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * The palette's choice of participant: the programmatic id when it names someone in the
    * room, else the rows the list already uses, with a name shared by two peers disambiguated
    * by the shortest peer-id prefix that tells them apart. An unknown id falls through to
@@ -1050,6 +1125,7 @@ class Session {
     this.followingName = this.displayLabel(peerId);
     this.pendingGoTo = undefined;
     this.showFollowStatus();
+    refreshParticipants();
     await this.followTick();
   }
 
@@ -1231,6 +1307,7 @@ class Session {
     this.followingPeerId = undefined;
     this.followStatus?.dispose();
     this.followStatus = undefined;
+    refreshParticipants();
   }
 
   private showFollowStatus(): void {
@@ -1326,6 +1403,7 @@ class Session {
     if (current === this) {
       current = undefined;
     }
+    refreshParticipants();
   }
 
   /** Whether a document of this window still holds `path`: what keeps a removed file. */
@@ -1532,6 +1610,7 @@ class Session {
       case 'peers': {
         this.peers = report.peers;
         this.refreshStatus();
+        refreshParticipants();
         // The follow target is a peer id, so a rename only re-labels the indicator while a
         // departure ends the follow: the peer is gone from membership and its awareness state
         // with it, so there is nothing left to land on.
@@ -1736,6 +1815,9 @@ async function host(
     return;
   }
   current = new Session(engine);
+  // The seat's own reports predate the session's listener, and an empty room sends no
+  // later ones — without this the view keeps whatever the window showed before.
+  refreshParticipants();
   const invite = pageInviteFor(engine);
   if (invite === undefined) {
     return;
@@ -1904,6 +1986,8 @@ async function joinGuestRoom(options: {
     return;
   }
   current = new Session(engine, { mirror: live });
+  // As above: the seat's reports predate the listener, so the view is told directly.
+  refreshParticipants();
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
@@ -2431,20 +2515,63 @@ async function acceptDisplayName(raw: string): Promise<void> {
   void vscode.window.showInformationMessage(`Selvage: display name set to "${name}".`);
 }
 
+/** What the view reads: the session, or `undefined` outside one. Set at activation. */
+let participantsView: ParticipantsProvider | undefined;
+let peerBadges: PeerFileDecorations | undefined;
+let participantsSource: () => ParticipantsSnapshot | undefined = () => undefined;
+
 /**
- * A peer's caret colour as a dot, for the list.
- *
- * The colour is `peerColour`'s — the very value the caret bar, the selection fill, the
- * overview-ruler tick and the caret's hover are built from, so the key cannot disagree with
- * the thing it explains. A data-URI SVG is the only shape `QuickPickItem.iconPath` carries a
- * colour in; nothing in this suite can see the dot, only the URI.
+ * What the live session offers the view: membership with presence paths, file URIs for
+ * the badges, and the followed peer. A plain value, so the view never reaches into
+ * the session — and a test can read the same shape without one.
  */
-function swatch(colour: string): vscode.Uri {
-  const svg =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">' +
-    `<circle cx="6" cy="6" r="6" fill="${colour}"/></svg>`;
-  return vscode.Uri.parse(`data:image/svg+xml,${encodeURIComponent(svg)}`);
+interface ParticipantsSnapshot {
+  entries: ParticipantEntry[];
+  fileUriOf(path: string): string | undefined;
+  followingPeerId: string | undefined;
 }
+
+/**
+ * Pushes the live session's membership + presence into the view and the file badges.
+ * Sessions call this on every event that can move a row or a badge — the peers report,
+ * presence, and teardown — and the holders below diff, so unchanged rows stand still.
+ */
+function refreshParticipants(): void {
+  const view = participantsView;
+  const badges = peerBadges;
+  if (view === undefined || badges === undefined) {
+    return;
+  }
+  const snapshot = participantsSource();
+  if (snapshot === undefined) {
+    view.refresh(resolveViewRows(viewRows(undefined)));
+    badges.refresh([]);
+    return;
+  }
+  view.refresh(
+    resolveViewRows(
+      viewRows({ entries: snapshot.entries, followingPeerId: snapshot.followingPeerId }),
+    ),
+  );
+  const byUri = new Map<string, string[]>();
+  for (const entry of snapshot.entries) {
+    if (entry.path === undefined) {
+      continue;
+    }
+    const uri = snapshot.fileUriOf(entry.path);
+    if (uri === undefined) {
+      continue;
+    }
+    const names = byUri.get(uri) ?? [];
+    names.push(participantLabel(entry, snapshot.entries));
+    byUri.set(uri, names);
+  }
+  const files: FilePresence[] = [...byUri].map(([uri, names]) => ({ uri, names }));
+  badges.refresh(files);
+}
+
+/**
+ * Lists the room's other participants: each one's colour, name, role and document.
 
 /**
  * Lists the room's other participants: each one's colour, name, role and document.
@@ -2528,41 +2655,6 @@ function stopFollowing(): void {
     return;
   }
   session.stopFollowing();
-}
-
-/**
- * The name a row says: the display name, or the id when the room left the name blank — the
- * rule the caret's own label follows (`cursors.ts`).
- */
-function peerName(displayName: string, peerId: string): string {
-  return displayName === '' ? peerId : displayName;
-}
-
-/**
- * A picker's row label, disambiguated only when it must: one `Ada` reads `Ada`, two read
- * `Ada (p-3d334f)` and `Ada (p-a91c02)`, where the fragment is the shortest prefix of the
- * peer id unique among the peers sharing that name. The prefix is a label only — the row
- * carries the full id, which is what the command lands on.
- */
-function participantLabel(participant: Participant, all: Participant[]): string {
-  const name = peerName(participant.displayName, participant.peerId);
-  if (participant.displayName === '') {
-    return name;
-  }
-  const shared = all.filter(
-    (other) => other.peerId !== participant.peerId && other.displayName === participant.displayName,
-  );
-  if (shared.length === 0) {
-    return name;
-  }
-  const ids = new Set([participant.peerId, ...shared.map((other) => other.peerId)]);
-  for (let length = 1; length <= participant.peerId.length; length += 1) {
-    const prefix = participant.peerId.slice(0, length);
-    if ([...ids].every((id) => id === participant.peerId || !id.startsWith(prefix))) {
-      return `${name} (${prefix})`;
-    }
-  }
-  return `${name} (${participant.peerId})`;
 }
 
 /**

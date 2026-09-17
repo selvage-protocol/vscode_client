@@ -119,6 +119,7 @@ const SENTENCES = [
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
+  "`Selvage: you're the only one here — copy the invite link.`",
   // Going to a participant, and following one. Start and an asked-for stop live in the
   // status item: the indicator going up and down is the whole announcement, so there is
   // no toast for those. A stop the user did not ask for — a local edit, a go-to — says so.

@@ -76,6 +76,10 @@ const registered = {
   closedTabs: [],
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
   listings: 0,
+  /** Every `registerTreeDataProvider` call, as `{ viewId, provider }`, in order. */
+  treeDataProviders: [],
+  /** Every `registerFileDecorationProvider` call, in order. */
+  fileDecorationProviders: [],
   /**
    * Holds a directory read, as `(path, index) => Promise`: the read is answered when the promise
    * resolves. A real walk is slow in a large tree and faster in a small one, so a test that needs
@@ -357,6 +361,8 @@ function reset() {
   registered.watchers.length = 0;
   registered.watcherFailure = undefined;
   watcherBudget = 0;
+  registered.treeDataProviders.length = 0;
+  registered.fileDecorationProviders.length = 0;
   registered.listings = 0;
   registered.readHold = undefined;
   folders.length = 0;
@@ -752,6 +758,16 @@ module.exports = {
     activeTextEditor: undefined,
     visibleTextEditors: [],
     tabGroups,
+    /** Records the view; a test reads its rows back through the provider it kept. */
+    registerTreeDataProvider(viewId, provider) {
+      registered.treeDataProviders.push({ viewId, provider });
+      return disposable();
+    },
+    /** Records the badge provider; a test asks it what a file wears. */
+    registerFileDecorationProvider(provider) {
+      registered.fileDecorationProviders.push(provider);
+      return disposable();
+    },
     createStatusBarItem: () => {
       const item = {
         text: '',
