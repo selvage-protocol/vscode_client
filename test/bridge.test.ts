@@ -907,10 +907,6 @@ test('the bridge exports the vocabulary an adapter is written against', async ()
     'peerColour',
     'translucent',
     'cursorFor',
-    'virtualUri',
-    'virtualDocument',
-    'roomFromQuery',
-    'SCHEME',
   ]) {
     assert.ok(name in bridge, `the bridge's public surface has no ${name}`);
   }

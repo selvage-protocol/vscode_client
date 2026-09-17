@@ -28,11 +28,7 @@ export {
   MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATHS,
   MAX_GRANT_PATH_BYTES,
-  grantChildren,
   grantUnion,
   isGrantedPath,
   sortGrant,
 } from './grant.ts';
-export type { GrantChild } from './grant.ts';
-export { SCHEME, roomFromQuery, virtualDocument, virtualUri } from './virtual.ts';
-export type { VirtualDocument } from './virtual.ts';
