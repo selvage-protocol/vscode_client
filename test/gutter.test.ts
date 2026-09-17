@@ -213,13 +213,14 @@ async function seat(
  * editor reports it open, then visible. Returns the editor so a test can look at what was
  * drawn on it.
  */
-function installEditor(
+async function installEditor(
   bundle: LoadedExtension,
   storage: string,
   roomId: string,
   path: string,
   text: string,
-): StubEditor {
+  host: { documents(): string[] },
+): Promise<StubEditor> {
   const root = mirrorWindowDir(storage, roomId);
   const document: StubDocument = {
     uri: bundle.stub.Uri.parse(`file://${root}/${path}`),
@@ -242,6 +243,12 @@ function installEditor(
   };
   bundle.stub.fire('openTextDocument', document);
   (bundle.stub.window.visibleTextEditors as StubEditor[]).push(editor);
+  // The open reports the document, which is what holds it in the room. The badge the
+  // tests wait for is drawn off presence, so the hold settling first is what keeps a
+  // single first frame from racing the room it names.
+  await waitFor(`the room to hold ${path} open`, () =>
+    host.documents().includes(path) ? true : false,
+  );
   return editor;
 }
 
@@ -259,7 +266,7 @@ test('the badge is a base64 SVG in the glyph margin, applied at the caret line',
   // Published after the guest is seated: awareness reaches later arrivals only as it changes.
   // Offset 6 is the empty line after "hello\n", so the badge line is not always 0.
   host.setSelection(PATH, { anchor: 6, head: 6 });
-  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
+  const editor = await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
 
   const badge = await waitFor('the gutter badge to be drawn', () => {
     bundle.stub.fire('visibleEditors');
@@ -323,7 +330,7 @@ test('a peer that renames itself re-labels its caret and its badge', async (t) =
   host.insert(PATH, 0, 'hello\n');
   const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
+  const editor = await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
 
   // The host's caret is drawn under its first name, its hover and its badge alike.
   await waitFor('the caret to be drawn', () => {
@@ -355,7 +362,7 @@ test('a peer-controlled label renders as plain text, never as a link', async (t)
   host.insert(PATH, 0, 'hello\n');
   const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  const editor = installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
+  const editor = await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
 
   await host.rename('[Open](https://attacker.example)');
   const relabelled = await waitFor('the hostile label to be drawn', () => {
@@ -375,7 +382,7 @@ test('a rename loop retains only a bounded number of badge types', async (t) => 
   host.insert(PATH, 0, 'hello\n');
   const { bundle, storage } = await seat(t, invite);
   host.setSelection(PATH, { anchor: 0, head: 0 });
-  installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n');
+  await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
   bundle.stub.fire('visibleEditors');
 
   for (let index = 0; index < 50; index += 1) {

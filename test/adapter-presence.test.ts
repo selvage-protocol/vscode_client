@@ -94,6 +94,12 @@ async function seat(t: TestContext): Promise<Adapter> {
   };
   bundle.stub.fire('openTextDocument', document);
   bundle.stub.window.activeTextEditor = editor;
+  // The open reports the document, which is what holds it in the room: the host seeing
+  // the hold is the room settled around this window, so the single moves below are drawn
+  // rather than raced.
+  await waitFor(`the room to hold ${PATH} open`, () =>
+    host.documents().includes(PATH) ? true : false,
+  );
   // Counted from here: seating published its own presence before the room had a caret in it.
   tap.reset();
 
