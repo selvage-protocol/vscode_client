@@ -106,6 +106,8 @@ resolved in this order: an explicit address given to the command, then the `selv
 setting, then the last server used — and with none of those, the question starts from the demo
 server `ws://100.64.0.3:8080`, a prefill, not a commitment. CopyInvite links to the page named by
 `selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
+the setting must name an https origin, and anything else falls back to the default, so a copied
+link never carries the room's token over cleartext.
 
 ## Commands
 
@@ -465,7 +467,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
-| `test/https-invite.test.ts` | the invite is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, and the `selvage.webOrigin` override |
+| `test/https-invite.test.ts` | the invite is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page |
 | `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after an empty join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, a join with no folder reloading onto the mirror, leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |

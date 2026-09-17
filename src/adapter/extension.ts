@@ -2084,14 +2084,24 @@ export function parsePageLink(text: string): { room: string; token: string; serv
 }
 
 /**
- * The page CopyInvite links to: the `selvage.webOrigin` setting when one is set,
- * else the Pi page default (`DEFAULT_WEB_ORIGIN`). A trailing slash is not a
- * second page, so it is stripped before the link is built.
+ * The page CopyInvite links to: the `selvage.webOrigin` setting when it names an
+ * absolute `https:` origin, else the Pi page default (`DEFAULT_WEB_ORIGIN`). A
+ * non-HTTPS or unparsable value falls back rather than minting a cleartext link
+ * carrying the room's token. A trailing slash is not a second page, so it is
+ * stripped before the link is built.
  */
 function webOrigin(): string {
   const configured = config().get<string>('webOrigin', '').trim();
-  const origin = configured === '' ? DEFAULT_WEB_ORIGIN : configured;
-  return origin.replace(/\/+$/, '');
+  if (configured !== '') {
+    try {
+      if (new URL(configured).protocol === 'https:') {
+        return configured.replace(/\/+$/, '');
+      }
+    } catch {
+      // Not an absolute URL at all: the default below stands.
+    }
+  }
+  return DEFAULT_WEB_ORIGIN;
 }
 
 /**

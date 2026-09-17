@@ -229,3 +229,19 @@ test('the webOrigin setting moves the copied link', async (t) => {
     `the setting did not move the link: ${link}`,
   );
 });
+
+test('a non-https webOrigin falls back to the default page', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  for (const configured of ['http://custom.example:9443/', 'not a url']) {
+    const fresh = freshActivated(t);
+    fresh.bundle.stub.configure({ webOrigin: configured });
+    const { link } = await copiedInvite(fresh.bundle, server);
+    assert.ok(
+      link.startsWith(`${DEFAULT_ORIGIN}/?room=`),
+      `${configured} minted a link off the default page: ${link}`,
+    );
+  }
+});

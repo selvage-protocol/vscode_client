@@ -101,7 +101,7 @@
         },
         "selvage.webOrigin": {
           "type": "string",
-          "description": "The page CopyInvite links to, as an https origin. When unset, the invite links to the Pi page default."
+          "description": "The page CopyInvite links to, as an https origin. Anything else — including plain http — falls back to the Pi page default, so a copied link never carries the room's token over cleartext."
         },
         "selvage.displayName": {
           "type": "string",
