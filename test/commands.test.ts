@@ -1972,6 +1972,8 @@ test('opening a file the room does not list says so once and shares nothing', as
   // open-document set is the witness, and a listed open beside it is the control.
   const holder = { text: '' };
   const unlisted = mirrorDocument(bundle, storage, roomId, 'notes/scratch.md', holder);
+  // The editor holds the document open, which is what a later listing rejoins.
+  bundle.stub.registered.textDocuments.push(unlisted);
   bundle.stub.fire('openTextDocument', unlisted);
   bundle.stub.fire('openTextDocument', unlisted);
   const said = await waitFor('the unlisted open to be reported', () =>
@@ -1997,6 +1999,19 @@ test('opening a file the room does not list says so once and shares nothing', as
     host.documents().includes('notes/scratch.md'),
     false,
     'an unlisted file reached the room',
+  );
+
+  // The listing naming it later joins it: the open the room skipped is not announced
+  // twice, and the hold it takes is what shares it from here on.
+  await host.grant(['a.md', 'notes/scratch.md']);
+  await waitFor('the listed file to join the room', () =>
+    host.documents().includes('notes/scratch.md') ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.filter((message) => message.includes('is not in the room'))
+      .length,
+    1,
+    'joining the room repeated the sentence',
   );
 });
 

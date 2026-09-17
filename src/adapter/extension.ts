@@ -468,7 +468,10 @@ class Session {
         label: 'Fetch the whole listing',
         description: `${listed.length} files`,
       };
-      const picked = await vscode.window.showQuickPick([whole, ...listed], {
+      // Mixed rows: the whole-listing row is an object, paths are strings, told apart by
+      // shape at runtime. The overloads take one or the other, never the union, so the
+      // call carries the union under a cast rather than a lie about what is offered.
+      const picked = await vscode.window.showQuickPick([whole, ...listed] as unknown as string[], {
         title: 'Fetch a path from the room',
         placeHolder: `${listed.length} listed in this room`,
       });
@@ -1423,6 +1426,17 @@ class Session {
           this.seenListed.add(path);
         }
         this.applyListing(report.paths);
+        // A document opened while the listing did not name it joins the room now that
+        // it does: the open skipped it, and no second open announces it. Documents
+        // already shared, unshared schemes and still-unlisted paths are untouched —
+        // `open` decides each one the way the first open did.
+        if (this.mirror !== undefined) {
+          for (const document of vscode.workspace.textDocuments) {
+            if (this.editor.pathOf(document) === undefined) {
+              this.open(document);
+            }
+          }
+        }
         break;
       }
       case 'peers': {

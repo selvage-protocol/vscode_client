@@ -52,6 +52,8 @@ export interface Registered {
    * so a test can have two republish walks overlap: a walk in a large tree outlasts a later one.
    */
   readHold: ((path: string, index: number) => Promise<unknown> | undefined) | undefined;
+  /** The window's open documents, as a test seeded them before the session started. */
+  textDocuments: unknown[];
 }
 
 /** The stub module itself, for a test that needs to run a command or read what it recorded. */
