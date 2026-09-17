@@ -121,6 +121,35 @@ test('opening an oversize file shares nothing, however the bytes count', async (
   assert.equal(session.host.text('full.log').length, MAX_GRANT_FILE_BYTES);
 });
 
+test('typing a document past the size bound refuses the edit and publishes nothing', async (t) => {
+  const { session, host } = await twoWindows(t);
+  const path = 'notes.txt';
+  const base = `${'a'.repeat(MAX_GRANT_FILE_BYTES - 64)}\n`;
+  host.editor.open(path, base);
+  host.bridge.documentOpened(path);
+  await waitFor('the seed to reach the replica', () => session.host.text(path) === base);
+
+  // Opened under the bound, typed past it: the keystroke is refused, not published.
+  host.editor.type(path, `${base}${'b'.repeat(128)}`);
+  await host.editor.settle();
+  const refusal = await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError').length === 1
+      ? host.editor.reportsOf('sessionError')[0]
+      : false,
+  );
+  assert.match(refusal.message, /will not share notes\.txt with the room/);
+  assert.match(refusal.message, new RegExp(`over the ${MAX_GRANT_FILE_BYTES} bytes`));
+  assert.match(refusal.message, /nothing was shared for it/);
+  assert.equal(session.host.text(path), base, 'the over-bound edit reached the replica');
+  assert.equal(session.guest.text(path), base, 'the over-bound edit reached the guest');
+
+  // Refused once per path: further keystrokes stay out without another dialog.
+  host.editor.type(path, `${base}${'c'.repeat(128)}`);
+  await host.editor.settle();
+  assert.equal(host.editor.reportsOf('sessionError').length, 1, 'the refusal nagged again');
+  assert.equal(session.host.text(path), base);
+});
+
 test('opening a path the grant could never carry shares nothing', async (t) => {
   const { session, host } = await twoWindows(t);
 

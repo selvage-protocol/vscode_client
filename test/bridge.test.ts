@@ -473,6 +473,13 @@ test('a refused doc.open is reported, and leaves no hold to release', async (t) 
   const refusal = host.editor.reportsOf('sessionError')[0];
   assert.equal(refusal?.code, 'bad_params');
   assert.match(refusal?.message ?? '', /refused to open src\/main\.rs/);
+  assert.deepEqual(host.bridge.openDocuments(), [], 'a refused path stayed in documents');
+
+  // A refused open must not resurrect through keystrokes: the seed already in the replica
+  // is what the open carried, and whatever is typed afterwards must not publish.
+  host.editor.type(PATH, `${FILE}more\n`);
+  await host.editor.settle();
+  assert.equal(session.host.text(PATH), FILE, 'a later edit published a refused path');
 
   host.editor.close(PATH);
   host.bridge.documentClosed(PATH);

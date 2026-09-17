@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SessionBridge, grantUnion, matchesReplica, peerColour } from '../bridge/index.ts';
+import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, peerColour } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
@@ -999,9 +999,17 @@ class Session {
   /**
    * The mirror file a room path lives at, or `undefined` outside a guest's mirror: the
    * one address a guest's document has, whether the editor opens it or a tool reads it.
+   *
+   * A path a peer names — follow, go-to, the open command — is untrusted input: presence
+   * carries any string, so the grant's shape rule gates it here, at the narrow waist every
+   * guest open passes through, rather than at each caller. The marker is refused with it:
+   * it names the mirror's own bookkeeping, never a room document.
    */
   mirrorUri(path: string): vscode.Uri | undefined {
     if (this.mirror === undefined) {
+      return undefined;
+    }
+    if (!isGrantedPath(path) || path === MIRROR_MARKER) {
       return undefined;
     }
     return vscode.Uri.joinPath(this.mirror.uri, ...path.split('/'));
@@ -1019,9 +1027,14 @@ class Session {
     }
     try {
       if (this.role() === 'guest') {
+        // The path may have come from a peer's presence, so a refusal here reads as the
+        // grant's answer rather than a missing mirror: `mirrorUri` already applied it.
+        if (this.mirror === undefined) {
+          throw new Error('this window has no mirror for the room');
+        }
         const uri = this.mirrorUri(path);
         if (uri === undefined) {
-          throw new Error('this window has no mirror for the room');
+          throw new Error('the path is not one this window shares');
         }
         return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
       }
@@ -2094,7 +2107,7 @@ async function openRoomDocument(session: Session, path: string): Promise<void> {
   try {
     const uri = session.mirrorUri(path);
     if (uri === undefined) {
-      throw new Error('this window has no mirror for the room');
+      throw new Error('the path is not one this window shares');
     }
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
   } catch (error) {

@@ -319,9 +319,12 @@ export class SessionBridge {
     // editor reports is in the buffer's coordinates, and mapping it onto the replica's would
     // need the EOL offset table — a class of its own in the extension the study read. Two
     // string scans per change event buy the whole policy being four lines long.
-    this.publish(path, text, replica);
     this.moveSave(path);
-    this.scheduleBackstop(path);
+    // A refused publish leaves the buffer alone: the backstop converges the buffer to the
+    // replica, which is exactly what must not happen to text the room refused to carry.
+    if (this.publish(path, text, replica)) {
+      this.scheduleBackstop(path);
+    }
   }
 
   /** The editor closed a document: this client stops holding it open in the room. */
@@ -636,9 +639,16 @@ export class SessionBridge {
         }
       })
       .catch((error: unknown) => {
-        // A refused hold leaves nothing that will ever open this document, so a deferred entry
-        // goes with the report rather than sitting there for the rest of the session.
+        // A refused hold leaves nothing that will ever open this document, so the bridge
+        // entry goes with the report rather than sitting there for the rest of the session:
+        // `documents` still holding the path would let a later keystroke publish through
+        // the whole-replica sync what the server refused to open.
         this.unarrived.delete(path);
+        this.documents.delete(path);
+        this.cancelSave(path);
+        this.cancelBackstop(path);
+        this.pending.delete(path);
+        this.attempts.delete(path);
         this.refused('open', path, error);
       });
   }
@@ -660,8 +670,27 @@ export class SessionBridge {
     });
   }
 
-  /** Writes the buffer's difference from the replica into the replica. */
-  private publish(path: string, bufferText: string, replica: string): void {
+  /**
+   * Writes the buffer's difference from the replica into the replica. A buffer that grew
+   * past what the session carries — opened under the bound, typed past it — is refused
+   * rather than published: the seed gate judges the buffer at open, and this is the same
+   * gate on the buffer at every keystroke. Reported once per path, like a seed refusal.
+   * True when the difference was published: a refusal leaves the buffer alone, the way a
+   * refused seed does, rather than scheduling the convergence that would wipe it.
+   */
+  private publish(path: string, bufferText: string, replica: string): boolean {
+    const refusal = seedRefusal(path, bufferText);
+    if (refusal !== undefined) {
+      if (!this.refusedSeeds.has(path)) {
+        this.refusedSeeds.add(path);
+        this.host.report({
+          kind: 'sessionError',
+          code: 'error',
+          message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
+        });
+      }
+      return false;
+    }
     const change = diff(replica, toCrdt(bufferText));
     if (change.end > change.start) {
       this.engine.delete(path, change.start, change.end - change.start);
@@ -669,6 +698,7 @@ export class SessionBridge {
     if (change.text !== '') {
       this.engine.insert(path, change.start, change.text);
     }
+    return true;
   }
 
   /**
