@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
+import { sessionUrl } from '../src/engine/urls.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -827,12 +828,18 @@ test('a host jumps to a peer through its own working copy', async (t) => {
     () => {
       void bundle.stub.commands.executeCommand('selvage.copyInvite');
       const text = bundle.stub.registered.clipboard;
-      return text.startsWith('ws://') ? text : false;
+      return text.startsWith('https://') ? text : false;
     },
     { describe: () => bundle.stub.registered.clipboard },
   );
+  const page = new URL(invite);
+  const wire = sessionUrl(
+    page.searchParams.get('server') ?? server.wsBase,
+    page.searchParams.get('room') ?? '',
+    page.searchParams.get('token') ?? '',
+  );
   const guest = await SelvageEngine.join(
-    invite,
+    wire,
     'Cara',
     options({ baseUrl: server.wsBase, displayName: 'Cara', reconnect: false }),
   );
@@ -1158,12 +1165,18 @@ test('a host jump to a path it does not share is refused without opening', async
     () => {
       void bundle.stub.commands.executeCommand('selvage.copyInvite');
       const text = bundle.stub.registered.clipboard;
-      return text.startsWith('ws://') ? text : false;
+      return text.startsWith('https://') ? text : false;
     },
     { describe: () => bundle.stub.registered.clipboard },
   );
+  const page = new URL(invite);
+  const wire = sessionUrl(
+    page.searchParams.get('server') ?? server.wsBase,
+    page.searchParams.get('room') ?? '',
+    page.searchParams.get('token') ?? '',
+  );
   const guest = await SelvageEngine.join(
-    invite,
+    wire,
     'Cara',
     options({ baseUrl: server.wsBase, displayName: 'Cara', reconnect: false }),
   );

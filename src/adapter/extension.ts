@@ -16,6 +16,7 @@ import {
   code as errCode,
   isProtocolError,
   parseSessionUrl,
+  sessionUrl,
 } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
@@ -109,6 +110,14 @@ const LAST_SERVER_KEY = 'selvage.lastServer';
  * so moving the demo is this one line.
  */
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
+
+/**
+ * The page CopyInvite links to when nothing is configured: the Pi page served
+ * next to the demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable default,
+ * never a commitment — the `selvage.webOrigin` setting always wins —
+ * so moving the page is this one line.
+ */
+const DEFAULT_WEB_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8443';
 
 export function activate(context: vscode.ExtensionContext): void {
   // A window the user typed a server into leaves it behind for the next one. The in-memory
@@ -400,7 +409,7 @@ class Session {
 
   /** The invite link, for the connection that minted the room and no other. */
   invite(): string | undefined {
-    return this.engine.inviteUrl();
+    return pageInviteFor(this.engine);
   }
 
   /** The room's open-document set, as the server owns it. */
@@ -1727,7 +1736,7 @@ async function host(
     return;
   }
   current = new Session(engine);
-  const invite = engine.inviteUrl();
+  const invite = pageInviteFor(engine);
   if (invite === undefined) {
     return;
   }
@@ -1763,7 +1772,7 @@ async function join(args?: JoinArgs): Promise<void> {
   }
   let invite: string | undefined;
   if (args?.invite !== undefined) {
-    invite = args.invite;
+    invite = resolveInviteToWire(args.invite);
   } else {
     // The clipboard is not read here: prefilling the box with it would lift whatever the
     // user last copied — a password, a token — into a field a shoulder-surfer can read,
@@ -1771,7 +1780,7 @@ async function join(args?: JoinArgs): Promise<void> {
     invite = await vscode.window.showInputBox({
       title: 'Join a Selvage session',
       prompt: 'Paste the invite link the host sent you.',
-      placeHolder: 'ws://host:8080/session?room=…&token=…',
+      placeHolder: 'https://page/?room=…&token=…',
       value: '',
       ignoreFocusOut: true,
       validateInput: (value) => inviteLinkRefusal(value),
@@ -1784,7 +1793,7 @@ async function join(args?: JoinArgs): Promise<void> {
   if (displayName === undefined) {
     return;
   }
-  await joinGuestRoom({ invite, displayName });
+  await joinGuestRoom({ invite: resolveInviteToWire(invite), displayName });
 }
 
 /**
@@ -1993,6 +2002,9 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
  */
 function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
+  if (parsePageLink(invite) !== undefined) {
+    return undefined;
+  }
   // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
   // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
   // pass this box and fail later inside the engine.
@@ -2020,7 +2032,112 @@ function inviteLinkRefusal(value: string): string | undefined {
 
 /** What a good invite link looks like, for the join box refusal. */
 function inviteLinkHint(): string {
-  return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like ws://host:8080/session?room=…&token=….';
+  return 'That does not look like a Selvage invite link. Paste the whole link the host sent you — it looks like https://page/?room=…&token=…. A ws://host:8080/session?room=…&token=… link still joins.';
+}
+
+/**
+ * The guest link for a room: the page URL carrying room and token, with `server`
+ * only when the room lives off the page default — the shape the page itself
+ * offers and reads back (`web_client/BROWSER_NOTES.md`, `src/browser/share.ts`).
+ * Pure so tests pin it without an editor: `origin` is the page, `server` the room's.
+ */
+export function buildPageLink(
+  origin: string,
+  room: string,
+  token: string,
+  server: string,
+  defaultServer: string,
+): string {
+  let link =
+    `${origin}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
+  if (server !== defaultServer) {
+    link += `&server=${encodeURIComponent(server)}`;
+  }
+  return link;
+}
+
+/**
+ * Reads a pasted page link back into the room, its token, and any server — the
+ * page's own parsing, mirrored so a copied link joins the same way it loads.
+ * Pure so tests pin it without an editor.
+ */
+export function parsePageLink(text: string): { room: string; token: string; server?: string } | undefined {
+  let url: URL;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return undefined;
+  }
+  const room = url.searchParams.get('room');
+  const token = url.searchParams.get('token');
+  if (room === null || room === '' || token === null || token === '') {
+    return undefined;
+  }
+  const server = url.searchParams.get('server');
+  if (server === null || server === '') {
+    return { room, token };
+  }
+  return { room, token, server };
+}
+
+/**
+ * The page CopyInvite links to: the `selvage.webOrigin` setting when it names an
+ * absolute `https:` origin, else the Pi page default (`DEFAULT_WEB_ORIGIN`). A
+ * non-HTTPS or unparsable value falls back rather than minting a cleartext link
+ * carrying the room's token. A trailing slash is not a second page, so it is
+ * stripped before the link is built.
+ */
+function webOrigin(): string {
+  const configured = config().get<string>('webOrigin', '').trim();
+  if (configured !== '') {
+    try {
+      if (new URL(configured).protocol === 'https:') {
+        return configured.replace(/\/+$/, '');
+      }
+    } catch {
+      // Not an absolute URL at all: the default below stands.
+    }
+  }
+  return DEFAULT_WEB_ORIGIN;
+}
+
+/**
+ * The guest link for this window's room, with the configured page as its origin:
+ * `buildPageLink` bound to the setting and the page default.
+ */
+function buildPageInvite(room: string, token: string, serverBase: string): string {
+  return buildPageLink(webOrigin(), room, token, serverBase, DEFAULT_SERVER_URL);
+}
+
+/** The page link for an engine's session, or `undefined` when it holds no token. */
+function pageInviteFor(engine: SelvageEngine): string | undefined {
+  const wire = engine.inviteUrl();
+  if (wire === undefined) {
+    return undefined;
+  }
+  const parsed = parseSessionUrl(wire);
+  const room = parsed?.join.room;
+  const token = parsed?.join.token;
+  if (parsed === undefined || room === undefined || room === '' || token === undefined || token === '') {
+    return undefined;
+  }
+  return buildPageInvite(room, token, parsed.base);
+}
+
+/**
+ * The wire URL an invite joins on: a page link resolves to its room's server
+ * (the page default when the link carries none), while a `ws://` invite — the
+ * advanced fallback for non-default servers — joins as it always has.
+ */
+function resolveInviteToWire(invite: string): string {
+  const page = parsePageLink(invite);
+  if (page === undefined) {
+    return invite;
+  }
+  return sessionUrl(page.server ?? DEFAULT_SERVER_URL, page.room, page.token);
 }
 
 /**

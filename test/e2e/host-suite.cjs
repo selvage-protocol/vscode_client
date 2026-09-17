@@ -84,7 +84,7 @@ async function run() {
       async () => {
         await vscode.commands.executeCommand('selvage.copyInvite');
         const clipboard = await vscode.env.clipboard.readText();
-        return clipboard.startsWith('ws://') ? clipboard : false;
+        return clipboard.startsWith('https://') ? clipboard : false;
       },
       DEADLINE_MS,
     );

@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { SelvageEngine, parseSessionUrl } from '../src/engine/index.ts';
+import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
 import {
   loadBundle,
   mirrorFileUri,
@@ -41,9 +41,25 @@ const REFRESH_MS = 250;
 
 /** The room an invite names, for the sentences that have to name it. */
 function roomOf(invite: string): string {
-  const room = parseSessionUrl(invite)?.join.room;
-  assert.ok(room !== undefined, `the invite names no room: ${invite}`);
-  return room;
+  const wire = parseSessionUrl(invite)?.join.room;
+  if (wire !== undefined) {
+    return wire;
+  }
+  const page = new URL(invite).searchParams.get('room');
+  assert.ok(page !== null && page !== '', `the invite names no room: ${invite}`);
+  return page as string;
+}
+
+/** The wire URL a copied page link names, as the adapter's own join resolves it. */
+function wireOf(link: string): string {
+  const page = new URL(link);
+  const room = page.searchParams.get('room');
+  const token = page.searchParams.get('token');
+  const server = page.searchParams.get('server');
+  assert.ok(room !== null && room !== '', `the link names no room: ${link}`);
+  assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
+  assert.ok(server !== null && server !== '', `the link carries no server: ${link}`);
+  return sessionUrl(server, room, token);
 }
 
 /** The bundle, activated with its own storage, with its recorded state cleared. */
@@ -67,7 +83,7 @@ async function inviteOf(bundle: LoadedExtension): Promise<string> {
   return await waitFor('the invite link', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('ws://') ? clipboard : false;
+    return clipboard.startsWith('https://') ? clipboard : false;
   });
 }
 
@@ -102,7 +118,7 @@ async function hosted(t: TestContext, contents: Record<string, string>): Promise
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -398,7 +414,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
 
   // Not watching is not the session ending: the listing is published, the room holds it, and a
   // guest still joins.
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -481,7 +497,7 @@ test('a server with no grant is not a failure, and the watch goes on', async (t)
   );
 
   // The session is still this window's, and the room is still open for a guest.
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -524,7 +540,7 @@ test('a refused listing is reported, and the session goes on', async (t) => {
   );
   assert.equal(server.grantAttempts, 2, 'the watch gave up after the first refusal');
 
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });

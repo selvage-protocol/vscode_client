@@ -28,16 +28,32 @@ import {
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
-import { SelvageEngine, parseSessionUrl } from '../src/engine/index.ts';
+import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
 import { peerColour } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
 
 /** The room an invite names, so a message that has to name it can be read as a whole. */
 function roomOf(invite: string): string {
-  const room = parseSessionUrl(invite)?.join.room;
-  assert.ok(room !== undefined, `the invite names no room: ${invite}`);
-  return room;
+  const wire = parseSessionUrl(invite)?.join.room;
+  if (wire !== undefined) {
+    return wire;
+  }
+  const page = new URL(invite).searchParams.get('room');
+  assert.ok(page !== null && page !== '', `the invite names no room: ${invite}`);
+  return page as string;
+}
+
+/** The wire URL a copied page link names, as the adapter's own join resolves it. */
+function wireOf(link: string): string {
+  const page = new URL(link);
+  const room = page.searchParams.get('room');
+  const token = page.searchParams.get('token');
+  const server = page.searchParams.get('server');
+  assert.ok(room !== null && room !== '', `the link names no room: ${link}`);
+  assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
+  assert.ok(server !== null && server !== '', `the link carries no server: ${link}`);
+  return sessionUrl(server, room, token);
 }
 
 /** The directory entries at `dir`, sorted: the mirror's shape read back off disk. */
@@ -131,7 +147,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
   const invite = await waitFor('the first session to be ready', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('ws://') ? text : false;
+    return text.startsWith('https://') ? text : false;
   });
   assert.equal(server.acceptedConnections, 1, 'the first host opened one connection');
 
@@ -141,7 +157,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
   await bundle.stub.commands.executeCommand('selvage.host', { ...hostArgs, displayName: 'Ada again' });
   const copied = await waitFor('the invite to be copied again', () => {
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('ws://') ? text : false;
+    return text.startsWith('https://') ? text : false;
   });
   assert.equal(copied, invite, 'the second host copied a different invite');
   assert.equal(server.acceptedConnections, 1, 'the second host minted a second room');
@@ -190,7 +206,7 @@ test('the copy command says where the invite went, and a window with none is tol
     bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
   );
   assert.equal(said, 'Selvage: the invite link is on the clipboard.');
-  assert.ok(bundle.stub.registered.clipboard.startsWith('ws://'), 'nothing reached the clipboard');
+  assert.ok(bundle.stub.registered.clipboard.startsWith('https://'), 'nothing reached the clipboard');
 });
 
 test('a guest opens the room\'s first document by itself, and only that one', async (t) => {
@@ -411,7 +427,7 @@ test('joining while hosting asks before ending the room', async (t) => {
   });
   await waitFor('the host to be seated', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
-    return bundle.stub.registered.clipboard.startsWith('ws://') ? true : false;
+    return bundle.stub.registered.clipboard.startsWith('https://') ? true : false;
   });
   const before = server.acceptedConnections;
 
@@ -802,7 +818,7 @@ async function inviteOf(bundle: LoadedExtension): Promise<string> {
   return await waitFor('the invite link', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('ws://') ? clipboard : false;
+    return clipboard.startsWith('https://') ? clipboard : false;
   });
 }
 
@@ -829,7 +845,7 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -863,7 +879,7 @@ test('a symbolic link to a directory is not listed, and nothing behind it is ser
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1000,7 +1016,7 @@ test('a host serves the path the room asks for, and refuses what the grant leave
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1069,7 +1085,7 @@ test('a host names deletion when the room asks for a file it removed', async (t)
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1230,7 +1246,7 @@ test('the status tooltip names the room but never the invite token', async (t) =
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const invite = await waitFor('the invite link', () => {
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('ws://') ? clipboard : false;
+    return clipboard.startsWith('https://') ? clipboard : false;
   });
   const token = invite.slice(invite.indexOf('token='));
   assert.ok(!tooltip.includes(token), 'the token is in the status tooltip');
@@ -1413,6 +1429,11 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a whole invite link was refused',
   );
+  assert.equal(
+    validate('https://page.example/?room=r&token=t'),
+    undefined,
+    'a whole page link was refused',
+  );
   // A truncated paste, a server address, and nothing at all: all fail here, in plain
   // words, rather than later as whatever the engine said.
   assert.equal(
@@ -1425,7 +1446,8 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     'ws://127.0.0.1:8080/not-a-session',
     'ws://127.0.0.1:8080',
     'not-a-url/session?room=r&token=t',
-    'https://host/session?room=r&token=t',
+    'https://host/?room=r',
+    'https://host/',
     '',
   ]) {
     const refusal = validate(bad);
