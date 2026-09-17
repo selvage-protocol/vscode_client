@@ -491,10 +491,11 @@ real built extension loaded — one hosting a real file, one joining by invite, 
 concurrently — and asserts their documents converge. It also proves the room's grant end to
 end: the guest opens a file the host's folder holds and the host never opened, so its content
 can only have been read on request. Left running, the host then makes a file under its folder
-and removes another while the room is live and the guest's own view of the room has to gain the
-one and lose the other, and it cuts the guest's connection through a small relay and checks it
-reconnects and re-converges. `SELVAGE_E2E_RECONNECT=0` leaves the reconnect leg out; the watch
-leg runs either way.
+and removes another while the room is live and the guest's mirror on disk has to gain the
+one and lose the other; a third window joins with no folder, reloads onto the mirror, and
+proves the stashed join landed there; and it cuts the guest's connection through a small
+relay and checks it reconnects and re-converges. `SELVAGE_E2E_RECONNECT=0` leaves the
+reconnect leg out; the watch and empty-window legs run either way.
 
 Run it with `scripts/e2e/run-two-instance.sh` from the repository root. It has heavier
 prerequisites than everything else here — a network, Xvfb, an internet download the first time,
