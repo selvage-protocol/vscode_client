@@ -2032,7 +2032,7 @@ function joinedMessage(roomId: string, documents: string[]): string {
   // them rather than leaving the guest to assume the room is one file.
   const rest = documents.length - 1;
   const more =
-    rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path` : '';
+    rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk` : '';
   return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
 }
 

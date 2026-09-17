@@ -1476,7 +1476,7 @@ test('joining names the rest of the room the landing does not open', async (t) =
   );
   assert.equal(
     joined,
-    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more; Selvage: Open a document from the room lists every path.`,
+    `Selvage: joined room ${roomId}; opening workspace/README.md and 1 more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk.`,
   );
 });
 
