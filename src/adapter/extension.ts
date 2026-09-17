@@ -682,7 +682,7 @@ class Session {
         // whatever the freeze gave it, and a warning about a room already left misleads.
         if (!this.finished && !this.engine.has(path)) {
           void vscode.window.showWarningMessage(
-            `Selvage: ${path} is still empty: the host has not sent its text yet.`,
+            `Selvage: ${path} is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.`,
           );
         }
         resolve();

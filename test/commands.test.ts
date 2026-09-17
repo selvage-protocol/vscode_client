@@ -1502,7 +1502,7 @@ test('a fetch that times out names the empty path and reports no fetch', async (
   );
   assert.equal(
     warned,
-    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet.',
+    'Selvage: workspace/lonely.md is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.',
   );
   // A wait that gave up is not a fetch: the warning is the wait's terminal state, and the
   // report stays silent about files that never arrived rather than naming them fetched.
