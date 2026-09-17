@@ -217,6 +217,64 @@ class EngineStub implements Engine {
 }
 
 /**
+ * An editor whose applies hang until the test releases them, as an editor round-trip that
+ * outlasts the hold's answer does. The text is untouched until release: the buffer stays
+ * behind the replica the way a window the user keeps typing in does.
+ */
+class DeferredEditor extends FakeEditor {
+  private readonly resolvers: Array<(applied: boolean) => void> = [];
+
+  override applyChange(path: string, change: TextChange): Promise<boolean> {
+    const asked = this.changes.get(path) ?? [];
+    asked.push(change);
+    this.changes.set(path, asked);
+    return new Promise<boolean>((resolve) => {
+      this.resolvers.push(resolve);
+    });
+  }
+
+  /** Releases the oldest hanging apply, as the editor answering it. */
+  release(applied: boolean): void {
+    const resolve = this.resolvers.shift();
+    assert.ok(resolve !== undefined, 'no hanging apply to release');
+    resolve(applied);
+  }
+}
+
+/** A host window with a deferred editor and a guest window, each with a bridge of its own. */
+async function deferredWindows(t: TestContext): Promise<{
+  session: Awaited<ReturnType<typeof fakeSession>>;
+  host: { editor: DeferredEditor; bridge: SessionBridge };
+  guest: { editor: FakeEditor; bridge: SessionBridge };
+}> {
+  const session = await fakeSession();
+  const hostEditor = new DeferredEditor();
+  const guestEditor = new FakeEditor();
+  const hostBridge = new SessionBridge({
+    engine: slice(session.host),
+    host: hostEditor,
+  });
+  const guestBridge = new SessionBridge({
+    engine: slice(session.guest),
+    host: guestEditor,
+  });
+  hostEditor.attach(hostBridge);
+  guestEditor.attach(guestBridge);
+  t.after(async () => {
+    hostBridge.dispose();
+    guestBridge.dispose();
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  return {
+    session,
+    host: { editor: hostEditor, bridge: hostBridge },
+    guest: { editor: guestEditor, bridge: guestBridge },
+  };
+}
+
+/**
  * An editor that takes a change and never answers it, as a front-end that dropped the message
  * does. `applyChange`'s promise is the only thing that settles a document's apply in the
  * bridge, and nothing else ever fails it.
@@ -487,6 +545,95 @@ test('a refused doc.open is reported, and leaves no hold to release', async (t) 
     session.server.requests.filter((request) => request.method === 'doc.close').length,
     0,
     'a close was sent for a document this client never held',
+  );
+});
+
+test('a refused open with an apply in flight publishes nothing when it settles', async (t) => {
+  const { session, host } = await deferredWindows(t);
+  // The room already holds text the opening buffer lacks, so the open issues an apply;
+  // the hold it takes with it is refused.
+  session.guest.insert(PATH, 0, 'from the room\n');
+  await waitFor('the room to hold the text', () => session.host.text(PATH) === 'from the room\n');
+  session.server.refusedOpens.add(PATH);
+
+  host.editor.open(PATH, FILE);
+  host.bridge.documentOpened(PATH);
+  await waitFor('the open to issue its apply', () =>
+    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
+  );
+  await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError').length === 1 ? true : false,
+  );
+
+  // The user keeps typing into the window the refused apply was converging, and the open
+  // is re-fired while the first apply still hangs: the reopen issues its own flight
+  // rather than queueing behind the stale one.
+  host.editor.type(PATH, `${FILE}more\n`);
+  await host.editor.settle();
+  host.bridge.documentOpened(PATH);
+  assert.equal(
+    host.editor.changes.get(PATH)?.length,
+    2,
+    'the reopen queued behind the stale flight',
+  );
+  await waitFor('the second refusal to be reported', () =>
+    host.editor.reportsOf('sessionError').length === 2 ? true : false,
+  );
+
+  // The stale settlement is not its flight any more: it converges nothing.
+  host.editor.release(true);
+  await host.editor.settle();
+  assert.equal(
+    session.host.text(PATH),
+    'from the room\n',
+    'a stale settlement published a refused path',
+  );
+  assert.deepEqual(
+    host.editor.reportsOf('divergence'),
+    [],
+    'a stale settlement diverged a refused path',
+  );
+  assert.equal(
+    host.editor.text(PATH),
+    `${FILE}more\n`,
+    'a stale settlement wiped the refused buffer',
+  );
+});
+
+test('an over-bound edit typed during an apply stays in the buffer when it settles', async (t) => {
+  const { session, host } = await deferredWindows(t);
+  host.editor.open(PATH, 'a\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the seed to reach the replica', () => session.host.text(PATH) === 'a\n');
+
+  // A peer's edit arrives while no apply is in flight, so the reconcile issues one and hangs.
+  // The hold lands first: an update racing the open answer never attaches to observe.
+  await waitFor('the hold to land', () => session.host.openDocuments().includes(PATH));
+  session.guest.insert(PATH, 0, 'remote\n');
+  await waitFor('the reconcile to issue its apply', () =>
+    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
+  );
+  const roomText = session.host.text(PATH);
+
+  // The user types past the size bound into the window the apply was converging.
+  const over = `${'b'.repeat(MAX_GRANT_FILE_BYTES)}\n`;
+  host.editor.type(PATH, over);
+  await host.editor.settle();
+  host.editor.release(true);
+  await host.editor.settle();
+
+  // The refusal leaves the buffer alone: nothing published, no converging wipe, one report.
+  assert.equal(session.host.text(PATH), roomText, 'the refused edit reached the replica');
+  assert.equal(host.editor.text(PATH), over, 'the settlement wiped the refused buffer');
+  assert.equal(
+    host.editor.changes.get(PATH)?.length,
+    1,
+    'the settlement reconciled a refused buffer',
+  );
+  assert.equal(
+    host.editor.reportsOf('sessionError').length,
+    1,
+    'the refusal nagged or never came',
   );
 });
 

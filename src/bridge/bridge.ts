@@ -642,9 +642,12 @@ export class SessionBridge {
         // A refused hold leaves nothing that will ever open this document, so the bridge
         // entry goes with the report rather than sitting there for the rest of the session:
         // `documents` still holding the path would let a later keystroke publish through
-        // the whole-replica sync what the server refused to open.
+        // the whole-replica sync what the server refused to open. The in-flight apply goes
+        // with it: its settlement must neither publish nor converge, and a reopen issues
+        // its own flight rather than queueing behind a stale one.
         this.unarrived.delete(path);
         this.documents.delete(path);
+        this.inFlight.delete(path);
         this.cancelSave(path);
         this.cancelBackstop(path);
         this.pending.delete(path);
@@ -707,18 +710,28 @@ export class SessionBridge {
    * settles, so a change is never diffed against a buffer an edit is still moving.
    */
   private issue(path: string, change: TextChange, expected: string): void {
-    this.inFlight.set(path, {
+    const flight = {
       expected,
       replica: this.engine.text(path),
       before: this.host.text(path),
       moved: false,
-    });
+    };
+    this.inFlight.set(path, flight);
     void this.host
       .applyChange(path, change)
       .then((applied) => {
+        // The settlement belongs to the exact flight it was issued for: a refused hold or
+        // a close drops the flight, and a reopen issues its own, so a stale settlement
+        // converges nothing — neither a publish nor a wipe.
+        if (this.inFlight.get(path) !== flight) {
+          return;
+        }
         this.settle(path, applied);
       })
       .catch((error: unknown) => {
+        if (this.inFlight.get(path) !== flight) {
+          return;
+        }
         this.inFlight.delete(path);
         this.host.report({
           kind: 'sessionError',
@@ -734,6 +747,11 @@ export class SessionBridge {
   private settle(path: string, applied: boolean): void {
     const flight = this.inFlight.get(path);
     this.inFlight.delete(path);
+    // The document left while the apply was in flight — refused open, or closed: its
+    // settlement publishes nothing and converges nothing.
+    if (!this.documents.has(path)) {
+      return;
+    }
     if (!applied) {
       this.refuse(path, flight?.moved ?? false);
       return;
@@ -753,7 +771,14 @@ export class SessionBridge {
         // edit behind it lands the merge exactly on the pre-apply text when the peer's change
         // and the user's edit are inverses.
         if (actual !== flight.before || flight.moved) {
-          this.publish(path, actual, replica);
+          if (!this.publish(path, actual, replica)) {
+            // The room refused the buffer — over the size bound, or ungrantable: it stays
+            // as the user left it, the way a refused seed does. The pending reconcile would
+            // converge it back to the replica, and an armed backstop would do the same, so
+            // both go with the refusal.
+            this.pending.delete(path);
+            this.cancelBackstop(path);
+          }
         }
       } else {
         // The replica moved too, so the buffer's difference is not separable from a peer's
