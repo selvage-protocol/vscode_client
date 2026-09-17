@@ -73,7 +73,7 @@ async function run() {
       displayName: DISPLAY_NAME,
     });
 
-    // `host()` runs detached from the command's own promise (`void host(files)`), so the
+    // `host()` runs detached from the command's own promise (`void host(args)`), so the
     // session appears asynchronously; `copyInvite` is the only observable that says it is
     // ready, since it no-ops with a warning until `current` exists. Reading the invite back
     // off the real clipboard (rather than monkeypatching `writeText`) is what actually works
