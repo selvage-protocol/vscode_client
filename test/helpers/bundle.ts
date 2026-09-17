@@ -47,6 +47,13 @@ export interface Registered {
   closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
   listings: number;
+  /** Every view the extension registered, as `{ viewId, provider }`, in order. */
+  treeDataProviders: Array<{
+    viewId: string;
+    provider: TestTreeDataProvider;
+  }>;
+  /** Every file-badge provider the extension registered, in order. */
+  fileDecorationProviders: Array<TestFileDecorationProvider>;
   /**
    * Holds a directory read until the promise it returns resolves, as `(path, index) => Promise`,
    * so a test can have two republish walks overlap: a walk in a large tree outlasts a later one.
@@ -148,6 +155,19 @@ export interface EditorStub {
   commands: {
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>;
   };
+}
+
+/** A tree view's provider, as the stub keeps it: enough to list rows and watch refreshes. */
+export interface TestTreeDataProvider {
+  getChildren(element?: unknown): Promise<unknown[]> | unknown[];
+  getTreeItem(element: unknown): unknown;
+  onDidChangeTreeData(handler: (element: unknown) => void): { dispose(): void };
+}
+
+/** A file-badge provider, as the stub keeps it: enough to ask what a file wears. */
+export interface TestFileDecorationProvider {
+  provideFileDecoration(uri: unknown): unknown;
+  onDidChangeFileDecorations(handler: (uri: unknown) => void): { dispose(): void };
 }
 
 export interface LoadedExtension {

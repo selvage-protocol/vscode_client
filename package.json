@@ -92,6 +92,40 @@
         "title": "Stop following"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "selvage.participants",
+          "name": "Selvage: Participants"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "selvage.copyInvite",
+          "when": "view == selvage.participants",
+          "group": "1_selvage"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "selvage.goToParticipant",
+          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",
+          "group": "1_selvage@1"
+        },
+        {
+          "command": "selvage.followParticipant",
+          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",
+          "group": "1_selvage@2"
+        },
+        {
+          "command": "selvage.stopFollowing",
+          "when": "view == selvage.participants && viewItem == selvageParticipantFollowing",
+          "group": "1_selvage@3"
+        }
+      ]
+    },
     "configuration": {
       "title": "Selvage",
       "properties": {
@@ -147,7 +181,7 @@
     "test:extension": "npm run build && node --test test/manifest.test.ts test/mirror.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/https-invite.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
+    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/https-invite.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/participants.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",
