@@ -14,7 +14,6 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire, registerHooks } from 'node:module';
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -283,29 +282,27 @@ test('mirror paths compare on one separator form', () => {
   assert.equal(mirrorRelative('/mirror', '/mirror/../escape.md'), undefined);
 });
 
-test('a removal the filesystem refuses does not abort the republish', (t) => {
-  // Permission bits bind unlink on POSIX as non-root only: root ignores them and
-  // Windows ACLs do not emulate them. Skipping there is honest — the test proves
-  // nothing it cannot stage — while the `try/catch` still ships everywhere.
-  if (process.platform === 'win32' || process.getuid?.() === 0) {
-    t.skip('permission bits do not bind unlink on this platform or user');
-    return;
-  }
+test('a file deleted under the republish does not abort it', (t) => {
+  // The `held` callback runs inside the removal pass, before each unlink: deleting the
+  // pass's other files from it stages a concurrent delete deterministically, on every
+  // platform and user, with no permission bits and no test double.
   const keep = storage(t);
   const mirror = mintMirror(keep, 'r-unlink', { window: 'w-unlink', pid: process.pid });
-  mirror.materialise(['gone.md', 'stuck.md']);
-  // An uncooperative mode on the directory: the removal fails, the republish must not.
-  chmodSync(mirror.root, 0o555);
-  let report;
-  try {
-    report = mirror.republish([], () => false);
-  } finally {
-    chmodSync(mirror.root, 0o755);
-  }
-  // Red without the guard: the first failure throws and `gone.md` stays with it.
-  assert.deepEqual(report.removed.sort(), []);
-  assert.equal(isFile(join(mirror.root, 'gone.md')), true);
-  assert.equal(isFile(join(mirror.root, 'stuck.md')), true);
+  mirror.materialise(['a.md', 'b.md']);
+  const seen: string[] = [];
+  const report = mirror.republish([], (path) => {
+    seen.push(path);
+    if (seen.length === 1) {
+      for (const other of ['a.md', 'b.md']) {
+        if (other !== path) {
+          rmSync(join(mirror.root, other), { force: true });
+        }
+      }
+    }
+    return false;
+  });
+  // Red without the guard: the vanished file's unlink throws and nothing is removed.
+  assert.deepEqual(report.removed, seen.slice(0, 1));
   const retry = mirror.republish([], () => false);
-  assert.deepEqual(retry.removed.sort(), ['gone.md', 'stuck.md']);
+  assert.deepEqual(retry.removed, []);
 });
