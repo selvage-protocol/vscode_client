@@ -24,6 +24,20 @@ export type { LineEnding, TextChange } from './editing.ts';
 export { cursorFor, peerColour, translucent } from './cursors.ts';
 export type { Cursor, CursorPeer, ResolvedCursor } from './cursors.ts';
 export {
+  badgeFiles,
+  describeParticipants,
+  participantLabel,
+  peerName,
+  viewRows,
+} from './participants.ts';
+export type {
+  FileBadge,
+  FilePresence,
+  ParticipantEntry,
+  ParticipantRow,
+  RosterRow,
+} from './participants.ts';
+export {
   GRANT_EXCLUDED_DIRS,
   MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATHS,
