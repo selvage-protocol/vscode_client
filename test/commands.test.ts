@@ -2015,6 +2015,42 @@ test('opening a file the room does not list says so once and shares nothing', as
   );
 });
 
+test('a document the room opens joins even with no listing at all', async (t) => {
+  // The open-document set is the room's other half: a document opened while neither half
+  // named it is skipped, and the set naming it later joins it the way a listing does.
+  // Joining is proven by an edit round trip, since the host's own open is already in
+  // the set before the guest can join it.
+  const { host, invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  bundle.stub.configure({ openOnJoin: false });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the guest to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('joined room')) ? true : false,
+  );
+  const holder = { text: '' };
+  const document = mirrorDocument(bundle, storage, roomId, 'late.md', holder);
+  bundle.stub.registered.textDocuments.push(document);
+  bundle.stub.fire('openTextDocument', document);
+  await waitFor('the unlisted open to be reported', () =>
+    bundle.stub.registered.warnings.some((message) => message.includes('is not in the room'))
+      ? true
+      : false,
+  );
+
+  await host.open('late.md');
+  await waitFor('the room to name the opened document', () =>
+    roomOffer(bundle).includes('late.md') ? roomOffer(bundle) : false,
+  );
+  // The set naming it rejoined what the open skipped: a local edit publishes now.
+  holder.text = 'guest edit\n';
+  bundle.stub.fire('changeTextDocument', { document });
+  const echoed = await waitFor('the joined document to publish', () =>
+    host.text('late.md') === 'guest edit\n' ? host.text('late.md') : false,
+  );
+  assert.equal(echoed, 'guest edit\n');
+});
+
 test('saving a file the room does not list says so once', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md']);

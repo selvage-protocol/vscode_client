@@ -1255,6 +1255,24 @@ class Session {
   }
 
   /**
+   * A document opened while the room did not name it joins now that it does: the open
+   * skipped it, and no second open announces it. Documents already shared, unshared
+   * schemes and still-unlisted paths are untouched — `open` decides each one the way
+   * the first open did. Runs on every listing and document report, because either can
+   * be what names a path first.
+   */
+  private rejoinListed(): void {
+    if (this.mirror === undefined) {
+      return;
+    }
+    for (const document of vscode.workspace.textDocuments) {
+      if (this.editor.pathOf(document) === undefined) {
+        this.open(document);
+      }
+    }
+  }
+
+  /**
    * Fills the mirror's shape from a listing: new paths materialise empty, files that
    * left it are removed unless a document of this window still holds them, and what
    * could not be mirrored is said out loud rather than left missing in silence. Runs
@@ -1417,6 +1435,7 @@ class Session {
         // retry is over whenever this arrives.
         this.reconnecting = false;
         this.refreshStatus();
+        this.rejoinListed();
         this.openFromRoom();
         break;
       }
@@ -1426,17 +1445,7 @@ class Session {
           this.seenListed.add(path);
         }
         this.applyListing(report.paths);
-        // A document opened while the listing did not name it joins the room now that
-        // it does: the open skipped it, and no second open announces it. Documents
-        // already shared, unshared schemes and still-unlisted paths are untouched —
-        // `open` decides each one the way the first open did.
-        if (this.mirror !== undefined) {
-          for (const document of vscode.workspace.textDocuments) {
-            if (this.editor.pathOf(document) === undefined) {
-              this.open(document);
-            }
-          }
-        }
+        this.rejoinListed();
         break;
       }
       case 'peers': {
