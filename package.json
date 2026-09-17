@@ -97,7 +97,7 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The server to host on, as a WebSocket address — the one a selvaged prints, e.g. ws://127.0.0.1:8080. Asked for when unset."
+          "description": "The server to host on, as a WebSocket address. When unset, hosting asks, starting from the last server used, else the demo default."
         },
         "selvage.displayName": {
           "type": "string",
