@@ -17,8 +17,7 @@ import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
-import { virtualUri } from '../src/bridge/virtual.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { options } from './helpers/session.ts';
@@ -31,11 +30,16 @@ const TEXT_B = 'xxx\nyyy\nzzz\n';
 
 interface Seat {
   bundle: LoadedExtension;
+  storage: string;
   server: FakeServer;
   host: SelvageEngine;
   invite: string;
   roomId: string;
   hostId: string;
+  /** The guest's mirror root: every room file the tests open lives under it. */
+  mirrorRoot: string;
+  /** A `file:` URI string for a room path, as the adapter opens it. */
+  roomFile(path: string): string;
 }
 
 /** A room with text in every path, and the bundle joined to it as `Bob`. */
@@ -55,7 +59,12 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
 
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(() => {
     bundle.deactivate();
   });
@@ -67,7 +76,19 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
   await waitFor('the guest to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
   );
-  return { bundle, server, host, invite, roomId: host.session().roomId, hostId: host.session().peer.peer_id };
+  const roomId = host.session().roomId;
+  const mirrorRoot = mirrorWindowDir(storage, roomId);
+  return {
+    bundle,
+    storage,
+    server,
+    host,
+    invite,
+    roomId,
+    hostId: host.session().peer.peer_id,
+    mirrorRoot,
+    roomFile: (path: string) => `file://${mirrorRoot}/${path}`,
+  };
 }
 
 /**
@@ -110,19 +131,13 @@ interface FakeEditor {
 
 /** A guest document stand-in over mutable text: what the room applied, or what was typed. */
 function guestDocument(
-  roomId: string,
+  seat_: Seat,
   path: string,
   holder: { text: string },
 ): Record<string, unknown> {
-  const uriString = virtualUri(roomId, path);
-  const question = uriString.indexOf('?');
+  const uriString = seat_.roomFile(path);
   return {
-    uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
-      toString: () => uriString,
-    },
+    uri: seat_.bundle.stub.Uri.parse(uriString),
     eol: 1,
     isDirty: false,
     getText: () => holder.text,
@@ -153,6 +168,22 @@ function guestEditor(document: Record<string, unknown>): FakeEditor {
   return editor;
 }
 
+/** Whether a `setDecorations` call paints a zero-width caret at `at` on line zero. */
+function hasCaretAt(args: unknown, at: number): boolean {
+  const options = (args as Array<unknown>)[1];
+  if (!Array.isArray(options)) {
+    return false;
+  }
+  return (options as Array<{ range?: { start?: { character?: number }; end?: { character?: number } } }>).some(
+    (option) => option.range?.start?.character === at && option.range?.end?.character === at,
+  );
+}
+
+/** Whether the editor was ever told to draw a zero-width caret at `at`. */
+function drawnCaretAt(editor: FakeEditor, at: number): boolean {
+  return editor.decorated.some((args) => hasCaretAt(args, at));
+}
+
 /**
  * Stages a held document the way the editor would: the document opens first, and the host's
  * caret moves only once the replica holds the room's text — drawn then means presence
@@ -164,39 +195,43 @@ async function openHeld(
   holder: { text: string },
   hostAt: number,
 ): Promise<FakeEditor> {
-  const { bundle, roomId } = seat_;
-  const document = guestDocument(roomId, path, holder);
+  const { bundle } = seat_;
+  const document = guestDocument(seat_, path, holder);
   const editor = guestEditor(document);
   bundle.stub.window.activeTextEditor = editor;
   bundle.stub.window.visibleTextEditors = [editor];
+  // The open reports the document, which is what holds it in the room: the host seeing
+  // the hold is the room settled around this window.
   bundle.stub.fire('openTextDocument', document);
-  // The hold the open took is what makes the room send the text: poll the provider the way
-  // the editor reads, until the synchronous answer holds it.
-  const uri = document['uri'] as { scheme: string; path: string; query: string; toString(): string };
-  await waitFor(
-    `the guest replica to hold ${path}`,
-    () => {
-      const files = bundle.registered.files;
-      if (files === undefined) {
-        return false;
-      }
-      try {
-        const bytes = files.readFile(uri);
-        return bytes instanceof Uint8Array && new TextDecoder().decode(bytes) === holder.text;
-      } catch {
-        return false;
-      }
-    },
-    { describe: () => holder.text },
+  await waitFor(`the room to hold ${path} open`, () =>
+    seat_.host.documents().includes(path) ? true : false,
   );
-  seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
+  // A first frame the guest drops — presence racing the peers it names, the text its
+  // anchors resolve against — never comes again on its own, and an identical repeat
+  // dedups in awareness without a new broadcast. Alternating two adjacent carets keeps
+  // every repeat a genuine change, until a draw at the seated offset proves the pipeline.
+  let at = hostAt;
+  seat_.host.setSelection(path, { anchor: at, head: at });
   await waitFor(
     `the host caret at ${hostAt} to be drawn in ${path}`,
-    () =>
-      editor.decorated.some(
-        (args) => Array.isArray(args[1]) && (args[1] as unknown[]).length > 0,
-      ),
+    () => {
+      if (drawnCaretAt(editor, hostAt)) {
+        return true;
+      }
+      at = at === hostAt ? hostAt + 1 : hostAt;
+      seat_.host.setSelection(path, { anchor: at, head: at });
+      return false;
+    },
     { describe: () => ({ decorated: editor.decorated.length }) },
+  );
+  // The alternation ends on whichever offset drew: two ordered broadcasts ending at the
+  // seated offset, then a fresh draw there, is what makes the caret that offset for what
+  // follows rather than whichever one the draw above saw.
+  const seen = editor.decorated.length;
+  seat_.host.setSelection(path, { anchor: hostAt + 1, head: hostAt + 1 });
+  seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
+  await waitFor(`the host caret to settle at ${hostAt} in ${path}`, () =>
+    editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt)) ? true : false,
   );
   return editor;
 }
@@ -217,11 +252,37 @@ function followItem(seat_: Seat): { text: string; command?: string; color?: stri
   );
 }
 
-/** The follow banner type, when one is up: a disposed type reads as gone. */
-function followBanner(seat_: Seat, colour: string): { handle: { disposed?: boolean } } | undefined {
-  return (seat_.bundle.stub.registered.decorations as Array<{ options: Record<string, unknown>; handle: { disposed?: boolean } }>).find(
-    (entry) => entry.options['backgroundColor'] === colour && (entry.handle.disposed ?? false) !== true,
-  );
+/**
+ * Every `setDecorations` call that used a whole-line type: the banner's signature. The
+ * caret, selection and badge types never set `isWholeLine`, so a paint here is a follow
+ * banner on a document line, which must not exist.
+ */
+function wholeLinePaints(seat_: Seat, editors: FakeEditor[]): Array<unknown> {
+  const types = new Map<unknown, Record<string, unknown>>();
+  for (
+    const entry of seat_.bundle.stub.registered.decorations as Array<{
+      options: Record<string, unknown>;
+      handle: unknown;
+    }>
+  ) {
+    types.set(entry.handle, entry.options);
+  }
+  const paints: Array<unknown> = [];
+  for (const editor of editors) {
+    for (const args of editor.decorated) {
+      if (types.get(args[0])?.['isWholeLine'] === true) {
+        paints.push(args);
+      }
+    }
+  }
+  return paints;
+}
+
+/** Every whole-line decoration type the session created: the banner's other half. */
+function wholeLineTypes(seat_: Seat): Array<Record<string, unknown>> {
+  return (seat_.bundle.stub.registered.decorations as Array<{ options: Record<string, unknown> }>)
+    .map((entry) => entry.options)
+    .filter((options) => options['isWholeLine'] === true);
 }
 
 /**
@@ -272,7 +333,7 @@ test('go to fetches a document this window does not hold, and never lands at off
   const holder = { text: TEXT_A };
   await openHeld(seat_, PATH_A, holder, 2);
   seat_.host.setSelection(PATH_B, { anchor: 0, head: 0 });
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
 
   // An attempt from before presence arrives refuses before opening anything, so the command
   // is re-issued until the open it stages shows.
@@ -320,7 +381,7 @@ test('follow tracks the peer across caret moves and a document change', async (t
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
   await waitFor('the follow to land at the host caret', () => caretOf(editorA) === 5);
 
@@ -335,7 +396,7 @@ test('follow tracks the peer across caret moves and a document change', async (t
 
   // A document change opens the peer document through the ordinary path and lands there.
   seat_.host.setSelection(PATH_B, { anchor: 3, head: 3 });
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the follow to open the peer document',
     () => {
@@ -363,7 +424,7 @@ test('stopping works by command and by the indicator, and with nothing to stop',
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
   const item = followItem(seat_);
   assert.ok(item !== undefined, 'no follow indicator while following');
@@ -374,19 +435,17 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   // By the indicator: what a click runs.
   await seat_.bundle.stub.commands.executeCommand(item.command as string);
   await waitFor('the follow to stop', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
 
   // By the command, and then with nothing left to stop.
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the second follow to begin', () =>
-    seat_.bundle.stub.registered.information.filter((message) => message === 'Selvage: following Ada.')
-      .length >= 2,
+    followItem(seat_) !== undefined ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the second follow to stop', () =>
-    seat_.bundle.stub.registered.information.filter((message) => message === 'Selvage: stopped following Ada.')
-      .length >= 2,
+    followItem(seat_) === undefined ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the empty stop to be refused', () =>
@@ -394,18 +453,18 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   );
 });
 
-test('the indicator wears the peer colour, and a banner lands with the follow', async (t) => {
+test('the indicator wears the peer colour, and no banner paints the document', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
   const editor = await openHeld(seat_, PATH_A, holder, 5);
   const colour = peerColour(seat_.hostId);
 
-  // No banner before anything is followed: the indicator is follow state, not chrome.
-  assert.equal(followBanner(seat_, colour), undefined, 'a follow banner is up with no follow');
+  // No indicator before anything is followed: the status item is follow state, not chrome.
+  assert.equal(followItem(seat_), undefined, 'a follow indicator is up with no follow');
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
   const item = followItem(seat_);
   assert.ok(item !== undefined, 'no follow indicator while following');
@@ -415,60 +474,59 @@ test('the indicator wears the peer colour, and a banner lands with the follow', 
   assert.equal(item.command, 'selvage.stopFollowing');
 
   await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
-  const banner = followBanner(seat_, colour);
-  assert.ok(banner !== undefined, 'no follow banner once the follow landed');
-  const painted = editor.decorated.some(
-    (args) => args[0] === (banner as { handle: unknown }).handle && Array.isArray(args[1]) && (args[1] as unknown[]).length > 0,
+  // The regression: following paints no text line. No whole-line type exists, and no
+  // paint call on the followed editor used one — the caret and selection types never do.
+  assert.deepEqual(wholeLineTypes(seat_), [], 'starting the follow created a whole-line type');
+  assert.deepEqual(
+    wholeLinePaints(seat_, [editor]),
+    [],
+    'the follow painted a document line',
   );
-  assert.ok(painted, 'the banner never reached the followed editor');
 
-  // A caret move re-lands without rebuilding the banner: one follow, one banner.
+  // A caret move re-lands through the indicator alone: still no whole-line type mid-track.
   seat_.host.setSelection(PATH_A, { anchor: 8, head: 8 });
   await waitFor('the follow to track the caret move', () => caretOf(editor) === 8);
-  const banners = (seat_.bundle.stub.registered.decorations as Array<{ options: Record<string, unknown> }>).filter(
-    (entry) => entry.options['backgroundColor'] === colour,
-  );
-  assert.equal(banners.length, 1, 'the follow rebuilt its banner mid-track');
+  assert.deepEqual(wholeLineTypes(seat_), [], 'tracking the follow created a whole-line type');
 
-  // By the indicator: what a click runs stops the follow and takes the banner down.
+  // By the indicator: what a click runs stops the follow silently and paints nothing.
+  // Start and stop live in the status item — no toast either way.
+  const toasts = (): Array<string> =>
+    seat_.bundle.stub.registered.information.filter(
+      (message) =>
+        message.startsWith('Selvage: following') || message.startsWith('Selvage: stopped following'),
+    );
   await seat_.bundle.stub.commands.executeCommand(item.command as string);
   await waitFor('the follow to stop', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
   assert.equal(followItem(seat_), undefined, 'the indicator survived the stop');
-  assert.equal(followBanner(seat_, colour), undefined, 'the banner survived the stop');
+  assert.deepEqual(wholeLineTypes(seat_), [], 'stopping the follow painted a document line');
+  assert.deepEqual(toasts(), [], 'starting or stopping the follow toasted');
 });
 
-test('the banner sits only on the followed editor and survives a window switch', async (t) => {
+test('a window switch paints no banner on any editor', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
   const editor = await openHeld(seat_, PATH_A, holder, 5);
-  const colour = peerColour(seat_.hostId);
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
   await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
-  const banner = followBanner(seat_, colour);
-  assert.ok(banner !== undefined, 'no follow banner once the follow landed');
-  const handle = (banner as { handle: unknown }).handle;
 
-  // Another visible editor, showing a document the room never named, stays unpainted: the
-  // banner is the top of the followed editor, not of the window.
-  const other = guestEditor(guestDocument(seat_.roomId, 'src/elsewhere.rs', { text: 'zzz\n' }));
+  // Another visible editor, showing a document the room never named: the repaint the
+  // switch runs is synchronous, so what follows observes it rather than racing it — and
+  // no editor in the window carries a whole-line paint.
+  const other = guestEditor(guestDocument(seat_, 'src/elsewhere.rs', { text: 'zzz\n' }));
   seat_.bundle.stub.window.visibleTextEditors = [editor, other];
   seat_.bundle.stub.fire('visibleEditors', [editor, other]);
-  await waitFor('the banner to be repainted over the switch', () =>
-    other.decorated.some((args) => args[0] === handle) ? true : false,
+  assert.deepEqual(
+    wholeLinePaints(seat_, [editor, other]),
+    [],
+    'the window switch painted a document line',
   );
-  for (const args of other.decorated) {
-    if (args[0] === handle) {
-      assert.equal((args[1] as unknown[]).length, 0, 'the banner painted an unfollowed editor');
-    }
-  }
   assert.ok(followItem(seat_) !== undefined, 'a window switch ended the follow');
-  assert.ok(followBanner(seat_, colour) !== undefined, 'a window switch took the banner down');
 });
 
 test('a local edit ends the follow while a remote one does not', async (t) => {
@@ -478,7 +536,7 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
 
   // Remote: the host's text reaches the buffer first — the apply the bridge stages is the
@@ -500,19 +558,18 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   await waitFor('the follow to track past the remote edit', () => caretOf(editor) === 9);
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the follow to still be stoppable after the remote edit', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
 
   // Local: the buffer holds what only this window has, and the follow ends at once.
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the second follow to begin', () =>
-    seat_.bundle.stub.registered.information.filter((message) => message === 'Selvage: following Ada.')
-      .length >= 2,
+    followItem(seat_) !== undefined ? true : false,
   );
   holder.text = `${remote}typed here`;
   seat_.bundle.stub.fire('changeTextDocument', { document: editor.document });
   await waitFor('the local edit to end the follow', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
@@ -529,15 +586,15 @@ test('going somewhere stops following first', async (t) => {
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
 
   await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant', { peerId: caraId });
   const retryGoTo = issueUntil(seat_.bundle, 'selvage.goToParticipant', { peerId: caraId });
   await waitFor('the go-to to stop the follow', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the go-to to open the other peer document',
     () => {
@@ -570,9 +627,7 @@ test('the follow ends when the peer leaves, and the name re-labels while they st
   // The peer may still be joining when the command runs: re-issue until the follow establishes.
   const retryFollow = issueUntil(seat_.bundle, 'selvage.followParticipant', { peerId: caraId });
   await waitFor('the follow of the second peer to begin', () => {
-    if (
-      seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Cara.')
-    ) {
+    if (followItem(seat_) !== undefined) {
       return true;
     }
     retryFollow();
@@ -658,7 +713,7 @@ test('two peers sharing a name are told apart in the picker', async (t) => {
   assert.ok(fresh !== undefined, 'the picker never saw the chosen peer document');
   seat_.bundle.stub.registered.quickPickReply = fresh;
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
     'the follow to open the chosen peer document',
     () => {
@@ -725,7 +780,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
 });
 
 test('a host jumps to a peer through its own working copy', async (t) => {
-  // A host holds no virtual documents: the peer path opens as the window's own file, through
+  // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through rather than a bare join.
   const server = await FakeServer.start();
   t.after(async () => {
@@ -795,7 +850,11 @@ test('a host jumps to a peer through its own working copy', async (t) => {
     describe: () => caretOf(opened),
   });
   await waitFor('the follow to begin', () =>
-    bundle.stub.registered.information.some((message) => message === 'Selvage: following Cara.'),
+    bundle.stub.registered.statusBarItems.some(
+      (item) => item.command === 'selvage.stopFollowing',
+    )
+      ? true
+      : false,
   );
 });
 
@@ -808,9 +867,7 @@ test('a display name lands without the palette when it names one peer', async (t
   // The name is what automation can know: retry until the room names her.
   const retry = issueUntil(seat_.bundle, 'selvage.followParticipant', { displayName: 'Cara' });
   await waitFor('the named follow to begin', () => {
-    if (
-      seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Cara.')
-    ) {
+    if (followItem(seat_) !== undefined) {
       return true;
     }
     retry();
@@ -860,7 +917,7 @@ test('a remote CRLF apply does not end the follow while local CRLF typing does',
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
 
   // The buffer holds CRLF while the replica holds LF: the steady state of a CRLF document,
@@ -888,19 +945,18 @@ test('a remote CRLF apply does not end the follow while local CRLF typing does',
   await waitFor('the follow to track past the CRLF remote edit', () => caretOf(editor) === 9);
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the follow to still be stoppable after the CRLF remote edit', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
 
   // Local: the buffer holds what only this window has, and the follow ends at once.
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the second follow to begin', () =>
-    seat_.bundle.stub.registered.information.filter((message) => message === 'Selvage: following Ada.')
-      .length >= 2,
+    followItem(seat_) !== undefined ? true : false,
   );
   holder.text = `${crlf(remote)}typed here`;
   seat_.bundle.stub.fire('changeTextDocument', { document: editor.document });
   await waitFor('the local CRLF edit to end the follow', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
@@ -915,7 +971,7 @@ test('a superseded landing never places', async (t) => {
 
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
   await waitFor('the follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Ada.'),
+    followItem(seat_) !== undefined ? true : false,
   );
 
   // The first landing's open is held across the peer's next move: the older frame must not
@@ -923,7 +979,7 @@ test('a superseded landing never places', async (t) => {
   // frames pass, so the second move lands while the first is still in flight. Draining the
   // microtasks after the release settles the held frame — its path from there is synchronous
   // — so what follows observes it rather than racing it.
-  const uriB = virtualUri(seat_.roomId, PATH_B);
+  const uriB = seat_.roomFile( PATH_B);
   const windowState = seat_.bundle.stub.window as unknown as Record<string, unknown>;
   const show = windowState['showTextDocument'] as (
     document: unknown,
@@ -973,7 +1029,7 @@ test('a superseded landing never places', async (t) => {
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the follow to still be stoppable after the overlap', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: stopped following Ada.'),
+    followItem(seat_) === undefined ? true : false,
   );
 });
 
@@ -1017,7 +1073,7 @@ test('following a peer in no document pends until they enter one', async (t) => 
   nora.setSelection(PATH_A, { anchor: 7, head: 7 });
   await waitFor('the pending follow to land once she enters a document', () => caretOf(editor) === 7);
   await waitFor('the pending follow to begin', () =>
-    seat_.bundle.stub.registered.information.some((message) => message === 'Selvage: following Nora.'),
+    followItem(seat_) !== undefined ? true : false,
   );
   assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Nora');
 });
@@ -1055,7 +1111,7 @@ test('an unknown peer id falls through to the pick', async (t) => {
 });
 
 test('a host jump to a path it does not share is refused without opening', async (t) => {
-  // A host holds no virtual documents: the peer path opens as the window's own file, through
+  // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through. A path the grant deliberately leaves
   // out — here `.env`, which no listing ever names — fails that check, with the same sentence
   // a deleted path reports, and opens nothing.

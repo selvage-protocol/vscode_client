@@ -24,8 +24,8 @@
  *
  * The watch phase proves the listing follows the folder: the host makes a file under its own
  * folder and removes another while the room is live, and the guest's own view of the room — the
- * provider its Explorer reads — has to gain the created path and lose the deleted one, with the
- * created path's content arriving when the guest opens it.
+ * mirror on disk its Explorer reads — has to gain the created path and lose the deleted one,
+ * with the created path's content arriving when the guest opens it.
  *
  * The follow phase proves follow-and-jump across two real editors: the guest follows the host
  * by name, the host moves its caret to the end with no edit, and the guest's caret has to
@@ -33,10 +33,18 @@
  * guest's caret has to hold what it tracked. The host's move is a programmatic selection, so
  * the phase also answers whether assigning `editor.selection` publishes presence — if that
  * event never fires, the guest never tracks.
+ *
+ * The empty-window stage proves the join from a window with no folder: the first instance
+ * joins and the reload that puts the room's folder in the window tears the run down, which
+ * counts only with the stashed invite on disk to show for it. The second instance launches
+ * on the mirror folder itself and proves the stashed join landed — the invite left the
+ * marker, the listing filled the mirror, and no second folder was added — with no command
+ * run at all.
  */
 
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import net from 'node:net';
 import { constants } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -120,7 +128,7 @@ const SERVER_STOP_GRACE_MS = 5000;
  */
 let phase = 'startup';
 let lastLogged = '(nothing logged yet)';
-const inFlight = new Set<'host' | 'guest'>();
+const inFlight = new Set<'host' | 'guest' | 'empty'>();
 /** The server this run started, if it has got that far; stopped on every way out. */
 let activeServer: RealServer | undefined;
 
@@ -135,10 +143,11 @@ function log(...parts: unknown[]): void {
  * the one thing that cannot answer this: the stall worth reporting is the one where that
  * promise never settles, which says nothing about whether anything is still behind it.
  */
-function liveEditorProcesses(): { host: number[]; guest: number[] } {
-  const alive: { host: number[]; guest: number[] } = { host: [], guest: [] };
+function liveEditorProcesses(): { host: number[]; guest: number[]; empty: number[] } {
+  const alive: { host: number[]; guest: number[]; empty: number[] } = { host: [], guest: [], empty: [] };
   const hostUserData = resolve(RUN_DIR, 'host-user-data');
   const guestUserData = resolve(RUN_DIR, 'guest-user-data');
+  const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
   let entries: string[];
   try {
     entries = readdirSync('/proc');
@@ -161,6 +170,8 @@ function liveEditorProcesses(): { host: number[]; guest: number[] } {
       alive.host.push(Number(entry));
     } else if (cmdline.includes(guestUserData)) {
       alive.guest.push(Number(entry));
+    } else if (cmdline.includes(emptyUserData)) {
+      alive.empty.push(Number(entry));
     }
   }
   return alive;
@@ -172,9 +183,32 @@ function liveEditorProcesses(): { host: number[]; guest: number[] } {
  * `@vscode/test-electron`'s children and no handle on them comes back, so on a throw, a signal
  * or the watchdog they are otherwise abandoned alive.
  */
-function killLiveEditors(): void {
+function killLiveEditors(reason: string): void {
   const alive = liveEditorProcesses();
-  for (const pid of [...alive.host, ...alive.guest]) {
+  const pids = [...alive.host, ...alive.guest, ...alive.empty];
+  if (pids.length > 0) {
+    log(`killing live editors (${reason}): ${pids.join(', ')}`);
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // It exited between the scan and the signal.
+    }
+  }
+}
+
+/**
+ * Takes down only the empty-window stage's windows: the reload left one behind whose
+ * triage hangs on a display-name question, and the run's own host and guest must keep
+ * running for the legs after this one. Killing by profile, not by everything alive.
+ */
+function killEmptyEditors(reason: string): void {
+  const alive = liveEditorProcesses();
+  if (alive.empty.length > 0) {
+    log(`killing empty-window editors (${reason}): ${alive.empty.join(', ')}`);
+  }
+  for (const pid of alive.empty) {
     try {
       process.kill(pid, 'SIGTERM');
     } catch {
@@ -187,7 +221,7 @@ function killLiveEditors(): void {
  * Everything this run started is stopped here, whatever ended it: the server is on an ephemeral
  * port and outlives the proof that started it, and the editors are children nobody hands back.
  */
-async function stopWhatThisRunStarted(): Promise<void> {
+async function stopWhatThisRunStarted(reason: string): Promise<void> {
   const server = activeServer;
   activeServer = undefined;
   if (server !== undefined) {
@@ -195,12 +229,12 @@ async function stopWhatThisRunStarted(): Promise<void> {
     // that never lands, since the process is leaving either way.
     await Promise.race([server.stop(), delay(SERVER_STOP_GRACE_MS)]);
   }
-  killLiveEditors();
+  killLiveEditors(reason);
 }
 
 /** Stop, then leave with this code: the body of every failing ending. */
 async function stopAndExit(code: number): Promise<void> {
-  await stopWhatThisRunStarted();
+  await stopWhatThisRunStarted(`stop-and-exit(${code})`);
   process.exit(code);
 }
 
@@ -219,7 +253,7 @@ function armWatchdog(): ReturnType<typeof setTimeout> {
     console.error(
       `[e2e] WATCHDOG: instances still in flight: ${inFlight.size === 0 ? 'none' : [...inFlight].join(', ')}`,
     );
-    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}`);
+    console.error(`[e2e] WATCHDOG: editor processes alive: host ${list(alive.host)}; guest ${list(alive.guest)}; empty ${list(alive.empty)}`);
     console.error(
       `[e2e] WATCHDOG: editor output: ${resolve(RUN_DIR, 'host.log')}, ${resolve(RUN_DIR, 'guest.log')}`,
     );
@@ -475,14 +509,58 @@ async function pollFor<T>(label: string, check: () => T | undefined, deadlineMs:
   }
 }
 
+/**
+ * The mirror root under a user-data dir whose marker carries `invite`, when the join
+ * stashed one: the empty-window reload's proof, read off the orchestrator's own disk.
+ */
+function stashedMirrorRoot(userDataDir: string, room: string, invite: string): string | undefined {
+  let publishers: Dirent[];
+  try {
+    publishers = readdirSync(join(userDataDir, 'User', 'globalStorage'), { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const publisher of publishers) {
+    if (!publisher.isDirectory()) {
+      continue;
+    }
+    let windows: Dirent[];
+    try {
+      windows = readdirSync(join(userDataDir, 'User', 'globalStorage', publisher.name, 'rooms', room), {
+        withFileTypes: true,
+      });
+    } catch {
+      continue;
+    }
+    for (const window of windows) {
+      if (!window.isDirectory()) {
+        continue;
+      }
+      const root = join(userDataDir, 'User', 'globalStorage', publisher.name, 'rooms', room, window.name);
+      try {
+        const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
+          invite?: string;
+        };
+        if (marker.invite === invite) {
+          return root;
+        }
+      } catch {
+        // Not a stashed join yet.
+      }
+    }
+  }
+  return undefined;
+}
+
 async function runInstance(
-  role: 'host' | 'guest',
+  role: 'host' | 'guest' | 'empty',
   vscodeExecutablePath: string,
-  workspaceDir: string,
+  workspaceDirs: string[],
   userDataDir: string,
   extensionsDir: string,
   env: Record<string, string | undefined>,
   logFile: string,
+  suite: string = `${role}-suite.cjs`,
 ): Promise<{ code: number }> {
   mkdirSync(dirname(logFile), { recursive: true });
   const out = createWriteStream(logFile);
@@ -491,12 +569,12 @@ async function runInstance(
     await runTests({
       vscodeExecutablePath,
       extensionDevelopmentPath: ROOT,
-      extensionTestsPath: resolve(import.meta.dirname, `${role}-suite.cjs`),
+      extensionTestsPath: resolve(import.meta.dirname, suite),
       extensionTestsEnv: env,
       stdout: out,
       stderr: out,
       launchArgs: [
-        workspaceDir,
+        ...workspaceDirs,
         '--user-data-dir', userDataDir,
         '--extensions-dir', extensionsDir,
         '--disable-workspace-trust',
@@ -612,7 +690,7 @@ async function main(): Promise<void> {
   const hostRun = runInstance(
     'host',
     vscodeExecutablePath,
-    hostWorkspace,
+    [hostWorkspace],
     hostUserData,
     hostExtensions,
     {
@@ -627,7 +705,7 @@ async function main(): Promise<void> {
   const guestRun = runInstance(
     'guest',
     vscodeExecutablePath,
-    guestWorkspace,
+    [guestWorkspace],
     guestUserData,
     guestExtensions,
     {
@@ -692,6 +770,94 @@ async function main(): Promise<void> {
   );
   log('the guest has walked the room\u2019s listing the host\u2019s folder now stands for');
 
+  // The empty-window stage: joining with no folder reloads the window onto the mirror,
+  // which tears the first run down, and the second run on that folder proves the stashed
+  // join landed with no command run at all.
+  phase = 'empty window: joining with no folder';
+  const emptyInvite = readFileSync(inviteFile, 'utf8');
+  const emptyRoom = decodeURIComponent(/[?&]room=([^&]+)/.exec(emptyInvite)?.[1] ?? '');
+  if (emptyRoom === '') {
+    throw new Error('orchestrator: the invite names no room for the empty-window stage');
+  }
+  const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
+  const emptyExtensions = resolve(RUN_DIR, 'empty-extensions');
+  const emptyJoinRun = runInstance(
+    'empty',
+    vscodeExecutablePath,
+    [],
+    emptyUserData,
+    emptyExtensions,
+    {
+      ...sharedEnv,
+      SELVAGE_E2E_EMPTY_STAGE: 'join',
+      SELVAGE_E2E_EMPTY_INVITE: emptyInvite,
+      SELVAGE_E2E_DISPLAY_NAME: 'Empty',
+    },
+    resolve(RUN_DIR, 'empty-join.log'),
+    'guest-empty-suite.cjs',
+  );
+  emptyJoinRun.catch(() => {});
+  let emptyReloaded = false;
+  try {
+    await emptyJoinRun;
+  } catch {
+    emptyReloaded = true;
+  }
+  if (!emptyReloaded) {
+    throw new Error('orchestrator: the empty-window join resolved instead of reloading');
+  }
+  const emptyMirror = await pollFor(
+    'the empty-window join to stash its invite',
+    () => stashedMirrorRoot(emptyUserData, emptyRoom, emptyInvite) ?? undefined,
+    DEADLINE_MS,
+  );
+  log('the empty-window join stashed its invite at', emptyMirror);
+  // Let the reload land, then take down whatever of the first window is still alive: its
+  // triage would otherwise hang on a display-name question with nobody to answer it.
+  await delay(3000);
+  killEmptyEditors('empty-window reload leftovers');
+
+  phase = 'empty window: proving the stashed join landed';
+  // The second window reuses the first window's profile: the mirror lives in that
+  // profile's storage, and only a window on that storage can triage it. The display
+  // name goes in as a setting, so the stashed join lands without a question.
+  mkdirSync(join(emptyUserData, 'User'), { recursive: true });
+  writeFileSync(
+    join(emptyUserData, 'User', 'settings.json'),
+    JSON.stringify({ 'selvage.displayName': 'Empty' }),
+  );
+  const emptyDoneFile = resolve(RUN_DIR, 'empty-done.txt');
+  const emptyResultFile = resolve(RUN_DIR, 'empty-result.json');
+  const emptyReloadRun = runInstance(
+    'empty',
+    vscodeExecutablePath,
+    [emptyMirror],
+    emptyUserData,
+    emptyExtensions,
+    {
+      ...sharedEnv,
+      SELVAGE_E2E_EMPTY_STAGE: 'reloaded',
+      SELVAGE_E2E_EMPTY_DONE_FILE: emptyDoneFile,
+      SELVAGE_E2E_EMPTY_RESULT_FILE: emptyResultFile,
+      SELVAGE_E2E_DISPLAY_NAME: 'Empty',
+    },
+    resolve(RUN_DIR, 'empty-reload.log'),
+    'guest-empty-suite.cjs',
+  );
+  await emptyReloadRun;
+  await pollFor(
+    'the reloaded window to prove the stashed join',
+    () => (existsSync(emptyDoneFile) ? true : undefined),
+    DEADLINE_MS + 15_000,
+  );
+  const emptyOutcome = JSON.parse(readFileSync(emptyResultFile, 'utf8')) as {
+    joined?: boolean;
+    materialised?: boolean;
+    singleFolder?: boolean;
+    error?: string;
+  };
+  log('empty-window outcome:', JSON.stringify(emptyOutcome));
+
   if (proxy !== undefined && controlFile !== undefined) {
     phase = 'cutting the relay and reconnecting';
     log('cutting the guest relay (a real TCP close)');
@@ -724,7 +890,7 @@ async function main(): Promise<void> {
     deadline.abort();
   });
   await proxy?.stop();
-  await stopWhatThisRunStarted();
+  await stopWhatThisRunStarted('run finished');
 
   phase = 'checking the outcomes';
   const hostOutcome = readOutcome(hostResultFile);
@@ -787,9 +953,22 @@ async function main(): Promise<void> {
       guestText: guestOutcome?.granted?.text,
       heldBeforeGuest: hostOutcome?.granted?.heldBeforeGuest,
     },
+    empty: {
+      // The empty-window join reloaded instead of resolving, the invite was stashed, and
+      // the window reopened on the mirror proved the stashed join landed — invite gone,
+      // listing filled, no second folder — with no command run at all.
+      converged:
+        emptyOutcome.joined === true &&
+        emptyOutcome.materialised === true &&
+        emptyOutcome.singleFolder === true &&
+        emptyOutcome.error === undefined,
+      joined: emptyOutcome.joined,
+      materialised: emptyOutcome.materialised,
+      singleFolder: emptyOutcome.singleFolder,
+    },
     watch: {
       // The host made a file under its own folder and removed another while the room was live,
-      // and the guest's view of the room — its own provider's listing of the grant — gained the
+      // and the guest's view of the room — its mirror on disk — gained the
       // one and lost the other. The content travelled because the guest opened a path that was
       // a name in the listing a moment before. The removed path, opened fresh after the
       // listing lost it, is refused with the reason instead of a phantom empty document.
@@ -836,8 +1015,13 @@ async function main(): Promise<void> {
       'the room\u2019s listing did not follow the host\u2019s folder: the guest\u2019s view of the room did not gain the path the host made, did not lose the one it removed, or was not told the removed path is gone',
     );
   }
+  if (!summary.empty.converged) {
+    throw new Error(
+      'the empty-window join did not reload onto a mirror whose stashed join landed',
+    );
+  }
   log(
-    'PASSED: two real VS Code instances converged on the shared document, the guest tracked the host caret while following and held its position after stopping, a guest read a granted path the host never opened, and the room\u2019s listing followed the host\u2019s folder' +
+    'PASSED: two real VS Code instances converged on the shared document, the guest tracked the host caret while following and held its position after stopping, a guest read a granted path the host never opened, the room\u2019s listing followed the host\u2019s folder, and an empty window joined by reloading onto the mirror' +
       (RECONNECT ? ', and the guest re-converged after a simulated network blip' : ''),
   );
   phase = 'done';

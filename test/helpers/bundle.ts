@@ -5,55 +5,46 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
+
+import { waitFor } from './wait.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 export const ROOT = resolve(here, '..', '..');
 export const BUNDLE = resolve(ROOT, 'dist', 'extension.js');
 const STUB = resolve(here, 'vscode-stub.cjs');
 
-/** The three URI components a provider is given, as the stub's `Uri.parse` would give them. */
-export interface UriLike {
+/** A URI the stub's `Uri` builds, with the filesystem path the mirror resolves by. */
+export interface StubUri {
   scheme: string;
   path: string;
+  fsPath: string;
   query: string;
   toString(): string;
 }
 
-/** The guest file system, as the stub recorded it: the contract the adapter implements. */
-export interface GuestFiles {
-  use(source: {
-    roomId: string;
-    text(path: string): string;
-    paths?(): readonly string[];
-    has?(path: string): boolean;
-    fetch?(path: string): Promise<void>;
-  }): void;
-  freeze(text: Iterable<[uri: string, content: string]>): void;
-  stat(uri: UriLike): { type: number; size: number };
-  readFile(uri: UriLike): Uint8Array | Promise<Uint8Array>;
-  writeFile(uri: UriLike, content: Uint8Array): void;
-  watch(uri: UriLike): { dispose(): void };
-  readDirectory(uri: UriLike): Array<[string, number]>;
-  createDirectory(uri: UriLike): void;
-  delete(uri: UriLike): void;
-  rename(uri: UriLike): void;
-}
-
 export interface Registered {
   commands: string[];
-  schemes: string[];
-  /** Every tree view the extension created, with the options it was given. */
-  treeViews: Array<{ id: string; options: Record<string, unknown> }>;
+  /** Every `executeCommand` call, as `{ id, args }`, handled or not. */
+  executed: Array<{ id: string; args: unknown[] }>;
   /** Every file system watcher the extension created, as the stub keeps it. */
   watchers: Array<{
     pattern: { base?: { uri?: { toString(): string } }; pattern?: string };
     ignored: { create: boolean; change: boolean; delete: boolean };
     disposed: boolean;
   }>;
+  /** Every `workspace.updateWorkspaceFolders` call: `{ start, deleteCount, added }` URIs. */
+  folderCalls: Array<{ start: number; deleteCount: number | null | undefined; added: string[] }>;
+  /**
+   * How the editor answers `workspace.updateWorkspaceFolders`: `false` is the silent
+   * refusal, so a test stages what the client does when the folder never lands.
+   */
+  updateFoldersReturn: boolean;
+  /** Every `tabGroups.close` call, as the tabs it was given, in order. */
+  closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
   listings: number;
   /**
@@ -61,7 +52,8 @@ export interface Registered {
    * so a test can have two republish walks overlap: a walk in a large tree outlasts a later one.
    */
   readHold: ((path: string, index: number) => Promise<unknown> | undefined) | undefined;
-  files?: GuestFiles;
+  /** The window's open documents, as a test seeded them before the session started. */
+  textDocuments: unknown[];
 }
 
 /** The stub module itself, for a test that needs to run a command or read what it recorded. */
@@ -136,6 +128,19 @@ export interface EditorStub {
   window: {
     visibleTextEditors: unknown[];
     activeTextEditor: unknown;
+    /**
+     * The window's tab groups: leaving a room closes the room's tabs through these.
+     * One group is enough to stage that; a test seeds its tabs.
+     */
+    tabGroups: {
+      all: Array<{ tabs: unknown[] }>;
+      close(tabs: readonly unknown[]): Promise<boolean>;
+    };
+  };
+  /** The editor's `Uri`, for the mirror file a test opens the room through. */
+  Uri: {
+    parse(value: string): StubUri;
+    file(path: string): StubUri;
   };
   ConfigurationTarget: { Global: number; Workspace: number; WorkspaceFolder: number };
   ProgressLocation: { SourceControl: number; Window: number; Notification: number };
@@ -150,6 +155,85 @@ export interface LoadedExtension {
   deactivate(): void;
   registered: Registered;
   stub: EditorStub;
+}
+
+/**
+ * A fresh `globalStorageUri` home for a test, under `<repo>/.tmp/`, removed with it.
+ * A guest join mints exactly one window directory under it, which `mirrorWindowDir`
+ * finds again.
+ */
+export function testStoragePath(t: { after(callback: () => void): void }): string {
+  // A clean checkout has no `.tmp` until something needs scratch: make the parent,
+  // or the mkdtemp below fails with ENOENT instead of a storage directory.
+  mkdirSync(join(ROOT, '.tmp'), { recursive: true });
+  const dir = mkdtempSync(join(ROOT, '.tmp', 'storage-'));
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return dir;
+}
+
+/** The one window directory a join minted for `room` under a storage path. */
+export function mirrorWindowDir(storagePath: string, room: string): string {
+  // Room ids are server-minted `[A-Za-z0-9_-]` and sanitise to themselves.
+  const roomDir = join(storagePath, 'rooms', room);
+  const entries = readdirSync(roomDir);
+  assert.equal(entries.length, 1, `expected one window in ${roomDir}, found ${entries.length}`);
+  return join(roomDir, entries[0] as string);
+}
+
+/** A `file:` URI string for a mirror path, as the adapter opens it. */
+export function mirrorFileUri(storagePath: string, room: string, path: string): string {
+  return `file://${mirrorWindowDir(storagePath, room)}/${path}`;
+}
+
+/** Waits until the mirror for `room` holds every path in `paths` on disk. */
+export async function waitForMirrorFiles(
+  storagePath: string,
+  room: string,
+  paths: readonly string[],
+): Promise<void> {
+  await waitFor(
+    'the listing to reach the mirror',
+    () => {
+      let dir: string;
+      try {
+        dir = mirrorWindowDir(storagePath, room);
+      } catch {
+        return false;
+      }
+      return paths.every((path) => existsSync(join(dir, ...path.split('/')))) ? true : false;
+    },
+    {
+      describe: () => {
+        try {
+          return readdirSync(mirrorWindowDir(storagePath, room));
+        } catch {
+          return 'no mirror yet';
+        }
+      },
+    },
+  );
+}
+
+/** Waits until none of `paths` is on disk in the mirror for `room` anymore. */
+export async function waitForMirrorGone(
+  storagePath: string,
+  room: string,
+  paths: readonly string[],
+): Promise<void> {
+  await waitFor(
+    'the listing to leave the mirror',
+    () => {
+      let dir: string;
+      try {
+        dir = mirrorWindowDir(storagePath, room);
+      } catch {
+        return false;
+      }
+      return paths.every((path) => !existsSync(join(dir, ...path.split('/')))) ? true : false;
+    },
+  );
 }
 
 /**

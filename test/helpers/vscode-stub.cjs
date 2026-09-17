@@ -11,8 +11,8 @@
 
 const registered = {
   commands: [],
-  schemes: [],
-  files: undefined,
+  /** Every `executeCommand` call, as `{ id, args }`, handled or not. */
+  executed: [],
   /** The handler each `registerCommand` was given, so `executeCommand` can run it. */
   handlers: new Map(),
   /** What the clipboard holds, as the extension last left it. */
@@ -43,8 +43,6 @@ const registered = {
   decorations: [],
   /** Every status bar item the extension created, as the object it kept drawing into. */
   statusBarItems: [],
-  /** Every tree view the extension created, with the provider it was given. */
-  treeViews: [],
   informationReply: undefined,
   warningReply: undefined,
   quickPickReply: undefined,
@@ -66,6 +64,16 @@ const registered = {
    * watch the folder it shares.
    */
   watcherFailure: undefined,
+  /** Every `workspace.updateWorkspaceFolders` call, as `{ start, deleteCount, added }`. */
+  folderCalls: [],
+  /**
+   * How the editor answers `workspace.updateWorkspaceFolders`. `false` is the API's silent
+   * refusal: the call reports nothing and changes nothing, so the client reads the folders
+   * back rather than trusting the answer.
+   */
+  updateFoldersReturn: true,
+  /** Every `tabGroups.close` call, as the tabs it was given, in order. */
+  closedTabs: [],
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
   listings: 0,
   /**
@@ -319,6 +327,7 @@ const globalState = {
  * documented against; one that needs a configured value writes it itself.
  */
 function reset() {
+  registered.executed.length = 0;
   registered.clipboard = '';
   registered.clipboardWrites.length = 0;
   registered.clipboardReads.length = 0;
@@ -337,6 +346,10 @@ function reset() {
   registered.textDocuments.length = 0;
   registered.decorations.length = 0;
   registered.statusBarItems.length = 0;
+  registered.folderCalls.length = 0;
+  registered.updateFoldersReturn = true;
+  registered.closedTabs.length = 0;
+  tabGroups.all.length = 0;
   disk.files.clear();
   disk.links.clear();
   disk.unreadable.clear();
@@ -371,6 +384,24 @@ const listeners = new Map();
 
 /** The folders the window is opened on; a session captures these at invite time. */
 const folders = [{ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }];
+
+/**
+ * The window's tab groups, as leaving a room finds them: the room's tabs are closed by
+ * the client itself, because removing the folder leaves them open on files nobody owns.
+ * One group is enough to stage that: a test seeds its tabs the way a session leaves them.
+ */
+const tabGroups = {
+  /** The groups the window has open, each with the tabs it holds. */
+  all: [],
+  /** Closes tabs, recording what was closed. */
+  close(tabs) {
+    registered.closedTabs.push([...tabs]);
+    for (const group of tabGroups.all) {
+      group.tabs = group.tabs.filter((tab) => !tabs.includes(tab));
+    }
+    return Promise.resolve(true);
+  },
+};
 
 function event(name) {
   return (handler) => {
@@ -411,9 +442,12 @@ function parseUri(value) {
   const rest = colon === -1 ? withoutFragment : withoutFragment.slice(colon + 1);
   const question = rest.indexOf('?');
   const rawPath = question === -1 ? rest : rest.slice(0, question);
+  const path = decodedPath(rawPath);
   return {
     scheme,
-    path: decodedPath(rawPath),
+    path,
+    /** The platform path: the decoded path under one leading slash, as `Uri.file` reads. */
+    fsPath: `/${path.replace(/^\/+/, '')}`,
     query: question === -1 ? '' : rest.slice(question + 1),
     toString: () => text,
   };
@@ -433,14 +467,10 @@ function documentFor(uri) {
           return new TextDecoder().decode(file.bytes);
         }
       }
-      try {
-        const bytes = registered.files.readFile(uri);
-        // A read that has to ask the room answers with a promise; a document stand-in cannot
-        // hold a promise as text, and reads again when it settles.
-        return bytes instanceof Uint8Array ? new TextDecoder().decode(bytes) : '';
-      } catch {
-        return '';
-      }
+      // A `file:` document the working copy does not hold: the mirror lives on the real
+      // filesystem, which this stand-in cannot read, so it opens empty and the room's
+      // text arrives through the hold the open takes.
+      return '';
     },
     positionAt: (offset) => offset,
     offsetAt: (position) => position,
@@ -593,6 +623,9 @@ module.exports = {
       return disposable();
     },
     executeCommand(id, ...args) {
+      // Every command call, handled or not: the reload a join stages is one the stub
+      // has no handler for, and the call order is what the test asserts.
+      registered.executed.push({ id, args });
       const handler = registered.handlers.get(id);
       return Promise.resolve(handler === undefined ? undefined : handler(...args));
     },
@@ -680,20 +713,45 @@ module.exports = {
     },
     applyEdit: (edit) => registered.applyEditImpl(edit),
     createFileSystemWatcher,
-    registerFileSystemProvider(scheme, provider) {
-      registered.schemes.push(scheme);
-      registered.files = provider;
-      return disposable();
+    /**
+     * Adds or removes workspace folders, as establishing or leaving the room's folder
+     * does. An add to a window with no folder answers `true` and changes nothing — the
+     * empty-window shape only `openFolder` reaches — so joining one reloads instead.
+     */
+    updateWorkspaceFolders(start, deleteCount, ...added) {
+      registered.folderCalls.push({
+        start,
+        deleteCount,
+        added: added.map((folder) => folder.uri.toString()),
+      });
+      if (registered.updateFoldersReturn === false) {
+        return false;
+      }
+      if (folders.length === 0 && (deleteCount ?? 0) === 0) {
+        return true;
+      }
+      folders.splice(
+        start,
+        deleteCount ?? 0,
+        ...added.map((folder) => ({ uri: folder.uri, name: folder.name, index: 0 })),
+      );
+      folders.forEach((folder, index) => {
+        folder.index = index;
+      });
+      return true;
     },
     onDidOpenTextDocument: event('openTextDocument'),
     onDidCloseTextDocument: event('closeTextDocument'),
     onDidChangeTextDocument: event('changeTextDocument'),
+    onDidSaveTextDocument: event('saveTextDocument'),
+    onDidChangeWorkspaceFolders: event('workspaceFolders'),
     onDidChangeConfiguration: event('configuration'),
   },
 
   window: {
     activeTextEditor: undefined,
     visibleTextEditors: [],
+    tabGroups,
     createStatusBarItem: () => {
       const item = {
         text: '',
@@ -770,23 +828,6 @@ module.exports = {
         task({ report() {} }, { isCancellationRequested: false }),
       );
     },
-    /** A tree view, with the provider the extension registered for it. */
-    createTreeView: (id, options) => {
-      // One view per id, as the editor has: activating again replaces it rather than adding a
-      // second, which is what makes the recorded view the one a session is bound to.
-      const existing = registered.treeViews.findIndex((entry) => entry.id === id);
-      const entry = { id, options };
-      if (existing === -1) {
-        registered.treeViews.push(entry);
-      } else {
-        registered.treeViews[existing] = entry;
-      }
-      return {
-        title: undefined,
-        message: undefined,
-        dispose() {},
-      };
-    },
   },
 
   MarkdownString: class {
@@ -821,6 +862,8 @@ module.exports = {
   },
 
   env: {
+    /** The window's own id, as the extension names the mirror's provenance with it. */
+    sessionId: 'stub-session-id',
     clipboard: {
       readText: () => {
         registered.clipboardReads.push(registered.clipboard);

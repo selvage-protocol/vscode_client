@@ -62,15 +62,10 @@ test('activating registers exactly the commands the manifest contributes', () =>
     assert.ok(entry.title.trim() !== '', `${entry.command} has no title`);
   }
 
-  assert.deepEqual(
-    bundle.registered.schemes,
-    ['selvage'],
-    'the guest document scheme is registered once, under the name the bridge builds',
-  );
 });
 
 test('every setting the manifest declares is one the adapter reads', () => {
-  const source = ['extension.ts', 'documents.ts', 'guest-fs.ts', 'decorations.ts']
+  const source = ['extension.ts', 'documents.ts', 'mirror.ts', 'decorations.ts']
     .map((name) => readFileSync(resolve(ADAPTER, name), 'utf8'))
     .join('\n');
   const properties = Object.keys(manifest.contributes?.configuration?.properties ?? {});
@@ -100,26 +95,6 @@ test('the cursor label draws no name unless the user opts in', () => {
   );
 });
 
-test('the manifest contributes the Explorer view the extension registers', () => {
-  // A tree with no view is code nothing draws, and a view with no tree is an empty pane; the
-  // two are one feature and are named the same way.
-  const bundle = loadBundle();
-  bundle.activate({ subscriptions: [] });
-  bundle.deactivate();
-
-  const contributed = manifest.contributes?.views?.explorer ?? [];
-  assert.ok(contributed.length > 0, 'the manifest contributes no Explorer view');
-  for (const view of contributed) {
-    assert.match(view.id, /^selvage\./, `${view.id} is outside the extension's namespace`);
-    assert.ok((view.name ?? '').trim() !== '', `${view.id} has no name`);
-  }
-  assert.deepEqual(
-    [...bundle.registered.treeViews.map((view) => view.id)].sort(),
-    contributed.map((view) => view.id).sort(),
-    'a view the palette cannot reach, or a contributed one that is never registered',
-  );
-});
-
 test('the manifest asks for a VS Code no older than its type definitions', () => {
   // `vsce` refuses to package when `@types/vscode` needs a newer API than `engines.vscode`
   // promises, and nothing else checks it (`validateVSCodeTypesCompatibility`).
@@ -135,10 +110,10 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
   );
 });
 
-test('activation stays lazy: a command starts the extension, a guest tab restores it', () => {
+test('activation stays lazy: a command starts the extension, a mirror restores it', () => {
   // A command activation event is generated from `contributes.commands` since VS Code
   // 1.74, so the extension starts when a user runs one of its commands and not before. A
-  // `selvage:` tab restored in a new window is the one other way in: without the file-system
-  // event the tab is an unresolvable resource until a command happens to run.
-  assert.deepEqual(manifest.activationEvents ?? [], ['onFileSystem:selvage']);
+  // window opened on a mirror directory is the way back in after the reload that put the
+  // room's folder there — and after a crash that left one behind.
+  assert.deepEqual(manifest.activationEvents ?? [], ['workspaceContains:**/.selvage-mirror.json']);
 });

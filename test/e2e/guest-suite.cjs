@@ -9,14 +9,17 @@
  * exports for automation (`JoinArgs`, `OpenDocumentArgs`) rather than a `showInputBox`/
  * `showQuickPick` it has no way to click through.
  *
- * The watch phase reads the room's listing through this window's own file system provider —
- * the same listing the Explorer view renders — while the host makes a file under its folder
- * and removes another. The Explorer view itself cannot be driven from an extension test, and
- * the provider's directory listing is what it is drawn from.
+ * The room is a real directory here: joining adds the mirror folder to this window, and
+ * everything the proof asserts about the room's shape reads back off disk — the materialised
+ * files, the listing following the host's folder, the saved room text a tool would read.
+ * The Explorer view itself cannot be driven from an extension test, and the mirror on disk
+ * is what it is drawn from.
  */
 
 const vscode = require('vscode');
 const fs = require('fs');
+const path = require('path');
+const { execFile } = require('child_process');
 
 const DISPLAY_NAME = process.env.SELVAGE_E2E_DISPLAY_NAME ?? 'Bob';
 const INVITE_FILE = process.env.SELVAGE_E2E_INVITE_FILE;
@@ -87,6 +90,37 @@ async function appendMarker(document, marker, deadlineMs) {
   }
 }
 
+/** The mirror root: the `Selvage room <room>` folder joining added to this window. */
+function mirrorRoot(roomId) {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const found = folders.find((folder) => folder.name === `Selvage room ${roomId}`);
+  if (found === undefined) {
+    throw new Error(`guest: no room folder for ${roomId} in this window`);
+  }
+  return found.uri.fsPath;
+}
+
+/**
+ * Whether `rg` finds `pattern` under the mirror: what a tool outside the editor sees.
+ * A bounded spawn, skipped with a log line when `rg` is not installed.
+ */
+function rgMirror(pattern, dir) {
+  return new Promise((resolve, reject) => {
+    execFile('rg', ['-l', '-F', '--', pattern, dir], { timeout: 15000 }, (error, stdout) => {
+      if (error) {
+        if (error.code === 'ENOENT') {
+          console.log('guest: rg is not installed, skipping the mirror search check');
+          resolve('skipped');
+          return;
+        }
+        reject(new Error(`guest: rg over the mirror failed: ${error.message}`));
+        return;
+      }
+      resolve(stdout.trim().length > 0 ? 'found' : 'missing');
+    });
+  });
+}
+
 /** Routes the guest through the reconnect proxy when one is configured, keeping the room and
  * token the host actually minted. */
 function routeThroughProxy(invite) {
@@ -116,11 +150,40 @@ async function run() {
       DEADLINE_MS,
     );
 
+    const roomId = decodeURIComponent(/[?&]room=([^&]+)/.exec(rawInvite)[1]);
+    const root = await waitFor(
+      'the room folder to land in this window',
+      () => {
+        try {
+          return mirrorRoot(roomId);
+        } catch {
+          return false;
+        }
+      },
+      DEADLINE_MS,
+    );
+    // The shape lands before content: the mirror holds the empty file before anything
+    // opens it, which is what makes the open below a read of the room's shape.
+    const mirrorFile = path.join(root, roomPath);
+    await waitFor(
+      'the mirror to hold the empty file',
+      () => {
+        try {
+          return fs.statSync(mirrorFile).size === 0 ? true : false;
+        } catch {
+          return false;
+        }
+      },
+      DEADLINE_MS,
+    );
     const editor = await waitFor(
-      'the room document to open in a virtual editor',
+      'the room document to open in a mirror editor',
       async () => {
         await vscode.commands.executeCommand('selvage.openDocument', { path: roomPath });
-        return vscode.window.visibleTextEditors.find((candidate) => candidate.document.uri.scheme === 'selvage');
+        return vscode.window.visibleTextEditors.find(
+          (candidate) =>
+            candidate.document.uri.scheme === 'file' && candidate.document.uri.fsPath === mirrorFile,
+        );
       },
       DEADLINE_MS,
     );
@@ -143,13 +206,29 @@ async function run() {
         `${error.message}; the guest document reads ${JSON.stringify(document.getText())}; ` +
           `open room documents: ${JSON.stringify(
             vscode.window.visibleTextEditors
-              .filter((candidate) => candidate.document.uri.scheme === 'selvage')
+              .filter((candidate) => candidate.document.uri.scheme === 'file')
               .map((candidate) => candidate.document.uri.toString()),
           )}`,
       );
     });
     result.phase1 = { text: converged1 };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(result));
+
+    // The room's text on disk, as a tool outside the editor would read it: saving writes
+    // what the room already holds, and `rg` finds the host's marker in the mirror.
+    await document.save();
+    const savedText = fs.readFileSync(mirrorFile, 'utf8');
+    if (!savedText.includes(MARKER_HOST) || !savedText.includes(MARKER_GUEST)) {
+      throw new Error(
+        `guest: the saved mirror file does not hold the room's text: ${JSON.stringify(savedText)}`,
+      );
+    }
+    result.savedMirror = { text: savedText };
+    const searched = await rgMirror(MARKER_HOST, root);
+    if (searched === 'missing') {
+      throw new Error('guest: rg found no host marker in the mirror');
+    }
+    result.searchedMirror = searched;
 
     if (FOLLOW_READY_FILE !== undefined) {
       // The follow phase: this window follows the host by name — the programmatic seam for a
@@ -160,7 +239,7 @@ async function run() {
         'the follow to land in the room document',
         () => {
           const active = vscode.window.activeTextEditor;
-          return active !== undefined && active.document.uri.scheme === 'selvage' ? true : false;
+          return active !== undefined && active.document.uri.scheme === 'file' ? true : false;
         },
         DEADLINE_MS,
       );
@@ -190,7 +269,7 @@ async function run() {
         'the follow to track the host caret to the end',
         () => {
           const active = vscode.window.activeTextEditor;
-          if (active === undefined || active.document.uri.scheme !== 'selvage') {
+          if (active === undefined || active.document.uri.scheme !== 'file') {
             return false;
           }
           return active.document.offsetAt(active.selection.active) === movedTo ? true : false;
@@ -239,7 +318,8 @@ async function run() {
           await vscode.commands.executeCommand('selvage.openDocument', { path: grantedPath });
           return vscode.window.visibleTextEditors.find(
             (candidate) =>
-              candidate.document.uri.scheme === 'selvage' &&
+              candidate.document.uri.scheme === 'file' &&
+              candidate.document.uri.fsPath === path.join(root, grantedPath) &&
               candidate.document.getText() === GRANTED_TEXT,
           );
         },
@@ -267,11 +347,11 @@ async function run() {
 
     if (WATCH_PATH !== undefined && WATCH_DONE_FILE !== undefined) {
       // The room's listing, as this window's own provider renders it: the same listing the
-      // Explorer view is built from, read the way anything in this editor would read it.
+      // Explorer view is drawn from, read off disk the way anything in this editor would
+      // read them.
       const roomId = decodeURIComponent(/[?&]room=([^&]+)/.exec(rawInvite)[1]);
-      const room = `room=${encodeURIComponent(roomId)}`;
-      const namesIn = async (uri) =>
-        (await vscode.workspace.fs.readDirectory(uri)).map(([name]) => name);
+      const watchRoot = mirrorRoot(roomId);
+      const namesIn = (dir) => fs.readdirSync(dir);
       const top = WATCH_PATH.split('/')[0];
       const leaf = WATCH_PATH.slice(top.length + 1);
 
@@ -282,7 +362,7 @@ async function run() {
         'the room\u2019s listing to name the path the host is about to remove',
         async () => {
           try {
-            const seen = await namesIn(vscode.Uri.parse(`selvage:/?${room}`));
+            const seen = namesIn(watchRoot);
             return seen.includes(WATCH_DOOMED_PATH) ? seen : false;
           } catch {
             return false;
@@ -298,7 +378,7 @@ async function run() {
         'the room\u2019s listing to gain the created path and lose the removed one',
         async () => {
           try {
-            const seen = await namesIn(vscode.Uri.parse(`selvage:/?${room}`));
+            const seen = namesIn(watchRoot);
             return seen.includes(top) && !seen.includes(WATCH_DOOMED_PATH) ? seen : false;
           } catch {
             return false;
@@ -313,7 +393,7 @@ async function run() {
         'the created path to be a directory this window can walk into',
         async () => {
           try {
-            const seen = await namesIn(vscode.Uri.parse(`selvage:/${top}?${room}`));
+            const seen = namesIn(path.join(watchRoot, top));
             return seen.includes(leaf) ? seen : false;
           } catch {
             return false;
@@ -330,7 +410,8 @@ async function run() {
           await vscode.commands.executeCommand('selvage.openDocument', { path: WATCH_PATH });
           return vscode.window.visibleTextEditors.find(
             (candidate) =>
-              candidate.document.uri.scheme === 'selvage' &&
+              candidate.document.uri.scheme === 'file' &&
+              candidate.document.uri.fsPath === path.join(watchRoot, WATCH_PATH) &&
               candidate.document.getText() === WATCH_TEXT,
           );
         },
@@ -346,19 +427,33 @@ async function run() {
         text: createdEditor.document.getText(),
       };
 
-      // The removed path, opened fresh from the listing as it stood: the host has no
-      // file to serve for it, so the open is refused with the reason instead of leaving
-      // a phantom empty document.
+      // The removed path is gone from the mirror: the republish took the file, so no
+      // phantom empty document can open in its place, and asking for it opens nothing.
+      // (The refusal sentence itself goes to a message the test API cannot read.) The
+      // command runs detached, so the absence is polled rather than read off the call:
+      // an editor for the path appearing at any point in the window fails it.
+      const doomedFile = path.join(watchRoot, WATCH_DOOMED_PATH);
+      if (fs.existsSync(doomedFile)) {
+        throw new Error(`the de-listed file is still on disk: ${doomedFile}`);
+      }
+      await vscode.commands.executeCommand('selvage.openDocument', { path: WATCH_DOOMED_PATH });
+      const start = Date.now();
       let deleteRefused = false;
-      let deleteRefusal = '';
-      try {
-        const phantom = await vscode.workspace.openTextDocument(
-          vscode.Uri.parse(`selvage:/${WATCH_DOOMED_PATH}?${room}`),
+      let deleteRefusal = 'the republish removed the de-listed file from the mirror';
+      for (;;) {
+        const openedDoomed = vscode.window.visibleTextEditors.some(
+          (candidate) => candidate.document.uri.fsPath === doomedFile,
         );
-        deleteRefusal = `opened with ${JSON.stringify(phantom.getText())}`;
-      } catch (error) {
-        deleteRefusal = error instanceof Error ? error.message : String(error);
-        deleteRefused = deleteRefusal.includes('no longer shares');
+        if (openedDoomed) {
+          deleteRefused = false;
+          deleteRefusal = 'the de-listed path opened an editor anyway';
+          break;
+        }
+        if (Date.now() - start > 3000) {
+          deleteRefused = true;
+          break;
+        }
+        await delay(50);
       }
       result.watch.deleteRefused = deleteRefused;
       result.watch.deleteRefusal = deleteRefusal;

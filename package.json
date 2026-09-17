@@ -32,17 +32,9 @@
     }
   },
   "activationEvents": [
-    "onFileSystem:selvage"
+    "workspaceContains:**/.selvage-mirror.json"
   ],
   "contributes": {
-    "views": {
-      "explorer": [
-        {
-          "id": "selvage.grant",
-          "name": "Selvage"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "selvage.host",
@@ -63,6 +55,11 @@
         "command": "selvage.openDocument",
         "category": "Selvage",
         "title": "Open a document from the room"
+      },
+      {
+        "command": "selvage.fetch",
+        "category": "Selvage",
+        "title": "Fetch a path from the room"
       },
       {
         "command": "selvage.leave",
@@ -109,7 +106,7 @@
         "selvage.autoSave": {
           "type": "boolean",
           "default": true,
-          "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's document is virtual and its save writes nothing; the call is what clears the editor's unsaved marker."
+          "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's mirror file holds what the room already holds, so its save writes the room's own text; the call is also what clears the editor's unsaved marker."
         },
         "selvage.openOnJoin": {
           "type": "boolean",
@@ -143,10 +140,10 @@
     "test": "npm run build && node --test test/*.test.ts test/spikes/*.test.ts",
     "test:engine": "node --test test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts",
     "test:adapter": "node --test test/editing.test.ts test/bridge.test.ts test/documents.test.ts",
-    "test:extension": "npm run build && node --test test/manifest.test.ts test/guest-fs.test.ts",
+    "test:extension": "npm run build && node --test test/manifest.test.ts test/mirror.test.ts",
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/guest-fs.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
+    "test:fast": "npm run build && node --test test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/envelope.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",

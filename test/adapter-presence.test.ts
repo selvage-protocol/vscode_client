@@ -13,8 +13,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
-import { virtualUri } from '../src/bridge/virtual.ts';
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { counting } from './helpers/counting-socket.ts';
@@ -57,7 +56,12 @@ async function seat(t: TestContext): Promise<Adapter> {
 
   const bundle = loadBundle();
   bundle.stub.reset();
-  bundle.activate({ subscriptions: [] });
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
   t.after(async () => {
     bundle.deactivate();
     await host.disconnect();
@@ -69,15 +73,13 @@ async function seat(t: TestContext): Promise<Adapter> {
     bundle.stub.registered.information.some((message) => message.includes('joined room')),
   );
 
-  const uriString = virtualUri(host.session().roomId, PATH);
-  const question = uriString.indexOf('?');
+  // The room's file under the guest's mirror: opening it reports the document, which is
+  // what holds it in the room. The text arrived with the sync, so no wait precedes the
+  // caret: the first presence this window publishes already carries the path.
+  const roomId = host.session().roomId;
+  const mirrorRoot = mirrorWindowDir(storage, roomId);
   const document = {
-    uri: {
-      scheme: 'selvage',
-      path: uriString.slice(uriString.indexOf('/'), question),
-      query: uriString.slice(question + 1),
-      toString: () => uriString,
-    },
+    uri: bundle.stub.Uri.parse(`file://${mirrorRoot}/${PATH}`),
     eol: 1,
     isDirty: false,
     getText: () => TEXT,
@@ -85,28 +87,39 @@ async function seat(t: TestContext): Promise<Adapter> {
     offsetAt: (position: number) => position,
     save: () => Promise.resolve(true),
   };
+  const drawn: unknown[][] = [];
   const editor = {
     document,
     selection: { anchor: 0, active: 0 },
-    setDecorations: () => undefined,
+    setDecorations: (...args: unknown[]) => {
+      drawn.push(args);
+    },
   };
   bundle.stub.fire('openTextDocument', document);
   bundle.stub.window.activeTextEditor = editor;
-  // The replica has to hold the room's text before an offset in it means anything.
-  await waitFor('the guest replica to hold the room text', () => {
-    const files = bundle.registered.files;
-    if (files === undefined) {
-      return false;
+  bundle.stub.window.visibleTextEditors = [editor];
+  // The open reports the document, which is what holds it in the room: the host seeing
+  // the hold is the room settled around this window.
+  await waitFor(`the room to hold ${PATH} open`, () =>
+    host.documents().includes(PATH) ? true : false,
+  );
+  // A draw proves the replica holds the room's text: the presence frame that draws it
+  // resolves anchors against it, and a frame the guest drops for a text not yet synced
+  // never comes again. Alternating keeps every repeat a genuine change; the caret ends
+  // where the tests move it from.
+  let at = 3;
+  host.setSelection(PATH, { anchor: at, head: at });
+  await waitFor(`the seating caret to be drawn in ${PATH}`, () => {
+    if (
+      drawn.some((args) => Array.isArray(args[1]) && (args[1] as unknown[]).length > 0)
+    ) {
+      return true;
     }
-    try {
-      const bytes = files.readFile(document.uri);
-      // A read of a path the replica has not received answers with a promise, which is not
-      // yet the room's text: the wait polls until the synchronous answer holds it.
-      return bytes instanceof Uint8Array && new TextDecoder().decode(bytes) === TEXT;
-    } catch {
-      return false;
-    }
+    at = at === 3 ? 4 : 3;
+    host.setSelection(PATH, { anchor: at, head: at });
+    return false;
   });
+  host.setSelection(PATH, { anchor: 3, head: 3 });
   // Counted from here: seating published its own presence before the room had a caret in it.
   tap.reset();
 
@@ -178,7 +191,31 @@ test('a session that ends inside the interval still publishes the last position'
   // session ends, and losing it there is the failure this pins.
   adapter.bundle.deactivate();
 
+  // The frame crosses three event loops (guest teardown, server relay, host) under
+  // whatever else the suite runs beside it: the predicate is the same, the deadline is
+  // not the suite's default, and a frame truly lost still fails loudly with the state.
+  const dbgStart = Date.now();
+  const dbgLogged = { value: process.env.SELVAGE_DBG_PRESENCE === undefined };
   await waitFor('the final caret to reach the room', () => {
+    if (!dbgLogged.value && Date.now() - dbgStart > 12000) {
+      dbgLogged.value = true;
+      console.log(
+        'DBG-PRESENCE:',
+        JSON.stringify(
+          events.events.map((event) =>
+            event.type === 'presenceChanged'
+              ? event.presence.map((p) => ({
+                  peer: p.peer?.display_name,
+                  peerId: p.peer?.peer_id,
+                  path: p.state?.path,
+                  sel: p.state?.selection,
+                }))
+              : event.type,
+          ),
+        ),
+      );
+      delete process.env.SELVAGE_DBG_PRESENCE;
+    }
     for (const event of events.events) {
       if (event.type !== 'presenceChanged') {
         continue;
@@ -198,7 +235,7 @@ test('a session that ends inside the interval still publishes the last position'
       }
     }
     return false;
-  }, { describe: () => ({ events: events.types(), hostText: adapter.host.text(PATH) }) });
+  }, { timeoutMs: 15000, describe: () => ({ events: events.types(), hostText: adapter.host.text(PATH) }) });
 });
 
 test('leaving the shared document clears the cursor rather than dropping the event', async (t) => {

@@ -40,6 +40,7 @@ const TITLES: Record<string, string> = {
   'selvage.join': 'Join a session from an invite link',
   'selvage.copyInvite': 'Copy the invite link',
   'selvage.openDocument': 'Open a document from the room',
+  'selvage.fetch': 'Fetch a path from the room',
   'selvage.leave': 'Leave the session',
   'selvage.displayName': 'Set the name other participants see',
   'selvage.peers': "List the room's participants",
@@ -82,6 +83,23 @@ const SENTENCES = [
   "'Selvage: you are hosting, so the files you open are the ones the room has.'",
   '`Selvage: could not open ${} from the room: ${}`',
   '`Selvage: no shared document matches "${}".`',
+  // Fetching a listed path's content (`selvage.fetch`, the `:SelvageFetch` twin).
+  "'Selvage: you are hosting, so the files a mirror would hold are already on your disk.'",
+  "'Selvage: the room lists no files to fetch.'",
+  '`Selvage: no file the room lists matches "${}".`',
+  '`Selvage: fetching opens ${} in the room, so every peer receives it.`',
+  "'Selvage: fetching opens them in the room, so every peer receives them.'",
+  "'Selvage: fetched the files.'",
+  '`Selvage: could not fetch ${} from the room: ${}`',
+  '`Selvage: fetch all ${} listed files into the mirror? Each is held in the room so every peer receives it, and the mirror holds whatever arrives.`',
+  // The mirror's refusals: what the room cannot do, said where the client is present.
+  '`Selvage: ${} is not in the room, so it is not shared; the mirror holds the room\'s files and is removed when the session ends.`',
+  '`Selvage: ${} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`',
+  '`Selvage: ${} of the room\'s files could not be mirrored, starting with ${}.`',
+  '`Selvage: could not add the room\'s folder to this window (${}); join again.`',
+  "`Selvage: could not open the room's folder in this empty window; open a folder first and join again.`",
+  '`Selvage: removed room ${}\'s leftover files from the last session; they were the room\'s text, not unsaved work.`',
+  '`Selvage: could not join room ${}: the editor gave this window no storage for the room\'s files.`',
   "'Selvage: not in a session.'",
   "'Selvage: left the session.'",
   '`Selvage: room ${}`',
@@ -99,9 +117,8 @@ const SENTENCES = [
   '`Selvage: ${} (${})`',
   // The list of participants.
   "'Selvage: no other participants yet.'",
-  // Going to a participant, and following one.
-  '`Selvage: following ${}.`',
-  '`Selvage: stopped following ${}.`',
+  // Going to a participant, and following one. Start and stop live in the status item:
+  // the indicator going up and down is the whole announcement, so there is no toast.
   "'Selvage: not following anyone.'",
   '`Selvage: ${} left the room, so following stopped.`',
   '`Selvage: nothing to go to: ${} is not in a document.`',
