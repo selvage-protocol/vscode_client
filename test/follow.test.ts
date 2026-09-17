@@ -1173,3 +1173,61 @@ test('a host jump to a path it does not share is refused without opening', async
     'the refused jump opened an editor',
   );
 });
+
+test('a guest follow to a peer-named path outside the grant is refused without opening', async (t) => {
+  // The guest branch of the open had no grant check: a peer publishing awareness for
+  // `../../x` — or the mirror's own marker — made a following window open it. The gate
+  // lives at `mirrorUri` now, so both refuse with the grant's sentence and open nothing.
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  await openHeld(seat_, PATH_A, holder, 5);
+
+  const mallory = await SelvageEngine.join(
+    seat_.invite,
+    'Mallory',
+    options({ baseUrl: seat_.server.wsBase, displayName: 'Mallory', reconnect: false }),
+  );
+  t.after(async () => {
+    await mallory.disconnect();
+  });
+  const malloryId = mallory.session().peer.peer_id;
+  // No text, so this publishes the path alone: enough for the follow to reach the gate.
+  mallory.setSelection('../../outside.md', { anchor: 0, head: 0 });
+  const openedBefore = seat_.bundle.stub.registered.opened.length;
+
+  // An attempt from before presence arrives pends before opening anything, so the command
+  // is re-issued until the refusal it stages shows.
+  const retry = issueUntil(seat_.bundle, 'selvage.followParticipant', { peerId: malloryId });
+  await waitFor('the traversal to be refused', () => {
+    if (
+      seat_.bundle.stub.registered.errors.some(
+        (message) =>
+          message ===
+          'Selvage: could not open ../../outside.md from the room: the path is not one this window shares',
+      )
+    ) {
+      return true;
+    }
+    retry();
+    return false;
+  });
+
+  // The mirror's own marker names bookkeeping, never a document: refused the same way.
+  mallory.setSelection('.selvage-mirror.json', { anchor: 0, head: 0 });
+  await waitFor('the marker to be refused', () =>
+    seat_.bundle.stub.registered.errors.some(
+      (message) =>
+        message ===
+        'Selvage: could not open .selvage-mirror.json from the room: the path is not one this window shares',
+    )
+      ? true
+      : false,
+  );
+
+  assert.deepEqual(
+    seat_.bundle.stub.registered.opened.slice(openedBefore),
+    [],
+    'a peer-named path reached the editor',
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
+});

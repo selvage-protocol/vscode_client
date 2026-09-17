@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SessionBridge, grantUnion, matchesReplica, peerColour } from '../bridge/index.ts';
+import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, peerColour } from '../bridge/index.ts';
 import type { Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
@@ -66,6 +66,20 @@ const GRANT_REFRESH_INTERVAL_MS = 250;
  * answers and a tab that never opens.
  */
 const FETCH_TIMEOUT_MS = 5000;
+
+/**
+ * The most paths one fetch holds at once. Every held path is a `doc.open` every peer
+ * absorbs and a `Y.Text` every replica keeps, so a whole listing — or one directory of
+ * it — past this refuses with a sentence naming a narrower target instead of holding
+ * the room sequentially, each path up to `FETCH_TIMEOUT_MS`.
+ */
+const MAX_FETCH_ALL_PATHS = 100;
+
+/**
+ * The most unlisted mirror paths each once-per-path warning set holds. Past it the oldest
+ * entry is evicted: a tool churning unlisted names re-warns rather than growing memory.
+ */
+const MAX_UNLISTED_WARNINGS = 500;
 
 /** The session this window is in. One per window: multi-room is a v1 non-goal. */
 let current: Session | undefined;
@@ -216,7 +230,9 @@ class Session {
   /**
    * Unlisted mirror paths already said once this session: an open and a save each say
    * their own sentence once per path, and the person's own action is the only thing
-   * that could clear them — nothing does, so they stand for the session.
+   * that could clear them — nothing does, so they stand for the session. Bounded with
+   * FIFO eviction, so a tool churning unlisted names cannot grow them without bound;
+   * a path evicted and reopened says its sentence again, which is the honest answer.
    */
   private readonly unlistedOpened = new Set<string>();
   private readonly unlistedSaved = new Set<string>();
@@ -416,6 +432,25 @@ class Session {
   }
 
   /**
+   * Records an unlisted path as warned, true when this is the first time: the once-per-path
+   * rule with a bound. The oldest entry goes past `MAX_UNLISTED_WARNINGS`, so the set
+   * cannot grow one entry per distinct path a tool drops in the mirror.
+   */
+  private noteUnlisted(warned: Set<string>, path: string): boolean {
+    if (warned.has(path)) {
+      return false;
+    }
+    if (warned.size >= MAX_UNLISTED_WARNINGS) {
+      const oldest = warned.values().next();
+      if (!oldest.done) {
+        warned.delete(oldest.value);
+      }
+    }
+    warned.add(path);
+    return true;
+  }
+
+  /**
    * Fetches the room's content for listed paths: one path, or a directory of them —
    * the `:SelvageFetch` twin (`nvim_client/README.md`). A fetch is a hold: every path
    * it names joins the room's open-document set, so every peer receives it, which is
@@ -432,7 +467,9 @@ class Session {
       return;
     }
     const listed = this.listed();
-    const trimmed = (wanted ?? '').trim();
+    // A directory typed with a trailing slash names the directory: the prefix match below
+    // compares `dir/`, so the slash is stripped rather than missed.
+    const trimmed = (wanted ?? '').trim().replace(/\/+$/, '');
     // A named path resolves against the listing as it stands — including an empty one,
     // where a stale name still earns the reason it left rather than a miss or an empty
     // room. Only the picker's offer needs a listing to offer from.
@@ -454,11 +491,23 @@ class Session {
           }
           return;
         }
+        if (under.length > MAX_FETCH_ALL_PATHS) {
+          void vscode.window.showErrorMessage(
+            `Selvage: ${under.length} files under ${trimmed} is more than one fetch holds (at most ${MAX_FETCH_ALL_PATHS} at once); name a narrower directory.`,
+          );
+          return;
+        }
         targets = under;
       }
     } else {
       if (listed.length === 0) {
         void vscode.window.showInformationMessage('Selvage: the room lists no files to fetch.');
+        return;
+      }
+      if (listed.length > MAX_FETCH_ALL_PATHS) {
+        void vscode.window.showErrorMessage(
+          `Selvage: fetching all ${listed.length} listed files at once would hold every one in the room; fetch a file or a directory instead (at most ${MAX_FETCH_ALL_PATHS} at once).`,
+        );
         return;
       }
       // The whole listing leads the offer: bare `:SelvageFetch` fetches it all, and the
@@ -999,9 +1048,17 @@ class Session {
   /**
    * The mirror file a room path lives at, or `undefined` outside a guest's mirror: the
    * one address a guest's document has, whether the editor opens it or a tool reads it.
+   *
+   * A path a peer names — follow, go-to, the open command — is untrusted input: presence
+   * carries any string, so the grant's shape rule gates it here, at the narrow waist every
+   * guest open passes through, rather than at each caller. The marker is refused with it:
+   * it names the mirror's own bookkeeping, never a room document.
    */
   mirrorUri(path: string): vscode.Uri | undefined {
     if (this.mirror === undefined) {
+      return undefined;
+    }
+    if (!isGrantedPath(path) || path === MIRROR_MARKER) {
       return undefined;
     }
     return vscode.Uri.joinPath(this.mirror.uri, ...path.split('/'));
@@ -1019,9 +1076,14 @@ class Session {
     }
     try {
       if (this.role() === 'guest') {
+        // The path may have come from a peer's presence, so a refusal here reads as the
+        // grant's answer rather than a missing mirror: `mirrorUri` already applied it.
+        if (this.mirror === undefined) {
+          throw new Error('this window has no mirror for the room');
+        }
         const uri = this.mirrorUri(path);
         if (uri === undefined) {
-          throw new Error('this window has no mirror for the room');
+          throw new Error('the path is not one this window shares');
         }
         return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
       }
@@ -1303,8 +1365,7 @@ class Session {
     // unlisted path here is always a real file worth naming.)
     if (this.role() === 'guest' && this.mirror !== undefined && !this.offered().includes(path)) {
       this.editor.forget(document.uri);
-      if (!this.unlistedOpened.has(path)) {
-        this.unlistedOpened.add(path);
+      if (this.noteUnlisted(this.unlistedOpened, path)) {
         void vscode.window.showWarningMessage(
           `Selvage: ${path} is not in the room, so it is not shared; the mirror holds the room's files and is removed when the session ends.`,
         );
@@ -1332,13 +1393,11 @@ class Session {
     if (rel === undefined || rel === MIRROR_MARKER || this.offered().includes(rel)) {
       return;
     }
-    if (this.unlistedSaved.has(rel)) {
-      return;
+    if (this.noteUnlisted(this.unlistedSaved, rel)) {
+      void vscode.window.showWarningMessage(
+        `Selvage: ${rel} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`,
+      );
     }
-    this.unlistedSaved.add(rel);
-    void vscode.window.showWarningMessage(
-      `Selvage: ${rel} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`,
-    );
   }
 
   private close(document: vscode.TextDocument): void {
@@ -2094,7 +2153,7 @@ async function openRoomDocument(session: Session, path: string): Promise<void> {
   try {
     const uri = session.mirrorUri(path);
     if (uri === undefined) {
-      throw new Error('this window has no mirror for the room');
+      throw new Error('the path is not one this window shares');
     }
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
   } catch (error) {

@@ -334,13 +334,16 @@ export class SelvageEngine {
     options: JoinOptions = {},
   ): Promise<SelvageEngine> {
     const parsed = parseSessionUrl(invite);
-    if (
-      parsed === undefined ||
-      parsed.join.room === undefined ||
-      parsed.join.token === undefined
-    ) {
+    // A truncated paste's error must not echo the paste: the invite carries the room's
+    // token, so the refusal names the missing part rather than the link.
+    if (parsed === undefined) {
       return Promise.reject(
-        new ProtocolError(errCode.badParams, `not an invite URL: ${invite}`),
+        new ProtocolError(errCode.badParams, 'not an invite URL: it has no session address'),
+      );
+    }
+    if (parsed.join.room === undefined || parsed.join.token === undefined) {
+      return Promise.reject(
+        new ProtocolError(errCode.badParams, 'not an invite URL: it names no room to join'),
       );
     }
     return SelvageEngine.connect({
@@ -1274,7 +1277,9 @@ export class SelvageEngine {
       }
       case eventName.hostDetached: {
         const graceMs = numberParam(message.params, 'grace_ms') ?? 0;
-        this.emit({ type: 'hostDetached', graceMs });
+        // A grace of 1e15 renders as a 31-million-second tooltip: the room rejoins in
+        // seconds or not at all, so the wait is clamped to the hour it never needs.
+        this.emit({ type: 'hostDetached', graceMs: Math.min(Math.max(graceMs, 0), 3_600_000) });
         break;
       }
       case eventName.hostAttached: {
@@ -1288,20 +1293,24 @@ export class SelvageEngine {
       }
       case eventName.roomGone: {
         this.terminal = true;
-        const reason = textParam(message.params, 'reason') ?? 'room gone';
+        const reason = boundedText(textParam(message.params, 'reason') ?? 'room gone');
+        // A room gone mid-handshake settles the seat waiter now: the session is already
+        // known-terminal, and waiting out the handshake timeout would lie about it.
+        this.rejectSeat(new ProtocolError(errCode.roomGone, reason));
         this.emit({ type: 'roomGone', reason });
         break;
       }
       case eventName.sessionError: {
         const refusal: Refusal = {
-          code: textParam(message.params, 'code') ?? 'error',
-          message:
-            textParam(message.params, 'message') ??
-            'the server reported a fault',
+          code: boundedText(textParam(message.params, 'code') ?? 'error'),
+          message: boundedText(
+            textParam(message.params, 'message') ?? 'the server reported a fault',
+          ),
         };
         this.refusal = refusal;
         if (isTerminalCode(refusal.code)) {
           this.terminal = true;
+          this.rejectSeat(new ProtocolError(refusal.code, refusal.message));
         }
         if (this.seatWaiter === undefined) {
           this.emit({
@@ -1517,6 +1526,16 @@ function textParam(params: unknown, key: string): string | undefined {
       ? (params as Record<string, unknown>)[key]
       : undefined;
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * A server diagnostic cut to what a dialog can show: a hostile relay can put megabytes
+ * in `message`/`reason`, shown verbatim by the adapter, so these are truncated rather
+ * than passed whole. Server diagnostics, not owner-chosen names, so truncation with an
+ * ellipsis is honest where it would not be for a display name.
+ */
+function boundedText(text: string): string {
+  return text.length > 500 ? `${text.slice(0, 497)}...` : text;
 }
 
 /**

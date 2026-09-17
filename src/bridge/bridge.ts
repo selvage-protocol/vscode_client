@@ -319,9 +319,12 @@ export class SessionBridge {
     // editor reports is in the buffer's coordinates, and mapping it onto the replica's would
     // need the EOL offset table — a class of its own in the extension the study read. Two
     // string scans per change event buy the whole policy being four lines long.
-    this.publish(path, text, replica);
     this.moveSave(path);
-    this.scheduleBackstop(path);
+    // A refused publish leaves the buffer alone: the backstop converges the buffer to the
+    // replica, which is exactly what must not happen to text the room refused to carry.
+    if (this.publish(path, text, replica)) {
+      this.scheduleBackstop(path);
+    }
   }
 
   /** The editor closed a document: this client stops holding it open in the room. */
@@ -331,6 +334,9 @@ export class SessionBridge {
     }
     this.unarrived.delete(path);
     this.documents.delete(path);
+    // The flight belongs to the closed instance: without this a reopen queues behind it,
+    // and its settlement — still the current entry — converges the new buffer as its own.
+    this.inFlight.delete(path);
     this.cancelSave(path);
     this.cancelBackstop(path);
     this.pending.delete(path);
@@ -636,9 +642,19 @@ export class SessionBridge {
         }
       })
       .catch((error: unknown) => {
-        // A refused hold leaves nothing that will ever open this document, so a deferred entry
-        // goes with the report rather than sitting there for the rest of the session.
+        // A refused hold leaves nothing that will ever open this document, so the bridge
+        // entry goes with the report rather than sitting there for the rest of the session:
+        // `documents` still holding the path would let a later keystroke publish through
+        // the whole-replica sync what the server refused to open. The in-flight apply goes
+        // with it: its settlement must neither publish nor converge, and a reopen issues
+        // its own flight rather than queueing behind a stale one.
         this.unarrived.delete(path);
+        this.documents.delete(path);
+        this.inFlight.delete(path);
+        this.cancelSave(path);
+        this.cancelBackstop(path);
+        this.pending.delete(path);
+        this.attempts.delete(path);
         this.refused('open', path, error);
       });
   }
@@ -660,8 +676,27 @@ export class SessionBridge {
     });
   }
 
-  /** Writes the buffer's difference from the replica into the replica. */
-  private publish(path: string, bufferText: string, replica: string): void {
+  /**
+   * Writes the buffer's difference from the replica into the replica. A buffer that grew
+   * past what the session carries — opened under the bound, typed past it — is refused
+   * rather than published: the seed gate judges the buffer at open, and this is the same
+   * gate on the buffer at every keystroke. Reported once per path, like a seed refusal.
+   * True when the difference was published: a refusal leaves the buffer alone, the way a
+   * refused seed does, rather than scheduling the convergence that would wipe it.
+   */
+  private publish(path: string, bufferText: string, replica: string): boolean {
+    const refusal = seedRefusal(path, bufferText);
+    if (refusal !== undefined) {
+      if (!this.refusedSeeds.has(path)) {
+        this.refusedSeeds.add(path);
+        this.host.report({
+          kind: 'sessionError',
+          code: 'error',
+          message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
+        });
+      }
+      return false;
+    }
     const change = diff(replica, toCrdt(bufferText));
     if (change.end > change.start) {
       this.engine.delete(path, change.start, change.end - change.start);
@@ -669,6 +704,7 @@ export class SessionBridge {
     if (change.text !== '') {
       this.engine.insert(path, change.start, change.text);
     }
+    return true;
   }
 
   /**
@@ -677,18 +713,28 @@ export class SessionBridge {
    * settles, so a change is never diffed against a buffer an edit is still moving.
    */
   private issue(path: string, change: TextChange, expected: string): void {
-    this.inFlight.set(path, {
+    const flight = {
       expected,
       replica: this.engine.text(path),
       before: this.host.text(path),
       moved: false,
-    });
+    };
+    this.inFlight.set(path, flight);
     void this.host
       .applyChange(path, change)
       .then((applied) => {
+        // The settlement belongs to the exact flight it was issued for: a refused hold or
+        // a close drops the flight, and a reopen issues its own, so a stale settlement
+        // converges nothing — neither a publish nor a wipe.
+        if (this.inFlight.get(path) !== flight) {
+          return;
+        }
         this.settle(path, applied);
       })
       .catch((error: unknown) => {
+        if (this.inFlight.get(path) !== flight) {
+          return;
+        }
         this.inFlight.delete(path);
         this.host.report({
           kind: 'sessionError',
@@ -704,6 +750,11 @@ export class SessionBridge {
   private settle(path: string, applied: boolean): void {
     const flight = this.inFlight.get(path);
     this.inFlight.delete(path);
+    // The document left while the apply was in flight — refused open, or closed: its
+    // settlement publishes nothing and converges nothing.
+    if (!this.documents.has(path)) {
+      return;
+    }
     if (!applied) {
       this.refuse(path, flight?.moved ?? false);
       return;
@@ -723,7 +774,14 @@ export class SessionBridge {
         // edit behind it lands the merge exactly on the pre-apply text when the peer's change
         // and the user's edit are inverses.
         if (actual !== flight.before || flight.moved) {
-          this.publish(path, actual, replica);
+          if (!this.publish(path, actual, replica)) {
+            // The room refused the buffer — over the size bound, or ungrantable: it stays
+            // as the user left it, the way a refused seed does. The pending reconcile would
+            // converge it back to the replica, and an armed backstop would do the same, so
+            // both go with the refusal.
+            this.pending.delete(path);
+            this.cancelBackstop(path);
+          }
         }
       } else {
         // The replica moved too, so the buffer's difference is not separable from a peer's

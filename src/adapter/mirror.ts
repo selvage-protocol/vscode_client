@@ -47,6 +47,8 @@ export const MIRROR_MARKER = '.selvage-mirror.json';
  * A URI normalises `..` away before this ever sees it; the check is defence in depth.
  * Backslashes normalise to slashes on both sides: `fsPath` uses the platform's
  * separators, and a listing never carries a backslash, so the comparison is on one form.
+ * Empty and `.` segments name nothing either, for symmetry with the grant's shape rule:
+ * a tool's stray spelling resolves no room path rather than a different file.
  */
 export function mirrorRelative(root: string, fsPath: string): string | undefined {
   const normalRoot = root.replace(/\\/g, '/');
@@ -56,7 +58,7 @@ export function mirrorRelative(root: string, fsPath: string): string | undefined
     return undefined;
   }
   const rel = normalPath.slice(base.length);
-  if (rel === '' || rel.split('/').includes('..')) {
+  if (rel === '' || rel.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
     return undefined;
   }
   return rel;

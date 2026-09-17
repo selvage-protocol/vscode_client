@@ -13,7 +13,6 @@ import assert from 'node:assert/strict';
 import {
   GRANT_EXCLUDED_DIRS,
   MAX_GRANT_PATH_BYTES,
-  grantChildren,
   grantUnion,
   isGrantedPath,
   sortGrant,
@@ -286,47 +285,4 @@ test('what a window offers is the grant unioned with the room\u2019s open docume
   // A server with no grant still offers everything the room holds open.
   assert.deepEqual(grantUnion([], ['b.rs', 'a.rs']), ['a.rs', 'b.rs']);
   assert.deepEqual(grantUnion([], []), []);
-});
-
-test('a tree is derived by splitting the listing, and directories are the implication', () => {
-  const paths = ['README.md', 'src/main.rs', 'src/deep/nested.rs', 'docs/guide/intro.md'];
-
-  assert.deepEqual(grantChildren(paths), [
-    { name: 'docs', path: 'docs', directory: true },
-    { name: 'src', path: 'src', directory: true },
-    { name: 'README.md', path: 'README.md', directory: false },
-  ]);
-  assert.deepEqual(grantChildren(paths, 'src'), [
-    { name: 'deep', path: 'src/deep', directory: true },
-    { name: 'main.rs', path: 'src/main.rs', directory: false },
-  ]);
-  assert.deepEqual(grantChildren(paths, 'src/deep'), [
-    { name: 'nested.rs', path: 'src/deep/nested.rs', directory: false },
-  ]);
-  assert.deepEqual(grantChildren(paths, 'docs/guide'), [
-    { name: 'intro.md', path: 'docs/guide/intro.md', directory: false },
-  ]);
-
-  // Nothing is invented: a directory only exists because a path goes through it.
-  assert.deepEqual(grantChildren(paths, 'src/deep/nested.rs'), []);
-  assert.deepEqual(grantChildren(paths, 'nope'), []);
-  assert.deepEqual(grantChildren([], ''), []);
-});
-
-test('a path that is both a directory and a file is drawn as the directory', () => {
-  // `doc.open` will accept anything non-blank, so a listing can name `src` beside `src/main.rs`.
-  assert.deepEqual(grantChildren(['src', 'src/main.rs']), [
-    { name: 'src', path: 'src', directory: true },
-  ]);
-});
-
-test('a tree draws no row for a path the grant would never publish', () => {
-  // A server-supplied listing becomes tree rows, picker entries and URIs: whatever the
-  // receipt gate let through — or whatever a hostile listing carried before it — draws
-  // nothing here unless the grant would publish it.
-  assert.deepEqual(
-    grantChildren(['src/main.rs', '../etc/passwd', '.env', 'a\\b.txt', 'src/../../x']),
-    [{ name: 'src', path: 'src', directory: true }],
-  );
-  assert.deepEqual(grantChildren(['.env', '..', 'src//x']), []);
 });
