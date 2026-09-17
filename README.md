@@ -101,10 +101,10 @@ Then, in the two windows:
 6. `Selvage: Leave the session` on either side. Closing window one — the host — ends the room
    after the server's grace period, and window two is told.
 
-Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. With
-no setting and no remembered address, the server question starts from the demo server
-`ws://100.64.0.3:8080` — a prefill, not a commitment: an explicit address and this setting
-always win.
+Set `selvage.serverUrl` and `selvage.displayName` in settings to stop being asked. The server is
+resolved in this order: an explicit address given to the command, then the `selvage.serverUrl`
+setting, then the last server used — and with none of those, the question starts from the demo
+server `ws://100.64.0.3:8080`, a prefill, not a commitment.
 
 ## Commands
 
