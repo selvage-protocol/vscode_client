@@ -511,7 +511,8 @@ A sidecar or second process, and create/rename/delete on the wire (`PROTOCOL.md`
 read-only guests (`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond a granted
 path a peer asked for, multi-room windows, and publication (`vsce package`, a Marketplace
 publisher). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is not
-y-websocket's), `terminal/1`, and any default server address.
+y-websocket's), `terminal/1`, and any server address used without asking — the host question
+prefills the demo server, and nothing dials one silently.
 
 ## Licence
 
