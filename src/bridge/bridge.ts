@@ -334,6 +334,9 @@ export class SessionBridge {
     }
     this.unarrived.delete(path);
     this.documents.delete(path);
+    // The flight belongs to the closed instance: without this a reopen queues behind it,
+    // and its settlement — still the current entry — converges the new buffer as its own.
+    this.inFlight.delete(path);
     this.cancelSave(path);
     this.cancelBackstop(path);
     this.pending.delete(path);

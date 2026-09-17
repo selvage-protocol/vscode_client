@@ -637,6 +637,46 @@ test('an over-bound edit typed during an apply stays in the buffer when it settl
   );
 });
 
+test('a close drops the flight, so the old apply cannot settle the reopen', async (t) => {
+  const { session, host } = await deferredWindows(t);
+  host.editor.open(PATH, 'base\n');
+  host.bridge.documentOpened(PATH);
+  await waitFor('the seed to reach the replica', () => session.host.text(PATH) === 'base\n');
+  await waitFor('the hold to land', () => session.host.openDocuments().includes(PATH));
+
+  // A peer's edit issues an apply that hangs; the document closes under it.
+  session.guest.insert(PATH, 0, 'REMOTE\n');
+  await waitFor('the reconcile to issue its apply', () =>
+    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
+  );
+  const roomText = session.host.text(PATH);
+  host.bridge.documentClosed(PATH);
+
+  // The reopen issues its own flight rather than queueing behind the closed one.
+  host.bridge.documentOpened(PATH);
+  assert.equal(
+    host.editor.changes.get(PATH)?.length,
+    2,
+    'the reopen queued behind the closed flight',
+  );
+
+  // The user types into the reopened window; the old settlement is not its flight.
+  host.editor.type(PATH, 'base\nreopened\n');
+  await host.editor.settle();
+  host.editor.release(true);
+  await host.editor.settle();
+  assert.equal(
+    session.host.text(PATH),
+    roomText,
+    'a closed apply published the reopened buffer',
+  );
+  assert.equal(
+    host.editor.text(PATH),
+    'base\nreopened\n',
+    'a closed apply wiped the reopened buffer',
+  );
+});
+
 test('a guest adopts what the room has, and never seeds over it', async (t) => {
   const { session, host, guest } = await twoWindows(t);
 
