@@ -72,6 +72,8 @@ const registered = {
    * back rather than trusting the answer.
    */
   updateFoldersReturn: true,
+  /** When set, `vscode.openFolder` rejects with this message (see bundle.ts). */
+  openFolderThrows: undefined,
   /** Every `tabGroups.close` call, as the tabs it was given, in order. */
   closedTabs: [],
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
@@ -352,6 +354,7 @@ function reset() {
   registered.statusBarItems.length = 0;
   registered.folderCalls.length = 0;
   registered.updateFoldersReturn = true;
+  registered.openFolderThrows = undefined;
   registered.closedTabs.length = 0;
   tabGroups.all.length = 0;
   disk.files.clear();
@@ -632,6 +635,9 @@ module.exports = {
       // Every command call, handled or not: the reload a join stages is one the stub
       // has no handler for, and the call order is what the test asserts.
       registered.executed.push({ id, args });
+      if (id === 'vscode.openFolder' && registered.openFolderThrows !== undefined) {
+        return Promise.reject(new Error(registered.openFolderThrows));
+      }
       const handler = registered.handlers.get(id);
       return Promise.resolve(handler === undefined ? undefined : handler(...args));
     },

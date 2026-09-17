@@ -70,7 +70,23 @@ async function stageJoin() {
   if ((vscode.workspace.workspaceFolders ?? []).length !== 0) {
     throw new Error('empty: the join stage did not start in an empty window');
   }
-  await vscode.commands.executeCommand('selvage.join', { invite: INVITE, displayName: DISPLAY_NAME });
+  try {
+    await vscode.commands.executeCommand('selvage.join', { invite: INVITE, displayName: DISPLAY_NAME });
+    // The command returned, so the reload is staged: say so on disk, because the
+    // reload takes this run before it can say anything else.
+    if (process.env.SELVAGE_E2E_STAGED_FILE !== undefined) {
+      fs.writeFileSync(process.env.SELVAGE_E2E_STAGED_FILE, 'staged');
+    }
+  } catch (error) {
+    // A join that never staged is a failure the teardown would otherwise mask as
+    // the expected rejection: leave the cause where the orchestrator reads it.
+    if (process.env.SELVAGE_E2E_STAGE_ERROR_FILE !== undefined) {
+      try {
+        fs.writeFileSync(process.env.SELVAGE_E2E_STAGE_ERROR_FILE, error instanceof Error ? error.stack ?? error.message : String(error));
+      } catch {}
+    }
+    throw error;
+  }
   // The reload owns everything after this: it tears down this run about a second after
   // the join, which rejects the run. Give it its beat, so returning means it never came
   // rather than that this run outran it. Returning resolves the run, which the

@@ -1,7 +1,7 @@
 /**
  * Runs inside a second, real, headless VS Code Extension Development Host as the *guest* side
  * of the two-instance convergence proof (`run.ts` drives this file through
- * `@vscode/test-electron`).
+ * `@vscode/test-electron`, twice).
  *
  * As with `host-suite.cjs`: the real, unstubbed `vscode` object cannot be monkeypatched
  * (`vscode.window`/`vscode.env` are getter-only), so this drives `selvage.join` and
@@ -9,11 +9,24 @@
  * exports for automation (`JoinArgs`, `OpenDocumentArgs`) rather than a `showInputBox`/
  * `showQuickPick` it has no way to click through.
  *
- * The room is a real directory here: joining adds the mirror folder to this window, and
- * everything the proof asserts about the room's shape reads back off disk — the materialised
- * files, the listing following the host's folder, the saved room text a tool would read.
- * The Explorer view itself cannot be driven from an extension test, and the mirror on disk
- * is what it is drawn from.
+ * A join replaces the window's tree with the room mirror — one reload, never a second
+ * root — so this suite runs in two stages, like `guest-empty-suite.cjs`:
+ *
+ * `SELVAGE_E2E_STAGE=join`: join on a window holding its own folder, then wait out
+ * the reload's own beat so resolving means the reload never came. The reload tears
+ * down this very run: the extension host exits and `runTests` rejects, which the
+ * orchestrator counts as the stage passing. Resolving is the failure.
+ *
+ * `SELVAGE_E2E_STAGE=phases`: the window the orchestrator opened straight onto the
+ * mirror (with a freshly stashed invite the activation triage lands). Nothing here
+ * joins: the suite waits for the stashed join to land, proves the window is the
+ * mirror and nothing else, then runs every phase — convergence both ways, follow,
+ * the granted path, the watched listing, the reconnect leg.
+ *
+ * The room is a real directory here: the mirror on disk its Explorer reads — the
+ * materialised files, the listing following the host's folder, the saved room text
+ * a tool would read. The Explorer view itself cannot be driven from an extension
+ * test, and the mirror on disk is what it is drawn from.
  */
 
 const vscode = require('vscode');
@@ -22,6 +35,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const DISPLAY_NAME = process.env.SELVAGE_E2E_DISPLAY_NAME ?? 'Bob';
+const STAGE = process.env.SELVAGE_E2E_STAGE ?? 'join';
 const INVITE_FILE = process.env.SELVAGE_E2E_INVITE_FILE;
 const ROOM_PATH_FILE = process.env.SELVAGE_E2E_ROOM_PATH_FILE;
 const GRANTED_PATH_FILE = process.env.SELVAGE_E2E_GRANTED_PATH_FILE;
@@ -37,6 +51,8 @@ const FOLLOW_MOVED_FILE = process.env.SELVAGE_E2E_FOLLOW_MOVED_FILE;
 const FOLLOW_STOPPED_FILE = process.env.SELVAGE_E2E_FOLLOW_STOPPED_FILE;
 const FOLLOW_HOST_NAME = process.env.SELVAGE_E2E_FOLLOW_HOST_NAME ?? 'Ada';
 const PROXY_ADDR = process.env.SELVAGE_E2E_PROXY_ADDR;
+const STAGED_FILE = process.env.SELVAGE_E2E_STAGED_FILE;
+const STAGE_ERROR_FILE = process.env.SELVAGE_E2E_STAGE_ERROR_FILE;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
@@ -90,14 +106,24 @@ async function appendMarker(document, marker, deadlineMs) {
   }
 }
 
-/** The mirror root: the `Selvage room <room>` folder joining added to this window. */
+/** The mirror root in this window: the folder whose marker names the room. */
 function mirrorRoot(roomId) {
   const folders = vscode.workspace.workspaceFolders ?? [];
-  const found = folders.find((folder) => folder.name === `Selvage room ${roomId}`);
-  if (found === undefined) {
-    throw new Error(`guest: no room folder for ${roomId} in this window`);
+  for (const folder of folders) {
+    if (folder.uri.scheme !== 'file') {
+      continue;
+    }
+    let marker;
+    try {
+      marker = JSON.parse(fs.readFileSync(path.join(folder.uri.fsPath, '.selvage-mirror.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (marker.room === roomId && typeof marker.window === 'string') {
+      return folder.uri.fsPath;
+    }
   }
-  return found.uri.fsPath;
+  throw new Error(`guest: no mirror folder for ${roomId} in this window`);
 }
 
 /**
@@ -122,46 +148,81 @@ function rgMirror(pattern, dir) {
 }
 
 /** Routes the guest through the reconnect proxy when one is configured, keeping the room and
- * token the host actually minted. */
+ * token the host actually minted. A page link carries the server as a parameter; a wire
+ * invite is rewritten as it always was. */
 function routeThroughProxy(invite) {
   if (PROXY_ADDR === undefined) {
     return invite;
   }
+  try {
+    const url = new URL(invite);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      url.searchParams.set('server', `ws://${PROXY_ADDR}`);
+      return url.toString();
+    }
+  } catch {
+    // Not a page link: fall through to the wire rewrite below.
+  }
   return invite.replace(/^ws:\/\/[^/]+/, `ws://${PROXY_ADDR}`);
 }
 
-async function run() {
-  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, follow: undefined, error: undefined };
+async function stageJoin(rawInvite) {
   try {
-    const rawInvite = await waitFor(
-      'the host to publish an invite link',
-      () => (fs.existsSync(INVITE_FILE) ? fs.readFileSync(INVITE_FILE, 'utf8') : false),
-      DEADLINE_MS,
-    );
-
     await vscode.commands.executeCommand('selvage.join', {
       invite: routeThroughProxy(rawInvite),
       displayName: DISPLAY_NAME,
     });
+    // The command returned, so the reload is staged: say so on disk, because the
+    // reload takes this run before it can say anything else.
+    if (STAGED_FILE !== undefined) {
+      fs.writeFileSync(STAGED_FILE, 'staged');
+    }
+  } catch (error) {
+    // A join that never staged is a failure the teardown would otherwise mask as
+    // the expected rejection: leave the cause where the orchestrator reads it.
+    if (STAGE_ERROR_FILE !== undefined) {
+      try {
+        fs.writeFileSync(STAGE_ERROR_FILE, error instanceof Error ? error.stack ?? error.message : String(error));
+      } catch {}
+    }
+    throw error;
+  }
+  // The reload owns everything after this: it tears down this run about a second after
+  // the join, which rejects the run. Give it its beat, so returning means it never came
+  // rather than that this run outran it. Returning resolves the run, which the
+  // orchestrator reads as the failure; the rejection is the pass.
+  await delay(10000);
+}
 
-    const roomPath = await waitFor(
+async function stagePhases(rawInvite, result) {
+  const roomPath = await waitFor(
       'the host to publish the room path of the shared document',
       () => (fs.existsSync(ROOM_PATH_FILE) ? fs.readFileSync(ROOM_PATH_FILE, 'utf8') : false),
       DEADLINE_MS,
     );
 
     const roomId = decodeURIComponent(/[?&]room=([^&]+)/.exec(rawInvite)[1]);
-    const root = await waitFor(
-      'the room folder to land in this window',
+    // Nothing here joins: the activation triage lands the stashed invite this window
+    // opened on. The window must be the mirror and nothing else — the join's whole
+    // point — and the listing arriving fills it, which is what the phases below read.
+    const root = mirrorRoot(roomId);
+    await waitFor(
+      'the stashed join to land',
       () => {
         try {
-          return mirrorRoot(roomId);
+          const marker = JSON.parse(fs.readFileSync(path.join(root, '.selvage-mirror.json'), 'utf8'));
+          return marker.invite === undefined ? true : false;
         } catch {
           return false;
         }
       },
       DEADLINE_MS,
     );
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length !== 1) {
+      throw new Error(`guest: the phases window holds ${folders.length} folders, not the mirror alone`);
+    }
+    result.singleFolder = true;
     // The shape lands before content: the mirror holds the empty file before anything
     // opens it, which is what makes the open below a read of the room's shape.
     const mirrorFile = path.join(root, roomPath);
@@ -484,10 +545,31 @@ async function run() {
       );
       result.phase2 = { text: converged2 };
     }
+}
+
+async function run() {
+  const result = { role: 'guest', phase1: undefined, phase2: undefined, granted: undefined, watch: undefined, follow: undefined, singleFolder: undefined, error: undefined };
+  try {
+    const rawInvite = await waitFor(
+      'the host to publish an invite link',
+      () => (fs.existsSync(INVITE_FILE) ? fs.readFileSync(INVITE_FILE, 'utf8') : false),
+      DEADLINE_MS,
+    );
+    if (STAGE === 'join') {
+      await stageJoin(rawInvite);
+      return;
+    }
+    await stagePhases(rawInvite, result);
   } catch (error) {
     result.error = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
   } finally {
-    fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+    // The join stage writes nothing: its proof is the teardown, and the reload may
+    // take the window before a write lands.
+    if (RESULT_FILE !== undefined) {
+      try {
+        fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+      } catch {}
+    }
   }
   if (result.error !== undefined) {
     throw new Error(result.error);

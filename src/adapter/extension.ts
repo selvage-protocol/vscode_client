@@ -1879,14 +1879,16 @@ async function join(args?: JoinArgs): Promise<void> {
 }
 
 /**
- * Joins a room as a guest: the mirror first, the session second.
+ * Joins a room as a guest: the mirror first, the session second — across one reload.
  *
- * The window's folder count at join time chooses the shape. With at least one folder the
- * room's folder is added beside the person's own — no reload, nothing else moves — and the
- * add is read back rather than trusted. With none, the invite is stashed in the fresh
- * marker and the window reopens on the mirror: the extension host after the reload is new,
- * so a session started before it would be lost, and the stashed invite is what finishes
- * the join there. A resumed mirror — the reload's own — only wants its folder ensured.
+ * A join replaces the window's tree with the room mirror, however many folders the
+ * window holds: the invite and the display name are stashed in the fresh marker
+ * and the window reopens on the mirror. The extension host after the reload is
+ * new, so a session started before it would be lost, and the stashed invite is
+ * what finishes the join there. A resumed mirror — the reload's own — lands only
+ * when the window is the mirror and nothing else; anything else reloads again
+ * rather than joining half a window. There is never a second root beside the
+ * person's own: the room is the window until it is left.
  */
 async function joinGuestRoom(options: {
   invite: string;
@@ -1902,42 +1904,29 @@ async function joinGuestRoom(options: {
       );
       return;
     }
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    if (folders.length === 0) {
-      let fresh: Mirror;
-      try {
-        fresh = mintMirror(storageUri, room, { invite: options.invite });
-      } catch (error) {
-        void vscode.window.showErrorMessage(
-          `Selvage: could not add the room's folder to this window (${message(error)}); join again.`,
-        );
-        return;
-      }
-      try {
-        await vscode.commands.executeCommand('vscode.openFolder', fresh.uri, {
-          forceReuseWindow: true,
-        });
-      } catch {
-        fresh.remove();
-        void vscode.window.showErrorMessage(
-          `Selvage: could not open the room's folder in this empty window; open a folder first and join again.`,
-        );
-      }
-      return;
-    }
+    // The name given seconds ago crosses the reload in the marker, so the
+    // reload's window never asks for it again.
+    let fresh: Mirror;
     try {
-      mirror = mintMirror(storageUri, room);
+      fresh = mintMirror(storageUri, room, { invite: options.invite, displayName: options.displayName });
     } catch (error) {
       void vscode.window.showErrorMessage(
-        `Selvage: could not add the room's folder to this window (${message(error)}); join again.`,
+        `Selvage: could not open the room's folder in this window (${message(error)}); join again.`,
       );
       return;
     }
-    pruneRoom(storageUri, room, mirror.window);
-    if (!(await addRoomFolder(mirror))) {
-      mirror.remove();
-      return;
+    pruneRoom(storageUri, room, fresh.window);
+    try {
+      await vscode.commands.executeCommand('vscode.openFolder', fresh.uri, {
+        forceReuseWindow: true,
+      });
+    } catch (error) {
+      fresh.remove();
+      void vscode.window.showErrorMessage(
+        `Selvage: could not open the room's folder in this window (${message(error)}); join again.`,
+      );
     }
+    return;
   } else {
     if (storageUri === undefined) {
       void vscode.window.showErrorMessage(
@@ -1945,29 +1934,27 @@ async function joinGuestRoom(options: {
       );
       return;
     }
-    // The reload's own mirror: its folder is the window, or is added beside the rest.
-    // The invite leaves the marker now — the join below either lands, or its failure
+    // The reload's own mirror: the window is the mirror and nothing else — the join
+    // replaces the tree, never adds a second root. Anything else means the reload
+    // landed elsewhere, so it runs again rather than joining half a window. The
+    // invite leaves the marker now — the join below either lands, or its failure
     // path deletes the directory, so a failed join never rejoins itself.
     const folders = vscode.workspace.workspaceFolders ?? [];
     const resumed: Mirror = mirror;
-    if (!folders.some((folder) => folder.uri.toString() === resumed.uri.toString())) {
-      if (folders.length === 0) {
-        try {
-          await vscode.commands.executeCommand('vscode.openFolder', mirror.uri, {
-            forceReuseWindow: true,
-          });
-        } catch {
-          mirror.remove();
-          void vscode.window.showErrorMessage(
-            `Selvage: could not open the room's folder in this empty window; open a folder first and join again.`,
-          );
-        }
-        return;
+    const alone =
+      folders.length === 1 && folders[0]?.uri.toString() === resumed.uri.toString();
+    if (!alone) {
+      try {
+        await vscode.commands.executeCommand('vscode.openFolder', resumed.uri, {
+          forceReuseWindow: true,
+        });
+      } catch (error) {
+        resumed.remove();
+        void vscode.window.showErrorMessage(
+          `Selvage: could not open the room's folder in this window (${message(error)}); join again.`,
+        );
       }
-      if (!(await addRoomFolder(mirror))) {
-        mirror.remove();
-        return;
-      }
+      return;
     }
     mirror.clearInvite();
   }
@@ -1976,8 +1963,8 @@ async function joinGuestRoom(options: {
   try {
     engine = await SelvageEngine.join(options.invite, options.displayName, { client: CLIENT });
   } catch (error) {
-    // A failed join leaves no room-shaped folder behind: the folder goes first in a
-    // shared window, and the directory with it either way.
+    // A failed join leaves no room-shaped window behind: the folder goes, and the
+    // directory with it — removing the only folder reloads the window to empty.
     removeRoomFolder(live);
     live.remove();
     void vscode.window.showErrorMessage(
@@ -1991,37 +1978,6 @@ async function joinGuestRoom(options: {
   void vscode.window.showInformationMessage(
     joinedMessage(engine.session().roomId, engine.documents()),
   );
-}
-
-/** The room's folder beside the person's own, confirmed present rather than trusted. */
-async function addRoomFolder(mirror: Mirror): Promise<boolean> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const room = mirror.room;
-  // The reason is a value, not a second sentence: the vocabulary pins the one template.
-  let refusal: string | undefined = 'the editor refused the folder';
-  try {
-    if (
-      vscode.workspace.updateWorkspaceFolders(folders.length, 0, {
-        uri: mirror.uri,
-        name: `Selvage room ${room}`,
-      }) === true
-    ) {
-      refusal = (vscode.workspace.workspaceFolders ?? []).some(
-        (folder) => folder.uri.toString() === mirror.uri.toString(),
-      )
-        ? undefined
-        : 'the folder never landed';
-    }
-  } catch {
-    refusal = 'the editor refused the folder';
-  }
-  if (refusal !== undefined) {
-    void vscode.window.showErrorMessage(
-      `Selvage: could not add the room's folder to this window (${refusal}); join again.`,
-    );
-    return false;
-  }
-  return true;
 }
 
 /** Takes the room's folder back out of the window, where one was put. Best effort. */
@@ -2046,7 +2002,6 @@ function removeRoomFolder(mirror: Mirror): void {
  * without a marker of ours, is untouched.
  */
 async function triageMirrors(storage: vscode.Uri): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
   for (const stored of scanStorage(storage)) {
     if (current !== undefined) {
       return;
@@ -2056,20 +2011,22 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
       continue;
     }
     if (stored.invite !== undefined) {
-      const displayName = await resolveDisplayName();
+      // The name stashed with the invite answers without asking: falling back to
+      // the setting and the question only when the marker predates the stash.
+      const displayName = await resolveDisplayName(stored.displayName);
       if (displayName === undefined || current !== undefined) {
         return;
       }
       await joinGuestRoom({ invite: stored.invite, displayName, resume: mirror });
       return;
     }
-    const inWindow = folders.some(
-      (folder) => folder.uri.toString() === mirror.uri.toString(),
-    );
-    if (!inWindow && processAlive(readMarker(mirror.root)?.pid ?? 0)) {
+    // A live owner's directory is never this window's to clear — not beside the
+    // window, and not in it either: a second window onto a live room's mirror must
+    // not take the room out from under the first. Only a dead owner's cache goes.
+    if (processAlive(readMarker(mirror.root)?.pid ?? 0)) {
       continue;
     }
-    // Stale either way: restored onto it with no session, or owned by nobody anywhere.
+    // Stale: restored onto it with no session, or owned by nobody anywhere.
     removeRoomFolder(mirror);
     mirror.remove();
     void vscode.window.showWarningMessage(

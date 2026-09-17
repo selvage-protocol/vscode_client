@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
-import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
+import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { counting } from './helpers/counting-socket.ts';
@@ -69,9 +69,7 @@ async function seat(t: TestContext): Promise<Adapter> {
   });
 
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')),
-  );
+  await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
 
   // The room's file under the guest's mirror: opening it reports the document, which is
   // what holds it in the room. The text arrived with the sync, so no wait precedes the

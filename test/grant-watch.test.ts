@@ -20,6 +20,7 @@ import { join } from 'node:path';
 
 import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
 import {
+  landStashedJoin,
   loadBundle,
   mirrorFileUri,
   mirrorWindowDir,
@@ -295,11 +296,9 @@ test('a guest watches nothing and publishes no listing', async (t) => {
   const invite = host.inviteUrl();
   assert.ok(invite !== undefined, 'the host was given no invite link');
 
-  const { bundle } = activated(t);
+  const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')),
-  );
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
 
   // Nothing to wait for: a guest creates no watcher at all, so there is nothing that could
   // fire one later, and a room's listing is its host's to publish.
@@ -674,6 +673,7 @@ test('a path that leaves the listing is a listing that shrank, not a hold releas
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
   const roomId = roomOf(invite);
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['README.md', 'docs/notes.md', 'src/main.rs']);
 
   // The guest opens one of the granted paths: the room holds it from here on, and its text

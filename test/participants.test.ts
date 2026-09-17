@@ -101,7 +101,7 @@ import { resolve } from 'node:path';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
-import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
+import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { options } from './helpers/session.ts';
@@ -148,9 +148,7 @@ async function seat(t: TestContext): Promise<RoomSeat> {
     await server.stop();
   });
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room')),
-  );
+  await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
   const mirrorRoot = mirrorWindowDir(storage, host.session().roomId);
   return {
     bundle,

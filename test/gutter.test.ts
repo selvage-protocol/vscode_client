@@ -25,7 +25,7 @@ import {
 } from '../src/adapter/gutter.ts';
 import { peerColour } from '../src/bridge/index.ts';
 import { SelvageEngine } from '../src/engine/index.ts';
-import { loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
+import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -197,14 +197,11 @@ function activated(t: TestContext): { bundle: LoadedExtension; storage: string }
 async function seat(
   t: TestContext,
   invite: string,
+  roomId: string,
 ): Promise<{ bundle: LoadedExtension; storage: string }> {
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await waitFor('the guest to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('joined room'))
-      ? true
-      : false,
-  );
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
   return { bundle, storage };
 }
 
@@ -262,7 +259,7 @@ function typesWith(bundle: LoadedExtension, field: string): Decoration[] {
 test('the badge is a base64 SVG in the glyph margin, applied at the caret line', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const { bundle, storage } = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite, host.session().roomId);
   // Published after the guest is seated: awareness reaches later arrivals only as it changes.
   // Offset 6 is the empty line after "hello\n", so the badge line is not always 0.
   host.setSelection(PATH, { anchor: 6, head: 6 });
@@ -328,7 +325,7 @@ function drawnBadgeSvg(editor: StubEditor): string {
 test('a peer that renames itself re-labels its caret and its badge', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const { bundle, storage } = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite, host.session().roomId);
   host.setSelection(PATH, { anchor: 0, head: 0 });
   const editor = await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
 
@@ -360,7 +357,7 @@ test('a peer that renames itself re-labels its caret and its badge', async (t) =
 test('a peer-controlled label renders as plain text, never as a link', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const { bundle, storage } = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite, host.session().roomId);
   host.setSelection(PATH, { anchor: 0, head: 0 });
   const editor = await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
 
@@ -380,7 +377,7 @@ test('a peer-controlled label renders as plain text, never as a link', async (t)
 test('a rename loop retains only a bounded number of badge types', async (t) => {
   const { host, invite } = await room(t, [PATH]);
   host.insert(PATH, 0, 'hello\n');
-  const { bundle, storage } = await seat(t, invite);
+  const { bundle, storage } = await seat(t, invite, host.session().roomId);
   host.setSelection(PATH, { anchor: 0, head: 0 });
   await installEditor(bundle, storage, host.session().roomId, PATH, 'hello\n', host);
   bundle.stub.fire('visibleEditors');
