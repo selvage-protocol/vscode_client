@@ -1008,6 +1008,10 @@ async function main(): Promise<void> {
   // removed the directory with the session, so the reloaded window proves the same
   // landing again from the fresh stash, in this same profile.
   killEmptyEditors('empty-window join stashed; the reloaded window proves it again');
+  // The join's own stash goes first: triage finishes the first pending invite it
+  // finds, so a dead stash beside the fresh one would hijack the landing into a
+  // reload somewhere else. The reload it proved is already on record.
+  rmSync(emptyStash.root, { recursive: true, force: true });
   const emptyRestash = mintStash(emptyUserData, emptyPublisher, emptyRoom, emptyStash.invite, 'Empty');
   log('the reloaded window opens straight onto', emptyRestash);
 
