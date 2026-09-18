@@ -192,7 +192,7 @@ test('a remembered non-default server survives host-leave-host into the copied l
   );
   await bundle.stub.commands.executeCommand('selvage.leave');
   await waitFor('the leave to be said', () =>
-    bundle.stub.registered.information.some((message) => message.includes('left the session'))
+    bundle.stub.registered.information.some((message) => message.includes('Left the session'))
       ? true
       : false,
   );
@@ -232,14 +232,15 @@ test('a pasted page link joins the room it names', async (t) => {
 
   const second = freshActivated(t);
   await second.bundle.stub.commands.executeCommand('selvage.join', {
+    replaceWindow: true,
     invite: link,
     displayName: 'Bob',
   });
   await landStashedJoin(second.bundle, second.storage, roomId, 'Bob');
   const joined = second.bundle.stub.registered.information.find((message) =>
-    message.includes('joined the room'),
+    message.includes('Joined the room'),
   ) ?? false;
-  assert.equal(joined, `Selvage: joined the room; it has no open documents yet.`);
+  assert.equal(joined, `Selvage: Joined the room — it has no open documents yet.`);
 });
 
 test('a ws:// invite still joins, as the fallback for rooms off the page default', async (t) => {
@@ -256,14 +257,15 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   const wireRoom = new URL(link).searchParams.get('room');
   assert.ok(wireRoom !== null && wireRoom !== '', `the copied link names no room: ${link}`);
   await guest.bundle.stub.commands.executeCommand('selvage.join', {
+    replaceWindow: true,
     invite: `${wire}/session?room=${wireRoom}&token=${new URL(link).searchParams.get('token')}`,
     displayName: 'Bob',
   });
   await landStashedJoin(guest.bundle, guest.storage, wireRoom, 'Bob');
   const joined = guest.bundle.stub.registered.information.find((message) =>
-    message.includes('joined the room'),
+    message.includes('Joined the room'),
   ) ?? 'no join landed';
-  assert.match(joined, /Selvage: joined the room;/);
+  assert.match(joined, /Selvage: Joined the room/);
 });
 
 test('the webOrigin setting moves the copied link', async (t) => {

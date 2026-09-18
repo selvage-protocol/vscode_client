@@ -197,7 +197,7 @@ async function seat(
   roomId: string,
 ): Promise<{ bundle: LoadedExtension; storage: string }> {
   const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob', replaceWindow: true});
   await landStashedJoin(bundle, storage, roomId, 'Bob');
   return { bundle, storage };
 }

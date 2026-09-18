@@ -169,6 +169,7 @@ function routeThroughProxy(invite) {
 async function stageJoin(rawInvite) {
   try {
     await vscode.commands.executeCommand('selvage.join', {
+      replaceWindow: true,
       invite: routeThroughProxy(rawInvite),
       displayName: DISPLAY_NAME,
     });

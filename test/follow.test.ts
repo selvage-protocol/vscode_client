@@ -73,7 +73,7 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
     await host.disconnect();
     await server.stop();
   });
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob', replaceWindow: true});
   await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
   const roomId = host.session().roomId;
   const mirrorRoot = mirrorWindowDir(storage, roomId);
@@ -448,7 +448,7 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the empty stop to be refused', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
   );
   // An asked-for stop stays silent, the way the indicator going down always has: only a
   // stop the user did not ask for says so.
@@ -589,7 +589,7 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
   );
 });
 
@@ -792,7 +792,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
   await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
   await waitFor('the refusal to name the peer without a document', () =>
     seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: nothing to go to: Nora is not in a document.',
+      (message) => message === 'Selvage: Nothing to go to: Nora is not in a document.',
     ),
   );
   assert.equal(
@@ -989,7 +989,7 @@ test('a remote CRLF apply does not end the follow while local CRLF typing does',
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
   );
 });
 
@@ -1194,7 +1194,7 @@ test('a host jump to a path it does not share is refused without opening', async
     if (
       bundle.stub.registered.errors.some(
         (message) =>
-          message === 'Selvage: could not open .env from the room: the path is not one this window shares',
+          message === 'Selvage: Could not open .env from the room: the path is not one this window shares',
       )
     ) {
       return true;
@@ -1238,7 +1238,7 @@ test('a guest follow to a peer-named path outside the grant is refused without o
       seat_.bundle.stub.registered.errors.some(
         (message) =>
           message ===
-          'Selvage: could not open ../../outside.md from the room: the path is not one this window shares',
+          'Selvage: Could not open ../../outside.md from the room: the path is not one this window shares',
       )
     ) {
       return true;
@@ -1253,7 +1253,7 @@ test('a guest follow to a peer-named path outside the grant is refused without o
     seat_.bundle.stub.registered.errors.some(
       (message) =>
         message ===
-        'Selvage: could not open .selvage-mirror.json from the room: the path is not one this window shares',
+        'Selvage: Could not open .selvage-mirror.json from the room: the path is not one this window shares',
     )
       ? true
       : false,

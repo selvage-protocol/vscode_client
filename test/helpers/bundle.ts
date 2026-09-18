@@ -267,7 +267,7 @@ export async function landStashedJoin(
   await waitFor(
     'the stashed join to land',
     () =>
-      bundle.stub.registered.information.some((message) => message.includes('joined the room'))
+      bundle.stub.registered.information.some((message) => message.includes('Joined the room'))
         ? true
         : false,
   );
