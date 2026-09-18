@@ -159,10 +159,16 @@ coloured dot per row, because `QuickPickItem.iconPath` is the only field an edit
 colour from — and nothing in this repository can see that dot.
 
 The same roster also lives as a persistent `Selvage: Participants` view beside the explorer:
-one row per peer with their colour dot and current state, and nothing else as row text. The
-file each peer is in is badged on that file's own row instead, with the names in the hover;
-a peer's row menu offers going to them, following them, and — while they are followed —
-stopping. An empty room says it is alone and offers the invite copy on click.
+one row per peer with their colour dot, their name, and — where the browser's roster has the
+file on the tree — the file they are in as the row's own description, so the row and the badge
+that file wears name each other. Clicking a peer's row lands where they are, and each row
+carries the two verbs the browser's roster has as buttons: **Go to** and **Follow**, with
+**Stop following** in the followed peer's row in place of follow. Those three are the palette's
+own `selvage.goToParticipant`, `selvage.followParticipant` and `selvage.stopFollowing`, shown
+on the row (`inline`) and in its context menu alike; a peer in no document says so, carries no
+click, and offers neither verb — there is nowhere to go. The row's hover spells the whole thing
+out: name, role, file, and whether this window follows them. An empty room says it is alone and
+offers the invite copy on click.
 
 ## Packaging it
 

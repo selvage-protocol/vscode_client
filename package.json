@@ -79,17 +79,20 @@
       {
         "command": "selvage.goToParticipant",
         "category": "Selvage",
-        "title": "Go to a participant"
+        "title": "Go to a participant",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "selvage.followParticipant",
         "category": "Selvage",
-        "title": "Follow a participant"
+        "title": "Follow a participant",
+        "icon": "$(eye)"
       },
       {
         "command": "selvage.stopFollowing",
         "category": "Selvage",
-        "title": "Stop following"
+        "title": "Stop following",
+        "icon": "$(eye-closed)"
       }
     ],
     "views": {
@@ -109,6 +112,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "selvage.goToParticipant",
+          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",
+          "group": "inline@1"
+        },
+        {
+          "command": "selvage.followParticipant",
+          "when": "view == selvage.participants && viewItem == selvageParticipant",
+          "group": "inline@2"
+        },
+        {
+          "command": "selvage.stopFollowing",
+          "when": "view == selvage.participants && viewItem == selvageParticipantFollowing",
+          "group": "inline@3"
+        },
         {
           "command": "selvage.goToParticipant",
           "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",

@@ -22,13 +22,13 @@ import type { RosterRow } from '../src/bridge/participants.ts';
 const ADA = { peerId: 'p-aaa', displayName: 'Ada', role: 'host', path: 'src/a.rs' };
 const BO = { peerId: 'p-bbb', displayName: 'Bo', role: 'guest', path: 'src/b.rs' };
 
-test('a row names the peer and carries their marker colour, with no path on it', () => {
+test('a row names the peer, the file they are in, and their marker colour', () => {
   const [row] = describeParticipants([ADA], undefined);
   assert.equal(row?.label, 'Ada');
   assert.equal(row?.colour, peerColour('p-aaa'));
-  assert.equal(row?.description, '');
-  assert.ok(row?.tooltip.includes('src/a.rs'), 'the path survives in the hover, not on the row');
-  assert.ok(!JSON.stringify([row?.label, row?.description]).includes('src/a.rs'));
+  assert.equal(row?.description, 'src/a.rs', 'the row does not say which file the peer is in');
+  assert.ok(row?.tooltip.includes('src/a.rs'), 'the hover lost the file');
+  assert.ok(row?.tooltip.includes('host'), 'the hover lost the role');
 });
 
 test('a shared name disambiguates by the shortest unique peer-id prefix', () => {
@@ -45,13 +45,12 @@ test('a shared name disambiguates by the shortest unique peer-id prefix', () => 
   );
 });
 
-test('the followed peer reads Following and stops showing follow', () => {
+test('the followed peer keeps their file, offers the stop, and says so in the hover', () => {
   const rows = describeParticipants([ADA, BO], 'p-bbb');
-  assert.equal(rows.find((row) => row.peerId === 'p-bbb')?.description, 'Following');
-  assert.equal(
-    rows.find((row) => row.peerId === 'p-bbb')?.contextValue,
-    'selvageParticipantFollowing',
-  );
+  const bo = rows.find((row) => row.peerId === 'p-bbb');
+  assert.equal(bo?.description, 'src/b.rs', 'the follow state displaced the file');
+  assert.equal(bo?.contextValue, 'selvageParticipantFollowing');
+  assert.ok(bo?.tooltip.includes('following'), 'nothing says this row is the followed one');
   assert.equal(rows.find((row) => row.peerId === 'p-aaa')?.contextValue, 'selvageParticipant');
 });
 
@@ -221,7 +220,7 @@ interface RowNode {
   description?: string;
   tooltip?: string;
   contextValue?: string;
-  command?: { command: string };
+  command?: { command: string; arguments?: unknown[] };
 }
 
 function viewNodes(bundle: LoadedExtension): RowNode[] {
@@ -288,7 +287,7 @@ test('activation shows the join-first row outside a session, and peers once seat
   assert.equal(ada[0]?.label, 'Ada');
 });
 
-test('rows render on fabricated presence, with no path text on the row', async (t) => {
+test('rows render on fabricated presence, naming the file each peer is in', async (t) => {
   const seat_ = await seat(t);
   await peerIn(t, seat_, 'Cy', 5);
   const nodes = await waitFor('Cy to list with their file known', () => {
@@ -297,14 +296,36 @@ test('rows render on fabricated presence, with no path text on the row', async (
     return cy?.tooltip?.includes(PATH_A) ? current : false;
   });
   const cy = nodes.find((node) => node.label === 'Cy');
-  assert.equal(cy?.description, '');
+  assert.equal(cy?.description, PATH_A, 'the row does not name the file the peer is in');
   assert.equal(cy?.contextValue, 'selvageParticipant');
   for (const node of nodes) {
     assert.ok(!node.label?.includes('.rs'), 'a path leaked into a row label');
-    assert.ok(!node.description?.includes('.rs'), 'a path leaked into a row description');
   }
   const ada = nodes.find((node) => node.label === 'Ada');
   assert.equal(ada?.description, 'No open document', 'the host published no caret');
+});
+
+test('a peer in a document is one click away, and a peer in none is not', async (t) => {
+  const seat_ = await seat(t);
+  const cy = await peerIn(t, seat_, 'Cy', 5);
+  const nodes = await waitFor('Cy to list with their file known', () => {
+    const current = viewNodes(seat_.bundle);
+    const row = current.find((node) => node.label === 'Cy');
+    return row?.description === PATH_A ? current : false;
+  });
+  const cyRow = nodes.find((node) => node.label === 'Cy');
+  assert.equal(cyRow?.command?.command, 'selvage.goToParticipant', 'clicking the row does nothing');
+  assert.deepEqual(
+    cyRow?.command?.arguments,
+    [{ peerId: cy.session().peer.peer_id }],
+    'the click does not name the peer the row is about',
+  );
+  const ada = nodes.find((node) => node.label === 'Ada');
+  assert.equal(
+    ada?.command,
+    undefined,
+    'a peer in no document was given a click that could not land',
+  );
 });
 
 test('a rename updates the row in place, and a leave removes it without rebuilding the rest', async (t) => {
@@ -389,6 +410,18 @@ test('a row action calls through to go, follow and stop', async (t) => {
   editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
   await bundle.stub.commands.executeCommand('selvage.goToParticipant', adaRow);
   await waitFor('the row go-to to land at the host caret', () => {
+    const active = (editor.selection as { active: { character: number } }).active;
+    return active.character === 5 ? true : false;
+  });
+  // The row's own click, as the TreeItem carries it: the same landing, reached the way a
+  // single click on the row reaches it rather than the way the palette's row action does.
+  assert.equal(adaRow.command?.command, 'selvage.goToParticipant', 'the row is not clickable');
+  editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+  await bundle.stub.commands.executeCommand(
+    adaRow.command.command,
+    ...(adaRow.command.arguments ?? []),
+  );
+  await waitFor('a click on the row to land at the host caret', () => {
     const active = (editor.selection as { active: { character: number } }).active;
     return active.character === 5 ? true : false;
   });
@@ -568,33 +601,40 @@ test('hosting an empty room retires the join-first row at once', async (t) => {
   );
 });
 
-test('following and stopping mark the row at once, with no frame to wait for', async (t) => {
+test('following marks the row at once, and leaves the file it names alone', async (t) => {
   const seat_ = await seat(t);
   const { bundle } = seat_;
   const adaRow = await waitFor('Ada to list', () => {
     const current = viewNodes(bundle);
     return current.length === 1 && current[0]?.peerId !== undefined ? current[0] : false;
   });
+  assert.equal(adaRow.description, 'No open document', 'the row lost what it said about Ada');
   await bundle.stub.commands.executeCommand('selvage.followParticipant', adaRow);
   await waitFor('the follow to mark the row', () =>
-    viewNodes(bundle).find((node) => node.label === 'Ada')?.description === 'Following'
+    viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue ===
+    'selvageParticipantFollowing'
       ? true
       : false,
   );
+  assert.equal(
+    viewNodes(bundle).find((node) => node.label === 'Ada')?.description,
+    'No open document',
+    'the follow state displaced what the row says about where Ada is',
+  );
   await bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the stop to unmark the row', () =>
-    viewNodes(bundle).find((node) => node.label === 'Ada')?.description !== 'Following'
+    viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue === 'selvageParticipantAway'
       ? true
       : false,
   );
 });
 
-test('the manifest contributes the view, with actions on the commands it already has', () => {
+test('the manifest contributes the view, with the same actions on the row as buttons', () => {
   const manifest = JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')) as {
     contributes?: {
-      commands?: Array<{ command: string }>;
+      commands?: Array<{ command: string; icon?: string }>;
       views?: { explorer?: Array<{ id: string; name?: string }> };
-      menus?: Record<string, Array<{ command: string; when?: string }>>;
+      menus?: Record<string, Array<{ command: string; when?: string; group?: string }>>;
     };
   };
   const contributed = manifest.contributes ?? {};
@@ -605,11 +645,22 @@ test('the manifest contributes the view, with actions on the commands it already
     'the manifest contributes no Selvage: Participants view',
   );
   const menus = contributed.menus?.['view/item/context'] ?? [];
-  const ids = new Set((contributed.commands ?? []).map((entry) => entry.command));
+  const commands = contributed.commands ?? [];
+  const ids = new Set(commands.map((entry) => entry.command));
   const viewMenus = menus.filter((entry) => (entry.when ?? '').includes('selvage.participants'));
+  // Two groups, one per peer action: the row's own buttons (`inline`) and the menu an
+  // item's context menu opens. Anything else would be an action a user cannot reach.
+  const inGroup = (name: string): string[] =>
+    viewMenus
+      .filter((entry) => (entry.group ?? '').split('@')[0] === name)
+      .map((entry) => entry.command)
+      .sort();
+  const actions = ['selvage.followParticipant', 'selvage.goToParticipant', 'selvage.stopFollowing'].sort();
+  assert.deepEqual(inGroup('inline'), actions, 'the peer rows carry no per-peer buttons');
+  assert.deepEqual(inGroup('1_selvage'), actions, 'the peer rows lost their menu actions');
   assert.deepEqual(
-    viewMenus.map((entry) => entry.command).sort(),
-    ['selvage.followParticipant', 'selvage.goToParticipant', 'selvage.stopFollowing'],
+    [...new Set(viewMenus.map((entry) => entry.command))].sort(),
+    actions,
     'a view action the palette cannot reach, or a contributed one that is not a command',
   );
   const titleMenus = (contributed.menus?.['view/title'] ?? []).filter((entry) =>
@@ -623,21 +674,32 @@ test('the manifest contributes the view, with actions on the commands it already
   for (const entry of viewMenus) {
     assert.ok(ids.has(entry.command), `${entry.command} is no contributed command`);
   }
-  const whenOf = (command: string): string => {
-    const entry = viewMenus.find((item) => item.command === command);
-    assert.ok(entry !== undefined, `${command} has no row action`);
+  const whenOf = (command: string, group: string): string => {
+    const entry = viewMenus.find(
+      (item) => item.command === command && (item.group ?? '').split('@')[0] === group,
+    );
+    assert.ok(entry !== undefined, `${command} has no ${group} row action`);
     return entry.when ?? '';
   };
-  assert.equal(
-    whenOf('selvage.goToParticipant'),
-    'view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)',
-  );
-  assert.equal(
-    whenOf('selvage.followParticipant'),
-    'view == selvage.participants && viewItem == selvageParticipant',
-  );
-  assert.equal(
-    whenOf('selvage.stopFollowing'),
-    'view == selvage.participants && viewItem == selvageParticipantFollowing',
-  );
+  const WHEN: Record<string, string> = {
+    'selvage.goToParticipant':
+      'view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)',
+    'selvage.followParticipant': 'view == selvage.participants && viewItem == selvageParticipant',
+    'selvage.stopFollowing':
+      'view == selvage.participants && viewItem == selvageParticipantFollowing',
+  };
+  for (const command of Object.keys(WHEN)) {
+    assert.equal(whenOf(command, 'inline'), WHEN[command], `${command}'s button shows on the wrong rows`);
+    assert.equal(
+      whenOf(command, '1_selvage'),
+      WHEN[command],
+      `${command}'s menu action shows on the wrong rows`,
+    );
+  }
+  // A tree row renders a command's button from its icon: a command with none is a button
+  // with no glyph, so the three the row carries name one apiece.
+  const icons = new Map(commands.map((entry) => [entry.command, entry.icon]));
+  assert.equal(icons.get('selvage.goToParticipant'), '$(go-to-file)');
+  assert.equal(icons.get('selvage.followParticipant'), '$(eye)');
+  assert.equal(icons.get('selvage.stopFollowing'), '$(eye-closed)');
 });

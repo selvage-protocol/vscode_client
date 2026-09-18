@@ -20,12 +20,12 @@ export interface ParticipantEntry {
   path?: string;
 }
 
-/** What one roster row shows: name + state + actions only, never a path as text. */
+/** What one roster row shows: who the peer is, the file they are in, and their actions. */
 export interface ParticipantRow {
   kind: 'peer';
   peerId: string;
   label: string;
-  /** `Following`, `No open document`, or nothing — the state, not the file. */
+  /** The file the peer is in, or `No open document` — where they are, never whether followed. */
   description: string;
   contextValue:
     | 'selvageParticipant'
@@ -33,7 +33,7 @@ export interface ParticipantRow {
     | 'selvageParticipantAway';
   /** The peer's marker colour: the mapping the caret wears. */
   colour: string;
-  /** The hover, where the full detail — including the file — lives instead. */
+  /** The hover: name, role, file, and whether this window follows them. */
   tooltip: string;
   /** False for a peer in no document: there is nowhere to go to or follow. */
   canNavigate: boolean;
@@ -53,8 +53,10 @@ export function peerName(displayName: string, peerId: string): string {
 
 /**
  * One row per peer, in membership order. The label disambiguates only when it must —
- * the rule the caret's own label and the picker follow — and the followed peer reads
- * `Following` instead of offering follow again.
+ * the rule the caret's own label and the picker follow — and the row says *where* the peer
+ * is, beside the badge their file wears. The follow state is a row's actions and the hover
+ * rather than the description: the file is what the row is for, and the followed peer's
+ * row offers the stop in its place (`src/adapter/participants.ts`).
  */
 export function describeParticipants(
   entries: readonly ParticipantEntry[],
@@ -67,7 +69,7 @@ export function describeParticipants(
       kind: 'peer' as const,
       peerId: entry.peerId,
       label: participantLabel(entry, entries),
-      description: following ? 'Following' : navigable ? '' : 'No open document',
+      description: entry.path ?? 'No open document',
       contextValue: following
         ? 'selvageParticipantFollowing'
         : navigable

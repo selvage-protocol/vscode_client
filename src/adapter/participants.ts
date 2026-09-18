@@ -52,17 +52,25 @@ export function resolveViewRows(rows: readonly RosterRow[]): ViewRow[] {
 /**
  * One roster row: a `TreeItem` carrying the peer id, which is structurally the argument
  * the go-to and follow commands already take — so a view action calls straight through
- * with no new command. Rows deliberately carry no click command: a glance must not
- * navigate. The colour dot is the picker's `swatch`, so the row and the caret agree.
+ * with no new command. The colour dot is the picker's `swatch`, so the row and the caret
+ * agree.
+ *
+ * A peer in a document is one click away (`canNavigate`), carrying the click as a command
+ * with a `{ peerId }` argument: the owner overruled the earlier judgement that a glance
+ * must not navigate — going to a peer is what the row is for, and a peer in no document
+ * gets no click rather than one that cannot land. The click goes through `goToParticipant`,
+ * the same command the row's own button and the palette run.
  */
 export class ParticipantItem extends vscode.TreeItem {
   readonly peerId: string;
   private colour: string;
+  private canNavigate: boolean;
 
   constructor(row: ParticipantRow) {
     super(row.label, vscode.TreeItemCollapsibleState.None);
     this.peerId = row.peerId;
     this.colour = row.colour;
+    this.canNavigate = row.canNavigate;
     this.apply(row);
   }
 
@@ -73,7 +81,8 @@ export class ParticipantItem extends vscode.TreeItem {
       this.description === row.description &&
       this.tooltip === row.tooltip &&
       this.contextValue === row.contextValue &&
-      this.colour === row.colour
+      this.colour === row.colour &&
+      this.canNavigate === row.canNavigate
     ) {
       return false;
     }
@@ -87,7 +96,15 @@ export class ParticipantItem extends vscode.TreeItem {
     this.tooltip = row.tooltip;
     this.contextValue = row.contextValue;
     this.colour = row.colour;
+    this.canNavigate = row.canNavigate;
     this.iconPath = ParticipantItem.swatch(row.colour);
+    this.command = row.canNavigate
+      ? {
+          command: 'selvage.goToParticipant',
+          title: `Go to ${row.label}`,
+          arguments: [{ peerId: row.peerId }],
+        }
+      : undefined;
   }
 
   static swatch(colour: string): vscode.Uri {
