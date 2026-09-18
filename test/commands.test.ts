@@ -175,6 +175,40 @@ test('hosting while hosting copies the invite rather than minting a room', async
   );
 });
 
+test('hosting with no folder open is refused: a room from it would share nothing', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  // No folder open, as an untitled window has none: the room would grant no folder and
+  // share no document under one, so a guest would reload their own window onto nothing.
+  bundle.stub.setWorkspaceFolders([]);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const refused = await waitFor('the refusal', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('open a folder')) ?? false,
+  );
+  assert.equal(
+    refused,
+    'Selvage: open a folder first \u2014 hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.',
+  );
+  assert.equal(
+    server.acceptedConnections,
+    0,
+    'a room was minted from a window with nothing to share',
+  );
+  assert.deepEqual(
+    bundle.stub.registered.clipboardWrites,
+    [],
+    'an invite link for an empty room reached the clipboard',
+  );
+  assert.equal(roomOffer(bundle), '', 'a session started anyway');
+  assert.deepEqual(bundle.stub.registered.errors, [], 'the refusal read as a failure');
+});
+
 test('the copy command says where the invite went, and a window with none is told why', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
@@ -515,7 +549,7 @@ test('open while hosting says the host\'s own files are the room\'s', async (t) 
   assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a host was offered its own files');
 });
 
-test('hosting while a guest asks before leaving, and leaves on request', async (t) => {
+test('hosting while a guest asks before leaving, and an emptied window is told to open a folder', async (t) => {
   const { bundle, server } = await guest(t, ['workspace/README.md']);
   const before = server.acceptedConnections;
 
@@ -529,7 +563,29 @@ test('hosting while a guest asks before leaving, and leaves on request', async (
   assert.equal(asked, `Selvage: you are in this session; hosting a session means leaving it first.`);
   assert.equal(server.acceptedConnections, before, 'a dismissed question opened a connection');
 
+  // Leaving takes the room's folder with it — the mirror was the whole tree — so the window
+  // the host would now be seated in has nothing to share, and says so instead of minting a
+  // room that grants nothing.
   bundle.stub.registered.warningReply = 'Leave and host';
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada again',
+  });
+  const refused = await waitFor('the refusal', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('open a folder')) ?? false,
+  );
+  assert.equal(
+    refused,
+    'Selvage: open a folder first \u2014 hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.',
+  );
+  assert.equal(
+    server.acceptedConnections,
+    before,
+    'a room was minted from a window with nothing to share',
+  );
+
+  // A folder of the user's own, and the same command hosts from it.
+  bundle.stub.setWorkspaceFolders(['/workspace']);
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada again',

@@ -1808,6 +1808,17 @@ async function host(
     }
     inSession.dispose();
   }
+  // A room is a grant of the folder the host has open (`DESIGN.md` §4.2): the listing is the folder,
+  // and a host shares the `file:` documents under it. A window with no folder therefore has
+  // nothing to grant and nothing to share — a room minted here would hand the guest a link that
+  // reloads their own window onto an empty folder. So it is refused here, before a server is
+  // dialled, a name asked for or a link copied, in words that say what to do instead.
+  if ((vscode.workspace.workspaceFolders ?? []).length === 0) {
+    void vscode.window.showWarningMessage(
+      'Selvage: open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.',
+    );
+    return;
+  }
   const given = args?.serverUrl?.trim();
   const baseUrl = given === undefined || given === '' ? await resolveServerUrl() : given;
   if (baseUrl === undefined) {

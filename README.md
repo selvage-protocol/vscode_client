@@ -124,7 +124,7 @@ command there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
-| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. |
+| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. |
 | `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join — a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address — is refused before the name is asked and before the window reloads, in words that never quote the link's token. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
@@ -304,6 +304,17 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   `file:` documents under its mirror root — the room's folder in the Explorer — and nothing
   outside it. There are no exclude globs in v1: what a host shares is what it has open,
   which is visible in its own window.
+- **A window with no folder open cannot host.** A room *is* a grant of the host's folder
+  (`DESIGN.md` §4.2): the grant is that folder's listing, and a host's shared documents are the
+  `file:` ones under it. A window with no folder has neither, so `Selvage: Host a session` is
+  refused in one sentence saying to open a folder first — before a server is dialled, a name
+  asked for or a link copied — rather than minting a room that shares nothing and handing a
+  guest a link that reloads their own window onto an empty folder. The check sits after the
+  leave-and-host question, because leaving is what can take the folder away: a guest's window is
+  the room's mirror, so the leave that precedes a host leaves it empty, and the refusal then says
+  what the next step is. Closing a folder does not end a live session — it holds the folder it
+  was invited on — and hosting again in a window that is already hosting copies the invite, so
+  this refusal is reached only where a room really would have nothing in it.
 - **The room's listing follows the host's folder.** A host watches the folders it was invited on
   — one watcher per folder, `**/*` under it — and republishes the room's grant when a file under
   one appears, disappears or changes, so a path a build, a branch switch or another terminal
