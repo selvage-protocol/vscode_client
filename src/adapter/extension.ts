@@ -94,6 +94,13 @@ const MAX_UNLISTED_WARNINGS = 500;
 let current: Session | undefined;
 
 /**
+ * Set while the extension is torn down. Work that outlives a deactivation — the resume a
+ * marker asks for, which waits for a name and dials a room — checks it before it takes
+ * ownership of anything: a session built after teardown has no one left to dispose it.
+ */
+let deactivated = false;
+
+/**
  * Where this window mirrors rooms, from the activation context. Commands fail loudly
  * without it, which is unreachable in a real window — the editor always provides one —
  * and only a test activates with a context that has none.
@@ -140,6 +147,7 @@ const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 const DEFAULT_WEB_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8443';
 
 export function activate(context: vscode.ExtensionContext): void {
+  deactivated = false;
   // A window the user typed a server into leaves it behind for the next one. The in-memory
   // value still wins: it is what this window was told most recently.
   lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
@@ -190,12 +198,31 @@ export function activate(context: vscode.ExtensionContext): void {
   refreshParticipants();
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
   // detached, because a pending invite finishes by joining and joining is async.
+  //
+  // A folder with a file named like the marker starts this extension on its own — a
+  // `workspaceContains` activation event is the only way back in after the reload that put
+  // the room's folder in the window, and it is not something VS Code conditions on trust.
+  // What such a folder must not be able to do is make the window act: the triage below
+  // dials a room, moves the window onto the mirror and clears leftovers, so it waits for a
+  // window the person has trusted. One who trusts the workspace afterwards gets the triage
+  // then, which is the way VS Code's own documentation says to keep a trust-gated feature.
   if (storageUri !== undefined) {
-    void triageMirrors(storageUri, context);
+    if (vscode.workspace.isTrusted) {
+      void triageMirrors(storageUri, context);
+    } else {
+      context.subscriptions.push(
+        vscode.workspace.onDidGrantWorkspaceTrust(() => {
+          if (storageUri !== undefined) {
+            void triageMirrors(storageUri, context);
+          }
+        }),
+      );
+    }
   }
 }
 
 export function deactivate(): void {
+  deactivated = true;
   void current?.dispose();
   current = undefined;
   participantsSource = () => undefined;
@@ -1956,6 +1983,9 @@ async function joinGuestRoom(options: {
   displayName: string;
   resume?: Mirror;
 }): Promise<void> {
+  if (deactivated) {
+    return;
+  }
   const wire = resolveInviteToWire(options.invite);
   const room = parseSessionUrl(wire)?.join.room ?? 'room';
   let mirror = options.resume;
@@ -2038,7 +2068,15 @@ async function joinGuestRoom(options: {
     );
     return;
   }
-  current = new Session(engine, { mirror: live, invite: options.invite });
+  const session = new Session(engine, { mirror: live, invite: options.invite });
+  if (deactivated) {
+    // The window went away while the join was in flight. The seat is nobody's: it is given
+    // back through the same teardown a live session gets, rather than left connected and
+    // unowned by a window that will never dispose it.
+    void session.dispose();
+    return;
+  }
+  current = session;
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
   void vscode.window.showInformationMessage(joinedMessage(engine.documents()));
@@ -2070,7 +2108,7 @@ async function triageMirrors(
   context?: vscode.ExtensionContext,
 ): Promise<void> {
   for (const stored of scanStorage(storage)) {
-    if (current !== undefined) {
+    if (deactivated || current !== undefined) {
       return;
     }
     const mirror = openMirror(storage, stored.room, stored.window);
@@ -2096,7 +2134,7 @@ async function triageMirrors(
       // The name stashed with the invite answers without asking: falling back to
       // the setting and the question only when the marker predates the stash.
       const displayName = await resolveDisplayName(stored.displayName, context);
-      if (displayName === undefined || current !== undefined) {
+      if (displayName === undefined || current !== undefined || deactivated) {
         return;
       }
       await joinGuestRoom({ invite: stored.invite, displayName, resume: mirror });

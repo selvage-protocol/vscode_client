@@ -1234,6 +1234,53 @@ test('a requested path is read once, and never over what the replica has receive
   assert.equal(session.host.text(OTHER), 'from disk\nedited\n', 'the room was overwritten');
 });
 
+test('the asks a host remembers are the paths the room still holds open', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  // A granted path the host's working copy does not hold: read, refused and reported. What
+  // keeps that read from being attempted again is `requested`, and what fills it is the
+  // room's open-document set — a stranger's word. A token-holder that opens and closes
+  // distinct paths in a cycle would grow the union over the session without bound, so the
+  // set holds only what the room has open now.
+  const ghost = 'notes/gone.md';
+  const other = 'notes/other.md';
+  host.editor.disk.set(other, 'from disk\n');
+
+  guest.editor.open(ghost, '');
+  guest.bridge.documentOpened(ghost);
+  await waitFor('the host to try the read', () => host.editor.reads.length >= 1, {
+    describe: () => ({ reads: host.editor.reads }),
+  });
+  assert.deepEqual(host.editor.reads, [ghost], 'the host read a path the room did not name');
+
+  // The set is restated whenever it changes: the path it already asked for is not asked for
+  // again, which is the whole point of remembering the ask.
+  guest.editor.open(other, '');
+  guest.bridge.documentOpened(other);
+  await waitFor('the second path to be read', () => host.editor.reads.length >= 2, {
+    describe: () => ({ reads: host.editor.reads }),
+  });
+  assert.deepEqual(
+    host.editor.reads.filter((read) => read === ghost),
+    [ghost],
+    'a path the room still holds open was read twice',
+  );
+
+  // The room closes the first path, then names it again. The memory of the ask went with the
+  // close, so this is a fresh ask. Red without the pruning: the set keeps one string per path
+  // any token-holder ever named, and the host never reads this path again.
+  guest.bridge.documentClosed(ghost);
+  await waitFor('the room to drop the path', () => !session.guest.documents().includes(ghost), {
+    describe: () => ({ documents: session.guest.documents() }),
+  });
+  guest.bridge.documentOpened(ghost);
+  await waitFor(
+    'the re-opened path to be read again',
+    () => host.editor.reads.filter((read) => read === ghost).length >= 2,
+    { describe: () => ({ reads: host.editor.reads }) },
+  );
+  assert.equal(host.editor.reads.filter((read) => read === ghost).length, 2);
+});
+
 test('a seed in flight does not land over text the room supplied while it was reading', async (t) => {
   const session = await fakeSession();
   const editor = new HeldRead();

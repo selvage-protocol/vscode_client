@@ -15,12 +15,16 @@ export class ControlledSocket implements WebSocketLike {
 
   /** Text frames this socket was asked to send. */
   readonly sent: string[] = [];
+  /** Binary frames this socket was asked to send, as the bytes given it. */
+  readonly sentBinary: Uint8Array[] = [];
   /** How many times it was closed, by either end. */
   closes = 0;
 
   send(data: string | Uint8Array): void {
     if (typeof data === 'string') {
       this.sent.push(data);
+    } else {
+      this.sentBinary.push(data);
     }
   }
 

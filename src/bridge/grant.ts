@@ -30,6 +30,24 @@ export const MAX_GRANT_PATH_BYTES = 4096;
 export const MAX_GRANT_FILE_BYTES = 1024 * 1024;
 
 /**
+ * Whether a buffer is over the largest file a session carries.
+ *
+ * UTF-8 bytes are never fewer than UTF-16 code units and never more than three times as
+ * many, so a buffer under a third of the bound is under it from its length alone. This is
+ * asked of every shared buffer on every keystroke, so only a buffer in the top of that
+ * range — where the answer depends on what the characters are — pays for the exact count.
+ */
+export function overFileBound(text: string): boolean {
+  if (text.length > MAX_GRANT_FILE_BYTES) {
+    return true;
+  }
+  if (text.length * 3 <= MAX_GRANT_FILE_BYTES) {
+    return false;
+  }
+  return new TextEncoder().encode(text).length > MAX_GRANT_FILE_BYTES;
+}
+
+/**
  * Directory names that are never part of the grant. Dependency trees and build outputs are
  * what a working copy should not share, and they are also what makes a walk pathological.
  * Matched case-insensitively only where the host filesystem folds case (macOS, Windows):

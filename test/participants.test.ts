@@ -288,9 +288,27 @@ interface RowNode {
   peerId?: string;
   label?: string;
   description?: string;
-  tooltip?: string;
+  /**
+   * The row's hover. The adapter builds it with `MarkdownString().appendText`, so the room's
+   * words are plain text rather than markdown a stranger supplied; `markdown` reads it back.
+   */
+  tooltip?: { value?: string };
   contextValue?: string;
   command?: { command: string; arguments?: unknown[] };
+}
+
+/** A row's hover, as the editor receives it: the markdown string the adapter built. */
+function markdown(node: RowNode): string {
+  return String(node.tooltip?.value ?? '');
+}
+
+/**
+ * A row's hover as the room's own words. The adapter escapes markdown metacharacters
+ * (`appendText`), so a path's `.` and a bracket in a name read back with a backslash in
+ * front of them; this is the text a peer's name and path appear as.
+ */
+function words(node: RowNode): string {
+  return markdown(node).replace(/\\(.)/g, '$1');
 }
 
 /** A file row's decoration, as the editor would read it: the badge, its hover and its colour. */
@@ -370,7 +388,7 @@ test('rows render on fabricated presence, naming the file each peer is in', asyn
   const nodes = await waitFor('Cy to list with their file known', () => {
     const current = viewNodes(seat_.bundle);
     const cy = current.find((node) => node.label === 'Cy');
-    return cy?.tooltip?.includes(PATH_A) ? current : false;
+    return words(cy ?? {}).includes(PATH_A) ? current : false;
   });
   const cy = nodes.find((node) => node.label === 'Cy');
   assert.equal(cy?.description, PATH_A, 'the row does not name the file the peer is in');
@@ -380,6 +398,33 @@ test('rows render on fabricated presence, naming the file each peer is in', asyn
   }
   const ada = nodes.find((node) => node.label === 'Ada');
   assert.equal(ada?.description, 'No open document', 'the host published no caret');
+});
+
+test('a peer’s name is plain text in the hover, never markdown to render', async (t) => {
+  // A display name is bounded at 32 code units and may otherwise be anything, so this is a
+  // legal name. The workbench converts a string `TreeItem.tooltip` to a markdown string and
+  // renders it, which would make the name an image request from a stranger; the adapter
+  // escapes it to text the way the caret hover beside it already does.
+  const seat_ = await seat(t);
+  const hostile = '![](http://attacker/l.png)';
+  await peerIn(t, seat_, hostile, 5);
+  const nodes = await waitFor('the hostile name to list', () => {
+    const current = viewNodes(seat_.bundle);
+    return current.some((node) => node.label?.startsWith('!')) ? current : false;
+  });
+  const row = nodes.find((node) => node.label?.startsWith('!'));
+  assert.ok(row !== undefined, 'the hostile name is not in the view');
+  assert.equal(
+    typeof row.tooltip,
+    'object',
+    `the hover is a string the workbench renders as markdown: ${String(row.tooltip)}`,
+  );
+  const hover = markdown(row);
+  assert.ok(
+    hover.includes('\\!\\[\\]\\(http://attacker/l\\.png\\)'),
+    `the hover is not the name as plain text: ${hover}`,
+  );
+  assert.equal(hover.includes('!['), false, `the hover still carries markdown image syntax: ${hover}`);
 });
 
 test('a peer in a document is one click away, and a peer in none is not', async (t) => {
@@ -410,7 +455,7 @@ test('a rename updates the row in place, and a leave removes it without rebuildi
   const cy = await peerIn(t, seat_, 'Cy', 5);
   await waitFor('Cy to list with their file known', () => {
     const current = viewNodes(seat_.bundle);
-    return current.some((node) => node.tooltip?.includes(PATH_A)) ? true : false;
+    return current.some((node) => words(node).includes(PATH_A)) ? true : false;
   });
   const provider = participantsProvider(seat_.bundle);
   const fired: unknown[] = [];
@@ -482,7 +527,7 @@ test('a row action calls through to go, follow and stop', async (t) => {
   const adaRow = await waitFor('Ada to list with their file known', () => {
     const current = viewNodes(bundle);
     const ada = current.find((node) => node.label === 'Ada');
-    return ada?.tooltip?.includes(PATH_A) ? ada : false;
+    return words(ada ?? {}).includes(PATH_A) ? ada : false;
   });
   editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
   await bundle.stub.commands.executeCommand('selvage.goToParticipant', adaRow);
@@ -663,7 +708,7 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
   // still says what presence said, but no file anywhere wears a badge for it.
   mallory.setSelection('../evil', { anchor: 0, head: 0 });
   await waitFor('the hostile path to reach the view', () =>
-    viewNodes(bundle).some((node) => node.tooltip?.includes('evil')) ? true : false,
+    viewNodes(bundle).some((node) => words(node).includes('evil')) ? true : false,
   );
   const folder = bundle.stub.Uri.parse('file:///workspace');
   const escaped = bundle.stub.Uri.joinPath(folder, '..', 'evil');

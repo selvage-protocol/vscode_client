@@ -28,7 +28,7 @@ import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
 import { diff, hasCarriageReturn, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
-import { MAX_GRANT_FILE_BYTES, isGrantedPath } from './grant.ts';
+import { MAX_GRANT_FILE_BYTES, isGrantedPath, overFileBound } from './grant.ts';
 
 /**
  * The slice of `SelvageEngine` the bridge talks to. `SelvageEngine` satisfies it as it
@@ -180,11 +180,18 @@ export class SessionBridge {
   private readonly autoSave: boolean;
   /** The paths the editor currently has open in this session. */
   private readonly documents = new Set<string>();
-  /** The paths this host has seeded, so reopening a file does not push it in again. */
+  /**
+   * The paths this host has seeded, so reopening a file does not push it in again. Pruned
+   * when the document closes, along with `refusedSeeds`: the entries are one per path open.
+   */
   private readonly seeded = new Set<string>();
   /** The paths this host has refused and reported, so reopening one does not nag again. */
   private readonly refusedSeeds = new Set<string>();
-  /** The paths the room has asked for, so a read that was refused is not attempted again. */
+  /**
+   * The paths the room has asked for, so a read that was refused is not attempted again.
+   * Only the ones the room still holds open: `seedRequested` prunes to the set it is given,
+   * because that set is a peer's word and a peer can churn it.
+   */
   private readonly requested = new Set<string>();
   /** Documents a guest has opened whose room text has not arrived yet. See `documentOpened`. */
   private readonly unarrived = new Set<string>();
@@ -341,6 +348,13 @@ export class SessionBridge {
     this.cancelBackstop(path);
     this.pending.delete(path);
     this.attempts.delete(path);
+    // The once-per-path memories go with the document, so a session that opens many paths
+    // holds one entry per path *open* rather than one per path ever opened. A reopen is
+    // judged afresh: `seed`'s engine guard is what keeps a second insert out, and a refusal
+    // said again for a file the person has just reopened is the same sentence about the
+    // same act.
+    this.seeded.delete(path);
+    this.refusedSeeds.delete(path);
     this.release(path);
   }
 
@@ -547,6 +561,17 @@ export class SessionBridge {
   private seedRequested(documents: string[]): void {
     if (this.role() !== 'host') {
       return;
+    }
+    // This host remembers a path it was asked for only while the room holds it open. The
+    // set is written from the room's own word, and the room is a stranger's: a token-holder
+    // that opens and closes distinct paths in a cycle grows a union over the session without
+    // bound, one string per path it ever named. What is not open now is asked for again if
+    // it comes back, which costs the one bounded read the first ask cost.
+    const open = new Set(documents);
+    for (const path of [...this.requested]) {
+      if (!open.has(path)) {
+        this.requested.delete(path);
+      }
     }
     const fresh: string[] = [];
     for (const path of documents) {
@@ -994,12 +1019,7 @@ function seedRefusal(path: string, bufferText: string): string | undefined {
   if (!isGrantedPath(path)) {
     return 'it is not a path the room shares (excluded from the grant, or escaping the folder)';
   }
-  // UTF-8 bytes are never fewer than UTF-16 code units, so an over-long buffer is refused
-  // without encoding it; the rest pays one pass for the exact byte count.
-  if (
-    bufferText.length > MAX_GRANT_FILE_BYTES ||
-    new TextEncoder().encode(bufferText).length > MAX_GRANT_FILE_BYTES
-  ) {
+  if (overFileBound(bufferText)) {
     return `it is over the ${MAX_GRANT_FILE_BYTES} bytes a session will carry`;
   }
   return undefined;

@@ -84,6 +84,8 @@ const registered = {
   treeDataProviders: [],
   /** Every `registerFileDecorationProvider` call, in order. */
   fileDecorationProviders: [],
+  /** Every `workspace.onDidGrantWorkspaceTrust` handler, so a test can grant the trust. */
+  trustListeners: [],
   /**
    * Holds a directory read, as `(path, index) => Promise`: the read is answered when the promise
    * resolves. A real walk is slow in a large tree and faster in a small one, so a test that needs
@@ -369,6 +371,8 @@ function reset() {
   watcherBudget = 0;
   registered.treeDataProviders.length = 0;
   registered.fileDecorationProviders.length = 0;
+  registered.trustListeners.length = 0;
+  trusted = true;
   registered.listings = 0;
   registered.readHold = undefined;
   folders.length = 0;
@@ -393,6 +397,9 @@ function disposable() {
  * built, which is after a test's own `reset`.
  */
 const listeners = new Map();
+
+/** Whether the window is trusted, as `workspace.isTrusted` reports it. */
+let trusted = true;
 
 /** The folders the window is opened on; a session captures these at invite time. */
 const folders = [{ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 }];
@@ -527,6 +534,23 @@ module.exports = {
   },
   /** Fires an editor event the extension subscribed to: `fire('visibleEditors')`. */
   fire,
+  /** Whether the window is trusted, as `workspace.isTrusted`: set it before `activate`. */
+  get isTrusted() {
+    return trusted;
+  },
+  set isTrusted(value) {
+    trusted = Boolean(value);
+  },
+  /**
+   * The person trusts the window's folder, as VS Code reports it: every registered
+   * `onDidGrantWorkspaceTrust` handler runs, and the window reads as trusted afterwards.
+   */
+  grantTrust() {
+    trusted = true;
+    for (const handler of [...registered.trustListeners]) {
+      handler();
+    }
+  },
 
   EventEmitter: class {
     constructor() {
@@ -660,6 +684,24 @@ module.exports = {
   workspace: {
     get textDocuments() {
       return registered.textDocuments;
+    },
+    /**
+     * Whether the window is trusted. A test sets it before `activate` to model Restricted
+     * Mode; the extension reads it, and `reset` puts it back to trusted.
+     */
+    get isTrusted() {
+      return trusted;
+    },
+    set isTrusted(value) {
+      trusted = Boolean(value);
+    },
+    /**
+     * The handler the extension registered, so a test can fire the grant itself — which is
+     * what VS Code does when the person trusts the folder the window is open on.
+     */
+    onDidGrantWorkspaceTrust(handler) {
+      registered.trustListeners.push(handler);
+      return disposable();
     },
     /** The folders the window is opened on; a test can replace them mid-session. */
     get workspaceFolders() {

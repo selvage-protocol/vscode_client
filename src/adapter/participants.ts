@@ -66,6 +66,8 @@ export class ParticipantItem extends vscode.TreeItem {
   readonly peerId: string;
   private colour: string;
   private canNavigate: boolean;
+  /** The hover's text, as the bridge built it: what `update` compares and `tooltip` escapes. */
+  private tooltipText = '';
 
   constructor(row: ParticipantRow) {
     super(row.label, vscode.TreeItemCollapsibleState.None);
@@ -80,7 +82,7 @@ export class ParticipantItem extends vscode.TreeItem {
     if (
       this.label === row.label &&
       this.description === row.description &&
-      this.tooltip === row.tooltip &&
+      this.tooltipText === row.tooltip &&
       this.contextValue === row.contextValue &&
       this.colour === row.colour &&
       this.canNavigate === row.canNavigate
@@ -94,7 +96,12 @@ export class ParticipantItem extends vscode.TreeItem {
   private apply(row: ParticipantRow): void {
     this.label = row.label;
     this.description = row.description;
-    this.tooltip = row.tooltip;
+    // A string tooltip is converted to a markdown string by the workbench and rendered as
+    // markdown, so a peer's `![](http://…/l.png)` name — a legal 24-code-unit name — is an
+    // image request from a stranger. `appendText` escapes the room's words to plain text,
+    // which is what the caret hover beside this already does.
+    this.tooltipText = row.tooltip;
+    this.tooltip = new vscode.MarkdownString().appendText(row.tooltip);
     this.contextValue = row.contextValue;
     this.colour = row.colour;
     this.canNavigate = row.canNavigate;
