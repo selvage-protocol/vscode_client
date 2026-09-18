@@ -1808,7 +1808,8 @@ async function host(
     }
     inSession.dispose();
   }
-  const baseUrl = args?.serverUrl ?? (await resolveServerUrl());
+  const given = args?.serverUrl?.trim();
+  const baseUrl = given === undefined || given === '' ? await resolveServerUrl() : given;
   if (baseUrl === undefined) {
     return;
   }

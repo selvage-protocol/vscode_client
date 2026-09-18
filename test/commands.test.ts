@@ -1496,6 +1496,32 @@ test('an explicit server address beats the remembered server', async (t) => {
   assert.equal(bundle.stub.globalState.get('selvage.lastServer'), 'ws://127.0.0.1:2');
 });
 
+test('the server address a command is given is trimmed, and that is what is remembered', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // A pasted-with-padding address is the address: the setting and the box answer are
+  // trimmed, and an address given to the command has to be too, or the first host is the
+  // only one that ever sees the whitespace — every later host reuses it.
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: '  ws://127.0.0.1:1  ',
+    displayName: 'Ada',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not host')) ?? false,
+  );
+  assert.match(String(said), /could not host on ws:\/\/127\.0\.0\.1:1 \(/);
+  assert.equal(
+    bundle.stub.globalState.get('selvage.lastServer'),
+    'ws://127.0.0.1:1',
+    'the remembered address carries the whitespace it was given',
+  );
+});
+
 test('a configured server address answers without asking', async (t) => {
   const { bundle } = activated(t);
   bundle.stub.configure({ serverUrl: 'ws://127.0.0.1:9', displayName: 'Ada' });
