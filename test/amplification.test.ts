@@ -23,6 +23,7 @@ import { Awareness } from 'y-protocols/awareness';
 import { SelvageEngine } from '../src/engine/engine.ts';
 import {
   MESSAGE_QUERY_AWARENESS,
+  MESSAGE_SYNC,
   applyFrame,
   encodeSyncStep1,
   encodeUpdate,
@@ -79,21 +80,53 @@ test('a frame of awareness queries is answered with nothing at all', (t) => {
   assert.equal(room.doc.getText(PATH).toString(), 'the room’s text\n');
 });
 
-test('a frame of sync queries draws one answer, however many messages it holds', (t) => {
-  const room = replica(t, 'the room’s text\n');
-  // 4096 SyncStep1 messages, four bytes each: `0x00` for the sync type, `0x00` for step 1,
-  // `0x01` for a one-byte state vector and `0x00` for that vector — the shape that costs a
-  // whole replica-sized reply apiece, and the smallest message that is one.
-  const messages = 4096;
-  const step = Uint8Array.of(0, 0, 1, 0);
+/** `messages` copies of the smallest SyncStep1: sync, step 1, a one-byte empty state vector. */
+function syncQueries(messages: number): Uint8Array {
+  const step = Uint8Array.of(MESSAGE_SYNC, 0, 1, 0);
   const frame = new Uint8Array(messages * step.length);
   for (let index = 0; index < messages; index += 1) {
     frame.set(step, index * step.length);
   }
-  const effect = applyFrame(frame, room.doc, room.awareness, 'peer');
+  return frame;
+}
 
+test('a frame of sync queries draws one answer and stays aligned behind it', (t) => {
+  const room = replica(t, 'the room’s text\n');
+  // 4096 SyncStep1 messages, four bytes each: `0x00` for the sync type, `0x00` for step 1,
+  // `0x01` for a one-byte state vector and `0x00` for that vector — the shape that costs a
+  // whole replica-sized diff apiece, and the smallest message that is one. Past the cap the
+  // diff is never computed and the state vector is read off the frame and dropped, so an
+  // update after the run is still found and still applied: the frame stayed aligned.
+  const peer = new Y.Doc();
+  Y.applyUpdate(peer, Y.encodeStateAsUpdate(room.doc));
+  const text = peer.getText(PATH);
+  text.insert(text.length, 'from the peer\n');
+  const update = encodeUpdate(Y.encodeStateAsUpdate(peer));
+  peer.destroy();
+
+  const queries = syncQueries(4096);
+  const frame = new Uint8Array(queries.length + update.length);
+  frame.set(queries, 0);
+  frame.set(update, queries.length);
+
+  const effect = applyFrame(frame, room.doc, room.awareness, 'peer');
   const { count } = measured(effect.replies);
-  assert.equal(count, 1, `${count} answers to a frame of ${messages} queries`);
+  assert.equal(count, 1, `${count} answers to a frame of 4096 queries`);
+  assert.equal(
+    room.doc.getText(PATH).toString(),
+    'the room’s text\nfrom the peer\n',
+    'the frame did not stay aligned behind the dropped state vectors',
+  );
+});
+
+test('a sync sub-type y-protocols does not define is still a frame this client drops', (t) => {
+  const room = replica(t, 'the room’s text\n');
+  // The dispatch reads the sub-type itself, so it has to keep refusing a message that
+  // `y-protocols/sync`'s own `readSyncMessage` refuses.
+  assert.throws(
+    () => applyFrame(Uint8Array.of(MESSAGE_SYNC, 7), room.doc, room.awareness, 'peer'),
+    /unknown y-protocols sync message type 7/,
+  );
 });
 
 test('a legitimate frame is still applied and still answered', (t) => {
@@ -135,9 +168,15 @@ async function seated(t: TestContext): Promise<{
     webSocketFactory: () => socket,
   });
   let engine: SelvageEngine | undefined;
-  void attempted.then((seatedEngine) => {
-    engine = seatedEngine;
-  });
+  let failure: unknown;
+  void attempted.then(
+    (seatedEngine) => {
+      engine = seatedEngine;
+    },
+    (error: unknown) => {
+      failure = error;
+    },
+  );
   t.after(async () => {
     await engine?.disconnect();
   });
@@ -160,7 +199,9 @@ async function seated(t: TestContext): Promise<{
     }),
   );
   return {
-    engine: await waitFor('the handshake to complete', () => engine ?? false),
+    engine: await waitFor('the handshake to complete', () => engine ?? false, {
+      describe: () => ({ failure }),
+    }),
     socket,
   };
 }

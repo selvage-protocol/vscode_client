@@ -22,11 +22,12 @@ export const MESSAGE_AUTH = 2;
 export const MESSAGE_QUERY_AWARENESS = 3;
 
 /**
- * How many messages one frame may be answered with. A conforming peer asks once per frame at
- * most — this client and the reference one write one y-protocols message per frame, and only
- * SyncStep1 is answered at all — so a legitimate frame cannot lose an answer it needs. What
- * the cap bounds is the work a hostile frame can cost: without it `SyncStep1` costs a whole
- * replica-sized reply per two bytes, the same amplification the awareness query had per byte.
+ * How many messages one frame may be answered with, and — because the answer to a SyncStep1
+ * is a whole replica-sized diff — how many such diffs one frame may cost. A conforming peer
+ * asks once per frame at most: this client and the reference one write one y-protocols message
+ * per frame, and only SyncStep1 is answered at all. Past the cap the state vector is read off
+ * the frame and dropped, so a hostile frame pays for one answer rather than one per message,
+ * and a legitimate frame cannot lose an answer it needs.
  */
 const MAX_REPLIES_PER_FRAME = 1;
 
@@ -85,10 +86,27 @@ export function applyFrame(
     const messageType = decoding.readVarUint(decoder);
     switch (messageType) {
       case MESSAGE_SYNC: {
-        const encoder = encoding.createEncoder();
-        syncProtocol.readSyncMessage(decoder, encoder, doc, origin);
-        if (encoding.length(encoder) > 0 && replies.length < MAX_REPLIES_PER_FRAME) {
-          replies.push(wrap(MESSAGE_SYNC, encoding.toUint8Array(encoder)));
+        // The sync sub-type is read here rather than left to `readSyncMessage`, because the
+        // answer to a SyncStep1 is a whole diff of the document: past the cap that diff is not
+        // computed at all. The readers are y-protocols' own, so what is applied is theirs.
+        const syncType = decoding.readVarUint(decoder);
+        if (syncType === syncProtocol.messageYjsSyncStep1) {
+          if (replies.length >= MAX_REPLIES_PER_FRAME) {
+            decoding.readVarUint8Array(decoder);
+            break;
+          }
+          const encoder = encoding.createEncoder();
+          syncProtocol.readSyncStep1(decoder, encoder, doc);
+          if (encoding.length(encoder) > 0) {
+            replies.push(wrap(MESSAGE_SYNC, encoding.toUint8Array(encoder)));
+          }
+        } else if (
+          syncType === syncProtocol.messageYjsSyncStep2 ||
+          syncType === syncProtocol.messageYjsUpdate
+        ) {
+          syncProtocol.readSyncStep2(decoder, doc, origin);
+        } else {
+          throw new Error(`unknown y-protocols sync message type ${syncType}`);
         }
         break;
       }
