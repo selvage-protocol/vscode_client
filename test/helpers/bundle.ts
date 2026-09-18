@@ -224,6 +224,15 @@ export async function landStashedJoin(
   displayName: string,
   extraConfig: Record<string, unknown> = {},
 ): Promise<string> {
+  // The join stages its reload detached, so the landing waits for the staged reload
+  // rather than for a number of turns: the reload is the effect the landing reads.
+  await waitFor(
+    'the join to stage its reload',
+    () =>
+      bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder')
+        ? true
+        : false,
+  );
   const root = mirrorWindowDir(storagePath, roomId);
   const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
   assert.equal(reloads.length, 1, `expected one staged reload, found ${reloads.length}`);

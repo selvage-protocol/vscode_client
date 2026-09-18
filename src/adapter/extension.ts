@@ -112,6 +112,18 @@ let lastServer: string | undefined;
 const LAST_SERVER_KEY = 'selvage.lastServer';
 
 /**
+ * The last name a user typed, so the next host or join proceeds without asking.
+ * In memory for the window, and in `globalState` (see `LAST_DISPLAY_NAME_KEY`) for the
+ * next window and the next restart: answering the question once is enough. A remembered
+ * name is changed where names are changed — the `Selvage: Set the name other
+ * participants see` command, behind its `Change the name` answer — never by asking again.
+ */
+let lastDisplayName: string | undefined;
+
+/** The `globalState` key carrying the last typed name across windows and restarts. */
+const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
+
+/**
  * The server a window hosts on when nothing was typed, remembered or configured: the Pi
  * demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment —
  * the prompt still asks, explicit arguments and the `selvage.serverUrl` setting always win —
@@ -131,13 +143,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // A window the user typed a server into leaves it behind for the next one. The in-memory
   // value still wins: it is what this window was told most recently.
   lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
+  lastDisplayName = context.globalState?.get<string>(LAST_DISPLAY_NAME_KEY) ?? lastDisplayName;
   storageUri = context.globalStorageUri;
   context.subscriptions.push(
     vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
       void host(args, context);
     }),
     vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
-      void join(args);
+      void join(args, context);
     }),
     vscode.commands.registerCommand('selvage.copyInvite', () => {
       void copyInvite();
@@ -152,7 +165,7 @@ export function activate(context: vscode.ExtensionContext): void {
       leave();
     }),
     vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
-      void displayName(args);
+      void displayName(args, context);
     }),
     vscode.commands.registerCommand('selvage.peers', () => {
       void listPeers();
@@ -178,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
   // detached, because a pending invite finishes by joining and joining is async.
   if (storageUri !== undefined) {
-    void triageMirrors(storageUri);
+    void triageMirrors(storageUri, context);
   }
 }
 
@@ -1797,7 +1810,7 @@ async function host(
   }
   lastServer = baseUrl;
   await rememberServer(context, baseUrl);
-  const displayName = await resolveDisplayName(args?.displayName);
+  const displayName = await resolveDisplayName(args?.displayName, context);
   if (displayName === undefined) {
     return;
   }
@@ -1832,7 +1845,7 @@ export interface JoinArgs {
   displayName?: string;
 }
 
-async function join(args?: JoinArgs): Promise<void> {
+async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
     const leave = 'Leave and join';
@@ -1865,7 +1878,7 @@ async function join(args?: JoinArgs): Promise<void> {
   if (invite === undefined) {
     return;
   }
-  const displayName = await resolveDisplayName(args?.displayName);
+  const displayName = await resolveDisplayName(args?.displayName, context);
   if (displayName === undefined) {
     return;
   }
@@ -1997,7 +2010,10 @@ function removeRoomFolder(mirror: Mirror): void {
  * goes with it, and one sentence says what went. A live sibling's directory, and anything
  * without a marker of ours, is untouched.
  */
-async function triageMirrors(storage: vscode.Uri): Promise<void> {
+async function triageMirrors(
+  storage: vscode.Uri,
+  context?: vscode.ExtensionContext,
+): Promise<void> {
   for (const stored of scanStorage(storage)) {
     if (current !== undefined) {
       return;
@@ -2009,7 +2025,7 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
     if (stored.invite !== undefined) {
       // The name stashed with the invite answers without asking: falling back to
       // the setting and the question only when the marker predates the stash.
-      const displayName = await resolveDisplayName(stored.displayName);
+      const displayName = await resolveDisplayName(stored.displayName, context);
       if (displayName === undefined || current !== undefined) {
         return;
       }
@@ -2369,7 +2385,9 @@ function withinBound(raw: string): string | undefined {
 
 /**
  * The name this window will be seated with: the one a caller named, else the
- * `selvage.displayName` setting, else the answer to a question that states the bound.
+ * `selvage.displayName` setting, else the last typed name, else the answer to a
+ * question that states the bound — asked once, then remembered for the next window
+ * and the next restart, so no host or join asks twice for the same answer.
  *
  * A name over the bound is refused wherever it came from — a server refuses the
  * `session.hello` it would arrive in, and being asked for a shorter name is better than being
@@ -2377,12 +2395,29 @@ function withinBound(raw: string): string | undefined {
  * failing the command: the box starts from the name that was refused, so it can be shortened
  * instead of retyped.
  */
-async function resolveDisplayName(given?: string): Promise<string | undefined> {
+async function resolveDisplayName(
+  given?: string,
+  context?: vscode.ExtensionContext,
+): Promise<string | undefined> {
   if (given !== undefined) {
-    return withinBound(given);
+    const name = withinBound(given);
+    if (name === undefined) {
+      return undefined;
+    }
+    return rememberDisplayName(context, name);
   }
   const configured = config().get<string>('displayName', '').trim();
-  if (configured !== '') {
+  if (configured === '') {
+    // A remembered name answers without asking: the question below is for the first run.
+    // Only a name already inside the bound was ever remembered, so a refusal here means
+    // a memento written by hand, and the question — not an error — is what answers it.
+    // A name the setting names, even one the bound refuses, never falls through to here:
+    // the setting is the newer word, and a refused one earns the question prefilled with
+    // itself, not a silent older answer.
+    if (lastDisplayName !== undefined && displayNameRefusal(lastDisplayName) === undefined) {
+      return lastDisplayName;
+    }
+  } else {
     const name = withinBound(configured);
     if (name !== undefined) {
       return name;
@@ -2397,7 +2432,12 @@ async function resolveDisplayName(given?: string): Promise<string | undefined> {
   if (answer === undefined) {
     return undefined;
   }
-  return withinBound(answer);
+  // The first run's answer is every later run's: kept for the next window.
+  const name = withinBound(answer);
+  if (name === undefined) {
+    return undefined;
+  }
+  return rememberDisplayName(context, name);
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.displayName`. */
@@ -2417,9 +2457,9 @@ export interface DisplayNameArgs {
  * so a change applies to the room now rather than only to the next host or join. The setting
  * is written at the global scope, so a later window is not asked again.
  */
-async function displayName(args?: DisplayNameArgs): Promise<void> {
+async function displayName(args?: DisplayNameArgs, context?: vscode.ExtensionContext): Promise<void> {
   if (args?.name !== undefined) {
-    await acceptDisplayName(args.name);
+    await acceptDisplayName(args.name, context);
     return;
   }
   const currentName = nameInForce();
@@ -2442,7 +2482,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
   if (answer === undefined) {
     return;
   }
-  await acceptDisplayName(answer);
+  await acceptDisplayName(answer, context);
 }
 
 /**
@@ -2453,7 +2493,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
  * — one a configuration manager owns and leaves read-only — is reported rather than swallowed,
  * and the confirmation is not sent.
  */
-async function acceptDisplayName(raw: string): Promise<void> {
+async function acceptDisplayName(raw: string, context?: vscode.ExtensionContext): Promise<void> {
   const name = withinBound(raw);
   if (name === undefined) {
     return;
@@ -2466,6 +2506,9 @@ async function acceptDisplayName(raw: string): Promise<void> {
     );
     return;
   }
+  // The setting carries the name now; the memento keeps it too, so clearing the setting
+  // later still never asks twice for this answer.
+  await rememberDisplayName(context, name);
   void vscode.window.showInformationMessage(`Selvage: display name set to "${name}".`);
 }
 
@@ -2637,6 +2680,24 @@ async function ask(
   });
   const trimmed = answer?.trim();
   return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+}
+
+/**
+ * Keeps the typed name for the next window and the next restart. Memory only when the
+ * window cannot write: a window that cannot remember still hosts, so a write that
+ * fails is dropped rather than reported.
+ */
+async function rememberDisplayName(
+  context: vscode.ExtensionContext | undefined,
+  name: string,
+): Promise<string> {
+  lastDisplayName = name;
+  try {
+    await context?.globalState?.update(LAST_DISPLAY_NAME_KEY, name);
+  } catch {
+    // A window that cannot remember still hosts.
+  }
+  return name;
 }
 
 /**

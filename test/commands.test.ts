@@ -1496,6 +1496,149 @@ test('a configured server address beats the remembered server', async (t) => {
   assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
 });
 
+test('the typed name is remembered across windows, and hosting skips the question', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const first = freshBundle();
+  first.stub.reset();
+  first.stub.configure({ serverUrl: 'ws://127.0.0.1:1' });
+  first.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    first.deactivate();
+  });
+
+  // The server is dead so hosting fails — but the name box already kept its answer.
+  first.stub.registered.inputReply = 'Ada';
+  await first.stub.commands.executeCommand('selvage.host');
+  const kept = await waitFor('the name to be remembered', () =>
+    first.stub.globalState.get('selvage.lastDisplayName') === 'Ada' ? true : false,
+  );
+  assert.ok(kept);
+  first.deactivate();
+
+  // A new window is a new module: nothing in memory names Ada, only the memento — and
+  // hosting with her remembered name asks nothing. The recorded boxes are cleared but
+  // the memento is deliberately not reset.
+  const second = freshBundle();
+  second.stub.registered.inputs.length = 0;
+  second.stub.registered.inputReply = undefined;
+  second.activate({ subscriptions: [], globalState: first.stub.globalState });
+  t.after(() => {
+    second.deactivate();
+  });
+  await second.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
+  await waitFor('the remembered host to be seated', () =>
+    second.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(second.stub.registered.inputs.length, 0, 'the remembered name was asked for again');
+  assert.ok(
+    server.displayNames().includes('Ada'),
+    'the remembered name did not seat the host',
+  );
+});
+
+test('the first run asks for the name once, then never again', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // Nothing remembered and nothing configured: the question is asked, and its answer is
+  // what the memento keeps.
+  bundle.stub.registered.inputReply = 'Ada';
+  await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
+  const asked = await waitFor('the name question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.title, 'The name other participants see');
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(bundle.stub.globalState.get('selvage.lastDisplayName'), 'Ada');
+
+  // The answer is kept: hosting again, after leaving, asks nothing. Only the recorded
+  // boxes and notices are cleared — a reset would clear the memento under test.
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the leave to be said', () =>
+    bundle.stub.registered.information.some((message) => message.includes('left the session'))
+      ? true
+      : false,
+  );
+  bundle.stub.registered.inputs.length = 0;
+  bundle.stub.registered.information.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
+  await waitFor('the second host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'the kept name was asked for again');
+});
+
+test('an explicit name beats the remembered name, and is what is remembered next', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  await bundle.stub.globalState.update('selvage.lastDisplayName', 'Remembered');
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // The explicit name wins over the remembered one, with no question asked — and what
+  // was explicit is what is remembered next.
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'the remembered name was asked about');
+  assert.ok(server.displayNames().includes('Ada'), 'hosting did not use the explicit name');
+  assert.equal(bundle.stub.globalState.get('selvage.lastDisplayName'), 'Ada');
+});
+
+test('a configured name beats the remembered name', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  await bundle.stub.globalState.update('selvage.lastDisplayName', 'Remembered');
+  bundle.stub.configure({ displayName: 'Configured' });
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // The setting answers, not the memory: no box opens, and the room seats the
+  // configured name.
+  await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured name was asked about');
+  assert.ok(
+    server.displayNames().includes('Configured'),
+    'hosting did not use the configured name',
+  );
+  assert.ok(
+    !server.displayNames().includes('Remembered'),
+    'hosting seated the remembered name',
+  );
+});
+
 /** The built bundle reloaded with fresh module state, for tests about memory across windows. */
 function freshBundle(): LoadedExtension {
   const require = createRequire(import.meta.url);
@@ -1556,7 +1699,11 @@ test('a join to a dead server says what to check, not just the engine error', as
     invite: 'ws://127.0.0.1:1/session?room=r&token=t',
     displayName: 'Bob',
   });
-  // The reload is staged first; the failure lands after it, when the room is dialled.
+  // The reload is staged first — detached, so the read below waits for it rather than
+  // for a number of turns; the failure lands after it, when the room is dialled.
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
   const root = mirrorWindowDir(storage, 'r');
   bundle.stub.reset();
   bundle.stub.setWorkspaceFolders([root]);
@@ -2101,6 +2248,9 @@ test('the stashed name joins without a second question', async (t) => {
   const roomId = roomOf(invite);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
   const root = mirrorWindowDir(storage, roomId);
   const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
   assert.equal(reloads.length, 1, 'the join staged no reload to carry the name across');
@@ -2127,6 +2277,9 @@ test('a reloaded window holding more than the mirror reloads again, never beside
   const roomId = roomOf(invite);
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
   const root = mirrorWindowDir(storage, roomId);
   // The reload landed somewhere else: the room's folder plus the person's own.
   bundle.stub.reset();
