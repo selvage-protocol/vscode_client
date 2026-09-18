@@ -12,9 +12,11 @@ import assert from 'node:assert/strict';
 
 import {
   GRANT_EXCLUDED_DIRS,
+  MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATH_BYTES,
   grantUnion,
   isGrantedPath,
+  overFileBound,
   sortGrant,
 } from '../src/bridge/grant.ts';
 
@@ -247,6 +249,44 @@ test('a path is bounded in bytes, which is what the server bounds', () => {
   const astral = '😀'.repeat(MAX_GRANT_PATH_BYTES / 4);
   assert.equal(isGrantedPath(astral), true);
   assert.equal(isGrantedPath(`${astral}😀`), false);
+});
+
+test('the size gate counts bytes without encoding a buffer that cannot be over', (t) => {
+  // The gate is asked of every shared buffer on every keystroke, so what it must not do is
+  // encode the whole buffer to learn what its length already answers. The counter below is
+  // the cost: an encoder constructed on the fast path is a failure, not a slow test.
+  const Encoder = globalThis.TextEncoder;
+  let encodes = 0;
+  globalThis.TextEncoder = class {
+    encode(input?: string): Uint8Array {
+      encodes += 1;
+      return new Encoder().encode(input);
+    }
+  } as unknown as typeof Encoder;
+  t.after(() => {
+    globalThis.TextEncoder = Encoder;
+  });
+
+  const counts = (text: string): { over: boolean; encodes: number } => {
+    encodes = 0;
+    return { over: overFileBound(text), encodes };
+  };
+
+  // Under a third of the bound: bytes cannot exceed the bound, so the length decides.
+  const small = counts('a'.repeat(MAX_GRANT_FILE_BYTES / 3));
+  assert.deepEqual(small, { over: false, encodes: 0 });
+  // Past the bound in code units: bytes are never fewer, so nothing needs encoding.
+  const long = counts('a'.repeat(MAX_GRANT_FILE_BYTES + 1));
+  assert.deepEqual(long, { over: true, encodes: 0 });
+  // In the range where the answer depends on the characters, the exact count is used.
+  assert.deepEqual(counts('é'.repeat(MAX_GRANT_FILE_BYTES / 2 + 1)), {
+    over: true,
+    encodes: 1,
+  });
+  assert.deepEqual(counts('a'.repeat(MAX_GRANT_FILE_BYTES / 2)), {
+    over: false,
+    encodes: 1,
+  });
 });
 
 test('a listing is written ascending by UTF-16 code unit, not by code point or byte', () => {

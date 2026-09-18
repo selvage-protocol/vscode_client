@@ -28,7 +28,7 @@ import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
 import { diff, hasCarriageReturn, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
-import { MAX_GRANT_FILE_BYTES, isGrantedPath } from './grant.ts';
+import { MAX_GRANT_FILE_BYTES, isGrantedPath, overFileBound } from './grant.ts';
 
 /**
  * The slice of `SelvageEngine` the bridge talks to. `SelvageEngine` satisfies it as it
@@ -994,12 +994,7 @@ function seedRefusal(path: string, bufferText: string): string | undefined {
   if (!isGrantedPath(path)) {
     return 'it is not a path the room shares (excluded from the grant, or escaping the folder)';
   }
-  // UTF-8 bytes are never fewer than UTF-16 code units, so an over-long buffer is refused
-  // without encoding it; the rest pays one pass for the exact byte count.
-  if (
-    bufferText.length > MAX_GRANT_FILE_BYTES ||
-    new TextEncoder().encode(bufferText).length > MAX_GRANT_FILE_BYTES
-  ) {
+  if (overFileBound(bufferText)) {
     return `it is over the ${MAX_GRANT_FILE_BYTES} bytes a session will carry`;
   }
   return undefined;
