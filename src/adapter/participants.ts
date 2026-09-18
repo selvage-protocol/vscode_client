@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 
 import { badgeFiles } from '../bridge/index.ts';
 import type {
+  FileBadge,
   FilePresence,
   ParticipantRow,
   RosterRow,
@@ -206,24 +207,30 @@ export class ParticipantsProvider implements vscode.TreeDataProvider<vscode.Tree
 }
 
 /**
- * The peer markers on the room files' own rows: one badge per file peers are in — a
- * dot, or the headcount when several share it — with the names in the hover. Only
+ * The peer markers on the room files' own rows: one badge per file peers are in — the initials
+ * of the peer in it, or the headcount when several share it — with the names in the hover. Only
  * changed files fire, so a caret move never redraws the tree it decorates.
  *
- * The marker is deliberately not the peer colour: a file decoration's colour takes
- * only a theme colour, never an arbitrary hex, so the exact hex lives on the roster
- * dots, the follow indicator and the carets instead.
+ * The badge is the letters the glyph margin draws for that same peer, in the same colour: the
+ * colour is a theme colour (`selvage.peer.<index>`, contributed by the manifest), because a file
+ * decoration's colour takes a theme colour's id and never an arbitrary hex. One badge per row is
+ * the API's limit, so a shared file answers with the count and claims no colour, and the hover is
+ * where every name lives.
  */
 export class PeerFileDecorations implements vscode.FileDecorationProvider {
   private readonly changed = new vscode.EventEmitter<vscode.Uri | undefined>();
   readonly onDidChangeFileDecorations = this.changed.event;
-  private badges = new Map<string, { badge: string; tooltip: string }>();
+  private badges = new Map<string, FileBadge>();
 
   refresh(files: FilePresence[]): void {
     const next = new Map(badgeFiles(files).map((badge) => [badge.uri, badge] as const));
     for (const [uri, badge] of next) {
       const prev = this.badges.get(uri);
-      if (prev?.badge !== badge.badge || prev?.tooltip !== badge.tooltip) {
+      if (
+        prev?.badge !== badge.badge ||
+        prev?.tooltip !== badge.tooltip ||
+        prev?.colourId !== badge.colourId
+      ) {
         this.changed.fire(vscode.Uri.parse(uri));
       }
     }
@@ -240,6 +247,10 @@ export class PeerFileDecorations implements vscode.FileDecorationProvider {
     if (badge === undefined) {
       return undefined;
     }
-    return { badge: badge.badge, tooltip: badge.tooltip };
+    return {
+      badge: badge.badge,
+      tooltip: badge.tooltip,
+      color: badge.colourId === undefined ? undefined : new vscode.ThemeColor(badge.colourId),
+    };
   }
 }

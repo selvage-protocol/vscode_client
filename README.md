@@ -159,16 +159,16 @@ coloured dot per row, because `QuickPickItem.iconPath` is the only field an edit
 colour from — and nothing in this repository can see that dot.
 
 The same roster also lives as a persistent `Selvage: Participants` view beside the explorer:
-one row per peer with their colour dot, their name, and — where the browser's roster has the
-file on the tree — the file they are in as the row's own description, so the row and the badge
-that file wears name each other. Clicking a peer's row lands where they are, and each row
-carries the two verbs the browser's roster has as buttons: **Go to** and **Follow**, with
-**Stop following** in the followed peer's row in place of follow. Those three are the palette's
-own `selvage.goToParticipant`, `selvage.followParticipant` and `selvage.stopFollowing`, shown
-on the row (`inline`) and in its context menu alike; a peer in no document says so, carries no
-click, and offers neither verb — there is nowhere to go. The row's hover spells the whole thing
-out: name, role, file, and whether this window follows them. An empty room says it is alone and
-offers the invite copy on click.
+one row per peer with their colour dot, their name and the file they are in — the browser's
+roster leaves the file to the badge on that file's own row, and this one says it on the row as
+well, so the row and the badge name each other. Clicking a peer's row lands where they are, and
+each row carries the two verbs the browser's roster has as buttons: **Go to** and **Follow**,
+with **Stop following** in the followed peer's row in place of follow. Those three are the
+palette's own `selvage.goToParticipant`, `selvage.followParticipant` and
+`selvage.stopFollowing`, shown on the row (`inline`) and in its context menu alike; a peer in no
+document says so, carries no click, and offers neither verb — there is nowhere to go. The row's
+hover spells the whole thing out: name, role, file, and whether this window follows them. An
+empty room says it is alone and offers the invite copy on click.
 
 ## Packaging it
 
@@ -398,7 +398,9 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   caret bar, the selection fill and the overview-ruler tick are built from, so the key cannot
   disagree with what it explains. It is drawn as a quick pick with a coloured dot per row,
   because `QuickPickItem.iconPath` is the only field an editor renders a colour from; nothing in
-  this repository can see the dot, only the URI.
+  this repository can see the dot, only the URI. The same value reaches the Explorer through the
+  eight contributed theme colours the file badge is drawn in (see the badge bullet below), where
+  the theme, not this client, resolves the id to a colour.
 - **The name other participants see is set by a command as well as a setting.** *Selvage: Set the
   name other participants see* reports the name in force — the live session's, else the setting's
   — and writes `selvage.displayName` at the global scope, which is the analogue of the Neovim
@@ -414,7 +416,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   count `[...name].length` would give. The write is what makes the name the next session's, so a
   settings file that will not take it — one a configuration manager owns and leaves read-only —
   is reported rather than swallowed.
-- **A peer is drawn as a caret, a selection, and their initials on a badge in the gutter.**
+- **A peer is drawn as a caret, a selection, and their initials on a badge in two places.**
   The caret is a two-pixel bar on the left edge of the peer's position in their colour, the
   selection a quarter-alpha fill of the same colour, and the overview ruler carries a tick of it
   on the right. The glyph margin carries the peer's sign — the first two code points of their
@@ -427,6 +429,20 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   caret's `hoverMessage` still reads "name · role" and the status bar still lists the room. The
   badge needs `editor.glyphMargin`, which is on by default: with it off, no badge is drawn and
   there is no in-line fallback.
+- **The same badge marks the file the peer is in, on that file's own Explorer row.** A peer's
+  presence names a document, so a room file with one peer in it wears their initials — the same
+  letters the glyph margin draws for them — and their colour, with the name in the hover, so the
+  tree and the caret name each other. The colour is a theme colour: `FileDecoration.color` takes a
+  theme colour's id and never an arbitrary hex, so the eight palette entries are contributed as
+  `selvage.peer.0`…`selvage.peer.7` whose dark, light and high-contrast defaults are the palette's
+  own values, and `test/participants.test.ts` pins the two together rather than trusting them to
+  agree. That is the one thing this client contributes to the theme, and a theme may override it;
+  the ids are otherwise invisible. **One badge per row is the API's limit**, so a file several
+  peers are in answers with their count and claims no colour — picking one of them would claim the
+  file for that peer — and the hover names everyone. A peer's file is badged wherever the file row
+  is, which for a window holding the file means the Explorer; a badge on a URI no row holds is one
+  nothing ever draws. `explorer.decorations.colors` also tints the file's name with that colour
+  (VS Code's own setting, on by default); with it off the badge keeps the colour alone.
 - **A drawn name is bounded.** The decoration API measures nothing, so any width in a label is
   a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
   clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
@@ -489,6 +505,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
+| `test/participants.test.ts` | the roster and the view through the built bundle: the file each row names and the click a peer in a document carries, go-to/follow/stop on the row, the peer's initials and contributed colour on their file's own badge, the count when several share it, a presence path outside the grant badging nothing, and the manifest's inline row actions |
 | `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker with its stashed invite and name, opening only our own, leave deleting the directory, and prune with adopt-first |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |

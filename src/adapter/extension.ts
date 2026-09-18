@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 
 import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
-import type { FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
+import type { FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
   code as errCode,
@@ -2627,7 +2627,7 @@ function refreshParticipants(): void {
       viewRows({ entries: snapshot.entries, followingPeerId: snapshot.followingPeerId }),
     ),
   );
-  const byUri = new Map<string, string[]>();
+  const byUri = new Map<string, FilePeer[]>();
   for (const entry of snapshot.entries) {
     if (entry.path === undefined) {
       continue;
@@ -2636,11 +2636,13 @@ function refreshParticipants(): void {
     if (uri === undefined) {
       continue;
     }
-    const names = byUri.get(uri) ?? [];
-    names.push(participantLabel(entry, snapshot.entries));
-    byUri.set(uri, names);
+    const peers = byUri.get(uri) ?? [];
+    // The label, not the bare name: the row's own disambiguation reaches the badge's hover, so
+    // two peers sharing a name are two in the hover as well as two rows.
+    peers.push({ peerId: entry.peerId, label: participantLabel(entry, snapshot.entries) });
+    byUri.set(uri, peers);
   }
-  const files: FilePresence[] = [...byUri].map(([uri, names]) => ({ uri, names }));
+  const files: FilePresence[] = [...byUri].map(([uri, peers]) => ({ uri, peers }));
   badges.refresh(files);
 }
 

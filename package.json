@@ -35,6 +35,48 @@
     "workspaceContains:**/.selvage-mirror.json"
   ],
   "contributes": {
+    "colors": [
+      {
+        "id": "selvage.peer.0",
+        "description": "The colour the first participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#e06c75", "dark": "#e06c75", "highContrast": "#e06c75" }
+      },
+      {
+        "id": "selvage.peer.1",
+        "description": "The colour the second participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#e5c07b", "dark": "#e5c07b", "highContrast": "#e5c07b" }
+      },
+      {
+        "id": "selvage.peer.2",
+        "description": "The colour the third participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#98c379", "dark": "#98c379", "highContrast": "#98c379" }
+      },
+      {
+        "id": "selvage.peer.3",
+        "description": "The colour the fourth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#56b6c2", "dark": "#56b6c2", "highContrast": "#56b6c2" }
+      },
+      {
+        "id": "selvage.peer.4",
+        "description": "The colour the fifth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#61afef", "dark": "#61afef", "highContrast": "#61afef" }
+      },
+      {
+        "id": "selvage.peer.5",
+        "description": "The colour the sixth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#c678dd", "dark": "#c678dd", "highContrast": "#c678dd" }
+      },
+      {
+        "id": "selvage.peer.6",
+        "description": "The colour the seventh participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#d19a66", "dark": "#d19a66", "highContrast": "#d19a66" }
+      },
+      {
+        "id": "selvage.peer.7",
+        "description": "The colour the eighth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "defaults": { "light": "#b48ead", "dark": "#b48ead", "highContrast": "#b48ead" }
+      }
+    ],
     "commands": [
       {
         "command": "selvage.host",

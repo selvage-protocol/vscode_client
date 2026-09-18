@@ -11,8 +11,13 @@
 
 import type { Role } from '../engine/envelope.ts';
 
-/** Eight mid-tone colours, legible on a light and a dark theme alike. */
-const PALETTE = [
+/**
+ * Eight mid-tone colours, legible on a light and a dark theme alike. Exported because each
+ * entry is also contributed as a theme colour (`package.json`): a file decoration's colour
+ * takes a theme colour's id and never an arbitrary hex, so the badge a peer's file wears names
+ * the palette entry this peer's colour is. The two are pinned equal by `test/participants.test.ts`.
+ */
+export const PEER_PALETTE = [
   '#e06c75',
   '#e5c07b',
   '#98c379',
@@ -23,15 +28,24 @@ const PALETTE = [
   '#b48ead',
 ] as const;
 
-/** The colour a peer is drawn in, the same one in every client that can compute a hash. */
-export function peerColour(peerId: string): string {
-  // FNV-1a, over UTF-16 code units, kept in 32 unsigned bits.
+/** FNV-1a over the peer id's UTF-16 code units, kept in 32 unsigned bits. */
+function peerHash(peerId: string): number {
   let hash = 0x811c9dc5;
   for (let index = 0; index < peerId.length; index += 1) {
     hash ^= peerId.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return PALETTE[hash % PALETTE.length] ?? PALETTE[0];
+  return hash;
+}
+
+/** The palette entry a peer's colour comes from: what a theme colour for it is named after. */
+export function peerColourIndex(peerId: string): number {
+  return peerHash(peerId) % PEER_PALETTE.length;
+}
+
+/** The colour a peer is drawn in, the same one in every client that can compute a hash. */
+export function peerColour(peerId: string): string {
+  return PEER_PALETTE[peerColourIndex(peerId)] ?? PEER_PALETTE[0];
 }
 
 /**

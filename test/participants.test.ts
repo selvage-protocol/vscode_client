@@ -1,20 +1,21 @@
 /**
  * The Participants view's rows and file badges, without an editor.
  *
- * Slice 1: `describeParticipants` turns membership + presence into rows that keep
- * name + state + actions only — no path text on the row, per the owner refinement —
- * and `badgeFiles` marks the room files peers are in. Both are pure, so these tests
- * import `src/adapter/participants.ts` directly. Wiring (registration, refresh,
- * actions) is slice 2, through the built bundle.
+ * Slice 1: `describeParticipants` turns membership + presence into rows that name the peer and
+ * the file they are in, and `badgeFiles` marks the room files peers are in with the initials
+ * those peers are drawn by. Both are pure, so these tests import `src/bridge/` directly.
+ * Wiring (registration, refresh, actions) is slice 2, through the built bundle.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { peerColour } from '../src/bridge/cursors.ts';
+import { PEER_PALETTE, peerColour } from '../src/bridge/cursors.ts';
+import { initials } from '../src/bridge/initials.ts';
 import {
   badgeFiles,
   describeParticipants,
+  peerColourId,
   viewRows,
 } from '../src/bridge/participants.ts';
 import type { RosterRow } from '../src/bridge/participants.ts';
@@ -65,15 +66,84 @@ test('a peer in no document reads as away, with no navigation', () => {
   assert.equal(row?.canNavigate, false);
 });
 
-test('one peer in a file badges it; several badge the count, with names in the hover', () => {
-  assert.deepEqual(badgeFiles([{ uri: 'file:///room/src/a.rs', names: ['Ada'] }]), [
-    { uri: 'file:///room/src/a.rs', badge: '●', tooltip: 'Ada is here' },
-  ]);
+test('one peer in a file badges their initials, in the colour their caret wears', () => {
   assert.deepEqual(
-    badgeFiles([{ uri: 'file:///room/src/a.rs', names: ['Bo', 'Ada'] }]),
-    [{ uri: 'file:///room/src/a.rs', badge: '2', tooltip: 'Ada, Bo are here' }],
+    badgeFiles([{ uri: 'file:///room/src/a.rs', peers: [{ peerId: 'p-aaa', label: 'Ada' }] }]),
+    [
+      {
+        uri: 'file:///room/src/a.rs',
+        badge: 'Ad',
+        colourId: peerColourId('p-aaa'),
+        tooltip: 'Ada is here',
+      },
+    ],
   );
-  assert.deepEqual(badgeFiles([{ uri: 'file:///room/src/a.rs', names: [] }]), []);
+});
+
+test('the badge is the initials the glyph margin draws: two code points, astral-safe', () => {
+  const label = '\u{1F600}ada';
+  const [one] = badgeFiles([{ uri: 'u', peers: [{ peerId: 'p-1', label }] }]);
+  assert.equal(one?.badge, '\u{1F600}a');
+  assert.equal(one?.badge, initials(label), 'the file badge and the gutter badge disagree');
+  const [anonymous] = badgeFiles([{ uri: 'u', peers: [{ peerId: 'p-2', label: '' }] }]);
+  assert.equal(anonymous?.badge, initials(''), 'a name with no letters lost its bullet');
+});
+
+test('several peers in a file badge the count, name them all in the hover, and claim no colour', () => {
+  const [badge] = badgeFiles([
+    {
+      uri: 'file:///room/src/a.rs',
+      peers: [
+        { peerId: 'p-bbb', label: 'Bo' },
+        { peerId: 'p-aaa', label: 'Ada' },
+      ],
+    },
+  ]);
+  assert.equal(badge?.badge, '2', 'a shared file answered with one peer\u2019s initials');
+  assert.equal(badge?.colourId, undefined, 'one colour claimed a file two peers are in');
+  assert.equal(badge?.tooltip, 'Ada, Bo are here');
+});
+
+test('a file nobody is in wears nothing', () => {
+  assert.deepEqual(badgeFiles([{ uri: 'file:///room/src/a.rs', peers: [] }]), []);
+});
+
+test('every palette entry is a theme colour whose default is that entry', () => {
+  // A file decoration's colour is a `ThemeColor`, which takes a theme colour's id and never an
+  // arbitrary hex — so the palette is contributed as theme colours and a badge names one. The
+  // two halves are one decision, so they are pinned to each other here rather than separately.
+  const manifest = JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')) as {
+    contributes?: {
+      colors?: Array<{ id: string; description?: string; defaults?: Record<string, string> }>;
+    };
+  };
+  const colours = manifest.contributes?.colors ?? [];
+  assert.deepEqual(
+    colours.map((entry) => entry.id),
+    PEER_PALETTE.map((_, index) => `selvage.peer.${index}`),
+    'the manifest contributes a colour set that is not the peer palette',
+  );
+  for (const [index, colour] of PEER_PALETTE.entries()) {
+    const entry = colours[index];
+    for (const theme of ['light', 'dark', 'highContrast']) {
+      assert.equal(
+        entry?.defaults?.[theme],
+        colour,
+        `selvage.peer.${index} is not palette entry ${index} on a ${theme} theme`,
+      );
+    }
+    assert.ok(
+      (entry?.description ?? '').trim() !== '',
+      `selvage.peer.${index} has no description`,
+    );
+  }
+  for (const peerId of ['p-aaa', 'p-bbb', 'p-ccc', 'p-3d334f']) {
+    assert.equal(
+      peerColourId(peerId),
+      `selvage.peer.${PEER_PALETTE.indexOf(peerColour(peerId) as (typeof PEER_PALETTE)[number])}`,
+      `${peerId}'s badge colour is not the colour their caret wears`,
+    );
+  }
 });
 
 test('the view lists peers, or which note stands in when there is nothing to list', () => {
@@ -221,6 +291,13 @@ interface RowNode {
   tooltip?: string;
   contextValue?: string;
   command?: { command: string; arguments?: unknown[] };
+}
+
+/** A file row's decoration, as the editor would read it: the badge, its hover and its colour. */
+interface BadgeNode {
+  badge: string;
+  tooltip: string;
+  color?: { id: string };
 }
 
 function viewNodes(bundle: LoadedExtension): RowNode[] {
@@ -448,17 +525,21 @@ test('a row action calls through to go, follow and stop', async (t) => {
   );
 });
 
-test('a peer file wears their badge until they leave', async (t) => {
+test('a peer file wears their initials in their colour until they leave', async (t) => {
   const seat_ = await seat(t);
   const cy = await peerIn(t, seat_, 'Cy', 5);
   const badges = decorationsProvider(seat_.bundle);
   const uri = seat_.bundle.stub.Uri.parse(seat_.roomFile(PATH_A));
-  await waitFor('the peer file to badge', () => {
-    const badge = badges.provideFileDecoration(uri) as { badge?: string } | undefined;
-    return badge?.badge === '●' ? true : false;
+  const badge = await waitFor('the peer file to badge', () => {
+    const current = badges.provideFileDecoration(uri) as BadgeNode | undefined;
+    return current?.badge === 'Cy' ? current : false;
   });
-  const badge = badges.provideFileDecoration(uri) as { badge: string; tooltip: string };
   assert.equal(badge.tooltip, 'Cy is here');
+  assert.equal(
+    badge.color?.id,
+    peerColourId(cy.session().peer.peer_id),
+    'the badge is not drawn in the colour the peer\u2019s caret wears',
+  );
   const fired: unknown[] = [];
   badges.onDidChangeFileDecorations((changed) => {
     fired.push(String(changed));
@@ -470,6 +551,33 @@ test('a peer file wears their badge until they leave', async (t) => {
   assert.ok(
     fired.some((changed) => String(changed).endsWith(PATH_A)),
     'the badge lifted without telling the tree which file changed',
+  );
+});
+
+test('a second peer in the file turns the badge into a count and drops the colour', async (t) => {
+  const seat_ = await seat(t);
+  await peerIn(t, seat_, 'Cy', 5);
+  const badges = decorationsProvider(seat_.bundle);
+  const uri = seat_.bundle.stub.Uri.parse(seat_.roomFile(PATH_A));
+  const before = await waitFor('the file to wear one peer\u2019s badge', () => {
+    const current = badges.provideFileDecoration(uri) as BadgeNode | undefined;
+    return current?.badge === 'Cy' ? current : false;
+  });
+  assert.ok(before.color !== undefined, 'the single-peer badge claimed no colour');
+  const fired: string[] = [];
+  badges.onDidChangeFileDecorations((changed) => {
+    fired.push(String(changed));
+  });
+  await peerIn(t, seat_, 'Bo', 6);
+  const after = await waitFor('the shared file to badge the count', () => {
+    const current = badges.provideFileDecoration(uri) as BadgeNode | undefined;
+    return current?.badge === '2' ? current : false;
+  });
+  assert.equal(after.color, undefined, 'one peer\u2019s colour claimed a file two peers are in');
+  assert.ok(after.tooltip.includes('Bo') && after.tooltip.endsWith('are here'));
+  assert.ok(
+    fired.some((changed) => changed.endsWith(PATH_A)),
+    'the badge changed without telling the tree which file changed',
   );
 });
 
