@@ -60,6 +60,7 @@ const TITLES: Record<string, string> = {
 const SENTENCES = [
   // Joining and hosting.
   '`Selvage: the room is open; the invite link is on the clipboard.`',
+  '`Selvage: the room is open, but the invite link could not be copied (${}).`',
   '`Selvage: you are already hosting this session; the invite link is on the clipboard.`',
   '`Selvage: you are hosting this session; joining another session ends this room for everyone.`',
   '`Selvage: you are in this session; joining another session leaves it.`',

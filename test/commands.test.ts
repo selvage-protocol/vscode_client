@@ -246,6 +246,34 @@ test('hosting puts the invite link on the clipboard without being asked', async 
   assert.equal(said, 'Selvage: the room is open; the invite link is on the clipboard.');
 });
 
+test('a clipboard that will not take the invite is said out loud, and the room stands', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  bundle.stub.registered.clipboardWriteThrows = 'the clipboard is busy';
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const warned = await waitFor('the copy failure', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('could not be copied')) ??
+      false,
+  );
+  assert.equal(
+    warned,
+    'Selvage: the room is open, but the invite link could not be copied (the clipboard is busy).',
+  );
+  assert.equal(bundle.stub.registered.clipboard, '', 'a failed copy left the clipboard written');
+  // The session stands: the failure cost the copy, not the room.
+  const tooltip = await waitFor('the status bar to be drawn', () =>
+    roomOffer(bundle).includes('Hosting this session') ? roomOffer(bundle) : false,
+  );
+  assert.match(tooltip, /Hosting this session/);
+});
+
 test('a host never sees the room id: notices, tooltip and warnings say the room', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
@@ -540,7 +568,14 @@ test('joining while hosting asks before ending the room', async (t) => {
 });
 
 test('the display-name command reports the name in force and offers to change it', async (t) => {
-  const { bundle } = activated(t);
+  // A fresh window with nothing set and nothing remembered: the report is the first
+  // thing the command says. Fresh because the module remembers names other tests type.
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
 
   // With nothing set there is no name to report, and the report is the first thing the
   // command says: a palette entry takes no argument, so reading and setting share one
@@ -1637,6 +1672,34 @@ test('a configured name beats the remembered name', async (t) => {
     !server.displayNames().includes('Remembered'),
     'hosting seated the remembered name',
   );
+});
+
+test('the display-name command reports a remembered name and prefills it', async (t) => {
+  // Nothing set, but a name remembered: the report reads what a host or join would be
+  // seated with, and the change box starts from it rather than from the OS user.
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  await bundle.stub.globalState.update('selvage.lastDisplayName', 'Remembered');
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const reported = await waitFor('the report', () =>
+    bundle.stub.registered.information.find((message) =>
+      message.includes('the name others see'),
+    ) ?? false,
+  );
+  assert.equal(reported, 'Selvage: the name others see is "Remembered".');
+
+  bundle.stub.registered.informationReply = 'Change the name';
+  bundle.stub.registered.inputReply = 'Remembered';
+  await bundle.stub.commands.executeCommand('selvage.displayName');
+  const asked = await waitFor('the change box', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.value, 'Remembered', 'the box started from the OS user, not the name');
 });
 
 /** The built bundle reloaded with fresh module state, for tests about memory across windows. */

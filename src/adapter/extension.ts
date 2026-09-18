@@ -1833,7 +1833,15 @@ async function host(
   }
   // Hosting ends with the guest's next step already done: the link is on the clipboard
   // before the notice says so, with no button and no setting — a host always sends it next.
-  await vscode.env.clipboard.writeText(invite);
+  // A clipboard that will not take it is said out loud instead: the session stands either way.
+  try {
+    await vscode.env.clipboard.writeText(invite);
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      `Selvage: the room is open, but the invite link could not be copied (${message(error)}).`,
+    );
+    return;
+  }
   void vscode.window.showInformationMessage(
     `Selvage: the room is open; the invite link is on the clipboard.`,
   );
@@ -2367,7 +2375,16 @@ function nameInForce(): string | undefined {
     return live;
   }
   const configured = config().get<string>('displayName', '').trim();
-  return configured === '' ? undefined : configured;
+  if (configured !== '') {
+    return configured;
+  }
+  // The report reads what a host or join would be seated with: a remembered name answers
+  // here too, so the command never reports "no name" for one it would use unasked.
+  // Silent like the seating path — a report is not where a hand-written memento is policed.
+  if (lastDisplayName !== undefined && displayNameRefusal(lastDisplayName) === undefined) {
+    return lastDisplayName;
+  }
+  return undefined;
 }
 
 /**

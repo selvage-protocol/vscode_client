@@ -48,6 +48,8 @@ export interface Registered {
    * stages never happens, so the test stages what the client says instead.
    */
   openFolderThrows: string | undefined;
+  /** When set, the clipboard's `writeText` rejects with this message. */
+  clipboardWriteThrows: string | undefined;
   /** Every `tabGroups.close` call, as the tabs it was given, in order. */
   closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
