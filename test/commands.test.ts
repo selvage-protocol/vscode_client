@@ -1419,7 +1419,7 @@ test('hosting asks for the server in plain words, prefilled with the default', a
   assert.doesNotMatch(String(asked.prompt), /selvaged/);
 });
 
-test('the typed server is remembered across windows', async (t) => {
+test('the typed server is remembered across windows, and hosting reuses it without asking', async (t) => {
   const first = freshBundle();
   first.stub.reset();
   first.activate({ subscriptions: [], globalState: first.stub.globalState });
@@ -1438,7 +1438,9 @@ test('the typed server is remembered across windows', async (t) => {
   first.deactivate();
 
   // A new window is a new module: nothing in memory names the address, only the memento.
-  // The recorded boxes are cleared but the memento is deliberately not reset.
+  // The recorded boxes are cleared but the memento is deliberately not reset. Hosting
+  // again reuses the remembered address with no question — which is read here off the
+  // failure the dead address earns, so the box count is the assertion and not the poll.
   const second = freshBundle();
   second.stub.registered.inputs.length = 0;
   second.stub.registered.inputReply = undefined;
@@ -1446,11 +1448,18 @@ test('the typed server is remembered across windows', async (t) => {
   t.after(() => {
     second.deactivate();
   });
-  await second.stub.commands.executeCommand('selvage.host');
-  const asked = await waitFor('the server question', () =>
-    second.stub.registered.inputs[0] ?? false,
+  await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  const said = await waitFor('the failure', () =>
+    second.stub.registered.errors.find((message) =>
+      message.includes('could not host on ws://127.0.0.1:1'),
+    ) ?? false,
   );
-  assert.equal(asked.value, 'ws://127.0.0.1:1');
+  assert.ok(said, 'hosting did not reuse the remembered server');
+  assert.equal(
+    second.stub.registered.inputs.length,
+    0,
+    'the remembered server was asked for again',
+  );
 });
 
 test('an explicit server address beats the remembered server', async (t) => {
@@ -1727,13 +1736,13 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a whole page link was refused',
   );
-  // A truncated paste, a server address, and nothing at all: all fail here, in plain
-  // words, rather than later as whatever the engine said.
   assert.equal(
     validate('wss://host:8080/session?room=r&token=t'),
     undefined,
     'a secure invite link was refused',
   );
+  // A truncated paste, a server address, and nothing at all: all fail here, in plain
+  // words, rather than later as whatever the engine said.
   for (const bad of [
     'ws://127.0.0.1:8080/session?room=r',
     'ws://127.0.0.1:8080/not-a-session',

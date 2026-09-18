@@ -101,14 +101,14 @@ let current: Session | undefined;
 let storageUri: vscode.Uri | undefined;
 
 /**
- * The last server a user typed, so the next prompt is a keystroke rather than a paste.
- * In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for the next
- * window: a server address is not a secret, and a prefill the user can still edit is not
- * a commitment, so remembering it is safe.
+ * The last server a session was started on, so the next bare host reuses it with no
+ * question. In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for
+ * the next window: a server address is not a secret, and the first question's answer is
+ * a commitment a later argument or the `selvage.serverUrl` setting overrides.
  */
 let lastServer: string | undefined;
 
-/** The `globalState` key carrying the last typed server across windows. */
+/** The `globalState` key carrying the last server used across windows. */
 const LAST_SERVER_KEY = 'selvage.lastServer';
 
 /**
@@ -124,10 +124,10 @@ let lastDisplayName: string | undefined;
 const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 
 /**
- * The server a window hosts on when nothing was typed, remembered or configured: the Pi
- * demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment —
- * the prompt still asks, explicit arguments and the `selvage.serverUrl` setting always win —
- * so moving the demo is this one line.
+ * The server a window hosts on when nothing was set or remembered: the Pi demo from
+ * `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment — the
+ * one question an answerless window asks starts from it, and explicit arguments and the
+ * `selvage.serverUrl` setting always win — so moving the demo is this one line.
  */
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
@@ -1808,15 +1808,7 @@ async function host(
     }
     inSession.dispose();
   }
-  const baseUrl =
-    args?.serverUrl ??
-    (await ask(
-      'serverUrl',
-      'The Selvage server to host on',
-      'The server you and your guest connect to — usually the address it prints when it starts. Set "selvage.serverUrl" to stop being asked.',
-      'The address the server prints when it starts',
-      lastServer ?? DEFAULT_SERVER_URL,
-    ));
+  const baseUrl = args?.serverUrl ?? (await resolveServerUrl());
   if (baseUrl === undefined) {
     return;
   }
@@ -2684,26 +2676,25 @@ function stopFollowing(): void {
 }
 
 /**
- * A setting when there is one, and a question when there is not. The question carries a
- * prefilled fallback — the last typed server, else the demo default (`DEFAULT_SERVER_URL`) —
- * so asking is a keystroke rather than a paste.
+ * The server to host on, in the order an argument, the setting and the remembered
+ * address are worth: the first of them answers, silently. Only a window with none of
+ * the three asks, prefilled with the demo default (`DEFAULT_SERVER_URL`) — a prefill,
+ * not a commitment, because the answer is what the next host reuses.
  */
-async function ask(
-  key: string,
-  title: string,
-  prompt: string,
-  placeHolder: string,
-  fallback?: string,
-): Promise<string | undefined> {
-  const configured = config().get<string>(key, '');
+async function resolveServerUrl(): Promise<string | undefined> {
+  const configured = config().get<string>('serverUrl', '').trim();
   if (configured !== '') {
     return configured;
   }
+  if (lastServer !== undefined && lastServer.trim() !== '') {
+    return lastServer;
+  }
   const answer = await vscode.window.showInputBox({
-    title,
-    prompt,
-    placeHolder,
-    value: fallback ?? '',
+    title: 'The Selvage server to host on',
+    prompt:
+      'The server you and your guest connect to — usually the address it prints when it starts. Remembered for the next host; an argument or "selvage.serverUrl" uses another.',
+    placeHolder: 'The address the server prints when it starts',
+    value: DEFAULT_SERVER_URL,
     ignoreFocusOut: true,
     validateInput: (value) => (value.trim() === '' ? 'A value is needed to go on.' : undefined),
   });

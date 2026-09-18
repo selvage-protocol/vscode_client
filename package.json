@@ -131,7 +131,7 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The server to host on, as a WebSocket address. When unset, hosting asks, starting from the last server used, else the demo default."
+          "description": "The server to host on, as a WebSocket address. When unset, hosting reuses the last server used and asks only in a window with none to reuse — that one question starts from the demo server. An address given to the command always wins."
         },
         "selvage.webOrigin": {
           "type": "string",

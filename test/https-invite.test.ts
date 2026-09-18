@@ -176,8 +176,8 @@ test('CopyInvite copies exactly the page link, never the wire address', async (t
 
 test('a remembered non-default server survives host-leave-host into the copied link', async (t) => {
   // The trap's mechanism, pinned at the seam: hosting on an address remembers it,
-  // the next server question is prefilled with it, and accepting the prefill
-  // copies a link whose `&server=` names it — the guest then asks that server.
+  // the next host reuses it with no question, and the link it copies
+  // names it — the guest then asks that server.
   const server = await FakeServer.start();
   t.after(async () => {
     await server.stop();
@@ -196,20 +196,19 @@ test('a remembered non-default server survives host-leave-host into the copied l
       ? true
       : false,
   );
-  // No address: the question must carry the remembered one, and the reply accepts it
-  // the way a person hitting enter on the prefill does. The reset clears what was
-  // said so the waits below can only pass on the second host; the remembered
-  // address lives in the module, not in the cleared memento.
+  // No address: the remembered one answers without asking, the way the remembered name
+  // does. The reset clears what was said so the waits below can only pass on the second
+  // host; the remembered address lives in the module, not in the cleared memento, and
+  // the reply is cleared with it so a question could only stall the host.
   bundle.stub.reset();
-  bundle.stub.registered.inputReply = server.wsBase;
   await bundle.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
-  const asked = await waitFor('the server question', () =>
-    bundle.stub.registered.inputs.find((input) => input['title'] === 'The Selvage server to host on') ??
-      false,
-  );
-  assert.equal(asked['value'], server.wsBase, 'the question forgot the last server used');
   await waitFor('the second host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.inputs.length,
+    0,
+    'the remembered server was asked for again',
   );
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const link = await waitFor('the invite link', () => {
