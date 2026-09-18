@@ -1592,10 +1592,22 @@ class Session {
         this.documents = report.documents;
         // A seat reports the document set — the first one and every re-seat — so the
         // retry is over whenever this arrives.
+        const reseated = this.reconnecting;
         this.reconnecting = false;
         this.refreshStatus();
         this.rejoinListed();
         this.openFromRoom();
+        if (reseated && this.role() === 'host') {
+          // A host that dropped reclaims its room rather than minting a new one, and the
+          // room kept the listing it had while this window was gone: the folder as it
+          // stands now is published again, so a reclaim with a changed folder moves the
+          // room onto the new listing instead of leaving the dead one advertised. The
+          // last listing is forgotten first, so even an unchanged folder re-asserts
+          // what the room holds — one frame the guests dedupe — rather than staying silent.
+          this.published = undefined;
+          this.refusedListing = undefined;
+          void this.publishGrant();
+        }
         break;
       }
       case 'grant': {
