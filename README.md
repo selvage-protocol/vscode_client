@@ -400,10 +400,24 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   listing removes it. A document the room holds without listing has no file to open, so it
   is not openable here the way it is in Neovim; a save the room does not list is written —
   the editor cannot refuse it — and said about afterwards, where Neovim refuses it upfront.
+  A path whose leaf is a symbolic link, a directory or anything else that is not a regular
+  file is refused rather than listed as mirrored — the editor reads such a file through the
+  link on open and writes the room's text through it on save — and every directory on the
+  way to a leaf is read with `lstat`, so a link planted inside the mirror is not walked
+  through either.
   Leaving deletes the room's folder from the window — the mirror was the whole tree, so a
   window left with no folder reloads to empty. With several documents in the room only the first opens; the
   quick-pick in *Open a document from the room* lists every path — a guest never types
   one, so it cannot mistype the host's workspace-folder prefix.
+- **A marker resumes a room only in a window you have trusted.** A folder can start this
+  extension with nothing but a `.selvage-mirror.json` in it, and VS Code does not condition a
+  `workspaceContains` activation on workspace trust — that event is the only way back in after
+  the reload that puts the room's folder in the window. So the extension starts, registers its
+  commands, and stops there: the triage a marker asks for — dialling the room a leftover
+  mirror names, moving the window onto it, clearing leftovers — waits for a trusted window,
+  and runs when you trust the workspace afterwards. The manifest claims `limited` untrusted
+  support for exactly that reason; every command is your own act and works in a window you
+  have not trusted.
 - **Colour is derived from the peer id** (FNV-1a over a fixed palette), so two clients paint a
   peer alike instead of agreeing only by join order. *Selvage: List the room's participants*
   prints that same colour beside each peer — the value is `peerColour(peer_id)`, the one the
@@ -516,7 +530,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/crossing.test.ts` | an anchor produced by real `yjs` resolves through this engine; the fixture is vendored under `test/fixtures/`, or read from the `specification` checkout named by `SELVAGE_VECTORS` |
 | `test/reconnect.test.ts` | §9.1: a dropped guest re-hellos and re-opens; a dropped host *reclaims its room* rather than minting a new one; a destroyed room is terminal |
 | `test/editing.test.ts` | the document policy alone: LF in the replica, the minimal diff, the echo comparison, the `selvage:` URI, the peer palette |
-| `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
+| `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order, and the asks a host remembers bounded to the paths the room holds open |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
 | `test/https-invite.test.ts` | the invite a host copies is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page, and a guest handing the link it joined by on unchanged |
@@ -525,13 +539,16 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
-| `test/participants.test.ts` | the roster and the view through the built bundle: the file each row names and the click a peer in a document carries, go-to/follow/stop on the row, the peer's initials and contributed colour on their file's own badge, the count when several share it, a presence path outside the grant badging nothing, and the manifest's inline row actions |
-| `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker with its stashed invite and name, opening only our own, leave deleting the directory, and prune with adopt-first |
+| `test/participants.test.ts` | the roster and the view through the built bundle: the file each row names and the click a peer in a document carries, go-to/follow/stop on the row, the peer's initials and contributed colour on their file's own badge, the count when several share it, a presence path outside the grant badging nothing, a peer's markdown-shaped name left as plain text in the row's hover, and the manifest's inline row actions |
+| `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, a symlinked leaf refused rather than mirrored, refused symlinked segments, no-clobber and held-file removal, the marker with its stashed invite and name, opening only our own, leave deleting the directory, and prune with adopt-first |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
+| `test/amplification.test.ts` | what one inbound binary frame may cost in replies: a frame of awareness queries is answered with nothing at all, a frame of SyncStep1 messages draws one answer, a legitimate frame is still applied and still answered, and the engine writes nothing back for a hostile frame |
 | `test/spikes/` | the three §7 experiments, as measurements (`SPIKES.md`) |
 
-**381 tests, 0 failures**: 377 server-free and 4 that need a built `selvaged`. Waits are bounded
+**419 tests, 0 failures** in `test:fast` (`scripts/ci-local.sh all`), the suite that needs no
+server; `npm test` adds the four in `test/selvaged.test.ts`, which need a built `selvaged` from
+the sibling `reference_server` checkout. Waits are bounded
 polls of a real predicate that report the state they observed on failure
 (`test/helpers/wait.ts`), not `sleep`-and-hope.
 
