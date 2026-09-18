@@ -1873,7 +1873,7 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   }
   let invite: string | undefined;
   if (args?.invite !== undefined) {
-    invite = resolveInviteToWire(args.invite);
+    invite = args.invite.trim();
   } else {
     // The clipboard is not read here: prefilling the box with it would lift whatever the
     // user last copied — a password, a token — into a field a shoulder-surfer can read,
@@ -1886,8 +1886,19 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
       ignoreFocusOut: true,
       validateInput: (value) => inviteLinkRefusal(value),
     });
+    invite = invite?.trim();
   }
-  if (invite === undefined) {
+  if (invite === undefined || invite === '') {
+    return;
+  }
+  // The box refuses a bad paste as it is typed, so an editor reaching here holds a link
+  // it accepted — but a link that arrived by argument skipped that box, and the check is
+  // the same one either way. It runs before the name question and before the reload onto
+  // the room's mirror, and its sentence is fixed, so an unusable invite costs neither and
+  // never has its token said back to the person holding it.
+  const refusal = inviteLinkRefusal(invite);
+  if (refusal !== undefined) {
+    void vscode.window.showErrorMessage(`Selvage: ${refusal}`);
     return;
   }
   const displayName = await resolveDisplayName(args?.displayName, context);
@@ -2063,23 +2074,25 @@ async function triageMirrors(
  * Why a join box value is not an invite link, or `undefined` when it is. A truncated paste
  * fails here, in plain words saying what a good link looks like, rather than later as
  * whatever the engine said: a newcomer cannot tell "bad paste" from "server down" from
- * an ECONNREFUSED. The engine still refuses one that arrives by argument.
+ * an ECONNREFUSED. The same check answers a link that arrives by argument, before the name
+ * question and before the window reloads onto the room's mirror.
  */
 function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
-  if (parsePageLink(invite) !== undefined) {
+  const page = parsePageLink(invite);
+  if (page !== undefined) {
+    // A page link joins on the server it names, or on the page default when it names
+    // none: a `&server=` that is not an absolute ws/wss base builds a wire URL no socket
+    // can open, so it is refused here rather than after the question and the reload.
+    if (page.server !== undefined && !isSessionBase(page.server)) {
+      return inviteLinkHint();
+    }
     return undefined;
   }
   // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
   // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
   // pass this box and fail later inside the engine.
-  let url: URL;
-  try {
-    url = new URL(invite);
-  } catch {
-    return inviteLinkHint();
-  }
-  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+  if (!isSessionBase(invite)) {
     return inviteLinkHint();
   }
   const parsed = parseSessionUrl(invite);
@@ -2093,6 +2106,19 @@ function inviteLinkRefusal(value: string): string | undefined {
     return inviteLinkHint();
   }
   return undefined;
+}
+
+/**
+ * Whether `value` is an absolute `ws:`/`wss:` address: what a session URL can be built
+ * on, whether it is the whole invite or only the `&server=` a page link carries.
+ */
+function isSessionBase(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === 'ws:' || protocol === 'wss:';
+  } catch {
+    return false;
+  }
 }
 
 /** What a good invite link looks like, for the join box refusal. */

@@ -1741,8 +1741,14 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a secure invite link was refused',
   );
-  // A truncated paste, a server address, and nothing at all: all fail here, in plain
-  // words, rather than later as whatever the engine said.
+  assert.equal(
+    validate('https://page.example/?room=r&token=t&server=ws%3A%2F%2Fother%3A8080'),
+    undefined,
+    'a page link naming another server was refused',
+  );
+  // A truncated paste, a server address, a page link whose server is no WebSocket
+  // address, and nothing at all: all fail here, in plain words, rather than later as
+  // whatever the engine said.
   for (const bad of [
     'ws://127.0.0.1:8080/session?room=r',
     'ws://127.0.0.1:8080/not-a-session',
@@ -1750,6 +1756,8 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     'not-a-url/session?room=r&token=t',
     'https://host/?room=r',
     'https://host/',
+    'https://host/?room=r&token=t&server=not-a-url',
+    'https://host/?room=r&token=t&server=http%3A%2F%2Fother%3A8080',
     '',
   ]) {
     const refusal = validate(bad);
@@ -1761,6 +1769,109 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     bundle.stub.registered.errors.length,
     0,
     'validating the box opened a connection',
+  );
+});
+
+/**
+ * A window with nothing remembered and nothing configured, so the name question is the
+ * next thing any join would reach: a refusal has to come before it.
+ */
+function freshWindow(t: TestContext): LoadedExtension {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  return bundle;
+}
+
+/** Every user-visible surface a command left behind, for a scan that must find no token. */
+function surfaces(bundle: LoadedExtension): string[] {
+  return [
+    ...bundle.stub.registered.errors,
+    ...bundle.stub.registered.warnings,
+    ...bundle.stub.registered.information,
+  ];
+}
+
+test('an invite that arrives by argument is refused before the name question', async (t) => {
+  const token = 'tok-by-argument';
+  // Each one is a link no socket can open: two `ws://` shapes `parseSessionUrl` alone
+  // would pass, and two page links whose `&server=` is not a ws/wss base. An invite that
+  // arrives by argument used to skip the box's own check entirely, so it was not refused
+  // until after the name was asked and the window had reloaded onto the mirror.
+  const unusable = [
+    'wss://host:8080/session?room=r',
+    `not-a-url/session?room=r&token=${token}`,
+    `https://page.example/?room=r&token=${token}&server=not-a-url`,
+    `https://page.example/?room=r&token=${token}&server=http%3A%2F%2Fhost%3A8080`,
+  ];
+  for (const [index, invite] of unusable.entries()) {
+    const bundle = freshWindow(t);
+    await bundle.stub.commands.executeCommand('selvage.join', { invite });
+    const said = await waitFor(`the refusal of invite ${index}`, () =>
+      bundle.stub.registered.errors[0] ?? false,
+    );
+    assert.match(
+      String(said),
+      /does not look like a Selvage invite link/,
+      `invite ${index} was refused in the engine's words`,
+    );
+    assert.equal(bundle.stub.registered.errors.length, 1, 'the refusal was said more than once');
+    assert.ok(
+      !surfaces(bundle).some((surface) => surface.includes(token)),
+      `the refusal echoed the token: ${said}`,
+    );
+    assert.equal(
+      bundle.stub.registered.inputs.length,
+      0,
+      `the name was asked for unusable invite ${index}`,
+    );
+    assert.equal(
+      bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+      false,
+      `the window reloaded for unusable invite ${index}`,
+    );
+  }
+});
+
+test('a link the box lets through is refused before the name question, and before the reload', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  const token = 'tok-from-the-box';
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  // The box refuses this while it is typed; this stages the value reaching the command
+  // anyway — what a validation that let one through, or another caller than the box,
+  // would do. The same check refuses it, and the answer to the name question is never
+  // read.
+  bundle.stub.registered.inputReply = `https://page.example/?room=r&token=${token}&server=not-a-url`;
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const said = await waitFor('the refusal', () => bundle.stub.registered.errors[0] ?? false);
+  assert.match(String(said), /does not look like a Selvage invite link/);
+  assert.ok(!surfaces(bundle).some((surface) => surface.includes(token)), `the refusal echoed the token: ${said}`);
+  assert.deepEqual(
+    bundle.stub.registered.inputs.map((input) => input['title']),
+    ['Join a Selvage session'],
+    'the name was asked for a link that cannot join',
+  );
+  assert.equal(
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+    false,
+    'the window reloaded onto a mirror for a link that cannot join',
+  );
+  assert.equal(
+    existsSync(join(storage, 'rooms', 'r')),
+    false,
+    'a mirror was minted for a link that cannot join',
   );
 });
 
