@@ -108,10 +108,11 @@ Set `selvage.serverUrl`, `selvage.webOrigin` and `selvage.displayName` in settin
 resolved in this order: an explicit address given to the command, then the `selvage.serverUrl`
 setting, then the last server used — the first of those answers silently, so hosting asks only
 in a window that has none of them, and that one question starts from the demo server
-`ws://100.64.0.3:8080`, a prefill, not a commitment. CopyInvite links to the page named by
-`selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
-the setting must name an https origin, and anything else falls back to the default, so a copied
-link never carries the room's token over cleartext.
+`ws://100.64.0.3:8080`, a prefill, not a commitment. A host's CopyInvite links to the page named
+by `selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
+the setting must name an https origin, and anything else falls back to the default, so a host's copied
+link never carries the room's token over cleartext. A guest copies the link it joined by, so that
+setting does not touch a guest's copy.
 
 ## Commands
 
@@ -129,7 +130,7 @@ command there, while the three intents stay one-to-one.
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
-| `Selvage: Copy the invite link` | Put the page invite on the clipboard: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). Only the connection that minted the room has one; never a `ws://` address. |
+| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest holds the token it joined with — the invite *is* the permission — so it hands on the link it joined by, exactly as it stood: that same page link, or the `ws://` link where that is how the room was reached. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
@@ -476,8 +477,16 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 - **`selvage.cursorLabel: "chip"` is the documented opt-in** — the same clipped name inside the
   line behind a coloured border, in documented fields only. It covers the text it sits against,
   which is why it is not the default either.
-- **The invite copied is an `https://` page link, never `ws://`.** Joining accepts that page link; a `ws://…/session?room=…&token=…` link still joins as the advanced fallback for rooms off the page default. There is
+- **The invite a host copies is an `https://` page link, never `ws://`.** Joining accepts that page link; a `ws://…/session?room=…&token=…` link still joins as the advanced fallback for rooms off the page default. There is
   no `vscode://` wrapper, because that would be a convention the protocol does not have.
+- **A guest can hand the invite on too.** The invite *is* the permission — the token is what
+  the room is entered with — so the link a join was given is kept and copied as it stands: a
+  page link keeps the origin the host sent it from, and a guest that reached the room over
+  `ws://` has no other address for it. A host is unchanged: its copy is the page link built
+  from the wire invite it minted and `selvage.webOrigin`. Only the no-session sentence still
+  refuses, and it says what is true rather than which connection may hold a link. The status
+  bar is the copy control for either role, so the tooltip that says so is not a lie in a
+  guest's window.
 - **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
   asks the bridge to work the change out again against the buffer's current text.
 - **A change never ends inside a character.** Two astral characters that share a surrogate
@@ -510,8 +519,8 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
-| `test/https-invite.test.ts` | the invite is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after the join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, every join reloading the window onto the mirror (including host-leave-join on the first attempt, with the stashed name and never a second root), leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
+| `test/https-invite.test.ts` | the invite a host copies is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page, and a guest handing the link it joined by on unchanged |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, hosting with no folder open refused, a guest lands in the room's first document — including one that arrives after the join, and not with `selvage.openOnJoin` off — the invite copied by a host and by a guest (each link as it stands) and the room's own list, the open command's refusals, the fetch command's holds, every join reloading the window onto the mirror (including host-leave-join on the first attempt, with the stashed name and never a second root), leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |

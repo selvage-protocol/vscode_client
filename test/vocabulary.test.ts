@@ -79,7 +79,7 @@ const SENTENCES = [
   "'Selvage: the connection ended and the session is over; it could not be re-established.'",
   // The invite, and the room's documents.
   "'Selvage: the invite link is on the clipboard.'",
-  "'Selvage: there is no invite link: only the connection that opened the room has one.'",
+  "'Selvage: there is no invite link; host or join a room first.'",
   "'Selvage: join a session first.'",
   "'Selvage: the room has no open documents yet.'",
   "'Selvage: you are hosting, so the files you open are the ones the room has.'",

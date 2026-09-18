@@ -223,7 +223,7 @@ test('the copy command says where the invite went, and a window with none is tol
   );
   assert.equal(
     none,
-    'Selvage: there is no invite link: only the connection that opened the room has one.',
+    'Selvage: there is no invite link; host or join a room first.',
   );
   assert.equal(bundle.stub.registered.clipboard, '', 'something reached the clipboard');
 
@@ -245,6 +245,62 @@ test('the copy command says where the invite went, and a window with none is tol
   );
   assert.equal(said, 'Selvage: the invite link is on the clipboard.');
   assert.ok(bundle.stub.registered.clipboard.startsWith('https://'), 'nothing reached the clipboard');
+});
+
+test('a guest hands on the page link it joined by, origin and all', async (t) => {
+  const { invite, roomId } = await room(t, []);
+  const wire = parseSessionUrl(invite);
+  assert.ok(wire !== undefined, `the room gave no wire invite: ${invite}`);
+  // A page link off the page default, as a host on another origin produces: the guest's
+  // copy keeps that origin instead of re-homing the link on this window's own setting.
+  const page =
+    `https://elsewhere.example/room?room=${wire.join.room}&token=${wire.join.token}` +
+    `&server=${encodeURIComponent(wire.base)}`;
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite: page, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const said = await waitFor('the guest copy', () =>
+    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
+  );
+  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  assert.equal(
+    bundle.stub.registered.clipboard,
+    page,
+    'the guest copied a link that is not the one it joined by',
+  );
+});
+
+test('a guest that reached the room over ws:// hands that link on', async (t) => {
+  const { bundle, invite } = await guest(t, ['workspace/README.md']);
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const said = await waitFor('the guest copy', () =>
+    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
+  );
+  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  assert.equal(
+    bundle.stub.registered.clipboard,
+    invite,
+    'the guest copied a link that is not the one it joined by',
+  );
+  assert.deepEqual(
+    bundle.stub.registered.warnings,
+    [],
+    'a guest able to hand the invite on was told it could not',
+  );
+});
+
+test('a guest’s status bar hands the invite on too', async (t) => {
+  const { bundle } = await guest(t, ['workspace/README.md']);
+  const item = await waitFor('the status bar to be drawn', () =>
+    bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage') ?? false,
+  );
+  assert.equal(
+    item.command,
+    'selvage.copyInvite',
+    'the guest’s status bar tells a person to click it and does nothing',
+  );
+  assert.match(String(item.tooltip), /Invite link: click the status bar to copy it\./);
 });
 
 test('hosting puts the invite link on the clipboard without being asked', async (t) => {

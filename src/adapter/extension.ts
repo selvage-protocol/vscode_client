@@ -299,11 +299,18 @@ class Session {
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
   private landingCycle = 0;
+  /**
+   * The link this session was joined by, as the person gave it: a page link keeps the origin
+   * it arrived on, and a `ws://` link is all a guest that reached the room that way has. A
+   * host has none — its invite is built from the wire address it minted.
+   */
+  private readonly joinedWith: string | undefined;
   /** The room events the follow and the pending go-to re-resolve on. */
   private readonly stopEngine: () => void;
 
-  constructor(engine: SelvageEngine, options: { mirror?: Mirror } = {}) {
+  constructor(engine: SelvageEngine, options: { mirror?: Mirror; invite?: string } = {}) {
     this.mirror = engine.session().role === 'guest' ? options.mirror : undefined;
+    this.joinedWith = engine.session().role === 'guest' ? options.invite : undefined;
     this.engine = engine;
     this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
@@ -328,7 +335,9 @@ class Session {
     });
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
     this.status.name = 'Selvage';
-    this.status.command = engine.session().role === 'host' ? 'selvage.copyInvite' : undefined;
+    // The bar is the copy control for either role: a guest holds the invite it joined by,
+    // which is the whole permission to be in the room, so it is the guest's to hand on.
+    this.status.command = 'selvage.copyInvite';
 
     // A document that was already open when the session started is shared too.
     for (const document of vscode.workspace.textDocuments) {
@@ -436,9 +445,15 @@ class Session {
     return this.engine.session().role;
   }
 
-  /** The invite link, for the connection that minted the room and no other. */
+  /**
+   * The invite this window can hand on. A host builds its page link from the wire invite it
+   * minted and the configured origin; a guest has no wire invite — the handshake answer
+   * carries no token, which is a host's to hold — so it hands on the link it joined by,
+   * exactly as it stood. The invite *is* the permission: the token the guest joined with is
+   * the guest's to pass on.
+   */
   invite(): string | undefined {
-    return pageInviteFor(this.engine);
+    return pageInviteFor(this.engine) ?? this.joinedWith;
   }
 
   /** The room's open-document set, as the server owns it. */
@@ -1917,11 +1932,15 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   if (displayName === undefined) {
     return;
   }
-  await joinGuestRoom({ invite: resolveInviteToWire(invite), displayName });
+  await joinGuestRoom({ invite, displayName });
 }
 
 /**
  * Joins a room as a guest: the mirror first, the session second — across one reload.
+ *
+ * `invite` is the link the person gave, resolved to its wire URL here for the dial and
+ * for the room id: it is stashed in the marker and kept by the landed session as it
+ * stands, because it is also the link a guest hands on (`Session.invite`).
  *
  * A join replaces the window's tree with the room mirror, however many folders the
  * window holds: the invite and the display name are stashed in the fresh marker
@@ -1937,7 +1956,8 @@ async function joinGuestRoom(options: {
   displayName: string;
   resume?: Mirror;
 }): Promise<void> {
-  const room = parseSessionUrl(options.invite)?.join.room ?? 'room';
+  const wire = resolveInviteToWire(options.invite);
+  const room = parseSessionUrl(wire)?.join.room ?? 'room';
   let mirror = options.resume;
   if (mirror === undefined) {
     if (storageUri === undefined) {
@@ -2007,7 +2027,7 @@ async function joinGuestRoom(options: {
   const live: Mirror = mirror;
   let engine: SelvageEngine;
   try {
-    engine = await SelvageEngine.join(options.invite, options.displayName, { client: CLIENT });
+    engine = await SelvageEngine.join(wire, options.displayName, { client: CLIENT });
   } catch (error) {
     // A failed join leaves no room-shaped window behind: the folder goes, and the
     // directory with it — removing the only folder reloads the window to empty.
@@ -2018,7 +2038,7 @@ async function joinGuestRoom(options: {
     );
     return;
   }
-  current = new Session(engine, { mirror: live });
+  current = new Session(engine, { mirror: live, invite: options.invite });
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
   void vscode.window.showInformationMessage(joinedMessage(engine.documents()));
@@ -2295,15 +2315,17 @@ function joinedMessage(documents: string[]): string {
 }
 
 /**
- * Puts this window's invite on the clipboard, or warns that it has none — only the connection
- * that minted the room has one. The sentence that accompanies the copy is the caller's:
- * hosting again and copying the link deliberately say different things about the same copy.
+ * Puts this window's invite on the clipboard, or warns that it has none because there is no
+ * session to have one from. What a host copies is the page link built from the wire invite it
+ * minted; what a guest copies is the link it joined by, as it stood. The sentence that
+ * accompanies the copy is the caller's: hosting again and copying the link deliberately say
+ * different things about the same copy.
  */
 async function copyInviteLink(): Promise<string | undefined> {
   const invite = current?.invite();
   if (invite === undefined) {
     void vscode.window.showWarningMessage(
-      'Selvage: there is no invite link: only the connection that opened the room has one.',
+      'Selvage: there is no invite link; host or join a room first.',
     );
     return undefined;
   }

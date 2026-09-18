@@ -142,7 +142,11 @@ export interface MirrorMarker {
   window: string;
   pid: number;
   created: string;
-  /** A join the reload has not finished yet: deleted when it lands. */
+  /**
+   * A join the reload has not finished yet: deleted when it lands. The link as the person
+   * gave it — a page link keeps the origin it arrived on — because it is also the link the
+   * landed session hands on when someone asks for the invite (`Session.joinedWith`).
+   */
   invite?: string;
   /**
    * The name the join was started with, stashed beside the invite so the
