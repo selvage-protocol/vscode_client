@@ -2013,13 +2013,6 @@ async function host(
 export interface JoinArgs {
   invite?: string;
   displayName?: string;
-  /**
-   * Whether this caller has already taken the notice about the window a join replaces. A join
-   * reloads the window onto the room's folder, so a person is asked before it happens; `true`
-   * is for a caller with nobody to ask, which is how the end-to-end run drives the join. A
-   * person reaching `selvage.join` from the palette is asked.
-   */
-  replaceWindow?: boolean;
 }
 
 async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise<void> {
@@ -2070,7 +2063,16 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   if (displayName === undefined) {
     return;
   }
-  await joinGuestRoom({ invite, displayName, replaceWindow: args?.replaceWindow });
+  // A caller that supplied both of the command's own prompts — the invite and the name — is
+  // driving this command rather than answering it. That is what `HostArgs`/`JoinArgs` are for
+  // (`test/e2e/` cannot click a modal any more than it can click an input box), and it is not a
+  // second way to skip the question a join puts about the window: a caller that took over only
+  // one of the two still answers it, and the palette — which supplies neither — always does.
+  await joinGuestRoom({
+    invite,
+    displayName,
+    driven: args?.invite !== undefined && args?.displayName !== undefined,
+  });
 }
 
 /**
@@ -2093,7 +2095,8 @@ async function joinGuestRoom(options: {
   invite: string;
   displayName: string;
   resume?: Mirror;
-  replaceWindow?: boolean;
+  /** Whether a caller, not a person, is driving this join: see `JoinArgs`. */
+  driven?: boolean;
 }): Promise<void> {
   if (deactivated) {
     return;
@@ -2112,7 +2115,7 @@ async function joinGuestRoom(options: {
     // The window the reload is about to take: asked about before anything is minted, so a
     // decline costs nothing and leaves no half-made room directory behind. The resume below
     // skips it deliberately — the reload it belongs to is the one this asked about.
-    if (options.replaceWindow !== true && (vscode.workspace.workspaceFolders ?? []).length > 0) {
+    if (options.driven !== true && (vscode.workspace.workspaceFolders ?? []).length > 0) {
       const replace = 'Join';
       const answer = await vscode.window.showWarningMessage(
         replaceWindowWarning(),

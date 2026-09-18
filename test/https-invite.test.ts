@@ -232,7 +232,6 @@ test('a pasted page link joins the room it names', async (t) => {
 
   const second = freshActivated(t);
   await second.bundle.stub.commands.executeCommand('selvage.join', {
-    replaceWindow: true,
     invite: link,
     displayName: 'Bob',
   });
@@ -257,7 +256,6 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   const wireRoom = new URL(link).searchParams.get('room');
   assert.ok(wireRoom !== null && wireRoom !== '', `the copied link names no room: ${link}`);
   await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    replaceWindow: true,
     invite: `${wire}/session?room=${wireRoom}&token=${new URL(link).searchParams.get('token')}`,
     displayName: 'Bob',
   });

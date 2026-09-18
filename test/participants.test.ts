@@ -216,7 +216,7 @@ async function seat(t: TestContext): Promise<RoomSeat> {
     await host.disconnect();
     await server.stop();
   });
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob', replaceWindow: true});
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
   const mirrorRoot = mirrorWindowDir(storage, host.session().roomId);
   return {

@@ -68,7 +68,7 @@ async function seat(t: TestContext): Promise<Adapter> {
     await server.stop();
   });
 
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob', replaceWindow: true});
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
 
   // The room's file under the guest's mirror: opening it reports the document, which is
