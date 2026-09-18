@@ -20,6 +20,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire, registerHooks } from 'node:module';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { SessionBridge } from '../src/bridge/bridge.ts';
 import type { Engine, Report } from '../src/bridge/bridge.ts';
@@ -38,6 +48,8 @@ const { MIRROR_MARKER } = await import('../src/adapter/mirror.ts');
 const PATH = 'src/main.rs';
 /** The mirror root the seated guest resolves its documents under. */
 const MIRROR_ROOT = '/mirror';
+/** Where the real-filesystem cases hold their mirror and the files outside it: never `/tmp`. */
+const CASES = resolve(import.meta.dirname, '..', '.tmp', 'documents-tests');
 
 /** A position in the document, as an editor reports one. */
 interface StubPosition {
@@ -448,6 +460,83 @@ test('a guest with no mirror shares nothing', () => {
     },
   } as unknown as Parameters<typeof editor.register>[0];
   assert.equal(editor.register(document), undefined);
+});
+
+/**
+ * A guest shares no mirror leaf that is not a regular file, and writes through none: a link
+ * there is read through by the editor and saved through by this window, so the room's text
+ * would leave the mirror and the file it names would be the one that changed. Neovim refuses
+ * the same shape on the same path (`nvim_client/lua/selvage/init.lua`); this is the half of
+ * that pairing VS Code was missing. The leaf and every directory on the way to it are read
+ * with `lstat`, which reports the link itself rather than what it points at.
+ */
+test('a guest shares no mirror leaf a link stands in for', async (t) => {
+  mkdirSync(CASES, { recursive: true });
+  const base = mkdtempSync(join(CASES, 'leaf-'));
+  t.after(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+  const root = join(base, 'mirror');
+  const outside = join(base, 'outside');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+
+  const reports: Report[] = [];
+  const editor = new WorkspaceEditor({
+    role: 'guest',
+    mirrorRoot: root,
+    folders: [],
+    report: (report) => reports.push(report),
+  });
+  type Document = Parameters<typeof editor.register>[0];
+  const doc = (fsPath: string, extra: Record<string, unknown> = {}): Document =>
+    ({
+      uri: { scheme: 'file', path: fsPath, fsPath, query: '', toString: () => `file://${fsPath}` },
+      eol: 1,
+      isDirty: true,
+      getText: () => 'the room’s text\n',
+      save: () => Promise.resolve(true),
+      ...extra,
+    }) as unknown as Document;
+
+  const person = join(outside, 'secret.txt');
+  writeFileSync(person, 'the person’s own text\n');
+  symlinkSync(person, join(root, 'linked.txt'), 'file');
+  assert.equal(editor.register(doc(join(root, 'linked.txt'))), undefined);
+  // Said once, however many times the window tells us the document is open.
+  assert.equal(editor.register(doc(join(root, 'linked.txt'))), undefined);
+  assert.equal(reports.length, 1, `the refusal was said ${reports.length} times`);
+  assert.match(
+    (reports[0] as { message: string }).message,
+    /is not a regular file, so it is not shared/,
+  );
+
+  // The shape the prefix check beside it does not catch: a linked *directory*, which the
+  // room path resolves through rather than into.
+  symlinkSync(outside, join(root, 'linkdir'), 'dir');
+  assert.equal(editor.register(doc(join(root, 'linkdir', 'secret.txt'))), undefined);
+  assert.equal(readFileSync(person, 'utf8'), 'the person’s own text\n', 'the link was read out');
+
+  // The write side: a leaf that was a regular file when it was shared, replaced by a link
+  // before the save. The room's text must not follow it out of the mirror.
+  const leaf = join(root, 'plain.md');
+  writeFileSync(leaf, '');
+  let saves = 0;
+  const document = doc(leaf, {
+    save: () => {
+      saves += 1;
+      writeFileSync(leaf, 'the room’s text\n');
+      return Promise.resolve(true);
+    },
+  });
+  assert.equal(editor.register(document), 'plain.md');
+  const written = join(outside, 'written.txt');
+  writeFileSync(written, 'the person’s own text\n');
+  unlinkSync(leaf);
+  symlinkSync(written, leaf, 'file');
+  assert.equal(await editor.save('plain.md'), false, 'a save through the link was allowed');
+  assert.equal(saves, 0, 'the editor was asked to write through the link');
+  assert.equal(readFileSync(written, 'utf8'), 'the person’s own text\n', 'the room wrote outside the mirror');
 });
 
 /** A small deterministic generator, so a failure here replays from the same seed exactly. */

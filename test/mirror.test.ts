@@ -169,6 +169,30 @@ test('a symlinked directory on the way creates nothing outside the root', (t) =>
   );
 });
 
+test('a symlinked leaf is refused, not listed as mirrored', (t) => {
+  const keep = storage(t);
+  const target = join(keep.fsPath, 'outside.txt');
+  writeFileSync(target, 'the person’s own text\n');
+  const mirror = mintMirror(keep, 'r-leaf', { window: 'w-leaf', pid: process.pid });
+  symlinkSync(target, join(mirror.root, 'linked.txt'), 'file');
+  const report = mirror.materialise(['linked.txt']);
+  // Red with a link at the leaf accepted: it is listed as mirrored, the editor reads it
+  // through the link and saves the room's text through it, and the file outside the mirror
+  // is the one that changes.
+  assert.deepEqual(report.mirrored, []);
+  assert.deepEqual(report.refused, ['linked.txt']);
+  assert.equal(
+    readFileSync(target, 'utf8'),
+    'the person’s own text\n',
+    'the link’s target was written',
+  );
+  assert.equal(
+    lstatSync(join(mirror.root, 'linked.txt')).isSymbolicLink(),
+    true,
+    'the link was replaced with a file of the room’s',
+  );
+});
+
 test('minting under a symlinked segment is refused', (t) => {
   const keep = storage(t);
   const target = join(keep.fsPath, 'target');

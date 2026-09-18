@@ -411,7 +411,7 @@ function handle(room: string, window: string, root: string): Mirror {
  * Writes one empty file, with the directories on the way to it. True when the file is on
  * disk afterwards — created now, or kept because a republish must never clobber — and
  * false when the path is refused: a directory on the way that is not a plain directory,
- * or a leaf a symlink won between the check and the use.
+ * a leaf that is not a regular file, or a leaf a symlink won between the check and the use.
  */
 function materialiseOne(root: string, path: string): boolean {
   const segments = path.split('/');
@@ -434,8 +434,11 @@ function materialiseOne(root: string, path: string): boolean {
   }
   if (stat !== undefined) {
     // Never clobber: whatever is there — the room's text written through the buffer, a
-    // tool's file, a link — stays as it is.
-    return true;
+    // tool's file — stays as it is. What is *not* kept is a leaf that is not a regular
+    // file: the editor reads such a file through the link and saves through it, so a link
+    // standing where the room's file should be is refused rather than listed as mirrored,
+    // which is what Neovim does with a non-regular leaf (`nvim_client/lua/selvage/mirror.lua`).
+    return stat.isFile();
   }
   let fd: number | undefined;
   try {
@@ -484,6 +487,39 @@ function assertPlainDirectoryOrAbsent(dir: string): void {
   }
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error(`refusing to mirror under ${dir}: not a plain directory`);
+  }
+}
+
+/**
+ * Whether a room path under a mirror root is one this window may read and write: every
+ * directory between the root and the leaf is a plain directory — a path that reaches
+ * through a link leaves the mirror — and the leaf is absent or a regular file. An absent
+ * leaf is a file the person has not written yet; a link, a directory, a socket or a fifo
+ * at the leaf is not the room's file. `materialiseOne` refuses the same leaf at the disk;
+ * this is the check the read and the write beside it make, because the object can change
+ * between one and the next.
+ */
+export function plainMirrorPath(root: string, path: string): boolean {
+  const segments = path.split('/');
+  let dir = root;
+  for (const segment of segments.slice(0, -1)) {
+    dir = join(dir, segment);
+    let stat: ReturnType<typeof lstatSync> | undefined;
+    try {
+      stat = lstatSync(dir);
+    } catch {
+      // Nothing there: a path the editor holds for a file nobody has written.
+      continue;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return false;
+    }
+  }
+  const leaf = join(dir, segments[segments.length - 1] ?? '');
+  try {
+    return lstatSync(leaf).isFile();
+  } catch {
+    return true;
   }
 }
 

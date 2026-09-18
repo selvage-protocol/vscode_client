@@ -13,7 +13,7 @@ import { diff } from '../bridge/index.ts';
 import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 import { decodableText, grantedFile, isShareableFile, roomPathOf } from './grant.ts';
-import { MIRROR_MARKER, mirrorRelative } from './mirror.ts';
+import { MIRROR_MARKER, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
 
@@ -74,6 +74,11 @@ export class WorkspaceEditor implements EditorHost {
   /** The documents this window shares, by room path, and the same back again by URI. */
   private readonly documents = new Map<string, vscode.TextDocument>();
   private readonly paths = new Map<string, string>();
+  /**
+   * Room paths whose mirror leaf is not a regular file, so the refusal is said once rather
+   * than on every open event and every save.
+   */
+  private readonly unshareable = new Set<string>();
 
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
@@ -98,9 +103,40 @@ export class WorkspaceEditor implements EditorHost {
     ) {
       return undefined;
     }
+    // A guest's mirror leaf is read with `lstat` before its text is shared: a link there is
+    // read through by the editor, and its target's bytes would be the room's, which is the
+    // refusal Neovim makes on the same path (`lua/selvage/init.lua`). Anything but a
+    // regular file — a link, a directory, a socket — is refused the way a path outside the
+    // mirror is.
+    if (this.mirrorLeafRefusal(path) !== undefined) {
+      return undefined;
+    }
     this.documents.set(path, document);
     this.paths.set(document.uri.toString(), path);
     return path;
+  }
+
+  /**
+   * Says, once per path, that the mirror holds no regular file at `path`, and answers the
+   * sentence for a caller that must act on the refusal: the room's text is not read out of
+   * such a path and not written through it. `undefined` is the answer for a path there is
+   * nothing to refuse — a host's own file, a guest with no mirror, a leaf that is absent or
+   * a regular file.
+   */
+  private mirrorLeafRefusal(path: string): string | undefined {
+    if (this.mirrorRoot === undefined || plainMirrorPath(this.mirrorRoot, path)) {
+      return undefined;
+    }
+    const refusal = `${path} is not a regular file, so it is not shared`;
+    if (!this.unshareable.has(path)) {
+      this.unshareable.add(path);
+      this.onReport({
+        kind: 'sessionError',
+        code: 'error',
+        message: `will not share ${path} with the room: ${refusal}; nothing was shared for it`,
+      });
+    }
+    return refusal;
   }
 
   /** The path a document was registered under, if it is one this window shares. */
@@ -189,6 +225,13 @@ export class WorkspaceEditor implements EditorHost {
     // so the save writes the room's own text. The call is also what clears the dirty
     // marker. A host's save is the same ordinary write. `false` means the write failed and
     // the file is stale; the bridge reports it rather than swallowing it.
+    //
+    // A guest's leaf is read once more, immediately before the write: the registration that
+    // shared this document may have been a link-free path that a local process has since
+    // replaced, and a save through a link writes the room's text out of the mirror.
+    if (this.mirrorLeafRefusal(path) !== undefined) {
+      return false;
+    }
     return document.save();
   }
 
@@ -234,6 +277,7 @@ export class WorkspaceEditor implements EditorHost {
     this.cursors.dispose();
     this.documents.clear();
     this.paths.clear();
+    this.unshareable.clear();
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {
