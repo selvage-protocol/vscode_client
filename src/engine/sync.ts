@@ -3,8 +3,10 @@
  * messages with no count and no terminator, so a receiver reads until the frame ends.
  *
  * Message types 2 (auth) and 3 (awareness query) belong to y-protocols and are unused by
- * `selvage/1`. A query is still answered — a peer that asks gets an answer rather than
- * silence — and an auth denial is read and ignored.
+ * `selvage/1`: both are read and dropped. The query is dropped rather than answered because
+ * an answer costs a whole frame, and a frame is a byte stream with no count — so a frame of
+ * query bytes drew one answer per byte, which an inbound bound on the frame does nothing to
+ * bound. `MAX_REPLIES_PER_FRAME` caps what any one frame can draw, whatever it holds.
  */
 
 import * as decoding from 'lib0/decoding';
@@ -18,6 +20,15 @@ export const MESSAGE_SYNC = 0;
 export const MESSAGE_AWARENESS = 1;
 export const MESSAGE_AUTH = 2;
 export const MESSAGE_QUERY_AWARENESS = 3;
+
+/**
+ * How many messages one frame may be answered with. A conforming peer asks once per frame at
+ * most — this client and the reference one write one y-protocols message per frame, and only
+ * SyncStep1 is answered at all — so a legitimate frame cannot lose an answer it needs. What
+ * the cap bounds is the work a hostile frame can cost: without it `SyncStep1` costs a whole
+ * replica-sized reply per two bytes, the same amplification the awareness query had per byte.
+ */
+const MAX_REPLIES_PER_FRAME = 1;
 
 /** The replies a frame asked for, in the order the messages appeared. */
 export interface FrameEffect {
@@ -76,7 +87,7 @@ export function applyFrame(
       case MESSAGE_SYNC: {
         const encoder = encoding.createEncoder();
         syncProtocol.readSyncMessage(decoder, encoder, doc, origin);
-        if (encoding.length(encoder) > 0) {
+        if (encoding.length(encoder) > 0 && replies.length < MAX_REPLIES_PER_FRAME) {
           replies.push(wrap(MESSAGE_SYNC, encoding.toUint8Array(encoder)));
         }
         break;
@@ -89,10 +100,9 @@ export function applyFrame(
         );
         break;
       }
+      // Unused by `selvage/1` and read and dropped here: see the header. Nothing is
+      // consumed for it — a query carries no payload — and nothing is written back.
       case MESSAGE_QUERY_AWARENESS: {
-        replies.push(
-          encodeAwareness(awareness, [...awareness.getStates().keys()]),
-        );
         break;
       }
       case MESSAGE_AUTH: {
