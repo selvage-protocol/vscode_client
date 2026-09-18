@@ -101,14 +101,14 @@ let current: Session | undefined;
 let storageUri: vscode.Uri | undefined;
 
 /**
- * The last server a user typed, so the next prompt is a keystroke rather than a paste.
- * In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for the next
- * window: a server address is not a secret, and a prefill the user can still edit is not
- * a commitment, so remembering it is safe.
+ * The last server a session was started on, so the next bare host reuses it with no
+ * question. In memory for the window, and in `globalState` (see `LAST_SERVER_KEY`) for
+ * the next window: a server address is not a secret, and the first question's answer is
+ * a commitment a later argument or the `selvage.serverUrl` setting overrides.
  */
 let lastServer: string | undefined;
 
-/** The `globalState` key carrying the last typed server across windows. */
+/** The `globalState` key carrying the last server used across windows. */
 const LAST_SERVER_KEY = 'selvage.lastServer';
 
 /**
@@ -124,10 +124,10 @@ let lastDisplayName: string | undefined;
 const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 
 /**
- * The server a window hosts on when nothing was typed, remembered or configured: the Pi
- * demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment —
- * the prompt still asks, explicit arguments and the `selvage.serverUrl` setting always win —
- * so moving the demo is this one line.
+ * The server a window hosts on when nothing was set or remembered: the Pi demo from
+ * `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment — the
+ * one question an answerless window asks starts from it, and explicit arguments and the
+ * `selvage.serverUrl` setting always win — so moving the demo is this one line.
  */
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
@@ -1808,15 +1808,8 @@ async function host(
     }
     inSession.dispose();
   }
-  const baseUrl =
-    args?.serverUrl ??
-    (await ask(
-      'serverUrl',
-      'The Selvage server to host on',
-      'The server you and your guest connect to — usually the address it prints when it starts. Set "selvage.serverUrl" to stop being asked.',
-      'The address the server prints when it starts',
-      lastServer ?? DEFAULT_SERVER_URL,
-    ));
+  const given = args?.serverUrl?.trim();
+  const baseUrl = given === undefined || given === '' ? await resolveServerUrl() : given;
   if (baseUrl === undefined) {
     return;
   }
@@ -1881,7 +1874,7 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   }
   let invite: string | undefined;
   if (args?.invite !== undefined) {
-    invite = resolveInviteToWire(args.invite);
+    invite = args.invite.trim();
   } else {
     // The clipboard is not read here: prefilling the box with it would lift whatever the
     // user last copied — a password, a token — into a field a shoulder-surfer can read,
@@ -1894,8 +1887,19 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
       ignoreFocusOut: true,
       validateInput: (value) => inviteLinkRefusal(value),
     });
+    invite = invite?.trim();
   }
-  if (invite === undefined) {
+  if (invite === undefined || invite === '') {
+    return;
+  }
+  // The box refuses a bad paste as it is typed, so an editor reaching here holds a link
+  // it accepted — but a link that arrived by argument skipped that box, and the check is
+  // the same one either way. It runs before the name question and before the reload onto
+  // the room's mirror, and its sentence is fixed, so an unusable invite costs neither and
+  // never has its token said back to the person holding it.
+  const refusal = inviteLinkRefusal(invite);
+  if (refusal !== undefined) {
+    void vscode.window.showErrorMessage(`Selvage: ${refusal}`);
     return;
   }
   const displayName = await resolveDisplayName(args?.displayName, context);
@@ -2043,6 +2047,21 @@ async function triageMirrors(
       continue;
     }
     if (stored.invite !== undefined) {
+      // A marker can outlive the build that wrote it, or be edited by hand, so the
+      // stashed invite is put to the same check a paste is — before the name is asked
+      // and before any room is dialled, because the link is the one part of the resume
+      // this window cannot see. The refusal is the box's own fixed sentence, so a
+      // refused invite's token is never read back out. The stale mirror goes the way the
+      // session-less one below does: a room folder this window can never rejoin is a
+      // leftover, not a place to sit.
+      if (inviteLinkRefusal(stored.invite) !== undefined) {
+        removeRoomFolder(mirror);
+        mirror.remove();
+        void vscode.window.showWarningMessage(
+          `Selvage: removed the last session's leftover files; the link it was rejoining with does not look like a Selvage invite link.`,
+        );
+        continue;
+      }
       // The name stashed with the invite answers without asking: falling back to
       // the setting and the question only when the marker predates the stash.
       const displayName = await resolveDisplayName(stored.displayName, context);
@@ -2071,23 +2090,25 @@ async function triageMirrors(
  * Why a join box value is not an invite link, or `undefined` when it is. A truncated paste
  * fails here, in plain words saying what a good link looks like, rather than later as
  * whatever the engine said: a newcomer cannot tell "bad paste" from "server down" from
- * an ECONNREFUSED. The engine still refuses one that arrives by argument.
+ * an ECONNREFUSED. The same check answers a link that arrives by argument, before the name
+ * question and before the window reloads onto the room's mirror.
  */
 function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
-  if (parsePageLink(invite) !== undefined) {
+  const page = parsePageLink(invite);
+  if (page !== undefined) {
+    // A page link joins on the server it names, or on the page default when it names
+    // none: a `&server=` that is not an absolute ws/wss base builds a wire URL no socket
+    // can open, so it is refused here rather than after the question and the reload.
+    if (page.server !== undefined && !isSessionBase(page.server)) {
+      return inviteLinkHint();
+    }
     return undefined;
   }
   // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
   // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
   // pass this box and fail later inside the engine.
-  let url: URL;
-  try {
-    url = new URL(invite);
-  } catch {
-    return inviteLinkHint();
-  }
-  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+  if (!isSessionBase(invite)) {
     return inviteLinkHint();
   }
   const parsed = parseSessionUrl(invite);
@@ -2100,7 +2121,34 @@ function inviteLinkRefusal(value: string): string | undefined {
   ) {
     return inviteLinkHint();
   }
+  // And it has to be the invitation the engine dials: `parseSessionUrl` splits it into the
+  // base and the query, and `sessionUrl` — the builder the engine connects through — has
+  // to put the same invitation back. A base the URL parser rewrites is not one: in
+  // `ws:///session?…` the authority is swallowed into the path, so the parser reads host
+  // `session` with path `/` while `parseSessionUrl` hands back `ws://` and the wire URL
+  // rebuilt from it is `ws:/session?…` — a link that names no server to join. The room
+  // and its token are in the paste, so a link the engine would rewrite is refused here,
+  // in the fixed words, rather than dialled and lost after the reload.
+  if (
+    !isSessionBase(parsed.base) ||
+    sessionUrl(parsed.base, parsed.join.room, parsed.join.token) !== invite
+  ) {
+    return inviteLinkHint();
+  }
   return undefined;
+}
+
+/**
+ * Whether `value` is an absolute `ws:`/`wss:` address: what a session URL can be built
+ * on, whether it is the whole invite or only the `&server=` a page link carries.
+ */
+function isSessionBase(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === 'ws:' || protocol === 'wss:';
+  } catch {
+    return false;
+  }
 }
 
 /** What a good invite link looks like, for the join box refusal. */
@@ -2684,26 +2732,25 @@ function stopFollowing(): void {
 }
 
 /**
- * A setting when there is one, and a question when there is not. The question carries a
- * prefilled fallback — the last typed server, else the demo default (`DEFAULT_SERVER_URL`) —
- * so asking is a keystroke rather than a paste.
+ * The server to host on, in the order an argument, the setting and the remembered
+ * address are worth: the first of them answers, silently. Only a window with none of
+ * the three asks, prefilled with the demo default (`DEFAULT_SERVER_URL`) — a prefill,
+ * not a commitment, because the answer is what the next host reuses.
  */
-async function ask(
-  key: string,
-  title: string,
-  prompt: string,
-  placeHolder: string,
-  fallback?: string,
-): Promise<string | undefined> {
-  const configured = config().get<string>(key, '');
+async function resolveServerUrl(): Promise<string | undefined> {
+  const configured = config().get<string>('serverUrl', '').trim();
   if (configured !== '') {
     return configured;
   }
+  if (lastServer !== undefined && lastServer.trim() !== '') {
+    return lastServer;
+  }
   const answer = await vscode.window.showInputBox({
-    title,
-    prompt,
-    placeHolder,
-    value: fallback ?? '',
+    title: 'The Selvage server to host on',
+    prompt:
+      'The server you and your guest connect to — usually the address it prints when it starts. Remembered for the next host; an argument or "selvage.serverUrl" uses another.',
+    placeHolder: 'The address the server prints when it starts',
+    value: DEFAULT_SERVER_URL,
     ignoreFocusOut: true,
     validateInput: (value) => (value.trim() === '' ? 'A value is needed to go on.' : undefined),
   });

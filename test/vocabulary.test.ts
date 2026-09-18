@@ -101,6 +101,7 @@ const SENTENCES = [
   '`Selvage: ${} of the room\'s files could not be mirrored, starting with ${}.`',
   '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
   '`Selvage: removed the last session\'s leftover files; they were the room\'s text, not unsaved work.`',
+  '`Selvage: removed the last session\'s leftover files; the link it was rejoining with does not look like a Selvage invite link.`',
   '`Selvage: could not join the session: the editor gave this window no storage for the room\'s files.`',
   "'Selvage: not in a session.'",
   "'Selvage: left the session.'",

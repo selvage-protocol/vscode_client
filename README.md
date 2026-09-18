@@ -106,8 +106,9 @@ Then, in the two windows:
 
 Set `selvage.serverUrl`, `selvage.webOrigin` and `selvage.displayName` in settings to stop being asked. The server is
 resolved in this order: an explicit address given to the command, then the `selvage.serverUrl`
-setting, then the last server used — and with none of those, the question starts from the demo
-server `ws://100.64.0.3:8080`, a prefill, not a commitment. CopyInvite links to the page named by
+setting, then the last server used — the first of those answers silently, so hosting asks only
+in a window that has none of them, and that one question starts from the demo server
+`ws://100.64.0.3:8080`, a prefill, not a commitment. CopyInvite links to the page named by
 `selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
 the setting must name an https origin, and anything else falls back to the default, so a copied
 link never carries the room's token over cleartext.
@@ -123,8 +124,8 @@ command there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
-| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address and the name. |
-| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. |
+| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. |
+| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join — a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address — is refused before the name is asked and before the window reloads, in words that never quote the link's token. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
@@ -530,8 +531,9 @@ A sidecar or second process, and create/rename/delete on the wire (`PROTOCOL.md`
 read-only guests (`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond a granted
 path a peer asked for, multi-room windows, and publication (`vsce package`, a Marketplace
 publisher). Also deliberately absent: a `y-websocket` provider (Selvage's envelope is not
-y-websocket's), `terminal/1`, and any server address used without asking — the host question
-prefills the demo server, and nothing dials one silently.
+y-websocket's), `terminal/1`, and any server address used without asking beyond the one hosting
+remembered — the first host's question prefills the demo server, and every host after it reuses
+the answer until an argument or the setting names another.
 
 ## Licence
 

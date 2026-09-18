@@ -1419,7 +1419,7 @@ test('hosting asks for the server in plain words, prefilled with the default', a
   assert.doesNotMatch(String(asked.prompt), /selvaged/);
 });
 
-test('the typed server is remembered across windows', async (t) => {
+test('the typed server is remembered across windows, and hosting reuses it without asking', async (t) => {
   const first = freshBundle();
   first.stub.reset();
   first.activate({ subscriptions: [], globalState: first.stub.globalState });
@@ -1438,7 +1438,9 @@ test('the typed server is remembered across windows', async (t) => {
   first.deactivate();
 
   // A new window is a new module: nothing in memory names the address, only the memento.
-  // The recorded boxes are cleared but the memento is deliberately not reset.
+  // The recorded boxes are cleared but the memento is deliberately not reset. Hosting
+  // again reuses the remembered address with no question — which is read here off the
+  // failure the dead address earns, so the box count is the assertion and not the poll.
   const second = freshBundle();
   second.stub.registered.inputs.length = 0;
   second.stub.registered.inputReply = undefined;
@@ -1446,11 +1448,18 @@ test('the typed server is remembered across windows', async (t) => {
   t.after(() => {
     second.deactivate();
   });
-  await second.stub.commands.executeCommand('selvage.host');
-  const asked = await waitFor('the server question', () =>
-    second.stub.registered.inputs[0] ?? false,
+  await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  const said = await waitFor('the failure', () =>
+    second.stub.registered.errors.find((message) =>
+      message.includes('could not host on ws://127.0.0.1:1'),
+    ) ?? false,
   );
-  assert.equal(asked.value, 'ws://127.0.0.1:1');
+  assert.ok(said, 'hosting did not reuse the remembered server');
+  assert.equal(
+    second.stub.registered.inputs.length,
+    0,
+    'the remembered server was asked for again',
+  );
 });
 
 test('an explicit server address beats the remembered server', async (t) => {
@@ -1485,6 +1494,32 @@ test('an explicit server address beats the remembered server', async (t) => {
   assert.ok(said, 'hosting did not use the explicit address');
   assert.equal(bundle.stub.registered.inputs.length, 0, 'the remembered server was asked about');
   assert.equal(bundle.stub.globalState.get('selvage.lastServer'), 'ws://127.0.0.1:2');
+});
+
+test('the server address a command is given is trimmed, and that is what is remembered', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // A pasted-with-padding address is the address: the setting and the box answer are
+  // trimmed, and an address given to the command has to be too, or the first host is the
+  // only one that ever sees the whitespace — every later host reuses it.
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: '  ws://127.0.0.1:1  ',
+    displayName: 'Ada',
+  });
+  const said = await waitFor('the failure', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not host')) ?? false,
+  );
+  assert.match(String(said), /could not host on ws:\/\/127\.0\.0\.1:1 \(/);
+  assert.equal(
+    bundle.stub.globalState.get('selvage.lastServer'),
+    'ws://127.0.0.1:1',
+    'the remembered address carries the whitespace it was given',
+  );
 });
 
 test('a configured server address answers without asking', async (t) => {
@@ -1727,13 +1762,19 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a whole page link was refused',
   );
-  // A truncated paste, a server address, and nothing at all: all fail here, in plain
-  // words, rather than later as whatever the engine said.
   assert.equal(
     validate('wss://host:8080/session?room=r&token=t'),
     undefined,
     'a secure invite link was refused',
   );
+  assert.equal(
+    validate('https://page.example/?room=r&token=t&server=ws%3A%2F%2Fother%3A8080'),
+    undefined,
+    'a page link naming another server was refused',
+  );
+  // A truncated paste, a server address, a page link whose server is no WebSocket
+  // address, a wire invite the engine would not dial as pasted, and nothing at all: all
+  // fail here, in plain words, rather than later as whatever the engine said.
   for (const bad of [
     'ws://127.0.0.1:8080/session?room=r',
     'ws://127.0.0.1:8080/not-a-session',
@@ -1741,6 +1782,10 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     'not-a-url/session?room=r&token=t',
     'https://host/?room=r',
     'https://host/',
+    'https://host/?room=r&token=t&server=not-a-url',
+    'https://host/?room=r&token=t&server=http%3A%2F%2Fother%3A8080',
+    'ws:///session?room=r&token=t',
+    'ws://127.0.0.1:8080//session?room=r&token=t',
     '',
   ]) {
     const refusal = validate(bad);
@@ -1752,6 +1797,148 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     bundle.stub.registered.errors.length,
     0,
     'validating the box opened a connection',
+  );
+});
+
+test('a wire invite is refused when the engine would not dial it as pasted', async (t) => {
+  const { bundle } = activated(t);
+
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const asked = await waitFor('the join question', () =>
+    bundle.stub.registered.inputs[0] ?? false,
+  );
+  const validate = asked.validateInput as (value: string) => string | undefined;
+
+  // `ws:///session?…` reads as host `session` with path `/`: the URL parser swallows the
+  // authority into the path, `parseSessionUrl` hands the engine `ws://` as the base, and
+  // the wire URL the engine rebuilds from it — `ws:/session?…` — is not the endpoint the
+  // paste named. A base the engine would rewrite is refused here, before the name
+  // question and the reload, rather than dialled and lost.
+  for (const rewritten of [
+    'ws:///session?room=r&token=t',
+    'ws://127.0.0.1:8080//session?room=r&token=t',
+  ]) {
+    assert.match(
+      String(validate(rewritten)),
+      /does not look like a Selvage invite link/,
+      `the engine would not dial ${rewritten} as pasted`,
+    );
+  }
+  // A base the engine dials as pasted is an invite whatever it resolves to: a host that
+  // is not there fails at the dial, in the sentence that says to check the server, the
+  // way `ws://127.0.0.1:1/session?…` does in the join below. Refusing it would refuse
+  // every hostname that carries no port — `ws://lumi-raspberrypi/session?…` behind a
+  // reverse proxy is a room the page default does not name.
+  assert.equal(
+    validate('ws://name/session?room=r&token=t'),
+    undefined,
+    'a well-formed invite to a host that is not there was refused as a bad paste',
+  );
+});
+
+/**
+ * A window with nothing remembered and nothing configured, so the name question is the
+ * next thing any join would reach: a refusal has to come before it.
+ */
+function freshWindow(t: TestContext): LoadedExtension {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  return bundle;
+}
+
+/** Every user-visible surface a command left behind, for a scan that must find no token. */
+function surfaces(bundle: LoadedExtension): string[] {
+  return [
+    ...bundle.stub.registered.errors,
+    ...bundle.stub.registered.warnings,
+    ...bundle.stub.registered.information,
+  ];
+}
+
+test('an invite that arrives by argument is refused before the name question', async (t) => {
+  const token = 'tok-by-argument';
+  // Each one is a link no socket can open: `ws://` shapes `parseSessionUrl` alone would
+  // pass, two of them bases the engine would rewrite before it dialled, and two page
+  // links whose `&server=` is not a ws/wss base. An invite that arrives by argument used
+  // to skip the box's own check entirely, so it was not refused until after the name was
+  // asked and the window had reloaded onto the mirror.
+  const unusable = [
+    'wss://host:8080/session?room=r',
+    `not-a-url/session?room=r&token=${token}`,
+    `https://page.example/?room=r&token=${token}&server=not-a-url`,
+    `https://page.example/?room=r&token=${token}&server=http%3A%2F%2Fhost%3A8080`,
+    `ws:///session?room=r&token=${token}`,
+    `ws://127.0.0.1:8080//session?room=r&token=${token}`,
+  ];
+  for (const [index, invite] of unusable.entries()) {
+    const bundle = freshWindow(t);
+    await bundle.stub.commands.executeCommand('selvage.join', { invite });
+    const said = await waitFor(`the refusal of invite ${index}`, () =>
+      bundle.stub.registered.errors[0] ?? false,
+    );
+    assert.match(
+      String(said),
+      /does not look like a Selvage invite link/,
+      `invite ${index} was refused in the engine's words`,
+    );
+    assert.equal(bundle.stub.registered.errors.length, 1, 'the refusal was said more than once');
+    assert.ok(
+      !surfaces(bundle).some((surface) => surface.includes(token)),
+      `the refusal echoed the token: ${said}`,
+    );
+    assert.equal(
+      bundle.stub.registered.inputs.length,
+      0,
+      `the name was asked for unusable invite ${index}`,
+    );
+    assert.equal(
+      bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+      false,
+      `the window reloaded for unusable invite ${index}`,
+    );
+  }
+});
+
+test('a link the box lets through is refused before the name question, and before the reload', async (t) => {
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  const token = 'tok-from-the-box';
+  const storage = testStoragePath(t);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  // The box refuses this while it is typed; this stages the value reaching the command
+  // anyway — what a validation that let one through, or another caller than the box,
+  // would do. The same check refuses it, and the answer to the name question is never
+  // read.
+  bundle.stub.registered.inputReply = `https://page.example/?room=r&token=${token}&server=not-a-url`;
+  await bundle.stub.commands.executeCommand('selvage.join');
+  const said = await waitFor('the refusal', () => bundle.stub.registered.errors[0] ?? false);
+  assert.match(String(said), /does not look like a Selvage invite link/);
+  assert.ok(!surfaces(bundle).some((surface) => surface.includes(token)), `the refusal echoed the token: ${said}`);
+  assert.deepEqual(
+    bundle.stub.registered.inputs.map((input) => input['title']),
+    ['Join a Selvage session'],
+    'the name was asked for a link that cannot join',
+  );
+  assert.equal(
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+    false,
+    'the window reloaded onto a mirror for a link that cannot join',
+  );
+  assert.equal(
+    existsSync(join(storage, 'rooms', 'r')),
+    false,
+    'a mirror was minted for a link that cannot join',
   );
 });
 
@@ -2570,6 +2757,112 @@ test("activation leaves a live room's mirror alone, even in this window", async 
     1,
     'the live room earned its own sentence',
   );
+});
+
+test('activation drops a mirror whose stashed invite cannot join, before asking for a name', async (t) => {
+  const storage = testStoragePath(t);
+  const root = join(storage, 'rooms', 'r-stale', 'w-stale');
+  mkdirSync(root, { recursive: true });
+  const token = 'tok-in-the-marker';
+  // A marker an older build could have left: its stashed invite is the paste, not the
+  // wire URL the engine dials, and nothing remembers a name, so the question is what the
+  // resumed join would reach next. The invite has to be refused before it.
+  writeFileSync(
+    join(root, '.selvage-mirror.json'),
+    `${JSON.stringify({
+      room: 'r-stale',
+      window: 'w-stale',
+      pid: 2147483647,
+      created: new Date(0).toISOString(),
+      invite: `not-a-url/session?room=r-stale&token=${token}`,
+    })}\n`,
+  );
+
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  const said = await waitFor('the unusable stashed invite to be reported', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('leftover files')) ?? false,
+  );
+  assert.equal(
+    said,
+    `Selvage: removed the last session's leftover files; the link it was rejoining with does not look like a Selvage invite link.`,
+  );
+  assert.equal(
+    bundle.stub.registered.inputs.length,
+    0,
+    'the name was asked for a link that cannot join',
+  );
+  assert.equal(
+    bundle.stub.registered.errors.length,
+    0,
+    'the engine was reached with the unusable invite',
+  );
+  assert.ok(
+    !surfaces(bundle).some((surface) => surface.includes(token)),
+    `the token reached a user-visible surface: ${surfaces(bundle).join(' | ')}`,
+  );
+  assert.equal(
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+    false,
+    'the window was reloaded for a link that cannot join',
+  );
+  assert.equal(existsSync(root), false, 'the refused mirror survived activation');
+});
+
+test('activation does not dial a stashed invite it refuses', async (t) => {
+  const { server, invite } = await room(t, []);
+  // A hand-edited marker naming a room that is really there: the invite carries the room
+  // and its token, and only the base has a stray slash the engine would rewrite before
+  // dialling. Refused, the room is never opened — a link in a mirror's own marker is not
+  // a reason to reach somebody else's room.
+  const storage = testStoragePath(t);
+  const root = join(storage, 'rooms', 'r-stale', 'w-stale');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, '.selvage-mirror.json'),
+    `${JSON.stringify({
+      room: 'r-stale',
+      window: 'w-stale',
+      pid: 2147483647,
+      created: new Date(0).toISOString(),
+      invite: invite.replace('/session?', '//session?'),
+      displayName: 'Ada',
+    })}\n`,
+  );
+  const before = server.acceptedConnections;
+
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  await waitFor('the refused mirror to be reported', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('leftover files')) ?? false,
+  );
+  assert.equal(server.acceptedConnections, before, 'a refused invite was dialled anyway');
+  assert.equal(
+    bundle.stub.registered.information.some((message) => message.includes('joined the room')),
+    false,
+    'a session was seated from a refused invite',
+  );
+  assert.equal(existsSync(root), false, 'the refused mirror survived activation');
 });
 
 test('leaving closes the room tabs, the folder, and the directory', async (t) => {
