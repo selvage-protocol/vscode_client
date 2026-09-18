@@ -423,10 +423,6 @@ class Session {
     return this.engine.session().role;
   }
 
-  roomId(): string {
-    return this.engine.session().roomId;
-  }
-
   /** The invite link, for the connection that minted the room and no other. */
   invite(): string | undefined {
     return pageInviteFor(this.engine);
@@ -1704,7 +1700,7 @@ class Session {
     const here = this.peers.length + 1;
     this.status.text = `$(radio-tower) Selvage: ${who} · ${here} here`;
     const lines = [
-      `${this.role() === 'host' ? 'Hosting' : 'Guest in'} room ${this.roomId()}`,
+      `${this.role() === 'host' ? 'Hosting' : 'Guest in'} this session`,
       `In the room: ${summarise([this.names(), 'you'].flat())}`,
       `Documents the room offers: ${summarise(this.documents)}`,
       `Shared from this window: ${summarise(shared)}`,
@@ -1741,13 +1737,13 @@ function summarise(names: readonly string[]): string {
  */
 function joinWarning(session: Session): string {
   return session.role() === 'host'
-    ? `Selvage: you are hosting room ${session.roomId()}; joining another session ends this room for everyone.`
-    : `Selvage: you are in room ${session.roomId()}; joining another session leaves it.`;
+    ? `Selvage: you are hosting this session; joining another session ends this room for everyone.`
+    : `Selvage: you are in this session; joining another session leaves it.`;
 }
 
 /** What the Host command asks a guest to give up: the room it is in, before it can host one. */
-function hostWarning(session: Session): string {
-  return `Selvage: you are in room ${session.roomId()}; hosting a session means leaving it first.`;
+function hostWarning(): string {
+  return `Selvage: you are in this session; hosting a session means leaving it first.`;
 }
 
 /**
@@ -1770,7 +1766,7 @@ async function host(
       // Hosting again is reaching for the invite, not asking for a second room.
       if ((await copyInviteLink()) !== undefined) {
         void vscode.window.showInformationMessage(
-          `Selvage: you are already hosting room ${inSession.roomId()}; the invite link is on the clipboard.`,
+          `Selvage: you are already hosting this session; the invite link is on the clipboard.`,
         );
       }
       return;
@@ -1778,7 +1774,7 @@ async function host(
     // A guest cannot host without leaving the room it is in, and leaving is the user's call.
     const leave = 'Leave and host';
     const choice = await vscode.window.showWarningMessage(
-      hostWarning(inSession),
+      hostWarning(),
       { modal: true },
       leave,
     );
@@ -1822,14 +1818,12 @@ async function host(
   if (invite === undefined) {
     return;
   }
-  const copy = 'Copy invite link';
-  const choice = await vscode.window.showInformationMessage(
-    `Selvage: room ${engine.session().roomId} is open; copy the invite link to let someone join.`,
-    copy,
+  // Hosting ends with the guest's next step already done: the link is on the clipboard
+  // before the notice says so, with no button and no setting — a host always sends it next.
+  await vscode.env.clipboard.writeText(invite);
+  void vscode.window.showInformationMessage(
+    `Selvage: the room is open; the invite link is on the clipboard.`,
   );
-  if (choice === copy) {
-    await vscode.env.clipboard.writeText(invite);
-  }
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.join`. */
@@ -1900,7 +1894,7 @@ async function joinGuestRoom(options: {
   if (mirror === undefined) {
     if (storageUri === undefined) {
       void vscode.window.showErrorMessage(
-        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+        `Selvage: could not join the session: the editor gave this window no storage for the room's files.`,
       );
       return;
     }
@@ -1930,7 +1924,7 @@ async function joinGuestRoom(options: {
   } else {
     if (storageUri === undefined) {
       void vscode.window.showErrorMessage(
-        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+        `Selvage: could not join the session: the editor gave this window no storage for the room's files.`,
       );
       return;
     }
@@ -1979,9 +1973,7 @@ async function joinGuestRoom(options: {
   current = new Session(engine, { mirror: live });
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
-  void vscode.window.showInformationMessage(
-    joinedMessage(engine.session().roomId, engine.documents()),
-  );
+  void vscode.window.showInformationMessage(joinedMessage(engine.documents()));
 }
 
 /** Takes the room's folder back out of the window, where one was put. Best effort. */
@@ -2034,7 +2026,7 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
     removeRoomFolder(mirror);
     mirror.remove();
     void vscode.window.showWarningMessage(
-      `Selvage: removed room ${stored.room}'s leftover files from the last session; they were the room's text, not unsaved work.`,
+      `Selvage: removed the last session's leftover files; they were the room's text, not unsaved work.`,
     );
   }
 }
@@ -2186,24 +2178,25 @@ function resolveInviteToWire(invite: string): string {
 }
 
 /**
- * The join's sentence: the room the window joined, and the landing it is about to make in it —
+ * The join's sentence: the landing the window is about to make in the room —
  * which is nothing to name when the room has no documents yet, and the palette when
- * `selvage.openOnJoin` has turned the landing off.
+ * `selvage.openOnJoin` has turned the landing off. The room's id is the server's, not
+ * the guest's, so the sentence says the room and never names it.
  */
-function joinedMessage(roomId: string, documents: string[]): string {
+function joinedMessage(documents: string[]): string {
   const first = documents[0];
   if (first === undefined) {
-    return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
+    return `Selvage: joined the room; it has no open documents yet.`;
   }
   if (!opensOnJoin()) {
-    return `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`;
+    return `Selvage: joined the room. Selvage: Open a document from the room lists every path.`;
   }
   // The landing opens one document; the rest wait behind the palette, so the join names
   // them rather than leaving the guest to assume the room is one file.
   const rest = documents.length - 1;
   const more =
     rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk` : '';
-  return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
+  return `Selvage: joined the room; opening ${first}${more}.`;
 }
 
 /**
@@ -2561,7 +2554,7 @@ async function listPeers(): Promise<void> {
       iconPath: swatch(participant.colour),
     })),
     {
-      title: `Selvage: room ${session.roomId()}`,
+      title: `Selvage: who is in the room`,
       placeHolder: 'Who is here, and the colour their caret is drawn in',
       matchOnDescription: true,
       matchOnDetail: true,
