@@ -28,13 +28,13 @@ import {
   isCompatible,
   method,
 } from '../../src/engine/envelope.ts';
-import type { Keepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
+import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
 
 export interface FakeServerOptions {
   /** What `/meta` advertises as its wire versions. */
   metaWireVersions?: string[];
-  /** The keepalive the server advertises in the handshake. */
-  keepalive?: Partial<Keepalive>;
+  /** The keepalive the server advertises in the handshake and in `/meta`. */
+  keepalive?: Partial<MetaKeepalive>;
   /** How long the room survives after its host leaves; no reaping when omitted. */
   roomGraceMs?: number;
   /** Answer `/meta` with this status instead of a body, for the unreachable-`/meta` path. */
@@ -114,6 +114,13 @@ export class FakeServer {
   grantHold: Promise<void> | undefined = undefined;
   /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
   readonly refusedOpens = new Set<string>();
+  /**
+   * When set, every later handshake is refused with this code and the matching close — the
+   * shape a full room or a full server refuses a retry with. A refusal is an `x.` capacity
+   * code the server invents, so the client has to treat the reserved namespace as final
+   * (`PROTOCOL.md` §9.1, §11); the fake server produces the fault the real one will not
+   * produce on demand. */
+  helloRefusal: { code: string; message: string } | undefined = undefined;
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
   readonly unansweredOpens = new Set<string>();
   private readonly options: Required<
@@ -153,7 +160,15 @@ export class FakeServer {
           server: 'fake-selvaged/0.0.0',
           wire_versions: options.metaWireVersions ?? [WIRE_VERSION],
           capabilities: [...SERVER_CAPABILITIES],
-          keepalive: { ...DEFAULT_KEEPALIVE, ...options.keepalive },
+          keepalive: {
+            ...DEFAULT_KEEPALIVE,
+            ...options.keepalive,
+            // The grace is the server's own configuration, so a fake server that models one
+            // advertises it in `/meta` as the reference does (§2, §9).
+            ...(options.roomGraceMs === undefined
+              ? {}
+              : { room_grace_ms: options.roomGraceMs }),
+          },
           roles: ['host', 'guest'],
         }),
       );
@@ -323,6 +338,10 @@ export class FakeServer {
       typeof params.display_name === 'string' ? params.display_name : '';
     if (displayName.trim() === '') {
       this.refuse(client, code.badParams, 'a display_name is required');
+      return;
+    }
+    if (this.helloRefusal !== undefined) {
+      this.refuse(client, this.helloRefusal.code, this.helloRefusal.message);
       return;
     }
     const claimed: Role | undefined =

@@ -11,9 +11,11 @@ import { SelvageEngine } from '../src/engine/engine.ts';
 import type { ConnectOptions } from '../src/engine/engine.ts';
 import { EngineClosedError, ProtocolError, isProtocolError } from '../src/engine/errors.ts';
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 
 import { caret } from '../src/engine/presence.ts';
 import type { Anchor, AwarenessState } from '../src/engine/presence.ts';
+import { encodeAwareness } from '../src/engine/sync.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
 import { counting } from './helpers/counting-socket.ts';
@@ -36,6 +38,21 @@ function anchored(engine: SelvageEngine, path: string, index: number): Anchor {
   const anchor = engine.anchorAt(path, index);
   assert.ok(anchor !== undefined, `no text for ${path}: the replica received nothing`);
   return anchor;
+}
+
+/**
+ * An awareness state under a chosen client id, as a peer publishes it: the frame the engine
+ * applies. The scratch clock is destroyed with the frame, so nothing is left ticking.
+ */
+function awarenessFrame(clientId: number): Uint8Array {
+  const doc = new Y.Doc();
+  doc.clientID = clientId;
+  const awareness = new Awareness(doc);
+  awareness.setLocalState({ path: PATH });
+  const frame = encodeAwareness(awareness, [clientId]);
+  awareness.destroy();
+  doc.destroy();
+  return frame;
 }
 
 test('a host mints a room and gets an invite URL it can be joined through', async (t) => {
@@ -627,6 +644,74 @@ test('presence is attributed to a peer, and dropped when that peer leaves', asyn
     false,
     'a departed peer keeps no cursor',
   );
+});
+
+test('an awareness id two peers claim is freed only when the last of them leaves', async (t) => {
+  const session = await fakeSession();
+  t.after(async () => {
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+  const { host, server } = session;
+  const sharedId = 42;
+  // §8.4: an awareness id is not an identity and nothing requires it to be unique in a room,
+  // so a client that reuses one after reconnecting makes two peers speak for one replica. A
+  // cursor is the room's while anyone claims its id; the roster decides when it is free.
+  for (const [peerId, name] of [
+    ['p-one', 'One'],
+    ['p-two', 'Two'],
+  ]) {
+    server.sendToClient(
+      'Ada',
+      JSON.stringify({
+        v: 'selvage/1',
+        event: 'peer.joined',
+        params: {
+          peer: {
+            peer_id: peerId,
+            display_name: name,
+            role: 'guest',
+            awareness_client_id: sharedId,
+          },
+        },
+      }),
+    );
+  }
+  server.sendBinaryToClient('Ada', awarenessFrame(sharedId));
+
+  const claimants = () =>
+    host.peers().filter((peer) => peer.awareness_client_id === sharedId).length;
+  const holds = () =>
+    host.presence().some((presence) => presence.clientId === sharedId);
+  await waitFor('both claimants to be seated', () => claimants() === 2, {
+    describe: () => host.peers(),
+  });
+  await waitFor('the shared state to arrive', holds, { describe: () => host.presence() });
+
+  // One of the two leaves: the other still claims the id, so its cursor stays.
+  server.sendToClient(
+    'Ada',
+    JSON.stringify({ v: 'selvage/1', event: 'peer.left', params: { peer_id: 'p-one' } }),
+  );
+  await waitFor('the first departure to be applied', () => claimants() === 1, {
+    describe: () => host.peers(),
+  });
+  assert.equal(
+    holds(),
+    true,
+    'the peer that is still here keeps the cursor it speaks for',
+  );
+
+  // The last claimant leaves: only now is the id free.
+  server.sendToClient(
+    'Ada',
+    JSON.stringify({ v: 'selvage/1', event: 'peer.left', params: { peer_id: 'p-two' } }),
+  );
+  await waitFor('the last departure to be applied', () => claimants() === 0, {
+    describe: () => host.peers(),
+  });
+  assert.equal(holds(), false, 'the id is freed once nobody claims it');
 });
 
 test('setAwareness(null) clears presence rather than publishing an empty state', async (t) => {

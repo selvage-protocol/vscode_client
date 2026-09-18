@@ -115,10 +115,27 @@ test('a fatal session error code pairs with the close code the server uses', () 
   ]) {
     assert.equal(isTerminalCode(fatal), true, fatal);
   }
-  for (const recoverable of [code.badMessage, code.badParams, 'close_1006']) {
+  for (const recoverable of [
+    code.badMessage,
+    code.badParams,
+    'close_1006',
+    'X.room_full',
+    '',
+  ]) {
     assert.equal(isTerminalCode(recoverable), false, recoverable);
   }
   assert.equal(isTerminalCode(undefined), false);
+
+  // §9.1: a refusal in the reserved `x.` namespace is a stop as well, whatever it means —
+  // the namespace is how an implementation refuses without teaching every client its word.
+  for (const reserved of [
+    'x.server_full',
+    'x.room_full',
+    'x.something.invented.later',
+    'x.',
+  ]) {
+    assert.equal(isTerminalCode(reserved), true, reserved);
+  }
 });
 
 test('the invite URL is the connection URL, and is taken apart again', () => {
