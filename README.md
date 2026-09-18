@@ -125,11 +125,11 @@ command there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
-| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. |
-| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join — a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address — is refused before the name is asked and before the window reloads, in words that never quote the link's token. |
+| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. The handshake is announced while it happens (`withProgress`), as the reconnect path's own indicator already was; the notice that follows carries the invite's next step and a **Copy again** button. |
+| `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join — a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address — is refused before the name is asked and before the window reloads, in words that never quote the link's token. A window holding a folder of its own is asked before the reload takes it — the folder stays on disk either way — and the handshake after the reload is announced while it happens. A refused join says what happened rather than what the wire said: the room's own `no such room: <id>` and `invalid room token` reach the person as a sentence with no room id and no wire word in it. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
-| `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
+| `Selvage: Download a file from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
 | `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest holds the token it joined with — the invite *is* the permission — so it hands on the link it joined by, exactly as it stood: that same page link, or the `ws://` link where that is how the room was reached. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
@@ -169,7 +169,12 @@ palette's own `selvage.goToParticipant`, `selvage.followParticipant` and
 `selvage.stopFollowing`, shown on the row (`inline`) and in its context menu alike; a peer in no
 document says so, carries no click, and offers neither verb — there is nowhere to go. The row's
 hover spells the whole thing out: name, role, file, and whether this window follows them. An
-empty room says it is alone and offers the invite copy on click.
+empty room says it is alone and offers the invite copy on click. A window with **no** session
+leaves the view empty, which is when the editor draws the `viewsWelcome` the manifest
+contributes for it: one sentence saying what hosting is for, and the palette's own **Host a
+session** and **Join a session from an invite link** buttons. The view deliberately has no row of
+its own there — a row would stand in front of that welcome for good — and the sentence a command
+needs before it can run (`Selvage: Join a session first.`) still belongs to those commands.
 
 ## Packaging it
 
