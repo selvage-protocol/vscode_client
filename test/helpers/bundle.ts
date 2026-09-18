@@ -48,6 +48,8 @@ export interface Registered {
    * stages never happens, so the test stages what the client says instead.
    */
   openFolderThrows: string | undefined;
+  /** When set, the clipboard's `writeText` rejects with this message. */
+  clipboardWriteThrows: string | undefined;
   /** Every `tabGroups.close` call, as the tabs it was given, in order. */
   closedTabs: unknown[][];
   /** Every `workspace.fs.readDirectory` call: the listing was walked that many times. */
@@ -224,6 +226,15 @@ export async function landStashedJoin(
   displayName: string,
   extraConfig: Record<string, unknown> = {},
 ): Promise<string> {
+  // The join stages its reload detached, so the landing waits for the staged reload
+  // rather than for a number of turns: the reload is the effect the landing reads.
+  await waitFor(
+    'the join to stage its reload',
+    () =>
+      bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder')
+        ? true
+        : false,
+  );
   const root = mirrorWindowDir(storagePath, roomId);
   const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
   assert.equal(reloads.length, 1, `expected one staged reload, found ${reloads.length}`);
@@ -250,7 +261,7 @@ export async function landStashedJoin(
   await waitFor(
     'the stashed join to land',
     () =>
-      bundle.stub.registered.information.some((message) => message.includes('joined room'))
+      bundle.stub.registered.information.some((message) => message.includes('joined the room'))
         ? true
         : false,
   );

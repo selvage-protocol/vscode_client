@@ -107,16 +107,17 @@ async function copiedInvite(
     serverUrl: server.wsBase,
     displayName: 'Ada',
   });
-  const opened = await waitFor('the host to be seated', () =>
+  await waitFor('the host to be seated', () =>
     bundle.stub.registered.information.find((message) => message.includes('is open')) ?? false,
   );
-  const roomId = /^Selvage: room (\S+) is open/.exec(opened)?.[1];
-  assert.ok(roomId !== undefined, `the open message names no room: ${opened}`);
+  // Hosting copies the link itself; the room it names is read back off the link, never
+  // off a notice — no user-visible surface names it.
   const link = await waitFor('the invite link', () => {
-    void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const clipboard = bundle.stub.registered.clipboard;
     return clipboard.startsWith('https://') ? clipboard : false;
   });
+  const roomId = new URL(link).searchParams.get('room');
+  assert.ok(roomId !== null && roomId !== '', `the copied link names no room: ${link}`);
   return { link, roomId };
 }
 
@@ -237,9 +238,9 @@ test('a pasted page link joins the room it names', async (t) => {
   });
   await landStashedJoin(second.bundle, second.storage, roomId, 'Bob');
   const joined = second.bundle.stub.registered.information.find((message) =>
-    message.includes('joined room'),
+    message.includes('joined the room'),
   ) ?? false;
-  assert.equal(joined, `Selvage: joined room ${roomId}; the room has no open documents yet.`);
+  assert.equal(joined, `Selvage: joined the room; it has no open documents yet.`);
 });
 
 test('a ws:// invite still joins, as the fallback for rooms off the page default', async (t) => {
@@ -261,9 +262,9 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   });
   await landStashedJoin(guest.bundle, guest.storage, wireRoom, 'Bob');
   const joined = guest.bundle.stub.registered.information.find((message) =>
-    message.includes('joined room'),
+    message.includes('joined the room'),
   ) ?? 'no join landed';
-  assert.match(joined, /Selvage: joined room \S+/);
+  assert.match(joined, /Selvage: joined the room;/);
 });
 
 test('the webOrigin setting moves the copied link', async (t) => {

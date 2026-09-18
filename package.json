@@ -139,7 +139,7 @@
         },
         "selvage.displayName": {
           "type": "string",
-          "description": "The name other participants see. A change while a session is live renames this connection at once; the change also applies to the next host or join. At most 32 UTF-16 code units; an emoji costs two. A longer name is refused rather than shortened. Asked for when unset; the Selvage: Set the name other participants see command changes it."
+          "description": "The name other participants see. A change while a session is live renames this connection at once; the change also applies to the next host or join. At most 32 UTF-16 code units; an emoji costs two. A longer name is refused rather than shortened. Asked for once when neither set nor remembered, then kept for the next host or join; the Selvage: Set the name other participants see command changes it."
         },
         "selvage.autoSave": {
           "type": "boolean",

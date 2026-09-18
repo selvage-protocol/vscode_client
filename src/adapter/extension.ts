@@ -112,6 +112,18 @@ let lastServer: string | undefined;
 const LAST_SERVER_KEY = 'selvage.lastServer';
 
 /**
+ * The last name a user typed, so the next host or join proceeds without asking.
+ * In memory for the window, and in `globalState` (see `LAST_DISPLAY_NAME_KEY`) for the
+ * next window and the next restart: answering the question once is enough. A remembered
+ * name is changed where names are changed — the `Selvage: Set the name other
+ * participants see` command, behind its `Change the name` answer — never by asking again.
+ */
+let lastDisplayName: string | undefined;
+
+/** The `globalState` key carrying the last typed name across windows and restarts. */
+const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
+
+/**
  * The server a window hosts on when nothing was typed, remembered or configured: the Pi
  * demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment —
  * the prompt still asks, explicit arguments and the `selvage.serverUrl` setting always win —
@@ -131,13 +143,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // A window the user typed a server into leaves it behind for the next one. The in-memory
   // value still wins: it is what this window was told most recently.
   lastServer = context.globalState?.get<string>(LAST_SERVER_KEY) ?? lastServer;
+  lastDisplayName = context.globalState?.get<string>(LAST_DISPLAY_NAME_KEY) ?? lastDisplayName;
   storageUri = context.globalStorageUri;
   context.subscriptions.push(
     vscode.commands.registerCommand('selvage.host', (args?: HostArgs) => {
       void host(args, context);
     }),
     vscode.commands.registerCommand('selvage.join', (args?: JoinArgs) => {
-      void join(args);
+      void join(args, context);
     }),
     vscode.commands.registerCommand('selvage.copyInvite', () => {
       void copyInvite();
@@ -152,7 +165,7 @@ export function activate(context: vscode.ExtensionContext): void {
       leave();
     }),
     vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
-      void displayName(args);
+      void displayName(args, context);
     }),
     vscode.commands.registerCommand('selvage.peers', () => {
       void listPeers();
@@ -178,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
   // detached, because a pending invite finishes by joining and joining is async.
   if (storageUri !== undefined) {
-    void triageMirrors(storageUri);
+    void triageMirrors(storageUri, context);
   }
 }
 
@@ -421,10 +434,6 @@ class Session {
 
   role(): Role {
     return this.engine.session().role;
-  }
-
-  roomId(): string {
-    return this.engine.session().roomId;
   }
 
   /** The invite link, for the connection that minted the room and no other. */
@@ -1704,7 +1713,7 @@ class Session {
     const here = this.peers.length + 1;
     this.status.text = `$(radio-tower) Selvage: ${who} · ${here} here`;
     const lines = [
-      `${this.role() === 'host' ? 'Hosting' : 'Guest in'} room ${this.roomId()}`,
+      `${this.role() === 'host' ? 'Hosting' : 'Guest in'} this session`,
       `In the room: ${summarise([this.names(), 'you'].flat())}`,
       `Documents the room offers: ${summarise(this.documents)}`,
       `Shared from this window: ${summarise(shared)}`,
@@ -1741,13 +1750,13 @@ function summarise(names: readonly string[]): string {
  */
 function joinWarning(session: Session): string {
   return session.role() === 'host'
-    ? `Selvage: you are hosting room ${session.roomId()}; joining another session ends this room for everyone.`
-    : `Selvage: you are in room ${session.roomId()}; joining another session leaves it.`;
+    ? `Selvage: you are hosting this session; joining another session ends this room for everyone.`
+    : `Selvage: you are in this session; joining another session leaves it.`;
 }
 
 /** What the Host command asks a guest to give up: the room it is in, before it can host one. */
-function hostWarning(session: Session): string {
-  return `Selvage: you are in room ${session.roomId()}; hosting a session means leaving it first.`;
+function hostWarning(): string {
+  return `Selvage: you are in this session; hosting a session means leaving it first.`;
 }
 
 /**
@@ -1770,7 +1779,7 @@ async function host(
       // Hosting again is reaching for the invite, not asking for a second room.
       if ((await copyInviteLink()) !== undefined) {
         void vscode.window.showInformationMessage(
-          `Selvage: you are already hosting room ${inSession.roomId()}; the invite link is on the clipboard.`,
+          `Selvage: you are already hosting this session; the invite link is on the clipboard.`,
         );
       }
       return;
@@ -1778,7 +1787,7 @@ async function host(
     // A guest cannot host without leaving the room it is in, and leaving is the user's call.
     const leave = 'Leave and host';
     const choice = await vscode.window.showWarningMessage(
-      hostWarning(inSession),
+      hostWarning(),
       { modal: true },
       leave,
     );
@@ -1801,7 +1810,7 @@ async function host(
   }
   lastServer = baseUrl;
   await rememberServer(context, baseUrl);
-  const displayName = await resolveDisplayName(args?.displayName);
+  const displayName = await resolveDisplayName(args?.displayName, context);
   if (displayName === undefined) {
     return;
   }
@@ -1822,14 +1831,20 @@ async function host(
   if (invite === undefined) {
     return;
   }
-  const copy = 'Copy invite link';
-  const choice = await vscode.window.showInformationMessage(
-    `Selvage: room ${engine.session().roomId} is open; copy the invite link to let someone join.`,
-    copy,
-  );
-  if (choice === copy) {
+  // Hosting ends with the guest's next step already done: the link is on the clipboard
+  // before the notice says so, with no button and no setting — a host always sends it next.
+  // A clipboard that will not take it is said out loud instead: the session stands either way.
+  try {
     await vscode.env.clipboard.writeText(invite);
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      `Selvage: the room is open, but the invite link could not be copied (${message(error)}).`,
+    );
+    return;
   }
+  void vscode.window.showInformationMessage(
+    `Selvage: the room is open; the invite link is on the clipboard.`,
+  );
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.join`. */
@@ -1838,7 +1853,7 @@ export interface JoinArgs {
   displayName?: string;
 }
 
-async function join(args?: JoinArgs): Promise<void> {
+async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise<void> {
   const inSession = current;
   if (inSession !== undefined) {
     const leave = 'Leave and join';
@@ -1871,7 +1886,7 @@ async function join(args?: JoinArgs): Promise<void> {
   if (invite === undefined) {
     return;
   }
-  const displayName = await resolveDisplayName(args?.displayName);
+  const displayName = await resolveDisplayName(args?.displayName, context);
   if (displayName === undefined) {
     return;
   }
@@ -1900,7 +1915,7 @@ async function joinGuestRoom(options: {
   if (mirror === undefined) {
     if (storageUri === undefined) {
       void vscode.window.showErrorMessage(
-        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+        `Selvage: could not join the session: the editor gave this window no storage for the room's files.`,
       );
       return;
     }
@@ -1930,7 +1945,7 @@ async function joinGuestRoom(options: {
   } else {
     if (storageUri === undefined) {
       void vscode.window.showErrorMessage(
-        `Selvage: could not join room ${room}: the editor gave this window no storage for the room's files.`,
+        `Selvage: could not join the session: the editor gave this window no storage for the room's files.`,
       );
       return;
     }
@@ -1979,9 +1994,7 @@ async function joinGuestRoom(options: {
   current = new Session(engine, { mirror: live });
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
-  void vscode.window.showInformationMessage(
-    joinedMessage(engine.session().roomId, engine.documents()),
-  );
+  void vscode.window.showInformationMessage(joinedMessage(engine.documents()));
 }
 
 /** Takes the room's folder back out of the window, where one was put. Best effort. */
@@ -2005,7 +2018,10 @@ function removeRoomFolder(mirror: Mirror): void {
  * goes with it, and one sentence says what went. A live sibling's directory, and anything
  * without a marker of ours, is untouched.
  */
-async function triageMirrors(storage: vscode.Uri): Promise<void> {
+async function triageMirrors(
+  storage: vscode.Uri,
+  context?: vscode.ExtensionContext,
+): Promise<void> {
   for (const stored of scanStorage(storage)) {
     if (current !== undefined) {
       return;
@@ -2017,7 +2033,7 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
     if (stored.invite !== undefined) {
       // The name stashed with the invite answers without asking: falling back to
       // the setting and the question only when the marker predates the stash.
-      const displayName = await resolveDisplayName(stored.displayName);
+      const displayName = await resolveDisplayName(stored.displayName, context);
       if (displayName === undefined || current !== undefined) {
         return;
       }
@@ -2034,7 +2050,7 @@ async function triageMirrors(storage: vscode.Uri): Promise<void> {
     removeRoomFolder(mirror);
     mirror.remove();
     void vscode.window.showWarningMessage(
-      `Selvage: removed room ${stored.room}'s leftover files from the last session; they were the room's text, not unsaved work.`,
+      `Selvage: removed the last session's leftover files; they were the room's text, not unsaved work.`,
     );
   }
 }
@@ -2186,24 +2202,25 @@ function resolveInviteToWire(invite: string): string {
 }
 
 /**
- * The join's sentence: the room the window joined, and the landing it is about to make in it —
+ * The join's sentence: the landing the window is about to make in the room —
  * which is nothing to name when the room has no documents yet, and the palette when
- * `selvage.openOnJoin` has turned the landing off.
+ * `selvage.openOnJoin` has turned the landing off. The room's id is the server's, not
+ * the guest's, so the sentence says the room and never names it.
  */
-function joinedMessage(roomId: string, documents: string[]): string {
+function joinedMessage(documents: string[]): string {
   const first = documents[0];
   if (first === undefined) {
-    return `Selvage: joined room ${roomId}; the room has no open documents yet.`;
+    return `Selvage: joined the room; it has no open documents yet.`;
   }
   if (!opensOnJoin()) {
-    return `Selvage: joined room ${roomId}. Selvage: Open a document from the room lists every path.`;
+    return `Selvage: joined the room. Selvage: Open a document from the room lists every path.`;
   }
   // The landing opens one document; the rest wait behind the palette, so the join names
   // them rather than leaving the guest to assume the room is one file.
   const rest = documents.length - 1;
   const more =
     rest > 0 ? ` and ${rest} more; Selvage: Open a document from the room lists every path, Selvage: Fetch a path from the room fills the files on disk` : '';
-  return `Selvage: joined room ${roomId}; opening ${first}${more}.`;
+  return `Selvage: joined the room; opening ${first}${more}.`;
 }
 
 /**
@@ -2358,7 +2375,16 @@ function nameInForce(): string | undefined {
     return live;
   }
   const configured = config().get<string>('displayName', '').trim();
-  return configured === '' ? undefined : configured;
+  if (configured !== '') {
+    return configured;
+  }
+  // The report reads what a host or join would be seated with: a remembered name answers
+  // here too, so the command never reports "no name" for one it would use unasked.
+  // Silent like the seating path — a report is not where a hand-written memento is policed.
+  if (lastDisplayName !== undefined && displayNameRefusal(lastDisplayName) === undefined) {
+    return lastDisplayName;
+  }
+  return undefined;
 }
 
 /**
@@ -2376,7 +2402,9 @@ function withinBound(raw: string): string | undefined {
 
 /**
  * The name this window will be seated with: the one a caller named, else the
- * `selvage.displayName` setting, else the answer to a question that states the bound.
+ * `selvage.displayName` setting, else the last typed name, else the answer to a
+ * question that states the bound — asked once, then remembered for the next window
+ * and the next restart, so no host or join asks twice for the same answer.
  *
  * A name over the bound is refused wherever it came from — a server refuses the
  * `session.hello` it would arrive in, and being asked for a shorter name is better than being
@@ -2384,12 +2412,29 @@ function withinBound(raw: string): string | undefined {
  * failing the command: the box starts from the name that was refused, so it can be shortened
  * instead of retyped.
  */
-async function resolveDisplayName(given?: string): Promise<string | undefined> {
+async function resolveDisplayName(
+  given?: string,
+  context?: vscode.ExtensionContext,
+): Promise<string | undefined> {
   if (given !== undefined) {
-    return withinBound(given);
+    const name = withinBound(given);
+    if (name === undefined) {
+      return undefined;
+    }
+    return rememberDisplayName(context, name);
   }
   const configured = config().get<string>('displayName', '').trim();
-  if (configured !== '') {
+  if (configured === '') {
+    // A remembered name answers without asking: the question below is for the first run.
+    // Only a name already inside the bound was ever remembered, so a refusal here means
+    // a memento written by hand, and the question — not an error — is what answers it.
+    // A name the setting names, even one the bound refuses, never falls through to here:
+    // the setting is the newer word, and a refused one earns the question prefilled with
+    // itself, not a silent older answer.
+    if (lastDisplayName !== undefined && displayNameRefusal(lastDisplayName) === undefined) {
+      return lastDisplayName;
+    }
+  } else {
     const name = withinBound(configured);
     if (name !== undefined) {
       return name;
@@ -2404,7 +2449,12 @@ async function resolveDisplayName(given?: string): Promise<string | undefined> {
   if (answer === undefined) {
     return undefined;
   }
-  return withinBound(answer);
+  // The first run's answer is every later run's: kept for the next window.
+  const name = withinBound(answer);
+  if (name === undefined) {
+    return undefined;
+  }
+  return rememberDisplayName(context, name);
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.displayName`. */
@@ -2424,9 +2474,9 @@ export interface DisplayNameArgs {
  * so a change applies to the room now rather than only to the next host or join. The setting
  * is written at the global scope, so a later window is not asked again.
  */
-async function displayName(args?: DisplayNameArgs): Promise<void> {
+async function displayName(args?: DisplayNameArgs, context?: vscode.ExtensionContext): Promise<void> {
   if (args?.name !== undefined) {
-    await acceptDisplayName(args.name);
+    await acceptDisplayName(args.name, context);
     return;
   }
   const currentName = nameInForce();
@@ -2449,7 +2499,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
   if (answer === undefined) {
     return;
   }
-  await acceptDisplayName(answer);
+  await acceptDisplayName(answer, context);
 }
 
 /**
@@ -2460,7 +2510,7 @@ async function displayName(args?: DisplayNameArgs): Promise<void> {
  * — one a configuration manager owns and leaves read-only — is reported rather than swallowed,
  * and the confirmation is not sent.
  */
-async function acceptDisplayName(raw: string): Promise<void> {
+async function acceptDisplayName(raw: string, context?: vscode.ExtensionContext): Promise<void> {
   const name = withinBound(raw);
   if (name === undefined) {
     return;
@@ -2473,6 +2523,9 @@ async function acceptDisplayName(raw: string): Promise<void> {
     );
     return;
   }
+  // The setting carries the name now; the memento keeps it too, so clearing the setting
+  // later still never asks twice for this answer.
+  await rememberDisplayName(context, name);
   void vscode.window.showInformationMessage(`Selvage: display name set to "${name}".`);
 }
 
@@ -2561,7 +2614,7 @@ async function listPeers(): Promise<void> {
       iconPath: swatch(participant.colour),
     })),
     {
-      title: `Selvage: room ${session.roomId()}`,
+      title: `Selvage: who is in the room`,
       placeHolder: 'Who is here, and the colour their caret is drawn in',
       matchOnDescription: true,
       matchOnDetail: true,
@@ -2644,6 +2697,24 @@ async function ask(
   });
   const trimmed = answer?.trim();
   return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+}
+
+/**
+ * Keeps the typed name for the next window and the next restart. Memory only when the
+ * window cannot write: a window that cannot remember still hosts, so a write that
+ * fails is dropped rather than reported.
+ */
+async function rememberDisplayName(
+  context: vscode.ExtensionContext | undefined,
+  name: string,
+): Promise<string> {
+  lastDisplayName = name;
+  try {
+    await context?.globalState?.update(LAST_DISPLAY_NAME_KEY, name);
+  } catch {
+    // A window that cannot remember still hosts.
+  }
+  return name;
 }
 
 /**

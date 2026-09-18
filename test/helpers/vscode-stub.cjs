@@ -74,6 +74,8 @@ const registered = {
   updateFoldersReturn: true,
   /** When set, `vscode.openFolder` rejects with this message (see bundle.ts). */
   openFolderThrows: undefined,
+  /** When set, the clipboard's `writeText` rejects with this message. */
+  clipboardWriteThrows: undefined,
   /** Every `tabGroups.close` call, as the tabs it was given, in order. */
   closedTabs: [],
   /** Every `workspace.fs.readDirectory` call, so a test can see the listing was walked again. */
@@ -355,6 +357,7 @@ function reset() {
   registered.folderCalls.length = 0;
   registered.updateFoldersReturn = true;
   registered.openFolderThrows = undefined;
+  registered.clipboardWriteThrows = undefined;
   registered.closedTabs.length = 0;
   tabGroups.all.length = 0;
   disk.files.clear();
@@ -892,6 +895,9 @@ module.exports = {
         return Promise.resolve(registered.clipboard);
       },
       writeText: (value) => {
+        if (registered.clipboardWriteThrows !== undefined) {
+          return Promise.reject(new Error(registered.clipboardWriteThrows));
+        }
         registered.clipboard = value;
         registered.clipboardWrites.push(value);
         return Promise.resolve();
