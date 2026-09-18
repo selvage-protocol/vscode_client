@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 
 import { badgeFiles } from '../bridge/index.ts';
 import type {
+  FileBadge,
   FilePresence,
   ParticipantRow,
   RosterRow,
@@ -52,17 +53,25 @@ export function resolveViewRows(rows: readonly RosterRow[]): ViewRow[] {
 /**
  * One roster row: a `TreeItem` carrying the peer id, which is structurally the argument
  * the go-to and follow commands already take — so a view action calls straight through
- * with no new command. Rows deliberately carry no click command: a glance must not
- * navigate. The colour dot is the picker's `swatch`, so the row and the caret agree.
+ * with no new command. The colour dot is the picker's `swatch`, so the row and the caret
+ * agree.
+ *
+ * A peer in a document is one click away (`canNavigate`), carrying the click as a command
+ * with a `{ peerId }` argument: the owner overruled the earlier judgement that a glance
+ * must not navigate — going to a peer is what the row is for, and a peer in no document
+ * gets no click rather than one that cannot land. The click goes through `goToParticipant`,
+ * the same command the row's own button and the palette run.
  */
 export class ParticipantItem extends vscode.TreeItem {
   readonly peerId: string;
   private colour: string;
+  private canNavigate: boolean;
 
   constructor(row: ParticipantRow) {
     super(row.label, vscode.TreeItemCollapsibleState.None);
     this.peerId = row.peerId;
     this.colour = row.colour;
+    this.canNavigate = row.canNavigate;
     this.apply(row);
   }
 
@@ -73,7 +82,8 @@ export class ParticipantItem extends vscode.TreeItem {
       this.description === row.description &&
       this.tooltip === row.tooltip &&
       this.contextValue === row.contextValue &&
-      this.colour === row.colour
+      this.colour === row.colour &&
+      this.canNavigate === row.canNavigate
     ) {
       return false;
     }
@@ -87,7 +97,15 @@ export class ParticipantItem extends vscode.TreeItem {
     this.tooltip = row.tooltip;
     this.contextValue = row.contextValue;
     this.colour = row.colour;
+    this.canNavigate = row.canNavigate;
     this.iconPath = ParticipantItem.swatch(row.colour);
+    this.command = row.canNavigate
+      ? {
+          command: 'selvage.goToParticipant',
+          title: `Go to ${row.label}`,
+          arguments: [{ peerId: row.peerId }],
+        }
+      : undefined;
   }
 
   static swatch(colour: string): vscode.Uri {
@@ -189,24 +207,30 @@ export class ParticipantsProvider implements vscode.TreeDataProvider<vscode.Tree
 }
 
 /**
- * The peer markers on the room files' own rows: one badge per file peers are in — a
- * dot, or the headcount when several share it — with the names in the hover. Only
+ * The peer markers on the room files' own rows: one badge per file peers are in — the initials
+ * of the peer in it, or the headcount when several share it — with the names in the hover. Only
  * changed files fire, so a caret move never redraws the tree it decorates.
  *
- * The marker is deliberately not the peer colour: a file decoration's colour takes
- * only a theme colour, never an arbitrary hex, so the exact hex lives on the roster
- * dots, the follow indicator and the carets instead.
+ * The badge is the letters the glyph margin draws for that same peer, in the same colour: the
+ * colour is a theme colour (`selvage.peer.<index>`, contributed by the manifest), because a file
+ * decoration's colour takes a theme colour's id and never an arbitrary hex. One badge per row is
+ * the API's limit, so a shared file answers with the count and claims no colour, and the hover is
+ * where every name lives.
  */
 export class PeerFileDecorations implements vscode.FileDecorationProvider {
   private readonly changed = new vscode.EventEmitter<vscode.Uri | undefined>();
   readonly onDidChangeFileDecorations = this.changed.event;
-  private badges = new Map<string, { badge: string; tooltip: string }>();
+  private badges = new Map<string, FileBadge>();
 
   refresh(files: FilePresence[]): void {
     const next = new Map(badgeFiles(files).map((badge) => [badge.uri, badge] as const));
     for (const [uri, badge] of next) {
       const prev = this.badges.get(uri);
-      if (prev?.badge !== badge.badge || prev?.tooltip !== badge.tooltip) {
+      if (
+        prev?.badge !== badge.badge ||
+        prev?.tooltip !== badge.tooltip ||
+        prev?.colourId !== badge.colourId
+      ) {
         this.changed.fire(vscode.Uri.parse(uri));
       }
     }
@@ -223,6 +247,10 @@ export class PeerFileDecorations implements vscode.FileDecorationProvider {
     if (badge === undefined) {
       return undefined;
     }
-    return { badge: badge.badge, tooltip: badge.tooltip };
+    return {
+      badge: badge.badge,
+      tooltip: badge.tooltip,
+      color: badge.colourId === undefined ? undefined : new vscode.ThemeColor(badge.colourId),
+    };
   }
 }

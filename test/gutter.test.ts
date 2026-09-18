@@ -15,15 +15,12 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import {
-  ANONYMOUS_INITIALS,
   BADGE_OPTIONS,
-  INITIALS_LIMIT,
   badgeDataUri,
   badgeSvg,
-  initials,
   onePerLine,
 } from '../src/adapter/gutter.ts';
-import { peerColour } from '../src/bridge/index.ts';
+import { ANONYMOUS_INITIALS, INITIALS_LIMIT, initials, peerColour } from '../src/bridge/index.ts';
 import { SelvageEngine } from '../src/engine/index.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';

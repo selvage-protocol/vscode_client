@@ -30,9 +30,10 @@
 
 import * as vscode from 'vscode';
 
+import { initials } from '../bridge/index.ts';
 import type { Cursor } from '../bridge/index.ts';
 
-import { BADGE_OPTIONS, badgeDataUri, initials, onePerLine } from './gutter.ts';
+import { BADGE_OPTIONS, badgeDataUri, onePerLine } from './gutter.ts';
 import { labelAttachment, labelMode } from './labels.ts';
 
 /** How many badge decoration types a rename loop may retain before the oldest goes. */

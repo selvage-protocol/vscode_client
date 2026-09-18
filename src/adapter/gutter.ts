@@ -1,6 +1,8 @@
 /**
- * A peer's initials, as the small coloured badge the glyph margin shows: what the badge says
- * and the image the editor is handed.
+ * A peer's glyph-margin badge: the image the editor is handed, and the small coloured square
+ * it draws. The initials themselves — the first two code points of a name, or the anonymous
+ * bullet — are the bridge's (`src/bridge/initials.ts`), because a room file's Explorer badge
+ * draws the same letters.
  *
  * The glyph margin is the one place the API draws outside the document's text flow — the
  * `gutterIconPath` image, not an `after` attachment, which is injected text. That image has to
@@ -20,12 +22,6 @@
  */
 
 import type { ThemableDecorationRenderOptions } from 'vscode';
-
-/** The bullet a peer whose name yields no letters is shown by, matching the Neovim client. */
-export const ANONYMOUS_INITIALS = '\u2022';
-
-/** How many code points of a name a badge shows. The box is one line-height square. */
-export const INITIALS_LIMIT = 2;
 
 /**
  * The one decoration field a badge needs beyond its image, typed against the editor's own
@@ -58,19 +54,6 @@ export function onePerLine<T extends { peerId: string }>(
     }
   }
   return chosen;
-}
-
-/**
- * The initials a badge draws: the first `INITIALS_LIMIT` code points of `label`, or the
- * anonymous bullet when there are none.
- *
- * Iterating the string yields whole code points, so a leading astral character is taken whole
- * rather than as half of a surrogate pair — a lone surrogate is text the editor cannot draw and
- * a strict JSON consumer refuses.
- */
-export function initials(label: string): string {
-  const characters = [...label].slice(0, INITIALS_LIMIT);
-  return characters.length === 0 ? ANONYMOUS_INITIALS : characters.join('');
 }
 
 const XML_ESCAPES: Record<string, string> = {

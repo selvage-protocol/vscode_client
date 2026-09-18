@@ -21,17 +21,20 @@ export {
   toReplicaOffset,
 } from './editing.ts';
 export type { LineEnding, TextChange } from './editing.ts';
-export { cursorFor, peerColour, translucent } from './cursors.ts';
+export { cursorFor, PEER_PALETTE, peerColour, peerColourIndex, translucent } from './cursors.ts';
+export { ANONYMOUS_INITIALS, INITIALS_LIMIT, initials } from './initials.ts';
 export type { Cursor, CursorPeer, ResolvedCursor } from './cursors.ts';
 export {
   badgeFiles,
   describeParticipants,
   participantLabel,
+  peerColourId,
   peerName,
   viewRows,
 } from './participants.ts';
 export type {
   FileBadge,
+  FilePeer,
   FilePresence,
   ParticipantEntry,
   ParticipantRow,

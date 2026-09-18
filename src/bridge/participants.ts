@@ -9,7 +9,8 @@
  * or that the room or the session is missing — and the adapter says it.
  */
 
-import { peerColour } from './cursors.ts';
+import { peerColour, peerColourIndex } from './cursors.ts';
+import { initials } from './initials.ts';
 
 /** One peer, as the view needs them: who the room says they are, and where. */
 export interface ParticipantEntry {
@@ -20,12 +21,12 @@ export interface ParticipantEntry {
   path?: string;
 }
 
-/** What one roster row shows: name + state + actions only, never a path as text. */
+/** What one roster row shows: who the peer is, the file they are in, and their actions. */
 export interface ParticipantRow {
   kind: 'peer';
   peerId: string;
   label: string;
-  /** `Following`, `No open document`, or nothing — the state, not the file. */
+  /** The file the peer is in, or `No open document` — where they are, never whether followed. */
   description: string;
   contextValue:
     | 'selvageParticipant'
@@ -33,7 +34,7 @@ export interface ParticipantRow {
     | 'selvageParticipantAway';
   /** The peer's marker colour: the mapping the caret wears. */
   colour: string;
-  /** The hover, where the full detail — including the file — lives instead. */
+  /** The hover: name, role, file, and whether this window follows them. */
   tooltip: string;
   /** False for a peer in no document: there is nowhere to go to or follow. */
   canNavigate: boolean;
@@ -53,8 +54,10 @@ export function peerName(displayName: string, peerId: string): string {
 
 /**
  * One row per peer, in membership order. The label disambiguates only when it must —
- * the rule the caret's own label and the picker follow — and the followed peer reads
- * `Following` instead of offering follow again.
+ * the rule the caret's own label and the picker follow — and the row says *where* the peer
+ * is, beside the badge their file wears. The follow state is a row's actions and the hover
+ * rather than the description: the file is what the row is for, and the followed peer's
+ * row offers the stop in its place (`src/adapter/participants.ts`).
  */
 export function describeParticipants(
   entries: readonly ParticipantEntry[],
@@ -67,7 +70,7 @@ export function describeParticipants(
       kind: 'peer' as const,
       peerId: entry.peerId,
       label: participantLabel(entry, entries),
-      description: following ? 'Following' : navigable ? '' : 'No open document',
+      description: entry.path ?? 'No open document',
       contextValue: following
         ? 'selvageParticipantFollowing'
         : navigable
@@ -142,38 +145,62 @@ function participantTooltip(entry: ParticipantEntry, following: boolean): string
   return parts.join(' — ');
 }
 
-/** One room file peers are in, by URI string, with the names presence attributes to it. */
-export interface FilePresence {
-  uri: string;
-  names: string[];
+/** One peer in one room file: who they are, and the label the roster says for them. */
+export interface FilePeer {
+  peerId: string;
+  /** The roster's name for them, duplicate names disambiguated as the rows disambiguate them. */
+  label: string;
 }
 
-/** The marker a file row wears: a neutral dot, or the headcount when several share it. */
+/** One room file peers are in, by URI string. */
+export interface FilePresence {
+  uri: string;
+  peers: readonly FilePeer[];
+}
+
+/** The marker a file row wears: one peer's initials in their colour, or the headcount. */
 export interface FileBadge {
   uri: string;
   badge: string;
+  /**
+   * The theme colour the badge is drawn in, when the file holds exactly one peer: the palette
+   * entry `peerColour` gives them, contributed by the manifest as `selvage.peer.<index>`. A
+   * decoration's colour takes a theme colour's id and never a hex, which is why the palette is
+   * contributed. Absent when several peers share the file: one peer's colour would claim the
+   * file for them.
+   */
+  colourId?: string;
   tooltip: string;
 }
 
+/** The theme colour a peer's badge is drawn in, as the manifest contributes it. */
+export function peerColourId(peerId: string): string {
+  return `selvage.peer.${peerColourIndex(peerId)}`;
+}
+
 /**
- * The badge per file peers are in. The marker is deliberately not the peer colour —
- * a file decoration's colour takes only a theme colour, never an arbitrary hex — so
- * one peer reads as a dot and several as their count, with the names in the hover.
- * Names sort, so two clients seeing the same file badge it the same way.
+ * The badge per file peers are in. One peer is their own initials in their own colour — the very
+ * letters and colour the glyph margin draws for them, so the file row and the caret name each
+ * other — and several peers are their count with no colour, because a file decoration carries one
+ * badge and one colour and picking one of them would claim the file for that peer. The names are
+ * in the hover either way, and sorted, so two clients seeing the same file badge it alike.
  */
 export function badgeFiles(files: readonly FilePresence[]): FileBadge[] {
   const badges: FileBadge[] = [];
   for (const file of files) {
-    const names = [...new Set(file.names)].sort();
-    if (names.length === 0) {
+    const peers = [...new Map(file.peers.map((peer) => [peer.label, peer])).values()].sort(
+      (left, right) => (left.label < right.label ? -1 : left.label > right.label ? 1 : 0),
+    );
+    const only = peers.length === 1 ? peers[0] : undefined;
+    if (peers.length === 0) {
       continue;
     }
-    const [first] = names;
+    const names = peers.map((peer) => peer.label);
     badges.push({
       uri: file.uri,
-      badge: names.length === 1 ? '●' : `${names.length}`,
-      tooltip:
-        names.length === 1 ? `${first} is here` : `${names.join(', ')} are here`,
+      badge: only === undefined ? String(peers.length) : initials(only.label),
+      ...(only === undefined ? {} : { colourId: peerColourId(only.peerId) }),
+      tooltip: peers.length === 1 ? `${names[0]} is here` : `${names.join(', ')} are here`,
     });
   }
   return badges;

@@ -572,6 +572,17 @@ module.exports = {
 
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
 
+  /**
+   * A theme colour, as the editor's own: an id the window resolves against its theme. A file
+   * decoration's colour is one of these, which is why the peer palette is contributed as theme
+   * colours — a test can read the id back out and compare it with the colour a caret wears.
+   */
+  ThemeColor: class {
+    constructor(id) {
+      this.id = id;
+    }
+  },
+
   EndOfLine: { LF: 1, CRLF: 2 },
 
   DecorationRangeBehavior: { OpenOpen: 0, ClosedClosed: 1, OpenClosed: 2, ClosedOpen: 3 },

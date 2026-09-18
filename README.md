@@ -108,10 +108,11 @@ Set `selvage.serverUrl`, `selvage.webOrigin` and `selvage.displayName` in settin
 resolved in this order: an explicit address given to the command, then the `selvage.serverUrl`
 setting, then the last server used — the first of those answers silently, so hosting asks only
 in a window that has none of them, and that one question starts from the demo server
-`ws://100.64.0.3:8080`, a prefill, not a commitment. CopyInvite links to the page named by
-`selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
-the setting must name an https origin, and anything else falls back to the default, so a copied
-link never carries the room's token over cleartext.
+`ws://100.64.0.3:8080`, a prefill, not a commitment. A host's CopyInvite links to the page named
+by `selvage.webOrigin`, defaulting to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`;
+the setting must name an https origin, and anything else falls back to the default, so a host's copied
+link never carries the room's token over cleartext. A guest copies the link it joined by, so that
+setting does not touch a guest's copy.
 
 ## Commands
 
@@ -124,12 +125,12 @@ command there, while the three intents stay one-to-one.
 
 | | |
 |---|---|
-| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. |
+| `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. |
 | `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join — a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address — is refused before the name is asked and before the window reloads, in words that never quote the link's token. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Fetch a path from the room` | Hold one listed path — or a directory of them — in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
-| `Selvage: Copy the invite link` | Put the page invite on the clipboard: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). Only the connection that minted the room has one; never a `ws://` address. |
+| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest holds the token it joined with — the invite *is* the permission — so it hands on the link it joined by, exactly as it stood: that same page link, or the `ws://` link where that is how the room was reached. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room — each one's colour, name, role and the document they are in. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
@@ -159,10 +160,16 @@ coloured dot per row, because `QuickPickItem.iconPath` is the only field an edit
 colour from — and nothing in this repository can see that dot.
 
 The same roster also lives as a persistent `Selvage: Participants` view beside the explorer:
-one row per peer with their colour dot and current state, and nothing else as row text. The
-file each peer is in is badged on that file's own row instead, with the names in the hover;
-a peer's row menu offers going to them, following them, and — while they are followed —
-stopping. An empty room says it is alone and offers the invite copy on click.
+one row per peer with their colour dot, their name and the file they are in — the browser's
+roster leaves the file to the badge on that file's own row, and this one says it on the row as
+well, so the row and the badge name each other. Clicking a peer's row lands where they are, and
+each row carries the two verbs the browser's roster has as buttons: **Go to** and **Follow**,
+with **Stop following** in the followed peer's row in place of follow. Those three are the
+palette's own `selvage.goToParticipant`, `selvage.followParticipant` and
+`selvage.stopFollowing`, shown on the row (`inline`) and in its context menu alike; a peer in no
+document says so, carries no click, and offers neither verb — there is nowhere to go. The row's
+hover spells the whole thing out: name, role, file, and whether this window follows them. An
+empty room says it is alone and offers the invite copy on click.
 
 ## Packaging it
 
@@ -298,6 +305,17 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   `file:` documents under its mirror root — the room's folder in the Explorer — and nothing
   outside it. There are no exclude globs in v1: what a host shares is what it has open,
   which is visible in its own window.
+- **A window with no folder open cannot host.** A room *is* a grant of the host's folder
+  (`DESIGN.md` §4.2): the grant is that folder's listing, and a host's shared documents are the
+  `file:` ones under it. A window with no folder has neither, so `Selvage: Host a session` is
+  refused in one sentence saying to open a folder first — before a server is dialled, a name
+  asked for or a link copied — rather than minting a room that shares nothing and handing a
+  guest a link that reloads their own window onto an empty folder. The check sits after the
+  leave-and-host question, because leaving is what can take the folder away: a guest's window is
+  the room's mirror, so the leave that precedes a host leaves it empty, and the refusal then says
+  what the next step is. Closing a folder does not end a live session — it holds the folder it
+  was invited on — and hosting again in a window that is already hosting copies the invite, so
+  this refusal is reached only where a room really would have nothing in it.
 - **The room's listing follows the host's folder.** A host watches the folders it was invited on
   — one watcher per folder, `**/*` under it — and republishes the room's grant when a file under
   one appears, disappears or changes, so a path a build, a branch switch or another terminal
@@ -392,7 +410,9 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   caret bar, the selection fill and the overview-ruler tick are built from, so the key cannot
   disagree with what it explains. It is drawn as a quick pick with a coloured dot per row,
   because `QuickPickItem.iconPath` is the only field an editor renders a colour from; nothing in
-  this repository can see the dot, only the URI.
+  this repository can see the dot, only the URI. The same value reaches the Explorer through the
+  eight contributed theme colours the file badge is drawn in (see the badge bullet below), where
+  the theme, not this client, resolves the id to a colour.
 - **The name other participants see is set by a command as well as a setting.** *Selvage: Set the
   name other participants see* reports the name in force — the live session's, else the setting's
   — and writes `selvage.displayName` at the global scope, which is the analogue of the Neovim
@@ -408,7 +428,7 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   count `[...name].length` would give. The write is what makes the name the next session's, so a
   settings file that will not take it — one a configuration manager owns and leaves read-only —
   is reported rather than swallowed.
-- **A peer is drawn as a caret, a selection, and their initials on a badge in the gutter.**
+- **A peer is drawn as a caret, a selection, and their initials on a badge in two places.**
   The caret is a two-pixel bar on the left edge of the peer's position in their colour, the
   selection a quarter-alpha fill of the same colour, and the overview ruler carries a tick of it
   on the right. The glyph margin carries the peer's sign — the first two code points of their
@@ -421,6 +441,20 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
   caret's `hoverMessage` still reads "name · role" and the status bar still lists the room. The
   badge needs `editor.glyphMargin`, which is on by default: with it off, no badge is drawn and
   there is no in-line fallback.
+- **The same badge marks the file the peer is in, on that file's own Explorer row.** A peer's
+  presence names a document, so a room file with one peer in it wears their initials — the same
+  letters the glyph margin draws for them — and their colour, with the name in the hover, so the
+  tree and the caret name each other. The colour is a theme colour: `FileDecoration.color` takes a
+  theme colour's id and never an arbitrary hex, so the eight palette entries are contributed as
+  `selvage.peer.0`…`selvage.peer.7` whose dark, light and high-contrast defaults are the palette's
+  own values, and `test/participants.test.ts` pins the two together rather than trusting them to
+  agree. That is the one thing this client contributes to the theme, and a theme may override it;
+  the ids are otherwise invisible. **One badge per row is the API's limit**, so a file several
+  peers are in answers with their count and claims no colour — picking one of them would claim the
+  file for that peer — and the hover names everyone. A peer's file is badged wherever the file row
+  is, which for a window holding the file means the Explorer; a badge on a URI no row holds is one
+  nothing ever draws. `explorer.decorations.colors` also tints the file's name with that colour
+  (VS Code's own setting, on by default); with it off the badge keeps the colour alone.
 - **A drawn name is bounded.** The decoration API measures nothing, so any width in a label is
   a guess; a name is peer-controlled and unbounded, so a guess is not enough. `boundedLabel`
   clips a drawn name to 24 code points with a trailing ellipsis — by code point, so a name
@@ -443,8 +477,16 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 - **`selvage.cursorLabel: "chip"` is the documented opt-in** — the same clipped name inside the
   line behind a coloured border, in documented fields only. It covers the text it sits against,
   which is why it is not the default either.
-- **The invite copied is an `https://` page link, never `ws://`.** Joining accepts that page link; a `ws://…/session?room=…&token=…` link still joins as the advanced fallback for rooms off the page default. There is
+- **The invite a host copies is an `https://` page link, never `ws://`.** Joining accepts that page link; a `ws://…/session?room=…&token=…` link still joins as the advanced fallback for rooms off the page default. There is
   no `vscode://` wrapper, because that would be a convention the protocol does not have.
+- **A guest can hand the invite on too.** The invite *is* the permission — the token is what
+  the room is entered with — so the link a join was given is kept and copied as it stands: a
+  page link keeps the origin the host sent it from, and a guest that reached the room over
+  `ws://` has no other address for it. A host is unchanged: its copy is the page link built
+  from the wire invite it minted and `selvage.webOrigin`. Only the no-session sentence still
+  refuses, and it says what is true rather than which connection may hold a link. The status
+  bar is the copy control for either role, so the tooltip that says so is not a lie in a
+  guest's window.
 - **A change the editor refuses is recomputed, not replayed**: `applyEdit` answering `false`
   asks the bridge to work the change out again against the buffer's current text.
 - **A change never ends inside a character.** Two astral characters that share a surrogate
@@ -477,12 +519,13 @@ The points `docs/studies/vscode-plugin.md` §9 leaves open, and what this client
 | `test/bridge.test.ts` | the adapter's half against the fake server and a fake editor: seeding, both directions of the loop, a keystroke inside the apply window, the CRLF offset mapping, the save policy, holds, a refused `doc.open`, a late guest, cursors, lifecycle order |
 | `test/manifest.test.ts` | the built bundle loads, activating it registers exactly the commands the manifest contributes, every declared setting is read, the cursor label's default draws nothing, `@types/vscode` fits `engines.vscode` |
 | `test/vocabulary.test.ts` | the words both clients share: the palette title each command is given, and every `Selvage: …` sentence the adapter can show |
-| `test/https-invite.test.ts` | the invite is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page |
-| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, a guest lands in the room's first document — including one that arrives after the join, and not with `selvage.openOnJoin` off — the invite copied and the room's own list, the open command's refusals, the fetch command's holds, every join reloading the window onto the mirror (including host-leave-join on the first attempt, with the stashed name and never a second root), leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
+| `test/https-invite.test.ts` | the invite a host copies is an `https://` page link: the page-link build and parse, the exact text CopyInvite copies with `ws://` never on the clipboard, joining from a pasted page link and from a `ws://` fallback, the `selvage.webOrigin` override and the non-https fallback to the default page, and a guest handing the link it joined by on unchanged |
+| `test/commands.test.ts` | the command flows through the built extension and a fake `selvaged`: hosting while hosting copies the invite and mints nothing, hosting with no folder open refused, a guest lands in the room's first document — including one that arrives after the join, and not with `selvage.openOnJoin` off — the invite copied by a host and by a guest (each link as it stands) and the room's own list, the open command's refusals, the fetch command's holds, every join reloading the window onto the mirror (including host-leave-join on the first attempt, with the stashed name and never a second root), leaving with its tabs and folder, unlisted files said once, the leave-first questions, leaving, a host that goes away and comes back, a room that goes, the display name reported, set as a live rename, refused over the bound before it is sent, a no-op change sending nothing, the participant list and its colours |
 | `test/adapter-presence.test.ts` | presence through the built extension, counted at the other end of the room: a burst of caret events is one frame at the last position, an unmoved caret adds none, the position pending when a session ends is still published, and leaving the shared document clears the cursor |
 | `test/display-name.test.ts` | the display-name bound: the count in UTF-16 code units — an astral character costs two, which is where `[...name].length` would be wrong — the refusal naming both counts, and the option object the question is built from |
 | `test/labels.test.ts` | the label decision: no name by default, a drawn name clipped to the bound (by code point), and the exact option object each opt-in produces — the pixels are not covered by anything |
 | `test/gutter.test.ts` | the gutter badge: the initials (by code point, astral-safe, empty → `•`), one per line with the lowest peer id winning, the SVG and its base64 data URI, the `gutterIconPath`/`'contain'` decoration type the built extension creates, and a rename re-labelling the caret and the badge |
+| `test/participants.test.ts` | the roster and the view through the built bundle: the file each row names and the click a peer in a document carries, go-to/follow/stop on the row, the peer's initials and contributed colour on their file's own badge, the count when several share it, a presence path outside the grant badging nothing, and the manifest's inline row actions |
 | `test/mirror.test.ts` | the mirror on disk and against a real room: the three-file shape, refused paths creating nothing, the count bound, the symlinked directory the guard does not catch, refused symlinked segments, no-clobber and held-file removal, the marker with its stashed invite and name, opening only our own, leave deleting the directory, and prune with adopt-first |
 | `test/boundary.test.ts` | no `vscode` import outside `src/adapter/`, no undeclared dependency, every editor-independent module reachable from a test, the public surface |
 | `test/selvaged.test.ts` | the gate, against the real `selvaged`: two engines, concurrent edits, text + state-vector convergence, presence both ways, a late joiner, a guest that disconnects and joins again, close semantics |
