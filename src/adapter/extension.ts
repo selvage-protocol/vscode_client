@@ -2046,6 +2046,21 @@ async function triageMirrors(
       continue;
     }
     if (stored.invite !== undefined) {
+      // A marker can outlive the build that wrote it, or be edited by hand, so the
+      // stashed invite is put to the same check a paste is — before the name is asked
+      // and before any room is dialled, because the link is the one part of the resume
+      // this window cannot see. The refusal is the box's own fixed sentence, so a
+      // refused invite's token is never read back out. The stale mirror goes the way the
+      // session-less one below does: a room folder this window can never rejoin is a
+      // leftover, not a place to sit.
+      if (inviteLinkRefusal(stored.invite) !== undefined) {
+        removeRoomFolder(mirror);
+        mirror.remove();
+        void vscode.window.showWarningMessage(
+          `Selvage: removed the last session's leftover files; the link it was rejoining with does not look like a Selvage invite link.`,
+        );
+        continue;
+      }
       // The name stashed with the invite answers without asking: falling back to
       // the setting and the question only when the marker predates the stash.
       const displayName = await resolveDisplayName(stored.displayName, context);
@@ -2102,6 +2117,20 @@ function inviteLinkRefusal(value: string): string | undefined {
     parsed.join.room === '' ||
     parsed.join.token === undefined ||
     parsed.join.token === ''
+  ) {
+    return inviteLinkHint();
+  }
+  // And it has to be the invitation the engine dials: `parseSessionUrl` splits it into the
+  // base and the query, and `sessionUrl` — the builder the engine connects through — has
+  // to put the same invitation back. A base the URL parser rewrites is not one: in
+  // `ws:///session?…` the authority is swallowed into the path, so the parser reads host
+  // `session` with path `/` while `parseSessionUrl` hands back `ws://` and the wire URL
+  // rebuilt from it is `ws:/session?…` — a link that names no server to join. The room
+  // and its token are in the paste, so a link the engine would rewrite is refused here,
+  // in the fixed words, rather than dialled and lost after the reload.
+  if (
+    !isSessionBase(parsed.base) ||
+    sessionUrl(parsed.base, parsed.join.room, parsed.join.token) !== invite
   ) {
     return inviteLinkHint();
   }
