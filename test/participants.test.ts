@@ -61,7 +61,7 @@ test('a peer in no document reads as away, with no navigation', () => {
     undefined,
   );
   assert.equal(row?.label, 'p-ccc', 'a blank name falls back to the id, as the caret label does');
-  assert.equal(row?.description, 'No open document');
+  assert.equal(row?.description, 'not in a file yet');
   assert.equal(row?.contextValue, 'selvageParticipantAway');
   assert.equal(row?.canNavigate, false);
 });
@@ -164,7 +164,7 @@ test('the view lists peers, or which note stands in when there is nothing to lis
  */
 
 import type { TestContext } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
@@ -216,7 +216,7 @@ async function seat(t: TestContext): Promise<RoomSeat> {
     await host.disconnect();
     await server.stop();
   });
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob', replaceWindow: true});
   await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
   const mirrorRoot = mirrorWindowDir(storage, host.session().roomId);
   return {
@@ -353,17 +353,17 @@ test('rows for the view are peers, or the one pinned note when there is nothing 
   assert.deepEqual(words(viewRows({ entries: [], followingPeerId: undefined })), [
     {
       kind: 'note',
-      label: 'Selvage: you\'re the only one here — copy the invite link.',
+      label: 'Selvage: You\'re the only one here — copy the invite link.',
       command: 'selvage.copyInvite',
     },
   ]);
-  assert.deepEqual(words(viewRows(undefined)), [
-    { kind: 'note', label: 'Selvage: join a session first.' },
-  ]);
+  // No session is no row: the view is empty, which is when the editor draws the welcome the
+  // manifest contributes for it. A row here would stand in front of that welcome forever.
+  assert.deepEqual(words(viewRows(undefined)), []);
   assert.deepEqual(words(peered).length, 1);
 });
 
-test('activation shows the join-first row outside a session, and peers once seated', async (t) => {
+test('the view is empty outside a session, where the welcome stands', async (t) => {
   const bundle = loadBundle();
   bundle.stub.reset();
   bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
@@ -372,7 +372,8 @@ test('activation shows the join-first row outside a session, and peers once seat
   });
   assert.deepEqual(
     (viewNodes(bundle)).map((node) => node.label),
-    ['Selvage: join a session first.'],
+    [],
+    'a row of its own would hide the welcome the manifest contributes',
   );
   const seat_ = await seat(t);
   const ada = await waitFor('Ada to list in the view', () => {
@@ -397,7 +398,7 @@ test('rows render on fabricated presence, naming the file each peer is in', asyn
     assert.ok(!node.label?.includes('.rs'), 'a path leaked into a row label');
   }
   const ada = nodes.find((node) => node.label === 'Ada');
-  assert.equal(ada?.description, 'No open document', 'the host published no caret');
+  assert.equal(ada?.description, 'not in a file yet', 'the host published no caret');
 });
 
 test('a peer’s name is plain text in the hover, never markdown to render', async (t) => {
@@ -724,7 +725,7 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
 });
 
 
-test('hosting an empty room retires the join-first row at once', async (t) => {
+test('hosting an empty room retires the welcome row at once', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
     await server.stop();
@@ -737,7 +738,8 @@ test('hosting an empty room retires the join-first row at once', async (t) => {
   });
   assert.deepEqual(
     viewNodes(bundle).map((node) => node.label),
-    ['Selvage: join a session first.'],
+    [],
+    'the session-less view has rows of its own',
   );
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -750,7 +752,7 @@ test('hosting an empty room retires the join-first row at once', async (t) => {
   );
   assert.deepEqual(
     viewNodes(bundle).map((node) => node.label),
-    ["Selvage: you're the only one here — copy the invite link."],
+    ["Selvage: You're the only one here — copy the invite link."],
   );
 });
 
@@ -761,7 +763,7 @@ test('following marks the row at once, and leaves the file it names alone', asyn
     const current = viewNodes(bundle);
     return current.length === 1 && current[0]?.peerId !== undefined ? current[0] : false;
   });
-  assert.equal(adaRow.description, 'No open document', 'the row lost what it said about Ada');
+  assert.equal(adaRow.description, 'not in a file yet', 'the row lost what it said about Ada');
   await bundle.stub.commands.executeCommand('selvage.followParticipant', adaRow);
   await waitFor('the follow to mark the row', () =>
     viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue ===
@@ -771,7 +773,7 @@ test('following marks the row at once, and leaves the file it names alone', asyn
   );
   assert.equal(
     viewNodes(bundle).find((node) => node.label === 'Ada')?.description,
-    'No open document',
+    'not in a file yet',
     'the follow state displaced what the row says about where Ada is',
   );
   await bundle.stub.commands.executeCommand('selvage.stopFollowing');
@@ -779,6 +781,45 @@ test('following marks the row at once, and leaves the file it names alone', asyn
     viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue === 'selvageParticipantAway'
       ? true
       : false,
+  );
+});
+
+test('a window with no session is invited to host, and the extension carries its own mark', () => {
+  // The one surface a stranger meets before any session exists. It is the view's welcome, which
+  // the editor draws only while the view has no rows at all — the page `describeParticipants`
+  // and `resolveViewRows` leave empty outside a session.
+  const manifest = JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')) as {
+    icon?: string;
+    contributes?: {
+      commands?: Array<{ command: string; title: string }>;
+      viewsWelcome?: Array<{ view: string; contents: string; when?: string }>;
+    };
+  };
+  const welcome = (manifest.contributes?.viewsWelcome ?? []).find(
+    (entry) => entry.view === 'selvage.participants',
+  );
+  assert.ok(welcome !== undefined, 'the view has no welcome for a window with no session');
+  assert.ok(
+    welcome.contents.includes('Share a folder with a friend'),
+    'the welcome does not say what hosting a session is for',
+  );
+  // The button is the command's own title rather than a second phrase for it: a person who
+  // clicks it lands on the palette entry of the same name.
+  const titles = new Map((manifest.contributes?.commands ?? []).map((c) => [c.command, c.title]));
+  for (const command of ['selvage.host', 'selvage.join']) {
+    const title = titles.get(command);
+    assert.ok(title !== undefined, `${command} is not a contributed command`);
+    assert.ok(
+      welcome.contents.includes(`[${title}](command:${command})`),
+      `the welcome offers no ${command} link under its own title`,
+    );
+  }
+  // An icon path is a promise about a file in the package: assert the file is there, so a
+  // rename cannot leave the Extensions view pointing at nothing.
+  assert.ok(manifest.icon !== undefined, 'the extension contributes no icon');
+  assert.ok(
+    existsSync(resolve(HERE, manifest.icon)),
+    `the manifest's icon names no file: ${manifest.icon}`,
   );
 });
 
