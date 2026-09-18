@@ -28,7 +28,8 @@
   },
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": true
+      "supported": "limited",
+      "description": "Every command is the person's own act and works in an untrusted workspace. What does not run there is the resume a marker asks for at activation — the room a mirror was left by — because a folder can start this extension with nothing but a file named like the marker. Trust the workspace and the resume runs; a hostile repository cannot make this window dial a room."
     }
   },
   "activationEvents": [

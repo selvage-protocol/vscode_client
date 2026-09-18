@@ -11,11 +11,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import type { TestContext } from 'node:test';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { loadBundle } from './helpers/bundle.ts';
+import { loadBundle, testStoragePath } from './helpers/bundle.ts';
+import { waitFor } from './helpers/wait.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(here, '..');
@@ -25,6 +27,9 @@ interface Manifest {
   main?: string;
   engines?: { vscode?: string; node?: string };
   activationEvents?: string[];
+  capabilities?: {
+    untrustedWorkspaces?: { supported?: unknown; description?: unknown };
+  };
   contributes?: {
     commands?: Array<{ command: string; title: string; category?: string }>;
     views?: { explorer?: Array<{ id: string; name?: string }> };
@@ -116,4 +121,64 @@ test('activation stays lazy: a command starts the extension, a mirror restores i
   // window opened on a mirror directory is the way back in after the reload that put the
   // room's folder there — and after a crash that left one behind.
   assert.deepEqual(manifest.activationEvents ?? [], ['workspaceContains:**/.selvage-mirror.json']);
+  // That event is the one thing a folder can use to start the extension by itself, and VS
+  // Code does not condition it on trust: the manifest claims the limitation rather than
+  // full support, and the resume it starts waits for a trusted window (`extension.ts`).
+  const trust = manifest.capabilities?.untrustedWorkspaces;
+  assert.equal(trust?.supported, 'limited', 'the manifest claims the extension is untrusted-safe');
+  assert.match(String(trust?.description ?? ''), /trust/i, 'the limitation is not explained');
+});
+
+/** A storage directory holding one mirror of ours, whose marker stashes a bad invite. */
+function staleMirror(storage: string): string {
+  const room = 'r-untrusted';
+  const window = 'w-untrusted';
+  const dir = join(storage, 'rooms', room, window);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, '.selvage-mirror.json'),
+    JSON.stringify({
+      room,
+      window,
+      pid: process.pid,
+      created: new Date(0).toISOString(),
+      invite: 'not-a-link',
+    }),
+  );
+  return dir;
+}
+
+/**
+ * A folder can start this extension with nothing but a `.selvage-mirror.json` in it, so the
+ * triage that file would otherwise trigger — dialling the room a leftover mirror names, or
+ * clearing the leftover — waits for a window the person has trusted. The resume is what a
+ * hostile repository must not reach; starting the extension to register commands is what no
+ * `workspaceContains` event can be kept from doing.
+ */
+test('an untrusted workspace starts the extension without resuming a room', async (t: TestContext) => {
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  const storage = testStoragePath(t);
+  const leftover = staleMirror(storage);
+
+  bundle.stub.isTrusted = false;
+  bundle.activate({ subscriptions: [], globalStorageUri: bundle.stub.Uri.file(storage) });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // Nothing triaged: the marker's window is neither cleared nor reported. The read is the
+  // assertion because the triage would have happened inside `activate`, and a test that
+  // waited for it would be waiting for something that must not come.
+  assert.deepEqual(bundle.stub.registered.warnings, [], 'an untrusted window triaged a mirror');
+  assert.equal(existsSync(leftover), true, 'an untrusted window removed a mirror on disk');
+
+  // The person trusts the folder: the resume runs then, which is what keeps the feature
+  // rather than dropping it.
+  bundle.stub.grantTrust();
+  await waitFor('the triage to run once the window is trusted', () =>
+    existsSync(leftover) ? false : true,
+  );
+  assert.equal(bundle.stub.registered.warnings.length, 1);
+  assert.match(String(bundle.stub.registered.warnings[0]), /leftover files/);
 });

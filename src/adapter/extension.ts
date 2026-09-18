@@ -190,8 +190,26 @@ export function activate(context: vscode.ExtensionContext): void {
   refreshParticipants();
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
   // detached, because a pending invite finishes by joining and joining is async.
+  //
+  // A folder with a file named like the marker starts this extension on its own — a
+  // `workspaceContains` activation event is the only way back in after the reload that put
+  // the room's folder in the window, and it is not something VS Code conditions on trust.
+  // What such a folder must not be able to do is make the window act: the triage below
+  // dials a room, moves the window onto the mirror and clears leftovers, so it waits for a
+  // window the person has trusted. One who trusts the workspace afterwards gets the triage
+  // then, which is the way VS Code's own documentation says to keep a trust-gated feature.
   if (storageUri !== undefined) {
-    void triageMirrors(storageUri, context);
+    if (vscode.workspace.isTrusted) {
+      void triageMirrors(storageUri, context);
+    } else {
+      context.subscriptions.push(
+        vscode.workspace.onDidGrantWorkspaceTrust(() => {
+          if (storageUri !== undefined) {
+            void triageMirrors(storageUri, context);
+          }
+        }),
+      );
+    }
   }
 }
 

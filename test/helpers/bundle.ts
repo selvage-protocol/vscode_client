@@ -107,8 +107,14 @@ export interface EditorStub {
     inputReply: unknown;
     /** How the editor answers `workspace.applyEdit`; a test may replace it to observe applies. */
     applyEditImpl: (edit: unknown) => Promise<boolean>;
+    /** Every `onDidGrantWorkspaceTrust` handler the extension registered. */
+    trustListeners: Array<() => void>;
   };
   reset(): void;
+  /** Whether the window is trusted; set it before `activate` to model Restricted Mode. */
+  isTrusted: boolean;
+  /** The person trusts the window's folder, as VS Code reports it. */
+  grantTrust(): void;
   /** Seeds settings as a hand-edited settings.json would; `reset` clears them again. */
   configure(values: Record<string, unknown>): void;
   /** The `globalState` memento, for a test that activates with its own context. */
