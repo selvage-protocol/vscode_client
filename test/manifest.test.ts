@@ -129,8 +129,8 @@ test('activation stays lazy: a command starts the extension, a mirror restores i
   assert.match(String(trust?.description ?? ''), /trust/i, 'the limitation is not explained');
 });
 
-/** A storage directory holding one mirror of ours, whose marker stashes a bad invite. */
-function staleMirror(storage: string): string {
+/** A storage directory holding one mirror of ours, whose marker stashes `invite`. */
+function staleMirror(storage: string, invite = 'not-a-link'): string {
   const room = 'r-untrusted';
   const window = 'w-untrusted';
   const dir = join(storage, 'rooms', room, window);
@@ -142,7 +142,7 @@ function staleMirror(storage: string): string {
       window,
       pid: process.pid,
       created: new Date(0).toISOString(),
-      invite: 'not-a-link',
+      invite,
     }),
   );
   return dir;
@@ -181,4 +181,67 @@ test('an untrusted workspace starts the extension without resuming a room', asyn
   );
   assert.equal(bundle.stub.registered.warnings.length, 1);
   assert.match(String(bundle.stub.registered.warnings[0]), /leftover files/);
+});
+
+/**
+ * The resume waits for a name and then dials a room, and the window can go away while it
+ * waits: the tear-down that runs then owns nothing, so a join that lands afterwards would
+ * leave a live engine and a session that nothing disposed. The port the invite names is one
+ * nothing answers on, so a dial is a failure reported in words — which is what the bounded
+ * wait below would find if the join ran.
+ */
+test('a resume the window is torn down for lands nothing', async (t: TestContext) => {
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  const storage = testStoragePath(t);
+  const leftover = staleMirror(
+    storage,
+    'ws://127.0.0.1:1/session?room=r-torn&token=t',
+  );
+
+  // The name question is held, so the window can be torn down while it is on screen.
+  let answer: (name: string | undefined) => void = () => undefined;
+  const asked = new Promise<string | undefined>((resolve) => {
+    answer = resolve;
+  });
+  bundle.stub.registered.inputReply = asked;
+  bundle.activate({ subscriptions: [], globalStorageUri: bundle.stub.Uri.file(storage) });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  await waitFor('the name question', () => bundle.stub.registered.inputs.length > 0);
+  bundle.deactivate();
+  answer('Bob');
+
+  // The join this would have made stages its reload within a few microtasks of the name —
+  // and, on a live room, dials it. The bounded wait that finds neither is the assertion, and
+  // it reports what it saw.
+  await assert.rejects(
+    waitFor(
+      'a reload or a report from a join this window must not make',
+      () =>
+        bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ||
+        bundle.stub.registered.errors.length > 0 ||
+        bundle.stub.registered.information.length > 0
+          ? true
+          : false,
+      {
+        timeoutMs: 1000,
+        describe: () => ({
+          executed: bundle.stub.registered.executed,
+          errors: bundle.stub.registered.errors,
+          information: bundle.stub.registered.information,
+        }),
+      },
+    ),
+    /timed out/,
+  );
+  assert.deepEqual(bundle.stub.registered.information, [], 'a torn-down window joined a room');
+  assert.deepEqual(
+    bundle.stub.registered.statusBarItems,
+    [],
+    'a session was built after the window was torn down',
+  );
+  assert.equal(existsSync(leftover), true, 'the room\u2019s files were left for nobody');
 });
