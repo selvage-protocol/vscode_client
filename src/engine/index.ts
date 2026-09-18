@@ -40,6 +40,7 @@ export type {
   ErrorObject,
   Keepalive,
   Meta,
+  MetaKeepalive,
   PeerInfo,
   Role,
 } from './envelope.ts';

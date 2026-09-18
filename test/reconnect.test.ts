@@ -529,3 +529,119 @@ test('a reconnect into a room that now grants nothing shows nothing', async (t) 
     'the listing the drop took away came back on the reconnect',
   );
 });
+
+test('a refusal in the reserved namespace stops the retries after one attempt', async (t) => {
+  // §9.1: a handshake refused with an `x.*` code MUST NOT be re-helloeed automatically, so a
+  // client that joins a full room gives up on the first refusal instead of walking its whole
+  // retry budget into the same answer.
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', options({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    reconnect: FAST_RECONNECT,
+  }));
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const events = record(host);
+  const seated = server.acceptedConnections;
+
+  // From here every handshake is refused with the code the reference server invents for a
+  // full room: a reserved `x.` name, which no client is taught in advance.
+  server.helloRefusal = {
+    code: 'x.room_full',
+    message: 'the room seats at most 64 peers',
+  };
+  server.drop('Ada');
+
+  const reported = await events.waitForEvent(
+    'the refusal to reach the adapter',
+    (event) => event.type === 'sessionError' && event.code === 'x.room_full',
+    { timeoutMs: 3000 },
+  );
+  assert.ok(reported.type === 'sessionError');
+  await events.waitForEvent(
+    'the engine to end the session',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 3000 },
+  );
+  assert.equal(host.isOpen, false, 'a terminal refusal is an observable end state');
+
+  // The refusal is terminal: one re-hello was attempted, never the policy's five.
+  await waitFor('the refused attempt to close', () => server.connectionCount === 0);
+  assert.equal(
+    server.acceptedConnections,
+    seated + 1,
+    'a full room is refused once, not retried into the same answer',
+  );
+});
+
+test('the retry budget covers the room grace the server advertised', async (t) => {
+  // §9.1: a client that knows the room's grace keeps retrying at least until the window has
+  // passed. The advertised grace here is 500 ms and each attempt waits 50 ms, so covering it
+  // takes ten retries — twice what the policy's own five would have managed before the room
+  // was reaped under the host.
+  const server = await FakeServer.start({ roomGraceMs: 500, silentAfter: 1 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', options({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    meta: 'check',
+    handshakeTimeoutMs: 20,
+    // The caller leaves `maxAttempts` to the engine, so the grace sizes the budget.
+    reconnect: { initialDelayMs: 50, maxDelayMs: 50 },
+  }));
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const events = record(host);
+  server.drop('Ada');
+
+  await events.waitForEvent(
+    'the host to give up after its scaled attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(host.isOpen, false);
+  assert.equal(
+    server.acceptedConnections,
+    11,
+    'the seated connection and the ten retries that span the advertised grace',
+  );
+});
+
+test('the retry budget falls back to the policy when no grace is advertised', async (t) => {
+  const server = await FakeServer.start({ silentAfter: 1 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', options({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    meta: 'check',
+    handshakeTimeoutMs: 20,
+    reconnect: { initialDelayMs: 50, maxDelayMs: 50 },
+  }));
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const events = record(host);
+  server.drop('Ada');
+
+  await events.waitForEvent(
+    'the host to give up after the policy’s attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(host.isOpen, false);
+  assert.equal(
+    server.acceptedConnections,
+    6,
+    'with no grace to size against, the policy keeps its own five attempts',
+  );
+});

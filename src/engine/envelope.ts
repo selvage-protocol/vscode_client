@@ -69,6 +69,13 @@ export const close = {
   unsupportedVersion: 4005,
 } as const;
 
+/**
+ * The reserved namespace for a code an implementation defines for itself (§10.1, §11). A
+ * handshake refused with one of these is as final as the bare codes below: §9.1 says it MUST
+ * NOT be re-helloed automatically, whatever it means.
+ */
+const RESERVED_CODE_PREFIX = 'x.';
+
 /** Refusals after which retrying the same URL cannot help (§9.1, §11). */
 export const TERMINAL_CODES: readonly string[] = [
   code.roomUnknown,
@@ -102,6 +109,17 @@ export interface Keepalive {
   ping_interval_ms: number;
   awareness_renew_ms: number;
   awareness_expire_ms: number;
+}
+
+/**
+ * The `keepalive` object of `GET /meta` (§2): the session's clocks, plus the room's grace
+ * period, which the handshake reply has no place for. A host that has been detached is the
+ * one connection that needs the grace and the one that is no longer there to be told, so it
+ * is advertised before a session exists.
+ */
+export interface MetaKeepalive extends Keepalive {
+  /** How long a room survives its host's connection ending (§9, §9.1). */
+  room_grace_ms?: number;
 }
 
 export interface ErrorObject {
@@ -174,7 +192,7 @@ export interface Meta {
   server?: string;
   wire_versions?: string[];
   capabilities?: string[];
-  keepalive?: Partial<Keepalive>;
+  keepalive?: Partial<MetaKeepalive>;
   roles?: string[];
 }
 
@@ -239,9 +257,17 @@ export function closeCodeFor(codeName: string): number {
   }
 }
 
-/** True when a refusal or close code means the session cannot be resumed. */
+/**
+ * True when a refusal or close code means the session cannot be resumed. Every code in the
+ * reserved `x.` namespace is terminal, known or not, exactly as the Rust reference client
+ * treats it: the namespace exists so an implementation can refuse without teaching every
+ * client its word first, and §9.1 forbids re-helloeing any such refusal.
+ */
 export function isTerminalCode(codeName: string | undefined): boolean {
-  return codeName !== undefined && TERMINAL_CODES.includes(codeName);
+  return (
+    codeName !== undefined &&
+    (codeName.startsWith(RESERVED_CODE_PREFIX) || TERMINAL_CODES.includes(codeName))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
