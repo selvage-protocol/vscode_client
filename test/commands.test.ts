@@ -3391,6 +3391,48 @@ test('a join asks before it takes the window, and a decline costs nothing', asyn
   );
 });
 
+test('a host that changes its mind about the window keeps the room it was hosting', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host to be seated', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  const other = await room(t, []);
+  bundle.stub.configure({ displayName: 'Bob' });
+  // One answer for both questions: `Leave and join` is the button that ends the room, and it is
+  // not the button that takes the window, so the second question is declined — the change of
+  // mind a person has after the first.
+  bundle.stub.registered.warningReply = 'Leave and join';
+
+  await bundle.stub.commands.executeCommand('selvage.join', { invite: other.invite });
+  const asked = await waitFor('the window question', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('Joining replaces')) ??
+      false,
+  );
+  assert.match(asked, /Joining replaces this window's folder/);
+  assert.equal(
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder'),
+    false,
+    'a declined window question reloaded the window anyway',
+  );
+  // Nothing was given up for a join that never happened: the room this window was hosting is
+  // still open, for the guests in it as much as for its host.
+  assert.equal(server.connectionCount, 1, 'the room ended on a question that was declined');
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  const copied = await waitFor('the invite of the room this window still hosts', () =>
+    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
+  );
+  assert.equal(copied, 'Selvage: The invite link is on the clipboard.');
+});
+
 test('a join from a window with no folder reloads without asking about the window', async (t) => {
   const { invite } = await room(t, []);
   const { bundle } = activated(t);

@@ -2049,7 +2049,6 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
     if (choice !== leave) {
       return;
     }
-    inSession.dispose();
   }
   let invite: string | undefined;
   if (args?.invite !== undefined) {
@@ -2090,11 +2089,29 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   // (`test/e2e/` cannot click a modal any more than it can click an input box), and it is not a
   // second way to skip the question a join puts about the window: a caller that took over only
   // one of the two still answers it, and the palette — which supplies neither — always does.
-  await joinGuestRoom({
-    invite,
-    displayName,
-    driven: args?.invite !== undefined && args?.displayName !== undefined,
-  });
+  const driven = args?.invite !== undefined && args?.displayName !== undefined;
+  // The window the reload is about to take, asked before anything is given up: the session this
+  // window had is not left for a join that may never happen, and no room directory is minted.
+  // The question is for a folder of the person's own — the one `replaceWindowWarning` promises
+  // stays on disk — so a window holding only room mirrors, and one holding nothing, reload
+  // without it. The resume the reload itself triggers never asks: this is the reload it belongs
+  // to.
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (!driven && folders.some((folder) => !isRoomMirror(folder))) {
+    const replace = 'Join';
+    const answer = await vscode.window.showWarningMessage(
+      replaceWindowWarning(),
+      { modal: true },
+      replace,
+    );
+    if (answer !== replace) {
+      return;
+    }
+  }
+  // Every question this command asks has been answered, so the join is committed: the room this
+  // window was in is left now rather than when the person said they would leave.
+  inSession?.dispose();
+  await joinGuestRoom({ invite, displayName });
 }
 
 /**
@@ -2128,8 +2145,6 @@ async function joinGuestRoom(options: {
   invite: string;
   displayName: string;
   resume?: Mirror;
-  /** Whether a caller, not a person, is driving this join: see `JoinArgs`. */
-  driven?: boolean;
 }): Promise<void> {
   if (deactivated) {
     return;
@@ -2144,24 +2159,6 @@ async function joinGuestRoom(options: {
         `Selvage: Could not join the session: the editor gave this window no storage for the room's files.`,
       );
       return;
-    }
-    // The window the reload is about to take: asked about before anything is minted, so a
-    // decline costs nothing and leaves no half-made room directory behind. The question is
-    // for a folder of the person's own — the one `replaceWindowWarning` promises stays on
-    // disk — so a window holding only room mirrors, and one holding nothing, reload without
-    // it. The resume below skips it deliberately: the reload it belongs to is the one this
-    // asked about.
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    if (options.driven !== true && folders.some((folder) => !isRoomMirror(folder))) {
-      const replace = 'Join';
-      const answer = await vscode.window.showWarningMessage(
-        replaceWindowWarning(),
-        { modal: true },
-        replace,
-      );
-      if (answer !== replace) {
-        return;
-      }
     }
     // The name given seconds ago crosses the reload in the marker, so the
     // reload's window never asks for it again.
