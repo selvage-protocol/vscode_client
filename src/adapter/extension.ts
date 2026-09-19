@@ -1196,6 +1196,7 @@ class Session {
     this.followingPeerId = peerId;
     this.followingName = this.displayLabel(peerId);
     this.pendingGoTo = undefined;
+    this.setFollowContext(true);
     this.showFollowStatus();
     refreshParticipants();
     await this.followTick();
@@ -1382,9 +1383,18 @@ class Session {
    */
   private clearFollow(): void {
     this.followingPeerId = undefined;
+    this.setFollowContext(false);
     this.followStatus?.dispose();
     this.followStatus = undefined;
     refreshParticipants();
+  }
+
+  /**
+   * Publishes the follow state as an editor context key, so a menu or a title button the
+   * manifest gates on `selvage.following` appears exactly while a follow stands.
+   */
+  private setFollowContext(active: boolean): void {
+    void vscode.commands.executeCommand('setContext', 'selvage.following', active);
   }
 
   private showFollowStatus(): void {
@@ -1397,11 +1407,14 @@ class Session {
     }
     this.followStatus.text = `$(person) Selvage: following ${this.followingName}`;
     // The foreground is the peer's marker colour: the mapping the caret wears, so the
-    // indicator and the caret cannot disagree. Only the foreground — a status-bar background
-    // takes two theme colours, never an arbitrary one.
+    // indicator and the caret cannot disagree. The background is the editor's own warning
+    // colour, which paints the whole item and lifts it out of the strip of session-state
+    // items it shares with the room's status — the nearest thing this editor has to the
+    // Neovim client's full-width row.
     if (this.followingPeerId !== undefined) {
       this.followStatus.color = peerColour(this.followingPeerId);
     }
+    this.followStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     this.followStatus.tooltip = `Following ${this.followingName} — select to stop following`;
     this.followStatus.show();
   }
