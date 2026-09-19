@@ -308,7 +308,16 @@ class Session {
    * tells a fresh open of it apart from a document the room never wrote to.
    */
   private readonly seenListed = new Set<string>();
-  private detachedMs: number | undefined;
+  /**
+   * The moment the room closes if the host does not return, taken from the grace
+   * `host.detached` carried. A deadline rather than a duration, because the status bar shows
+   * a clock that ticks: the number captured when the host left would read 30s for ever.
+   */
+  private detachedDeadline: number | undefined;
+  /** Recomputes the countdown while the host is away; cleared with the deadline. */
+  private detachedTimer: ReturnType<typeof setInterval> | undefined;
+  /** The host's name as last seen in membership: `host.detached` names only the grace. */
+  private hostName = '';
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
   private finished = false;
@@ -361,6 +370,7 @@ class Session {
     this.engine = engine;
     this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
+    this.rememberHost();
     this.documents = engine.documents();
     this.granted = engine.grantedPaths();
     for (const path of this.granted) {
@@ -1429,15 +1439,47 @@ class Session {
     return peerName(display, peerId);
   }
 
-  dispose(): void {
+  /** Remembers the host's name while it is present: `host.detached` carries only the grace. */
+  private rememberHost(): void {
+    const host = this.peers.find((peer) => peer.role === 'host');
+    if (host !== undefined) {
+      this.hostName = peerName(host.display_name, host.peer_id);
+    }
+  }
+
+  /**
+   * Starts the countdown the host's grace is. The deadline is the moment the room closes, so
+   * every redraw recomputes how long is left rather than repeating how long there was; the
+   * timer is what makes that recomputation happen while nothing else does.
+   */
+  private armHostAway(graceMs: number): void {
+    this.clearHostAway();
+    this.detachedDeadline = Date.now() + Math.max(0, graceMs);
+    this.detachedTimer = setInterval(() => {
+      this.refreshStatus();
+    }, 1000);
+    this.refreshStatus();
+  }
+
+  private clearHostAway(): void {
+    if (this.detachedTimer !== undefined) {
+      clearInterval(this.detachedTimer);
+      this.detachedTimer = undefined;
+    }
+    this.detachedDeadline = undefined;
+  }
+
+  dispose(options: { keepMirror?: boolean } = {}): void {
     if (this.finished) {
       return;
     }
     this.finished = true;
+    this.clearHostAway();
     // The follow is session state: it goes with the session, with no sentence, the way the
     // caret drawing and the room's document set do.
     this.stopEngine();
     this.followingPeerId = undefined;
+    this.setFollowContext(false);
     this.pendingGoTo = undefined;
     this.followStatus?.dispose();
     this.followStatus = undefined;
@@ -1455,7 +1497,11 @@ class Session {
     // removing the only folder reloads the window, so there must be no session left to
     // lose. The close is requested, not awaited: teardown is synchronous, and the stub
     // records the request order, which is the order the editor honours them in.
-    if (this.mirror !== undefined) {
+    //
+    // A room that closed under the guest is the one teardown that keeps the copy: what is in
+    // the mirror is the only place the guest's work exists, so the directory stays and the
+    // tabs and folder stay with it. `keepMirror` is set only from `roomGone`.
+    if (this.mirror !== undefined && options.keepMirror !== true) {
       const mirror = this.mirror;
       const tabs = (vscode.window.tabGroups?.all ?? [])
         .flatMap((group) => group.tabs)
@@ -1726,6 +1772,7 @@ class Session {
       }
       case 'peers': {
         this.peers = report.peers;
+        this.rememberHost();
         this.refreshStatus();
         refreshParticipants();
         // The follow target is a peer id, so a rename only re-labels the indicator while a
@@ -1744,24 +1791,33 @@ class Session {
         break;
       }
       case 'hostDetached': {
-        this.detachedMs = report.graceMs;
-        this.refreshStatus();
+        this.armHostAway(report.graceMs);
         void vscode.window.showWarningMessage(
-          `Selvage: the host left the room; it closes in ${seconds(report.graceMs)} unless they come back.`,
+          `Host disconnected. ${this.hostName} left — if they return within ${seconds(report.graceMs)} the session continues, otherwise this room closes and work in it is lost.`,
         );
         break;
       }
       case 'hostAttached': {
-        this.detachedMs = undefined;
+        this.clearHostAway();
+        this.hostName = peerName(report.peer.display_name, report.peer.peer_id);
         this.refreshStatus();
         void vscode.window.showInformationMessage(
-          `Selvage: ${report.peer.display_name} is hosting again.`,
+          `${this.hostName} is back — the session continues.`,
         );
         break;
       }
       case 'roomGone': {
-        void vscode.window.showWarningMessage(`Selvage: the room is gone (${report.reason}).`);
-        this.dispose();
+        // A guest's mirror is the only copy of what it wrote during the grace, so the room
+        // closing does not take it: the directory stays and one sentence says where.
+        if (this.mirror !== undefined) {
+          void vscode.window.showWarningMessage(
+            `The room closed. Your copy is kept at ${this.mirror.root}.`,
+          );
+          this.dispose({ keepMirror: true });
+        } else {
+          void vscode.window.showWarningMessage(`Selvage: the room is gone (${report.reason}).`);
+          this.dispose();
+        }
         break;
       }
       case 'sessionError': {
@@ -1805,14 +1861,18 @@ class Session {
 
   private refreshStatus(): void {
     const shared = this.bridge.openDocuments();
+    // The background belongs to the host-away alarm alone; every other state draws plain.
+    this.status.backgroundColor = undefined;
     if (this.reconnecting) {
       this.status.text = '$(sync~spin) Selvage: reconnecting…';
       this.status.tooltip = 'The connection dropped; trying to rejoin the room.';
       return;
     }
-    if (this.detachedMs !== undefined) {
-      this.status.text = '$(warning) Selvage: the host is away';
-      this.status.tooltip = `The room closes in ${seconds(this.detachedMs)} if the host does not come back.`;
+    if (this.detachedDeadline !== undefined) {
+      const remaining = Math.max(0, Math.ceil((this.detachedDeadline - Date.now()) / 1000));
+      this.status.text = `$(warning) Selvage: host away — room closes in ${remaining}s`;
+      this.status.tooltip = `The host is away; the room closes in ${remaining}s if they do not come back. Work in the room is lost when it closes.`;
+      this.status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }
     // The bar is the one Selvage surface a window always has, so it says the two things a

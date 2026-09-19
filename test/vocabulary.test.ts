@@ -86,9 +86,8 @@ const SENTENCES = [
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
   '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
   '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
-  // What the room's own reports say.
-  '`Selvage: the host left the room; it closes in ${} unless they come back.`',
-  '`Selvage: ${} is hosting again.`',
+  // What the room's own reports say. The host-detached and host-reclaimed sentences are
+  // full sentences shown without the wrapper; they are pinned by `PLAIN_SENTENCES` below.
   '`Selvage: the room is gone (${}).`',
   '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',
   '`Selvage: ${} was out of step with the room; the room\'s copy has been put back.`',
@@ -140,11 +139,24 @@ const SENTENCES = [
   // here with the codicon that leads them. The scan below reaches them through the same
   // optional prefix a template carries (`sentencesIn`).
   "'$(sync~spin) Selvage: reconnecting…'",
-  "'$(warning) Selvage: the host is away'",
+  '`$(warning) Selvage: host away — room closes in ${}s`',
   '`$(radio-tower) Selvage: ${} — ${}`',
   '`$(person) Selvage: following ${}`',
   // The empty room's one row: the invitation to copy the link.
   '`Selvage: you\'re the only one here — copy the invite link.`',
+];
+
+/**
+ * The shared sentences this client shows without the `Selvage: ` wrapper. Each is a full
+ * sentence the two clients agreed on, so it is what the user reads; the holes are `${}` as
+ * in `SENTENCES`. Pinned by presence in the adapter source, because the scan above finds only
+ * the wrapped literals.
+ */
+const PLAIN_SENTENCES = [
+  'Stopped following ${} — you moved.',
+  'Host disconnected. ${} left — if they return within ${} the session continues, otherwise this room closes and work in it is lost.',
+  '${} is back — the session continues.',
+  'The room closed. Your copy is kept at ${}.',
 ];
 
 /**
@@ -176,6 +188,16 @@ function sentencesIn(source: string): string[] {
   return found;
 }
 
+/**
+ * Whether a plain shared sentence appears in a source, with each `${}` hole matching any
+ * `${…}` expression the adapter fills it with. The sentence is matched as words, so a change
+ * to them is a failure rather than a silent miss.
+ */
+function containsPlainSentence(source: string, sentence: string): boolean {
+  const parts = sentence.split('${}').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(parts.join('\\$\\{[^}]*\\}')).test(source);
+}
+
 test('the manifest gives every command the shared phrase, under an unchanged id', () => {
   const manifest = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as {
     contributes?: { commands?: Array<{ command: string; title: string }> };
@@ -203,6 +225,15 @@ test('every sentence this client can show is the shared one', () => {
     [...new Set(SENTENCES)].sort(),
     'the sentences a window can show are not the ones the two clients agreed on',
   );
+});
+
+test('the full sentences shown without a wrapper are the shared ones', () => {
+  const source = readdirSync(ADAPTER)
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((name) => readFileSync(resolve(ADAPTER, name), 'utf8'))
+    .join('\n');
+  const missing = PLAIN_SENTENCES.filter((sentence) => !containsPlainSentence(source, sentence));
+  assert.deepEqual(missing, [], 'a shared sentence is not written in the adapter as agreed');
 });
 
 test('a display name is refused in the words both clients use', () => {
