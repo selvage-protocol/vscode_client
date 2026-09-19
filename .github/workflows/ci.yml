@@ -1,9 +1,11 @@
 name: ci
 
+# No `push: branches: [main]`: a pull request already runs the whole job, and the
+# merge commit carries the same content, so the merge would run it a second time.
+# `workflow_dispatch` is the re-run for a commit that reached `main` without one.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
