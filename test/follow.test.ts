@@ -244,6 +244,21 @@ function caretOf(editor: FakeEditor): number | undefined {
   return typeof active === 'number' ? active : active?.character;
 }
 
+/**
+ * The guest's Participants rows, as the view drew them: the description is the file the peer
+ * says they are in, so a row naming "{path}" is proof the presence frame reached this window.
+ */
+function guestRows(seat_: Seat): Array<{ peerId?: string; description?: string }> {
+  const view = seat_.bundle.stub.registered.treeDataProviders.find(
+    (entry) => entry.viewId === 'selvage.participants',
+  );
+  if (view === undefined) {
+    return [];
+  }
+  const rows = view.provider.getChildren();
+  return Array.isArray(rows) ? (rows as Array<{ peerId?: string; description?: string }>) : [];
+}
+
 /** The follow indicator, when one is up: a disposed item reads as gone. */
 function followItem(seat_: Seat): { text: string; command?: string; color?: string } | undefined {
   return seat_.bundle.stub.registered.statusBarItems.find(
@@ -535,6 +550,32 @@ test('a window switch paints no banner on any editor', async (t) => {
     'the window switch painted a document line',
   );
   assert.ok(followItem(seat_) !== undefined, 'a window switch ended the follow');
+});
+
+test('a peer caret already in the room paints on open, with no local move', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
+  // Ada's caret arrives while this window holds nothing for PATH_B: the presence frame is
+  // received, but a caret whose anchors cannot resolve against an empty replica is dropped.
+  seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
+  await waitFor('the guest to see Ada in the peer document', () =>
+    guestRows(seat_).some((row) => row.description === PATH_B) ? true : false,
+  );
+
+  // The document opens and the editor becomes visible in the same turn, before the room's text
+  // can cross the socket. No selection event follows: this window never moves.
+  const holder = { text: TEXT_B };
+  const document = guestDocument(seat_, PATH_B, holder);
+  const editor = guestEditor(document);
+  seat_.bundle.stub.window.activeTextEditor = editor;
+  seat_.bundle.stub.window.visibleTextEditors = [editor];
+  seat_.bundle.stub.fire('openTextDocument', document);
+  seat_.bundle.stub.fire('visibleEditors', [editor]);
+
+  await waitFor(
+    'the already-present caret to paint on open',
+    () => (drawnCaretAt(editor, 4) ? true : false),
+    { describe: () => ({ decorated: editor.decorated.length }) },
+  );
 });
 
 test('a local edit ends the follow while a remote one does not', async (t) => {
