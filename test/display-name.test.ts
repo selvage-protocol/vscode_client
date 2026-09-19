@@ -46,7 +46,7 @@ test('a name at the bound is accepted and one unit over it is refused', () => {
   const refusal = displayNameRefusal(`${exact}b`);
   assert.equal(
     refusal,
-    'This name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
+    'this name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
     'the refusal is not the sentence the Neovim client sends',
   );
 });
@@ -67,8 +67,8 @@ test('the count is the units the room charges, not the number of characters type
 });
 
 test('a blank name is refused before it is sent', () => {
-  assert.equal(displayNameRefusal(''), 'A name is needed.');
-  assert.equal(displayNameRefusal('   '), 'A name is needed.');
+  assert.equal(displayNameRefusal(''), 'a name is needed.');
+  assert.equal(displayNameRefusal('   '), 'a name is needed.');
   // Trimmed before it is counted, so the spaces around a name are not part of what it costs.
   assert.equal(displayNameRefusal(' Ada '), undefined);
   assert.match(displayNameRefusal(` ${'a'.repeat(33)} `) ?? '', /33 UTF-16 code units/);
@@ -92,7 +92,7 @@ test('the question states the bound and refuses an over-long answer while it is 
   // promise that every emoji costs two.
   assert.match(validate(`${'a'.repeat(29)}\u{1f1fa}\u{1f1f8}`) ?? '', /33 UTF-16 code units/);
   // Enter cannot accept a refusal: what comes back is a message and the box stays open.
-  assert.match(validate('   ') ?? '', /A name is needed/);
+  assert.match(validate('   ') ?? '', /a name is needed/);
 });
 
 test('a question with no name in force reports nothing about one', () => {

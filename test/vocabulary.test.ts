@@ -60,26 +60,26 @@ const TITLES: Record<string, string> = {
 const SENTENCES = [
   // Downloading a listed path's content — the `:SelvageFetch` twin — and what a hold of
   // one costs the room.
-  "'Selvage: Your files are already on your disk, so there is nothing to fetch while you host.'",
-  '`Selvage: Could not fetch ${} from the room: ${}`',
-  '`Selvage: No file the room lists matches "${}".`',
+  "'Selvage: your files are already on your disk, so there is nothing to fetch while you host.'",
+  '`Selvage: could not fetch ${} from the room: ${}`',
+  '`Selvage: no file the room lists matches "${}".`',
   '`Selvage: ${} files under ${} is more than one fetch holds (at most ${} at once); name a narrower directory.`',
-  "'Selvage: The room lists no files to fetch.'",
-  '`Selvage: Fetching all ${} listed files at once would hold every one in the room; fetch a file or a directory instead (at most ${} at once).`',
-  '`Selvage: Fetch all ${} listed files? Everyone in the room receives them, and they are stored on your disk.`',
-  '`Selvage: Fetching opens ${} in the room, so every peer receives it.`',
-  "'Selvage: Fetching opens them in the room, so every peer receives them.'",
-  "'Selvage: Fetched the files.'",
-  '`Selvage: Fetching ${}…`',
+  "'Selvage: the room lists no files to fetch.'",
+  '`Selvage: fetching all ${} listed files at once would hold every one in the room; fetch a file or a directory instead (at most ${} at once).`',
+  '`Selvage: fetch all ${} listed files? Everyone in the room receives them, and they are stored on your disk.`',
+  '`Selvage: fetching opens ${} in the room, so every peer receives it.`',
+  "'Selvage: fetching opens them in the room, so every peer receives them.'",
+  "'Selvage: fetched the files.'",
+  '`Selvage: fetching ${}…`',
   '`Selvage: ${} is still empty — the host has not sent its text yet. Fetch it again later.`',
   // Where a peer is, and following one.
-  "'Selvage: No other participants yet.'",
-  '`Selvage: Nothing to go to: ${} is not in a document.`',
-  '`Selvage: Nothing to follow: ${} is not in a document.`',
-  '`Selvage: Stopped following ${}.`',
-  "'Selvage: Not following anyone.'",
-  '`Selvage: Could not open ${} from the room: ${}`',
-  '`Selvage: Nothing to go to: ${}\'s caret does not resolve here.`',
+  "'Selvage: no other participants yet.'",
+  '`Selvage: nothing to go to: ${} is not in a document.`',
+  '`Selvage: nothing to follow: ${} is not in a document.`',
+  '`Selvage: stopped following ${}.`',
+  "'Selvage: not following anyone.'",
+  '`Selvage: could not open ${} from the room: ${}`',
+  '`Selvage: nothing to go to: ${}\'s caret does not resolve here.`',
   '`Selvage: ${} left the room, so following stopped.`',
   // The room's shape on disk: what the listing could not keep in step, and what is not
   // part of the room at all.
@@ -87,54 +87,55 @@ const SENTENCES = [
   '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
   '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
   // What the room's own reports say.
-  '`Selvage: The host left the room; it closes in ${} unless they come back.`',
+  '`Selvage: the host left the room; it closes in ${} unless they come back.`',
   '`Selvage: ${} is hosting again.`',
-  '`Selvage: The room is gone (${}).`',
-  '`Selvage: The editor would not apply the room\'s change to ${}; the file may be read-only.`',
+  '`Selvage: the room is gone (${}).`',
+  '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',
   '`Selvage: ${} was out of step with the room; the room\'s copy has been put back.`',
-  '`Selvage: Could not save ${}; the file on disk is behind the room.`',
-  '`Selvage: Could not save ${}; the file on disk is behind the room (${}).`',
-  "'Selvage: The connection ended and the session is over; it could not be re-established.'",
+  '`Selvage: could not save ${}; the file on disk is behind the room.`',
+  '`Selvage: could not save ${}; the file on disk is behind the room (${}).`',
+  "'Selvage: the connection ended and the session is over; it could not be re-established.'",
   // Host and join: what each costs a room that is already live, and the window a join takes.
-  '`Selvage: You are hosting this session; joining another session ends this room for everyone.`',
-  '`Selvage: You are in this session; joining another session leaves it.`',
-  '`Selvage: You are in this session; hosting a session means leaving it first.`',
-  '`Selvage: Joining replaces this window\'s folder with the room\'s files. Your own folder stays on disk — reopen it whenever you like.`',
+  '`Selvage: you are hosting this session; joining another session ends this room for everyone.`',
+  '`Selvage: you are in this session; joining another session leaves it.`',
+  '`Selvage: you are in this session; hosting a session means leaving it first.`',
+  '`Selvage: joining replaces this window\'s folder with the room\'s files. Your own folder stays on disk — reopen it whenever you like.`',
   // A fault the room reported, and the sentence the capacity refusal stands in for:
   // `x.room_full` on the wire is a sentence here.
-  "'Selvage: The room is full — it seats no more people.'",
+  "'Selvage: the room is full — it seats no more people.'",
   // Hosting, and the invite it leaves on the clipboard.
-  '`Selvage: You are already hosting this session; the invite link is on the clipboard.`',
-  "'Selvage: Open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.'",
-  '`Selvage: Connecting to ${}…`',
+  '`Selvage: you are already hosting this session; the invite link is on the clipboard.`',
+  "'Selvage: open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.'",
+  '`Selvage: connecting to ${}…`',
   // Joining: the wait, the refusals, and the landing.
-  '`Selvage: Could not host on ${}. ${}`',
-  '`Selvage: The room is open, but the invite link could not be copied (${}).`',
-  '`Selvage: The room is open. Send this link to your friend — it is on the clipboard.`',
+  '`Selvage: could not host on ${}. ${}`',
+  '`Selvage: the room is open, but the invite link could not be copied (${}).`',
+  '`Selvage: the room is open. Send this link to your friend — it is on the clipboard.`',
   '`Selvage: ${}`',
-  '`Selvage: Could not join the session: the editor gave this window no storage for the room\'s files.`',
-  '`Selvage: Could not open the room\'s folder in this window (${}); join again.`',
-  '`Selvage: Could not join the session. ${}`',
-  '`Selvage: Cleaned up the files left by the last session; its invite link no longer works.`',
-  '`Selvage: Cleaned up the files left by the last session.`',
-  '`Selvage: Joined the room — it has no open documents yet.`',
-  '`Selvage: Joined the room. The room has ${}.`',
-  '`Selvage: Joined the room — opening ${}.${}`',
+  '`Selvage: could not join the session: the editor gave this window no storage for the room\'s files.`',
+  '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
+  '`Selvage: could not join the session. ${}`',
+  '`Selvage: cleaned up the files left by the last session; its invite link no longer works.`',
+  '`Selvage: cleaned up the files left by the last session.`',
+  '`Selvage: joined the room; the room has no open documents yet.`',
+  '`Selvage: joined the room — opening ${}.`',
+  '`Selvage: joined the room — opening ${}; ${} more in the room.`',
+  '`Selvage: joined the room.`',
   // The invite, and the room's documents.
-  "'Selvage: There is no invite link; host or join a room first.'",
-  "'Selvage: The invite link is on the clipboard.'",
-  "'Selvage: Join a session first.'",
-  "'Selvage: You are the host — the files you open are the ones your guests see.'",
-  "'Selvage: The room has no open documents yet.'",
-  '`Selvage: No shared document matches "${}".`',
+  "'Selvage: there is no invite link; host or join a room first.'",
+  "'Selvage: the invite link is on the clipboard.'",
+  "'Selvage: join a session first.'",
+  "'Selvage: you are the host — the files you open are the ones your guests see.'",
+  "'Selvage: the room has no open documents yet.'",
+  '`Selvage: no shared document matches "${}".`',
   // The display name, and the room's participants.
-  "'Selvage: Not in a session.'",
-  "'Selvage: Left the session.'",
-  "'Selvage: No display name is set yet.'",
-  '`Selvage: The name others see is "${}".`',
-  '`Selvage: Could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
-  '`Selvage: Display name set to "${}".`',
-  '`Selvage: Who is in the room`',
+  "'Selvage: not in a session.'",
+  "'Selvage: left the session.'",
+  "'Selvage: no display name is set yet.'",
+  '`Selvage: the name others see is "${}".`',
+  '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
+  '`Selvage: display name set to "${}".`',
+  '`Selvage: who is in the room`',
   // The status bar: the one Selvage surface a window always has, so its fragments are pinned
   // here with the codicon that leads them. The scan below reaches them through the same
   // optional prefix a template carries (`sentencesIn`).
@@ -143,7 +144,7 @@ const SENTENCES = [
   '`$(radio-tower) Selvage: ${} — ${}`',
   '`$(person) Selvage: following ${}`',
   // The empty room's one row: the invitation to copy the link.
-  '`Selvage: You\'re the only one here — copy the invite link.`',
+  '`Selvage: you\'re the only one here — copy the invite link.`',
 ];
 
 /**
@@ -151,8 +152,8 @@ const SENTENCES = [
  * prefix, because the adapter wraps them, so the scan above sees only the wildcard.
  */
 const REFUSALS = [
-  'A name is needed.',
-  'This name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
+  'a name is needed.',
+  'this name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
 ];
 
 /** Every `Selvage: …` string literal in a source, `${…}` collapsed. A status-bar fragment leads

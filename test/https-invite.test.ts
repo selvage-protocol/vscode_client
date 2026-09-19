@@ -205,7 +205,7 @@ test('a remembered non-default server survives host-leave-host into the copied l
   );
   await bundle.stub.commands.executeCommand('selvage.leave');
   await waitFor('the leave to be said', () =>
-    bundle.stub.registered.information.some((message) => message.includes('Left the session'))
+    bundle.stub.registered.information.some((message) => message.includes('left the session'))
       ? true
       : false,
   );
@@ -250,9 +250,9 @@ test('a pasted page link joins the room it names', async (t) => {
   });
   await landStashedJoin(second.bundle, second.storage, roomId, 'Bob');
   const joined = second.bundle.stub.registered.information.find((message) =>
-    message.includes('Joined the room'),
+    message.includes('joined the room'),
   ) ?? false;
-  assert.equal(joined, `Selvage: Joined the room — it has no open documents yet.`);
+  assert.equal(joined, `Selvage: joined the room; the room has no open documents yet.`);
 });
 
 test('a ws:// invite still joins, as the fallback for rooms off the page default', async (t) => {
@@ -274,9 +274,9 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   });
   await landStashedJoin(guest.bundle, guest.storage, wireRoom, 'Bob');
   const joined = guest.bundle.stub.registered.information.find((message) =>
-    message.includes('Joined the room'),
+    message.includes('joined the room'),
   ) ?? 'no join landed';
-  assert.match(joined, /Selvage: Joined the room/);
+  assert.match(joined, /Selvage: joined the room/);
 });
 
 test('the webOrigin setting moves the copied link', async (t) => {

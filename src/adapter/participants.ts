@@ -19,7 +19,7 @@ import type {
 } from '../bridge/index.ts';
 
 /** The empty room's row. Pinned in `test/vocabulary.test.ts`, like every sentence. */
-export const NO_PEERS_LABEL = `Selvage: You're the only one here — copy the invite link.`;
+export const NO_PEERS_LABEL = `Selvage: you're the only one here — copy the invite link.`;
 
 /** A row that is a sentence rather than a peer: the empty room, or no session. */
 export interface NoteRow {

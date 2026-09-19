@@ -448,13 +448,13 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the empty stop to be refused', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
   );
   // An asked-for stop stays silent, the way the indicator going down always has: only a
   // stop the user did not ask for says so.
   assert.deepEqual(
     seat_.bundle.stub.registered.information.filter((message) =>
-      message.startsWith('Selvage: Stopped following'),
+      message.startsWith('Selvage: stopped following'),
     ),
     [],
     'an explicit stop said so',
@@ -583,13 +583,13 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   // sentence, which the indicator going down alone does not carry.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: Stopped following Ada.',
+      (message) => message === 'Selvage: stopped following Ada.',
     ),
     'the local edit ended the follow silently',
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
   );
 });
 
@@ -613,7 +613,7 @@ test('going somewhere stops following first', async (t) => {
   // The navigation supersedes the follow the user did not ask to end, so it says so.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: Stopped following Ada.',
+      (message) => message === 'Selvage: stopped following Ada.',
     ),
     'the go-to superseded the follow silently',
   );
@@ -792,7 +792,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
   await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
   await waitFor('the refusal to name the peer without a document', () =>
     seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: Nothing to go to: Nora is not in a document.',
+      (message) => message === 'Selvage: nothing to go to: Nora is not in a document.',
     ),
   );
   assert.equal(
@@ -989,7 +989,7 @@ test('a remote CRLF apply does not end the follow while local CRLF typing does',
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the ended follow to be unstoppable', () =>
-    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: Not following anyone.'),
+    seat_.bundle.stub.registered.warnings.some((message) => message === 'Selvage: not following anyone.'),
   );
 });
 
@@ -1194,7 +1194,7 @@ test('a host jump to a path it does not share is refused without opening', async
     if (
       bundle.stub.registered.errors.some(
         (message) =>
-          message === 'Selvage: Could not open .env from the room: the path is not one this window shares',
+          message === 'Selvage: could not open .env from the room: the path is not one this window shares',
       )
     ) {
       return true;
@@ -1238,7 +1238,7 @@ test('a guest follow to a peer-named path outside the grant is refused without o
       seat_.bundle.stub.registered.errors.some(
         (message) =>
           message ===
-          'Selvage: Could not open ../../outside.md from the room: the path is not one this window shares',
+          'Selvage: could not open ../../outside.md from the room: the path is not one this window shares',
       )
     ) {
       return true;
@@ -1253,7 +1253,7 @@ test('a guest follow to a peer-named path outside the grant is refused without o
     seat_.bundle.stub.registered.errors.some(
       (message) =>
         message ===
-        'Selvage: Could not open .selvage-mirror.json from the room: the path is not one this window shares',
+        'Selvage: could not open .selvage-mirror.json from the room: the path is not one this window shares',
     )
       ? true
       : false,

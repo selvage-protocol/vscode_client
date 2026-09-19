@@ -353,7 +353,7 @@ test('rows for the view are peers, or the one pinned note when there is nothing 
   assert.deepEqual(words(viewRows({ entries: [], followingPeerId: undefined })), [
     {
       kind: 'note',
-      label: 'Selvage: You\'re the only one here — copy the invite link.',
+      label: 'Selvage: you\'re the only one here — copy the invite link.',
       command: 'selvage.copyInvite',
     },
   ]);
@@ -752,7 +752,7 @@ test('hosting an empty room retires the welcome row at once', async (t) => {
   );
   assert.deepEqual(
     viewNodes(bundle).map((node) => node.label),
-    ["Selvage: You're the only one here — copy the invite link."],
+    ["Selvage: you're the only one here — copy the invite link."],
   );
 });
 

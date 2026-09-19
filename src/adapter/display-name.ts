@@ -39,11 +39,11 @@ export function displayNameUnits(name: string): number {
 export function displayNameRefusal(name: string): string | undefined {
   const trimmed = name.trim();
   if (trimmed === '') {
-    return 'A name is needed.';
+    return 'a name is needed.';
   }
   const units = displayNameUnits(trimmed);
   if (units > MAX_DISPLAY_NAME_UNITS) {
-    return `This name is ${units} UTF-16 code units and the limit is ${MAX_DISPLAY_NAME_UNITS}; a name is refused rather than shortened.`;
+    return `this name is ${units} UTF-16 code units and the limit is ${MAX_DISPLAY_NAME_UNITS}; a name is refused rather than shortened.`;
   }
   return undefined;
 }

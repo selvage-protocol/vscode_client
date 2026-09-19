@@ -406,7 +406,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
   assert.deepEqual(
     said,
     [
-      "Selvage: Could not watch the folder this window shares: this window has no watcher for that folder.",
+      "Selvage: could not watch the folder this window shares: this window has no watcher for that folder.",
     ],
     'two folders that cannot be watched are two failures the user has to read',
   );
@@ -525,7 +525,7 @@ test('a refused listing is reported, and the session goes on', async (t) => {
     bundle.stub.registered.errors.length > 0 ? bundle.stub.registered.errors : false,
   );
   assert.deepEqual(said, [
-    'Selvage: The server refused the listing of the folder this window shares: ' +
+    'Selvage: the server refused the listing of the folder this window shares: ' +
       'the listing is over the bound this server will store.',
   ]);
 
