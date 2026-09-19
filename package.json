@@ -156,6 +156,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "selvage.stopFollowing",
+          "when": "view == selvage.participants && selvage.following",
+          "group": "0_selvage"
+        },
+        {
           "command": "selvage.copyInvite",
           "when": "view == selvage.participants",
           "group": "1_selvage"

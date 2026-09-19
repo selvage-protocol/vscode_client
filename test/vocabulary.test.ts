@@ -86,9 +86,8 @@ const SENTENCES = [
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
   '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
   '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
-  // What the room's own reports say.
-  '`Selvage: the host left the room; it closes in ${} unless they come back.`',
-  '`Selvage: ${} is hosting again.`',
+  // What the room's own reports say. The host-detached and host-reclaimed sentences are
+  // full sentences shown without the wrapper; they are pinned by `PLAIN_SENTENCES` below.
   '`Selvage: the room is gone (${}).`',
   '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',
   '`Selvage: ${} was out of step with the room; the room\'s copy has been put back.`',
@@ -140,11 +139,24 @@ const SENTENCES = [
   // here with the codicon that leads them. The scan below reaches them through the same
   // optional prefix a template carries (`sentencesIn`).
   "'$(sync~spin) Selvage: reconnecting…'",
-  "'$(warning) Selvage: the host is away'",
+  '`$(warning) Selvage: host away — room closes in ${}s`',
   '`$(radio-tower) Selvage: ${} — ${}`',
   '`$(person) Selvage: following ${}`',
   // The empty room's one row: the invitation to copy the link.
   '`Selvage: you\'re the only one here — copy the invite link.`',
+];
+
+/**
+ * The shared sentences this client shows without the `Selvage: ` wrapper. Each is a full
+ * sentence the two clients agreed on, so it is what the user reads; the holes are `${}` as
+ * in `SENTENCES`. Pinned by presence in the adapter source, because the scan above finds only
+ * the wrapped literals.
+ */
+const PLAIN_SENTENCES = [
+  'Stopped following ${} — you moved.',
+  'Host disconnected. ${} left — if they return within ${} the session continues, otherwise this room closes and your local copy is kept.',
+  '${} is back — the session continues.',
+  'The room closed. Your copy is kept at ${}.',
 ];
 
 /**
@@ -176,6 +188,138 @@ function sentencesIn(source: string): string[] {
   return found;
 }
 
+/**
+ * Whether a plain shared sentence appears in a source, with each `${}` hole matching any
+ * `${…}` expression the adapter fills it with. The sentence is matched as words, so a change
+ * to them is a failure rather than a silent miss. Comments are stripped first, so a sentence
+ * left behind in a comment cannot stand in for one the code still shows.
+ */
+function containsPlainSentence(source: string, sentence: string): boolean {
+  const stripped = stripComments(source);
+  const parts = sentence.split('${}').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(parts.join('\\$\\{[^}]*\\}')).test(stripped);
+}
+
+/** The source with its comments removed: line, block, and their shapes inside code. String
+ * and template literals are kept whole, so a sentence they carry still matches. The scan only
+ * has to tell a comment from a literal in the adapter's own sources: `${}` inside a template's
+ * expression opens code, not another hole for a `}` to close.
+ */
+function stripComments(source: string): string {
+  let out = '';
+  let index = 0;
+  const length = source.length;
+  let string: string | undefined;
+  let expression = 0;
+  let regex = false;
+  while (index < length) {
+    const char = source[index] as string;
+    const next = (index + 1 < length ? source[index + 1] : '') as string;
+    if (string !== undefined) {
+      out += char;
+      if (char === '\\') {
+        out += next;
+        index += 2;
+        continue;
+      }
+      if (string === '`' && char === '$' && next === '{') {
+        out += next;
+        index += 2;
+        expression += 1;
+        continue;
+      }
+      if (char === string && (string !== '`' || expression === 0)) {
+        string = undefined;
+      } else if (string === '`' && expression > 0 && char === '}') {
+        expression -= 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (regex) {
+      out += char;
+      if (char === '\\') {
+        out += next;
+        index += 2;
+        continue;
+      }
+      if (char === '[') {
+        let close = index + 1;
+        if (source[close] === '^') {
+          close += 1;
+        }
+        if (source[close] === ']') {
+          close += 1;
+        }
+        while (close < length && source[close] !== ']') {
+          close += source[close] === '\\' ? 2 : 1;
+        }
+        out += source.slice(index + 1, close + 1);
+        index = close + 1;
+        continue;
+      }
+      if (char === '/') {
+        regex = false;
+      }
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      const end = source.indexOf('\n', index);
+      out += '\n';
+      index = end === -1 ? length : end + 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? length : end + 2;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      string = char;
+      expression = 0;
+      out += char;
+      index += 1;
+      continue;
+    }
+    if (char === '/') {
+      const before = out.replace(/\s+$/, '').slice(-1);
+      if (before === '' || '([{=:;,!&|?+-*%<>^~'.includes(before)) {
+        regex = true;
+      }
+    }
+    out += char;
+    index += 1;
+    continue;
+  }
+  return out;
+}
+
+test('a shared sentence in a comment alone proves nothing', () => {
+  const sentence = 'Stopped following ${} — you moved.';
+  const live = 'void vscode.window.showInformationMessage(`Stopped following ${name} — you moved.`);';
+  assert.equal(containsPlainSentence(live, sentence), true, 'a shown sentence no longer matches');
+  const commentedOut = [
+    `// ${live}`,
+    `/* ${live} */`,
+    `/**\n * ${live}\n */`,
+    'const pattern = /Stopped following /; // ' + live,
+  ];
+  for (const source of commentedOut) {
+    assert.equal(
+      containsPlainSentence(source, sentence),
+      false,
+      `a comment stood in for the sentence: ${source}`,
+    );
+  }
+  const codeThenComment = `${live} // Stopped following you — you moved.`;
+  assert.equal(
+    containsPlainSentence(codeThenComment, sentence),
+    true,
+    'a trailing comment hid the real code before it',
+  );
+});
+
 test('the manifest gives every command the shared phrase, under an unchanged id', () => {
   const manifest = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as {
     contributes?: { commands?: Array<{ command: string; title: string }> };
@@ -203,6 +347,15 @@ test('every sentence this client can show is the shared one', () => {
     [...new Set(SENTENCES)].sort(),
     'the sentences a window can show are not the ones the two clients agreed on',
   );
+});
+
+test('the full sentences shown without a wrapper are the shared ones', () => {
+  const source = readdirSync(ADAPTER)
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((name) => readFileSync(resolve(ADAPTER, name), 'utf8'))
+    .join('\n');
+  const missing = PLAIN_SENTENCES.filter((sentence) => !containsPlainSentence(source, sentence));
+  assert.deepEqual(missing, [], 'a shared sentence is not written in the adapter as agreed');
 });
 
 test('a display name is refused in the words both clients use', () => {
