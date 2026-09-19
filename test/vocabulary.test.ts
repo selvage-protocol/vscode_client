@@ -60,7 +60,7 @@ const TITLES: Record<string, string> = {
 const SENTENCES = [
   // Downloading a listed path's content — the `:SelvageFetch` twin — and what a hold of
   // one costs the room.
-  "'Selvage: Your files are already on your disk, so there is nothing to download while you host.'",
+  "'Selvage: Your files are already on your disk, so there is nothing to fetch while you host.'",
   '`Selvage: Could not fetch ${} from the room: ${}`',
   '`Selvage: No file the room lists matches "${}".`',
   '`Selvage: ${} files under ${} is more than one fetch holds (at most ${} at once); name a narrower directory.`',
@@ -71,7 +71,7 @@ const SENTENCES = [
   "'Selvage: Fetching opens them in the room, so every peer receives them.'",
   "'Selvage: Fetched the files.'",
   '`Selvage: Fetching ${}…`',
-  '`Selvage: ${} is still empty — the host has not sent its text yet. "Download a file from the room" tries again.`',
+  '`Selvage: ${} is still empty — the host has not sent its text yet. Fetch it again later.`',
   // Where a peer is, and following one.
   "'Selvage: No other participants yet.'",
   '`Selvage: Nothing to go to: ${} is not in a document.`',
@@ -135,6 +135,13 @@ const SENTENCES = [
   '`Selvage: Could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
   '`Selvage: Display name set to "${}".`',
   '`Selvage: Who is in the room`',
+  // The status bar: the one Selvage surface a window always has, so its fragments are pinned
+  // here with the codicon that leads them. The scan below reaches them through the same
+  // optional prefix a template carries (`sentencesIn`).
+  "'$(sync~spin) Selvage: reconnecting…'",
+  "'$(warning) Selvage: the host is away'",
+  '`$(radio-tower) Selvage: ${} — ${}`',
+  '`$(person) Selvage: following ${}`',
   // The empty room's one row: the invitation to copy the link.
   '`Selvage: You\'re the only one here — copy the invite link.`',
 ];
@@ -148,7 +155,9 @@ const REFUSALS = [
   'This name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
 ];
 
-/** Every `Selvage: …` string literal in a source, `${…}` collapsed. */
+/** Every `Selvage: …` string literal in a source, `${…}` collapsed. A status-bar fragment leads
+ * with a codicon inside the same literal, so the prefix is optional rather than absent.
+ */
 function sentencesIn(source: string): string[] {
   const found: string[] = [];
   for (const line of source.split('\n')) {
@@ -157,7 +166,9 @@ function sentencesIn(source: string): string[] {
     if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
       continue;
     }
-    for (const match of line.matchAll(/`Selvage: [^`]*`|'Selvage: [^']*'/g)) {
+    for (const match of line.matchAll(
+      /`(?:\$\([^`)]*\) )?Selvage: [^`]*`|'(?:\$\([^')]*\) )?Selvage: [^']*'/g,
+    )) {
       found.push(match[0].replaceAll(/\$\{[^}]*\}/g, '${}'));
     }
   }

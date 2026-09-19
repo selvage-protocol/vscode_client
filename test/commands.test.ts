@@ -303,6 +303,10 @@ test('a guest’s status bar hands the invite on too', async (t) => {
   const item = await waitFor('the status bar to be drawn', () =>
     bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage') ?? false,
   );
+  // The bar is the one Selvage surface a window always has, so what it says is pinned here:
+  // the side of the room the person is on, and how many people are in it. The guest sees the
+  // host, so the count is plural.
+  assert.equal(String(item.text), '$(radio-tower) Selvage: guest — 2 people in the room');
   assert.equal(
     item.command,
     'selvage.copyInvite',
@@ -2154,7 +2158,7 @@ test('a fetch that times out names the empty path and reports no fetch', async (
   );
   assert.equal(
     warned,
-    'Selvage: workspace/lonely.md is still empty — the host has not sent its text yet. "Download a file from the room" tries again.',
+    'Selvage: workspace/lonely.md is still empty — the host has not sent its text yet. Fetch it again later.',
   );
   // A wait that gave up is not a fetch: the warning is the wait's terminal state, and the
   // report stays silent about files that never arrived rather than naming them fetched.
@@ -2196,7 +2200,7 @@ test('fetch while hosting says the disk already holds what a mirror would', asyn
   );
   assert.equal(
     refusal,
-    'Selvage: Your files are already on your disk, so there is nothing to download while you host.',
+    'Selvage: Your files are already on your disk, so there is nothing to fetch while you host.',
   );
 });
 
@@ -2502,7 +2506,11 @@ test('a dropped connection shows reconnecting in the status bar', async (t) => {
     String(
       bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
     );
-  assert.match(bar(), /hosting/, 'the steady state was never shown');
+  assert.equal(
+    bar(),
+    '$(radio-tower) Selvage: hosting — 1 person in the room',
+    'the steady state was never shown, or it does not name the side and the count',
+  );
 
   // The drop is the server going away mid-session; the bounded retry is the engine's, and
   // the bar must say so instead of holding the steady-state text while retries run.
@@ -3381,6 +3389,147 @@ test('a join asks before it takes the window, and a decline costs nothing', asyn
   await waitFor('the reload onto the mirror', () =>
     bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
   );
+});
+
+test('a join from a window with no folder reloads without asking about the window', async (t) => {
+  const { invite } = await room(t, []);
+  const { bundle } = activated(t);
+  bundle.stub.setWorkspaceFolders([]);
+  // Undriven: the invite is pasted into the box and the name comes from the setting, which
+  // is the shape a person's first join takes. The answer to a question that must not be
+  // asked is a warning waiting to be recorded if it is.
+  bundle.stub.configure({ displayName: 'Bob' });
+  bundle.stub.registered.inputReply = invite;
+  bundle.stub.registered.warningReply = 'Join';
+
+  await bundle.stub.commands.executeCommand('selvage.join');
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('Joining replaces')),
+    false,
+    'a window with no folder was asked what the reload costs it',
+  );
+});
+
+test("a window holding only the room's mirror is not asked about a folder of its own", async (t) => {
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  bundle.stub.setWorkspaceFolders([]);
+  bundle.stub.configure({ displayName: 'Bob' });
+  bundle.stub.registered.inputReply = invite;
+  await bundle.stub.commands.executeCommand('selvage.join');
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  const root = mirrorWindowDir(storage, roomId);
+
+  // The window the reload landed on holds the mirror — a cache the session made, not a folder
+  // of the person's — and a second join replaces it. Nothing of the person's is open, so
+  // there is nothing for `replaceWindowWarning`'s promise to be about.
+  const second = await room(t, []);
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root]);
+  bundle.stub.configure({ displayName: 'Bob' });
+  bundle.stub.registered.inputReply = second.invite;
+  bundle.stub.registered.warningReply = 'Join';
+  await bundle.stub.commands.executeCommand('selvage.join');
+  await waitFor('the reload onto the second room', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('Joining replaces')),
+    false,
+    'a window whose only folder is a room mirror was told its own folder stays on disk',
+  );
+});
+
+test("the reload's own resume never asks about the window it already replaced", async (t) => {
+  const { invite } = await room(t, []);
+  const roomId = roomOf(invite);
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await waitFor('the reload onto the mirror', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  const root = mirrorWindowDir(storage, roomId);
+
+  // The reload landed beside something else, so the resume runs again rather than joining half
+  // a window. It is the reload the mint already asked about — asked here with a folder that is
+  // not a mirror among the window's, so the only thing that can silence the question is the
+  // resume's own suppression.
+  bundle.stub.reset();
+  bundle.stub.setWorkspaceFolders([root, '/elsewhere']);
+  bundle.stub.configure({ displayName: 'Bob' });
+  bundle.stub.registered.warningReply = 'Join';
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+  await waitFor('the second reload', () =>
+    bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder') ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('Joining replaces')),
+    false,
+    'the resume asked about a window the reload had already taken',
+  );
+});
+
+test('a join refused because the room already has a host says so, without the code', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  server.helloRefusal = { code: 'host_present', message: 'the room already has a host' };
+  const { bundle, storage } = activated(t);
+  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('Could not join')) ?? false,
+  );
+  assert.equal(said, 'Selvage: Could not join the session. That room already has a host.');
+  assert.doesNotMatch(said, /host_present/, 'the wire code is on screen');
+});
+
+test('a join refused for the wire version names what differs, without the code', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  server.helloRefusal = { code: 'unsupported_version', message: 'unsupported wire version 2' };
+  const { bundle, storage } = activated(t);
+  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('Could not join')) ?? false,
+  );
+  assert.equal(
+    said,
+    'Selvage: Could not join the session. This client and that server speak different versions (unsupported wire version 2).',
+  );
+  assert.doesNotMatch(said, /unsupported_version/, 'the wire code is on screen');
+});
+
+test('a join refused for a room that is gone says it once', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  // The reference server's own words for this code are the sentence itself, so the client's
+  // parenthetical used to read `That room is gone (the room is gone).`
+  server.helloRefusal = { code: 'room_gone', message: 'the room is gone' };
+  const { bundle, storage } = activated(t);
+  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('Could not join')) ?? false,
+  );
+  assert.equal(said, 'Selvage: Could not join the session. That room is gone.');
+  assert.doesNotMatch(said, /room_gone|the room is gone/, 'the wire code or the server’s own text');
 });
 
 test('a refused join says what happened, without the room id or a wire word', async (t) => {

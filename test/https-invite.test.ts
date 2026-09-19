@@ -24,6 +24,7 @@ import {
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
+import { sessionUrl } from '../src/engine/index.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(here, '..');
@@ -37,8 +38,8 @@ const PAGE_DEFAULT_SERVER = 'ws://100.64.0.3:8080';
 
 const require = createRequire(import.meta.url);
 
-/** The bundle's pure page-link helpers, without an editor. */
-function pageLinks(): {
+/** The bundle's pure invite helpers, without an editor. */
+function inviteHelpers(): {
   buildPageLink: (
     origin: string,
     room: string,
@@ -47,6 +48,7 @@ function pageLinks(): {
     defaultServer: string,
   ) => string;
   parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+  sessionAddress: (wire: string) => string;
 } {
   const Module = require('node:module') as {
     _resolveFilename: (...args: unknown[]) => string;
@@ -64,9 +66,11 @@ function pageLinks(): {
         defaultServer: string,
       ) => string;
       parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+      sessionAddress: (wire: string) => string;
     };
     assert.equal(typeof bundle.buildPageLink, 'function', 'the bundle exports no page-link builder');
     assert.equal(typeof bundle.parsePageLink, 'function', 'the bundle exports no page-link parser');
+    assert.equal(typeof bundle.sessionAddress, 'function', 'the bundle exports no session-address helper');
     return bundle;
   } finally {
     Module._resolveFilename = resolveFilename;
@@ -122,7 +126,7 @@ async function copiedInvite(
 }
 
 test('a page link omits server for the default room and keeps it otherwise', () => {
-  const { buildPageLink } = pageLinks();
+  const { buildPageLink } = inviteHelpers();
   assert.equal(
     buildPageLink('https://edit.example', 'r-1', 'tok', PAGE_DEFAULT_SERVER, PAGE_DEFAULT_SERVER),
     'https://edit.example/?room=r-1&token=tok',
@@ -134,7 +138,7 @@ test('a page link omits server for the default room and keeps it otherwise', () 
 });
 
 test('a pasted page link reads back into the same join, and nothing else does', () => {
-  const { buildPageLink, parsePageLink } = pageLinks();
+  const { buildPageLink, parsePageLink } = inviteHelpers();
   const link = buildPageLink(
     'https://edit.example',
     'r-1',
@@ -149,6 +153,15 @@ test('a pasted page link reads back into the same join, and nothing else does', 
   assert.equal(parsePageLink('https://host/?room=r-1'), undefined);
   assert.equal(parsePageLink('https://host/'), undefined);
   assert.equal(parsePageLink('not a link'), undefined);
+});
+
+test('a connect notice names the invite’s address, never the wire URL that carries the token', () => {
+  const { sessionAddress } = inviteHelpers();
+  const wire = sessionUrl('ws://127.0.0.1:8080', 'r-1', 'super-secret');
+  assert.equal(sessionAddress(wire), 'ws://127.0.0.1:8080');
+  // The fallback for a URL that will not parse is words, not the URL: the notice is read by a
+  // person, and the string it replaces carries the token that joined the room.
+  assert.doesNotMatch(sessionAddress('not a session URL: super-secret'), /super-secret/);
 });
 
 test('CopyInvite copies exactly the page link, never the wire address', async (t) => {

@@ -559,9 +559,9 @@ class Session {
    */
   async fetchFromRoom(wanted: string | undefined): Promise<void> {
     if (this.role() === 'host') {
-      // The Neovim refusal verbatim: a host's disk already holds what a mirror would.
+      // The Neovim refusal, in this client's words: a host's disk already holds what a mirror would.
       void vscode.window.showInformationMessage(
-        'Selvage: Your files are already on your disk, so there is nothing to download while you host.',
+        'Selvage: Your files are already on your disk, so there is nothing to fetch while you host.',
       );
       return;
     }
@@ -776,7 +776,7 @@ class Session {
         // whatever the freeze gave it, and a warning about a room already left misleads.
         if (!this.finished && !this.engine.has(path)) {
           void vscode.window.showWarningMessage(
-            `Selvage: ${path} is still empty — the host has not sent its text yet. "Download a file from the room" tries again.`,
+            `Selvage: ${path} is still empty — the host has not sent its text yet. Fetch it again later.`,
           );
         }
         resolve();
@@ -1846,6 +1846,22 @@ function replaceWindowWarning(): string {
 }
 
 /**
+ * Whether a folder the window is open on is a room's mirror rather than a folder of the
+ * person's own: a mirror root carries the marker its mint wrote. The modal's promise is
+ * about a folder of the person's, so a window holding only mirrors has nothing to be asked
+ * about — a mirror is a cache the session made and the session takes away.
+ */
+function isRoomMirror(folder: vscode.WorkspaceFolder): boolean {
+  try {
+    return readMarker(folder.uri.fsPath) !== undefined;
+  } catch {
+    // A marker this client did not write names no room of ours: treat the folder as the
+    // person's, which is the answer that asks rather than the one that assumes.
+    return false;
+  }
+}
+
+/**
  * What a first connect says when it does not become a session: the room's own answer where the
  * server gave one, and the transport's silence as the two causes it can have. What the server
  * writes is written for a protocol — a room id, `x.room_full`, "room token" — so the refusals
@@ -1872,12 +1888,16 @@ function connectRefusal(error: unknown, check: string): string {
     case ROOM_FULL:
       return 'The room is full — it seats no more people.';
     case errCode.roomGone:
-      return `That room is gone (${error.message}).`;
+      // The server's own text for this code is "the room is gone" (`session.rs`), so a
+      // parenthetical would only say the sentence twice.
+      return 'That room is gone.';
     case errCode.unsupportedVersion:
       return `This client and that server speak different versions (${error.message}).`;
     case errCode.helloRequired:
-      // The handshake was closed before it finished and the server named no refusal: as far
-      // as this window can tell, nothing was there to answer.
+      // The handshake did not finish, and this code covers both ways that happens: the
+      // server refused a first frame that was not `session.hello` (`session.rs`), and the
+      // engine's own deadline passed with nothing answering (`engine.ts`). Neither leaves a
+      // session, and the window says the one thing true of both.
       return `No server answered — ${check}`;
     default:
       return error.message;
@@ -2076,6 +2096,17 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
 }
 
 /**
+ * The address a connect notice names for the wire URL being dialled: the base `parseSessionUrl`
+ * splits off, never the URL itself. The query the base drops carries the room and the token
+ * that joined it, so the notice cannot print either. A URL that will not parse falls back to
+ * words rather than to itself: the notice is read by a person, and the whole URL is the one
+ * string in this command that must not be shown.
+ */
+export function sessionAddress(wire: string): string {
+  return parseSessionUrl(wire)?.base ?? 'the address in the invite';
+}
+
+/**
  * Joins a room as a guest: the mirror first, the session second — across one reload.
  *
  * `invite` is the link the person gave, resolved to its wire URL here for the dial and
@@ -2102,7 +2133,7 @@ async function joinGuestRoom(options: {
     return;
   }
   const wire = resolveInviteToWire(options.invite);
-  const base = parseSessionUrl(wire)?.base ?? wire;
+  const base = sessionAddress(wire);
   const room = parseSessionUrl(wire)?.join.room ?? 'room';
   let mirror = options.resume;
   if (mirror === undefined) {
@@ -2113,9 +2144,13 @@ async function joinGuestRoom(options: {
       return;
     }
     // The window the reload is about to take: asked about before anything is minted, so a
-    // decline costs nothing and leaves no half-made room directory behind. The resume below
-    // skips it deliberately — the reload it belongs to is the one this asked about.
-    if (options.driven !== true && (vscode.workspace.workspaceFolders ?? []).length > 0) {
+    // decline costs nothing and leaves no half-made room directory behind. The question is
+    // for a folder of the person's own — the one `replaceWindowWarning` promises stays on
+    // disk — so a window holding only room mirrors, and one holding nothing, reload without
+    // it. The resume below skips it deliberately: the reload it belongs to is the one this
+    // asked about.
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (options.driven !== true && folders.some((folder) => !isRoomMirror(folder))) {
       const replace = 'Join';
       const answer = await vscode.window.showWarningMessage(
         replaceWindowWarning(),
