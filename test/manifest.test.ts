@@ -180,7 +180,7 @@ test('an untrusted workspace starts the extension without resuming a room', asyn
     existsSync(leftover) ? false : true,
   );
   assert.equal(bundle.stub.registered.warnings.length, 1);
-  assert.match(String(bundle.stub.registered.warnings[0]), /leftover files/);
+  assert.match(String(bundle.stub.registered.warnings[0]), /cleaned up the files left by the last session/);
 });
 
 /**

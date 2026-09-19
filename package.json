@@ -6,6 +6,7 @@
   "description": "Live collaborative editing over the Selvage session protocol",
   "license": "MIT OR Apache-2.0",
   "publisher": "selvage-protocol",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/selvage-protocol/vscode_client.git"
@@ -102,7 +103,7 @@
       {
         "command": "selvage.fetch",
         "category": "Selvage",
-        "title": "Fetch a path from the room"
+        "title": "Download a file from the room"
       },
       {
         "command": "selvage.leave",
@@ -146,6 +147,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "selvage.participants",
+        "contents": "Share a folder with a friend — they need nothing but a browser.\n[Host a session](command:selvage.host)\n[Join a session from an invite link](command:selvage.join)"
+      }
+    ],
     "menus": {
       "view/title": [
         {

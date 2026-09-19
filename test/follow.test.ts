@@ -73,7 +73,7 @@ async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat
     await host.disconnect();
     await server.stop();
   });
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, host.session().roomId, 'Bob');
   const roomId = host.session().roomId;
   const mirrorRoot = mirrorWindowDir(storage, roomId);
@@ -454,7 +454,7 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   // stop the user did not ask for says so.
   assert.deepEqual(
     seat_.bundle.stub.registered.information.filter((message) =>
-      message.startsWith('Selvage: Stopped following'),
+      message.startsWith('Selvage: stopped following'),
     ),
     [],
     'an explicit stop said so',
@@ -583,7 +583,7 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   // sentence, which the indicator going down alone does not carry.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: Stopped following Ada.',
+      (message) => message === 'Selvage: stopped following Ada.',
     ),
     'the local edit ended the follow silently',
   );
@@ -613,7 +613,7 @@ test('going somewhere stops following first', async (t) => {
   // The navigation supersedes the follow the user did not ask to end, so it says so.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: Stopped following Ada.',
+      (message) => message === 'Selvage: stopped following Ada.',
     ),
     'the go-to superseded the follow silently',
   );

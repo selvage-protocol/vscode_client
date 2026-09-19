@@ -40,7 +40,7 @@ const TITLES: Record<string, string> = {
   'selvage.join': 'Join a session from an invite link',
   'selvage.copyInvite': 'Copy the invite link',
   'selvage.openDocument': 'Open a document from the room',
-  'selvage.fetch': 'Fetch a path from the room',
+  'selvage.fetch': 'Download a file from the room',
   'selvage.leave': 'Leave the session',
   'selvage.displayName': 'Set the name other participants see',
   'selvage.peers': "List the room's participants",
@@ -58,79 +58,93 @@ const TITLES: Record<string, string> = {
  * they are said.
  */
 const SENTENCES = [
-  // Joining and hosting.
-  '`Selvage: the room is open; the invite link is on the clipboard.`',
-  '`Selvage: the room is open, but the invite link could not be copied (${}).`',
-  '`Selvage: you are already hosting this session; the invite link is on the clipboard.`',
-  '`Selvage: you are hosting this session; joining another session ends this room for everyone.`',
-  '`Selvage: you are in this session; joining another session leaves it.`',
-  '`Selvage: you are in this session; hosting a session means leaving it first.`',
-  '`Selvage: joined the room; opening ${}${}.`',
-  '`Selvage: fetching ${}…`',
-  '`Selvage: ${} is still empty: the host has not sent its text yet. Selvage: Fetch a path from the room tries again.`',
-  '`Selvage: joined the room. Selvage: Open a document from the room lists every path.`',
-  '`Selvage: could not host on ${} (${}); is the server running at that address?`',
-  "'Selvage: open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.'",
-  '`Selvage: could not join the session (${}); check the link is complete and the server is running.`',
-  '`Selvage: joined the room; it has no open documents yet.`',
-  '`Selvage: ${} is hosting again.`',
-  '`Selvage: the host left the room; it closes in ${} unless they come back.`',
-  '`Selvage: the room is gone (${}).`',
-  "'Selvage: the connection ended and the session is over; it could not be re-established.'",
-  // The invite, and the room's documents.
-  "'Selvage: the invite link is on the clipboard.'",
-  "'Selvage: there is no invite link; host or join a room first.'",
-  "'Selvage: join a session first.'",
-  "'Selvage: the room has no open documents yet.'",
-  "'Selvage: you are hosting, so the files you open are the ones the room has.'",
-  '`Selvage: could not open ${} from the room: ${}`',
-  '`Selvage: no shared document matches "${}".`',
-  // Fetching a listed path's content (`selvage.fetch`, the `:SelvageFetch` twin).
-  "'Selvage: you are hosting, so the files a mirror would hold are already on your disk.'",
-  "'Selvage: the room lists no files to fetch.'",
+  // Downloading a listed path's content — the `:SelvageFetch` twin — and what a hold of
+  // one costs the room.
+  "'Selvage: your files are already on your disk, so there is nothing to fetch while you host.'",
+  '`Selvage: could not fetch ${} from the room: ${}`',
   '`Selvage: no file the room lists matches "${}".`',
+  '`Selvage: ${} files under ${} is more than one fetch holds (at most ${} at once); name a narrower directory.`',
+  "'Selvage: the room lists no files to fetch.'",
+  '`Selvage: fetching all ${} listed files at once would hold every one in the room; fetch a file or a directory instead (at most ${} at once).`',
+  '`Selvage: fetch all ${} listed files? Everyone in the room receives them, and they are stored on your disk.`',
   '`Selvage: fetching opens ${} in the room, so every peer receives it.`',
   "'Selvage: fetching opens them in the room, so every peer receives them.'",
   "'Selvage: fetched the files.'",
-  '`Selvage: could not fetch ${} from the room: ${}`',
-  '`Selvage: fetch all ${} listed files into the mirror? Each is held in the room so every peer receives it, and the mirror holds whatever arrives.`',
-  '`Selvage: fetching all ${} listed files at once would hold every one in the room; fetch a file or a directory instead (at most ${} at once).`',
-  '`Selvage: ${} files under ${} is more than one fetch holds (at most ${} at once); name a narrower directory.`',
-  // The mirror's refusals: what the room cannot do, said where the client is present.
-  '`Selvage: ${} is not in the room, so it is not shared; the mirror holds the room\'s files and is removed when the session ends.`',
-  '`Selvage: ${} is not in the room, so the save is not shared; copy it out of the mirror to keep it.`',
-  '`Selvage: ${} of the room\'s files could not be mirrored, starting with ${}.`',
-  '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
-  '`Selvage: removed the last session\'s leftover files; they were the room\'s text, not unsaved work.`',
-  '`Selvage: removed the last session\'s leftover files; the link it was rejoining with does not look like a Selvage invite link.`',
-  '`Selvage: could not join the session: the editor gave this window no storage for the room\'s files.`',
-  "'Selvage: not in a session.'",
-  "'Selvage: left the session.'",
-  '`Selvage: who is in the room`',
-  // The display name.
-  "'Selvage: no display name is set yet.'",
-  '`Selvage: the name others see is "${}".`',
-  '`Selvage: display name set to "${}".`',
-  '`Selvage: ${}`',
-  '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
-  // What the room's own reports say.
-  "`Selvage: ${} was out of step with the room; the room's copy has been put back.`",
-  "`Selvage: the editor would not apply the room's change to ${}; the file may be read-only.`",
-  '`Selvage: could not save ${}; the file on disk is behind the room.`',
-  '`Selvage: could not save ${}; the file on disk is behind the room (${}).`',
-  '`Selvage: ${} (${})`',
-  // The list of participants.
+  '`Selvage: fetching ${}…`',
+  '`Selvage: ${} is still empty — the host has not sent its text yet. Fetch it again later.`',
+  // Where a peer is, and following one.
   "'Selvage: no other participants yet.'",
-  "`Selvage: you're the only one here — copy the invite link.`",
-  // Going to a participant, and following one. Start and an asked-for stop live in the
-  // status item: the indicator going up and down is the whole announcement, so there is
-  // no toast for those. A stop the user did not ask for — a local edit, a go-to — says so.
-  "'Selvage: not following anyone.'",
-  '`Selvage: ${} left the room, so following stopped.`',
-  '`Selvage: Stopped following ${}.`',
   '`Selvage: nothing to go to: ${} is not in a document.`',
   '`Selvage: nothing to follow: ${} is not in a document.`',
-  "`Selvage: nothing to go to: ${}'s caret does not resolve here.`",
+  '`Selvage: stopped following ${}.`',
+  "'Selvage: not following anyone.'",
+  '`Selvage: could not open ${} from the room: ${}`',
+  '`Selvage: nothing to go to: ${}\'s caret does not resolve here.`',
+  '`Selvage: ${} left the room, so following stopped.`',
+  // The room's shape on disk: what the listing could not keep in step, and what is not
+  // part of the room at all.
+  '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
+  '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
+  '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
+  // What the room's own reports say.
+  '`Selvage: the host left the room; it closes in ${} unless they come back.`',
+  '`Selvage: ${} is hosting again.`',
+  '`Selvage: the room is gone (${}).`',
+  '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',
+  '`Selvage: ${} was out of step with the room; the room\'s copy has been put back.`',
+  '`Selvage: could not save ${}; the file on disk is behind the room.`',
+  '`Selvage: could not save ${}; the file on disk is behind the room (${}).`',
+  "'Selvage: the connection ended and the session is over; it could not be re-established.'",
+  // Host and join: what each costs a room that is already live, and the window a join takes.
+  '`Selvage: you are hosting this session; joining another session ends this room for everyone.`',
+  '`Selvage: you are in this session; joining another session leaves it.`',
+  '`Selvage: you are in this session; hosting a session means leaving it first.`',
+  '`Selvage: joining replaces this window\'s folder with the room\'s files. Your own folder stays on disk — reopen it whenever you like.`',
+  // A fault the room reported, and the sentence the capacity refusal stands in for:
+  // `x.room_full` on the wire is a sentence here.
+  "'Selvage: the room is full — it seats no more people.'",
+  // Hosting, and the invite it leaves on the clipboard.
+  '`Selvage: you are already hosting this session; the invite link is on the clipboard.`',
+  "'Selvage: open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.'",
+  '`Selvage: connecting to ${}…`',
+  // Joining: the wait, the refusals, and the landing.
+  '`Selvage: could not host on ${}. ${}`',
+  '`Selvage: the room is open, but the invite link could not be copied (${}).`',
+  '`Selvage: the room is open. Send this link to your friend — it is on the clipboard.`',
+  '`Selvage: ${}`',
+  '`Selvage: could not join the session: the editor gave this window no storage for the room\'s files.`',
+  '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
+  '`Selvage: could not join the session. ${}`',
+  '`Selvage: cleaned up the files left by the last session; its invite link no longer works.`',
+  '`Selvage: cleaned up the files left by the last session.`',
+  '`Selvage: joined the room; the room has no open documents yet.`',
+  '`Selvage: joined the room — opening ${}.`',
+  '`Selvage: joined the room — opening ${}; ${} more in the room.`',
+  '`Selvage: joined the room.`',
+  // The invite, and the room's documents.
+  "'Selvage: there is no invite link; host or join a room first.'",
+  "'Selvage: the invite link is on the clipboard.'",
+  "'Selvage: join a session first.'",
+  "'Selvage: you are the host — the files you open are the ones your guests see.'",
+  "'Selvage: the room has no open documents yet.'",
+  '`Selvage: no shared document matches "${}".`',
+  // The display name, and the room's participants.
+  "'Selvage: not in a session.'",
+  "'Selvage: left the session.'",
+  "'Selvage: no display name is set yet.'",
+  '`Selvage: the name others see is "${}".`',
+  '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
+  '`Selvage: display name set to "${}".`',
+  '`Selvage: who is in the room`',
+  // The status bar: the one Selvage surface a window always has, so its fragments are pinned
+  // here with the codicon that leads them. The scan below reaches them through the same
+  // optional prefix a template carries (`sentencesIn`).
+  "'$(sync~spin) Selvage: reconnecting…'",
+  "'$(warning) Selvage: the host is away'",
+  '`$(radio-tower) Selvage: ${} — ${}`',
+  '`$(person) Selvage: following ${}`',
+  // The empty room's one row: the invitation to copy the link.
+  '`Selvage: you\'re the only one here — copy the invite link.`',
 ];
 
 /**
@@ -142,7 +156,9 @@ const REFUSALS = [
   'this name is 33 UTF-16 code units and the limit is 32; a name is refused rather than shortened.',
 ];
 
-/** Every `Selvage: …` string literal in a source, `${…}` collapsed. */
+/** Every `Selvage: …` string literal in a source, `${…}` collapsed. A status-bar fragment leads
+ * with a codicon inside the same literal, so the prefix is optional rather than absent.
+ */
 function sentencesIn(source: string): string[] {
   const found: string[] = [];
   for (const line of source.split('\n')) {
@@ -151,7 +167,9 @@ function sentencesIn(source: string): string[] {
     if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
       continue;
     }
-    for (const match of line.matchAll(/`Selvage: [^`]*`|'Selvage: [^']*'/g)) {
+    for (const match of line.matchAll(
+      /`(?:\$\([^`)]*\) )?Selvage: [^`]*`|'(?:\$\([^')]*\) )?Selvage: [^']*'/g,
+    )) {
       found.push(match[0].replaceAll(/\$\{[^}]*\}/g, '${}'));
     }
   }

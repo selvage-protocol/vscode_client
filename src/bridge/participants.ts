@@ -26,7 +26,7 @@ export interface ParticipantRow {
   kind: 'peer';
   peerId: string;
   label: string;
-  /** The file the peer is in, or `No open document` — where they are, never whether followed. */
+  /** The file the peer is in, or `not in a file yet` — where they are, never whether followed. */
   description: string;
   contextValue:
     | 'selvageParticipant'
@@ -70,7 +70,7 @@ export function describeParticipants(
       kind: 'peer' as const,
       peerId: entry.peerId,
       label: participantLabel(entry, entries),
-      description: entry.path ?? 'No open document',
+      description: entry.path ?? 'not in a file yet',
       contextValue: following
         ? 'selvageParticipantFollowing'
         : navigable

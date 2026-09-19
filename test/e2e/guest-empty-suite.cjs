@@ -71,7 +71,7 @@ async function stageJoin() {
     throw new Error('empty: the join stage did not start in an empty window');
   }
   try {
-    await vscode.commands.executeCommand('selvage.join', { invite: INVITE, displayName: DISPLAY_NAME });
+    await vscode.commands.executeCommand('selvage.join', { invite: INVITE, displayName: DISPLAY_NAME});
     // The command returned, so the reload is staged: say so on disk, because the
     // reload takes this run before it can say anything else.
     if (process.env.SELVAGE_E2E_STAGED_FILE !== undefined) {

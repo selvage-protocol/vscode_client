@@ -363,7 +363,7 @@ test('a room destroyed under a client ends the session, and nothing retries it',
   server.drop('Bob');
 
   await events.waitForEvent(
-    'the guest to be told the room is gone',
+    'the guest to be told The room is gone',
     (event) => event.type === 'roomGone',
   );
   await events.waitForEvent(

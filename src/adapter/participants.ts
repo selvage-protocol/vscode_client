@@ -21,9 +21,6 @@ import type {
 /** The empty room's row. Pinned in `test/vocabulary.test.ts`, like every sentence. */
 export const NO_PEERS_LABEL = `Selvage: you're the only one here — copy the invite link.`;
 
-/** The row when no session is live. The existing sentence, said by other moments too. */
-export const NO_SESSION_LABEL = 'Selvage: join a session first.';
-
 /** A row that is a sentence rather than a peer: the empty room, or no session. */
 export interface NoteRow {
   kind: 'note';
@@ -36,18 +33,26 @@ export interface NoteRow {
 export type ViewRow = (ParticipantRow & { kind: 'peer' }) | NoteRow;
 
 /**
- * Turns the roster's answer into words: peers pass through, and each note becomes its
- * pinned sentence — the empty room offering the invite copy on click.
+ * Turns the roster's answer into words: peers pass through, and the empty room becomes its
+ * pinned sentence — the invitation to copy the link, which is the one thing to do when the
+ * room holds nobody else.
+ *
+ * No session is no row at all. The view is then empty, which is exactly when the editor draws
+ * the welcome the manifest contributes for it: one sentence and a **Host a session** button.
+ * The row this replaces said `Selvage: join a session first.` to someone whose intent was to
+ * host, and offered nothing to click; that sentence still stands where it belongs, on the
+ * commands that need a session before they can run.
  */
 export function resolveViewRows(rows: readonly RosterRow[]): ViewRow[] {
-  return rows.map((row) => {
+  const resolved: ViewRow[] = [];
+  for (const row of rows) {
     if (row.kind === 'peer') {
-      return row;
+      resolved.push(row);
+    } else if (row.kind === 'empty') {
+      resolved.push({ kind: 'note', label: NO_PEERS_LABEL, command: 'selvage.copyInvite' });
     }
-    return row.kind === 'empty'
-      ? { kind: 'note' as const, label: NO_PEERS_LABEL, command: 'selvage.copyInvite' }
-      : { kind: 'note' as const, label: NO_SESSION_LABEL };
-  });
+  }
+  return resolved;
 }
 
 /**
@@ -151,15 +156,24 @@ export class ParticipantsProvider implements vscode.TreeDataProvider<vscode.Tree
     const peers = rows.filter((row) => row.kind === 'peer');
     if (peers.length !== rows.length || peers.length === 0) {
       const note = rows[0];
-      const key =
-        note === undefined ? 'none' : `${note.label} ${note.kind === 'note' ? (note.command ?? '') : ''}`;
+      // No session is no row at all: an empty list, which is what the editor draws the
+      // manifest's welcome over. A `TreeItem` with an empty label would stand in front of it
+      // forever, and it is not a row a person could click.
+      if (note === undefined) {
+        this.note = undefined;
+        this.noteKey = undefined;
+        if (this.items.length > 0) {
+          this.byPeer.clear();
+          this.items = [];
+          this.changed.fire(undefined);
+        }
+        return;
+      }
+      const key = `${note.label} ${note.kind === 'note' ? (note.command ?? '') : ''}`;
       if (this.note === undefined || this.noteKey !== key) {
-        const item = new vscode.TreeItem(
-          note?.label ?? '',
-          vscode.TreeItemCollapsibleState.None,
-        );
+        const item = new vscode.TreeItem(note.label, vscode.TreeItemCollapsibleState.None);
         item.contextValue = 'selvageParticipantsNote';
-        if (note !== undefined && note.kind === 'note' && note.command !== undefined) {
+        if (note.kind === 'note' && note.command !== undefined) {
           item.command = { command: note.command, title: 'Copy the invite link' };
         }
         this.note = item;
@@ -167,7 +181,7 @@ export class ParticipantsProvider implements vscode.TreeDataProvider<vscode.Tree
       }
       if (this.byPeer.size > 0 || this.items[0] !== this.note) {
         this.byPeer.clear();
-        this.items = this.note === undefined ? [] : [this.note];
+        this.items = [this.note];
         this.changed.fire(undefined);
       }
       return;

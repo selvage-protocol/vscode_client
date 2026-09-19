@@ -297,7 +297,7 @@ test('a guest watches nothing and publishes no listing', async (t) => {
   assert.ok(invite !== undefined, 'the host was given no invite link');
 
   const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
 
   // Nothing to wait for: a guest creates no watcher at all, so there is nothing that could
@@ -406,7 +406,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
   assert.deepEqual(
     said,
     [
-      "Selvage: could not watch the folder this window shares: this window has no watcher for that folder (error)",
+      "Selvage: could not watch the folder this window shares: this window has no watcher for that folder.",
     ],
     'two folders that cannot be watched are two failures the user has to read',
   );
@@ -526,7 +526,7 @@ test('a refused listing is reported, and the session goes on', async (t) => {
   );
   assert.deepEqual(said, [
     'Selvage: the server refused the listing of the folder this window shares: ' +
-      'the listing is over the bound this server will store (bad_params)',
+      'the listing is over the bound this server will store.',
   ]);
 
   // A refusal is not a reason to stop watching: the next *different* listing is published and
@@ -671,7 +671,7 @@ test('a path that leaves the listing is a listing that shrank, not a hold releas
   await host.grant(['README.md', 'docs/notes.md', 'src/main.rs']);
 
   const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
   const roomId = roomOf(invite);
   await landStashedJoin(bundle, storage, roomId, 'Bob');
   await waitForMirrorFiles(storage, roomId, ['README.md', 'docs/notes.md', 'src/main.rs']);
