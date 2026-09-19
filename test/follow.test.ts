@@ -593,6 +593,39 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   );
 });
 
+test('a local cursor move stops the follow and says so', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    followItem(seat_) !== undefined ? true : false,
+  );
+  await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
+
+  // The person reaches for the arrow key: the editor reports the move as a selection change,
+  // which is the one thing the follow itself does not produce while it is applying a landing.
+  editor.selection = { anchor: { line: 0, character: 9 }, active: { line: 0, character: 9 } };
+  seat_.bundle.stub.fire('selection');
+  await waitFor('the move to stop the follow', () =>
+    followItem(seat_) === undefined ? true : false,
+  );
+  assert.ok(
+    seat_.bundle.stub.registered.information.some(
+      (message) => message === 'Stopped following Ada — you moved.',
+    ),
+    'the move ended the follow silently',
+  );
+
+  // And the stop is permanent: the next frame draws the peer's caret, and leaves ours alone.
+  seat_.host.setSelection(PATH_A, { anchor: 2, head: 2 });
+  await waitFor('the next peer frame to be drawn', () => (drawnCaretAt(editor, 2) ? true : false), {
+    describe: () => ({ decorated: editor.decorated.length }),
+  });
+  assert.equal(caretOf(editor), 9, 'the follow dragged the caret back after it ended');
+});
+
 test('going somewhere stops following first', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
   const holder = { text: TEXT_A };

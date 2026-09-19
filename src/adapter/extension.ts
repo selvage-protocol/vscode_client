@@ -336,6 +336,12 @@ class Session {
   private followingName = '';
   /** The indicator: created when a follow begins, gone when it ends, and the stop control. */
   private followStatus: vscode.StatusBarItem | undefined;
+  /**
+   * How many remote landings are in flight. A landing places the caret itself, and the editor
+   * reports that move back as a selection change; this is what tells that report apart from
+   * the person's own move, so the follow does not end the instant it lands.
+   */
+  private applyingRemote = 0;
   /** A go-to whose document has not arrived yet: re-resolved on every room event. */
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
@@ -400,6 +406,7 @@ class Session {
         this.saved(document);
       }),
       vscode.window.onDidChangeTextEditorSelection(() => {
+        this.localMoveEndsFollow();
         this.scheduleSelection();
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
@@ -1327,11 +1334,16 @@ class Session {
       return 'refused';
     }
     const position = editor.document.positionAt(resolved.head);
-    editor.selection = new vscode.Selection(position, position);
-    editor.revealRange(
-      new vscode.Range(position, position),
-      vscode.TextEditorRevealType.InCenterIfOutsideViewport,
-    );
+    this.applyingRemote += 1;
+    try {
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(
+        new vscode.Range(position, position),
+        vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+      );
+    } finally {
+      this.applyingRemote -= 1;
+    }
     this.scheduleSelection();
     return 'landed';
   }
@@ -1603,6 +1615,21 @@ class Session {
     const name = this.followingName;
     this.clearFollow();
     void vscode.window.showInformationMessage(`Selvage: stopped following ${name}.`);
+  }
+
+  /**
+   * A caret move the follow did not make ends it. While following, the next room frame would
+   * drag the caret back, so a person who reached for the arrow key would be fighting the
+   * client; a landing raises `applyingRemote` around the move it makes, which is what tells
+   * the two apart without comparing positions a peer may legitimately share.
+   */
+  private localMoveEndsFollow(): void {
+    if (this.applyingRemote > 0 || this.followingPeerId === undefined) {
+      return;
+    }
+    const name = this.followingName;
+    this.clearFollow();
+    void vscode.window.showInformationMessage(`Stopped following ${name} — you moved.`);
   }
 
   /**
