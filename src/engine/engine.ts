@@ -300,8 +300,8 @@ export class SelvageEngine {
   private retryTimer?: ReturnType<typeof setTimeout>;
   private attempts = 0;
   /**
-   * Attempts a reconnect makes before it gives up. The policy's number, raised in
-   * `negotiate()` to cover the room's advertised grace — but never lowered, and not touched
+   * Attempts a reconnect makes before it gives up. The policy's number, raised by
+   * `applyGrace()` to cover a grace the room reported — but never lowered, and not touched
    * at all when the caller named the number itself.
    */
   private retryBudget: number;
@@ -401,6 +401,23 @@ export class SelvageEngine {
     this.seat(session);
   }
 
+  /**
+   * Sizes the retry budget against a grace the room reported, from either place that carries
+   * one: `/meta`'s `room_grace_ms` and a `host.detached`'s `grace_ms`. The budget only ever
+   * grows, so a number that arrives later — or a larger one — is never a reason to give up
+   * sooner; overshooting costs one handshake, because a room the server has reaped answers
+   * `room_unknown`, which is terminal, while undershooting loses a room still open.
+   */
+  private applyGrace(graceMs: number): void {
+    if (this.maxAttemptsGiven || graceMs <= 0) {
+      return;
+    }
+    this.retryBudget = Math.max(
+      this.retryBudget,
+      attemptsForGrace(graceMs, this.reconnect),
+    );
+  }
+
   /** Applies `GET /meta`: advisory when unreachable, decisive when incompatible. */
   private async negotiate(): Promise<void> {
     if (this.options.meta === 'skip') {
@@ -427,17 +444,12 @@ export class SelvageEngine {
       );
     }
     // §9.1: a client that knows the room's grace keeps retrying at least until the window has
-    // passed, because a room survives its host's absence for exactly that long. The grace is
-    // read here, before the first session — it is the one number a host needs and the one its
-    // own `host.detached` never reaches it with. A number the caller gave for `maxAttempts`
-    // stands: the fields of `reconnect` are the caller's policy, and this only sizes the
-    // default the caller left to the engine.
+    // passed, because a room survives its host's absence for exactly that long. `/meta` is
+    // where a host reads it — the one number a host needs and the one its own `host.detached`
+    // never reaches it with.
     const graceMs = numberField(meta.keepalive, 'room_grace_ms');
-    if (!this.maxAttemptsGiven && graceMs !== undefined && graceMs > 0) {
-      this.retryBudget = Math.max(
-        this.reconnect.maxAttempts,
-        attemptsForGrace(graceMs, this.reconnect),
-      );
+    if (graceMs !== undefined) {
+      this.applyGrace(graceMs);
     }
   }
 
@@ -1330,7 +1342,12 @@ export class SelvageEngine {
         const graceMs = numberParam(message.params, 'grace_ms') ?? 0;
         // A grace of 1e15 renders as a 31-million-second tooltip: the room rejoins in
         // seconds or not at all, so the wait is clamped to the hour it never needs.
-        this.emit({ type: 'hostDetached', graceMs: Math.min(Math.max(graceMs, 0), 3_600_000) });
+        const windowMs = Math.min(Math.max(graceMs, 0), 3_600_000);
+        // The other half of §9.1: a guest that never read `/meta`, or read it before the
+        // grace was known, learns the same window here, and it is this one that arrives
+        // mid-session — a detach is when the guest's own reconnects have to span it.
+        this.applyGrace(windowMs);
+        this.emit({ type: 'hostDetached', graceMs: windowMs });
         break;
       }
       case eventName.hostAttached: {
