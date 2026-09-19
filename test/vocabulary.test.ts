@@ -154,7 +154,7 @@ const SENTENCES = [
  */
 const PLAIN_SENTENCES = [
   'Stopped following ${} — you moved.',
-  'Host disconnected. ${} left — if they return within ${} the session continues, otherwise this room closes and work in it is lost.',
+  'Host disconnected. ${} left — if they return within ${} the session continues, otherwise this room closes and your local copy is kept.',
   '${} is back — the session continues.',
   'The room closed. Your copy is kept at ${}.',
 ];

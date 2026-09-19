@@ -1834,7 +1834,7 @@ class Session {
       case 'hostDetached': {
         this.armHostAway(report.graceMs);
         void vscode.window.showWarningMessage(
-          `Host disconnected. ${this.hostName} left — if they return within ${seconds(report.graceMs)} the session continues, otherwise this room closes and work in it is lost.`,
+          `Host disconnected. ${this.hostName} left — if they return within ${seconds(report.graceMs)} the session continues, otherwise this room closes and your local copy is kept.`,
         );
         break;
       }
@@ -1912,7 +1912,7 @@ class Session {
     if (this.detachedDeadline !== undefined) {
       const remaining = Math.max(0, Math.ceil((this.detachedDeadline - Date.now()) / 1000));
       this.status.text = `$(warning) Selvage: host away — room closes in ${remaining}s`;
-      this.status.tooltip = `The host is away; the room closes in ${remaining}s if they do not come back. Work in the room is lost when it closes.`;
+      this.status.tooltip = `The host is away; the room closes in ${remaining}s if they do not come back. Your local copy is kept when it closes.`;
       this.status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }

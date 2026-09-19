@@ -1024,7 +1024,7 @@ test('a host that goes away and comes back is announced', async (t) => {
   );
   assert.equal(
     away,
-    'Host disconnected. Ada left — if they return within 30s the session continues, otherwise this room closes and work in it is lost.',
+    'Host disconnected. Ada left — if they return within 30s the session continues, otherwise this room closes and your local copy is kept.',
   );
 
   const back = await waitFor('the announcement', () =>
@@ -1058,7 +1058,7 @@ test('a room that is gone is named before the session ends', async (t) => {
   );
   assert.equal(
     away,
-    'Host disconnected. Ada left — if they return within 2s the session continues, otherwise this room closes and work in it is lost.',
+    'Host disconnected. Ada left — if they return within 2s the session continues, otherwise this room closes and your local copy is kept.',
   );
 
   const gone = await waitFor('the room to be reported gone', () =>
