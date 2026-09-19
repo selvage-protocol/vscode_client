@@ -351,6 +351,16 @@ class Session {
    * the person's own move, so the follow does not end the instant it lands.
    */
   private applyingRemote = 0;
+  /**
+   * The editor and offset the last landing placed, unanswered by a selection event yet. The
+   * editor reports a landing's move asynchronously, sometimes after `applyingRemote` has
+   * already fallen back to zero, so the counter alone cannot tell that late echo from the
+   * person's own move. The next selection event is measured against this expectation and
+   * consumed either way — matched, it is the echo and is excused; anything else is the
+   * person's own move — so a stale entry an echo never answers cannot go on excusing moves
+   * after it.
+   */
+  private expectedEcho: { editor: vscode.TextEditor; head: number } | undefined;
   /** A go-to whose document has not arrived yet: re-resolved on every room event. */
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
@@ -415,8 +425,8 @@ class Session {
       vscode.workspace.onDidSaveTextDocument((document) => {
         this.saved(document);
       }),
-      vscode.window.onDidChangeTextEditorSelection(() => {
-        this.localMoveEndsFollow();
+      vscode.window.onDidChangeTextEditorSelection((event) => {
+        this.localMoveEndsFollow(event);
         this.scheduleSelection();
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
@@ -1355,6 +1365,11 @@ class Session {
     } finally {
       this.applyingRemote -= 1;
     }
+    // The echo this placement reports may arrive after the counter above has fallen back to
+    // zero: remember the placement, so the next selection event is measured against it rather
+    // than read outright as the person's move. Only the latest landing stands: an older
+    // placement a newer one superseded never excuses a move afterwards.
+    this.expectedEcho = { editor, head: resolved.head };
     this.scheduleSelection();
     return 'landed';
   }
@@ -1393,6 +1408,7 @@ class Session {
    */
   private clearFollow(): void {
     this.followingPeerId = undefined;
+    this.expectedEcho = undefined;
     this.setFollowContext(false);
     this.followStatus?.dispose();
     this.followStatus = undefined;
@@ -1680,15 +1696,40 @@ class Session {
    * A caret move the follow did not make ends it. While following, the next room frame would
    * drag the caret back, so a person who reached for the arrow key would be fighting the
    * client; a landing raises `applyingRemote` around the move it makes, which is what tells
-   * the two apart without comparing positions a peer may legitimately share.
+   * a synchronous echo apart without comparing positions a peer may legitimately share. The
+   * editor may also report the placement after that counter has fallen back to zero, so the
+   * next event is measured against what the landing placed instead: a match is that echo and
+   * is excused, anything else is the person's own move, even to the peer's own offset.
    */
-  private localMoveEndsFollow(): void {
+  private localMoveEndsFollow(event: vscode.TextEditorSelectionChangeEvent | undefined): void {
     if (this.applyingRemote > 0 || this.followingPeerId === undefined) {
+      return;
+    }
+    if (this.consumesExpectedEcho(event)) {
       return;
     }
     const name = this.followingName;
     this.clearFollow();
     void vscode.window.showInformationMessage(`Stopped following ${name} — you moved.`);
+  }
+
+  /**
+   * Whether this event is the landing's own late echo: matched by editor and the offset it
+   * placed, since two editors can each report a move around the same moment and only the one
+   * the landing touched answers for it. The expectation is consumed either way — matched or
+   * not — so a stale one an echo never answers cannot go on excusing a move afterwards.
+   */
+  private consumesExpectedEcho(event: vscode.TextEditorSelectionChangeEvent | undefined): boolean {
+    const expected = this.expectedEcho;
+    if (expected === undefined) {
+      return false;
+    }
+    this.expectedEcho = undefined;
+    if (event === undefined || event.textEditor !== expected.editor) {
+      return false;
+    }
+    const active = event.selections[0]?.active;
+    return active !== undefined && event.textEditor.document.offsetAt(active) === expected.head;
   }
 
   /**

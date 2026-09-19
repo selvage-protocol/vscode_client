@@ -667,6 +667,46 @@ test('a local cursor move stops the follow and says so', async (t) => {
   assert.equal(caretOf(editor), 9, 'the follow dragged the caret back after it ended');
 });
 
+test("a landing's own late echo does not end the follow", async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const holder = { text: TEXT_A };
+  const editor = await openHeld(seat_, PATH_A, holder, 5);
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor('the follow to begin', () =>
+    followItem(seat_) !== undefined ? true : false,
+  );
+  // The effect the test waits on: the landing placed the peer's caret. The stub never
+  // fires a selection event for the programmatic move, so the echo below is staged by
+  // hand the way the editor reports it — after the assignment has returned, with the
+  // counter back at zero. Publishing our own caret would rebroadcast presence and land
+  // again, superseding the expectation before the echo arrives; the echo is staged before
+  // the publish runs instead, so it answers the placement it belongs to.
+  await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
+  // The editor hands the landing its own object, while the test's stand-in is a plain
+  // record: the echo below names the landing's editor by its document, the identity the
+  // implementation can observe through the stub.
+  const landed = seat_.bundle.stub.registered.shownEditors.find(
+    (candidate) => candidate.document === editor.document,
+  ) as unknown as typeof editor | undefined;
+  seat_.bundle.stub.fire('selection', {
+    textEditor: landed ?? editor,
+    selections: [{ active: caretOf(editor) ?? 5 }],
+  });
+  // The echo must not end the follow: the indicator stays up and nothing says the person
+  // moved — which is what a misread echo broke. Tracking the next genuine move proves the
+  // follow survived it.
+  assert.ok(followItem(seat_) !== undefined, "the landing's echo ended the follow");
+  assert.deepEqual(
+    seat_.bundle.stub.registered.information.filter((message) => message.includes('you moved')),
+    [],
+    "the landing's echo said the person moved",
+  );
+  seat_.host.setSelection(PATH_A, { anchor: 8, head: 8 });
+  await waitFor('the follow to track past its own echo', () => caretOf(editor) === 8);
+  assert.ok(followItem(seat_) !== undefined, 'the follow ended on the move after its echo');
+});
+
 test('going somewhere stops following first', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
   const holder = { text: TEXT_A };
