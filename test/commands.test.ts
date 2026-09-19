@@ -1308,7 +1308,7 @@ test('a host serves the path the room asks for, and refuses what the grant leave
   const own = bundle.stub.openWorkspaceDocument('file:///workspace/.env');
   bundle.stub.fire('openTextDocument', own);
   const gated = await waitFor('the refused open to be reported', () =>
-    bundle.stub.registered.errors.find((message) => message.includes('will not share .env')) ??
+    bundle.stub.registered.errors.find((message) => message.includes('share .env with the room')) ??
       false,
   );
   assert.match(gated, /nothing was shared for it/);

@@ -1909,12 +1909,14 @@ function connectRefusal(error: unknown, check: string): string {
  * they name a cause nothing here can — except for the capacity policy this server states with
  * a code of its own, which a person wants said rather than spelled out. The code itself stays
  * out of the sentence: `bad_params` is a word for a log, and this line is read by a person.
+ * Whatever the words came from — the room, or this window's own report of a folder it could not
+ * read — they are capitalised after the wrapper, because the wrapper is this client's.
  */
 function sessionErrorSentence(message: string, code: string): string {
   if (code === ROOM_FULL) {
     return 'Selvage: The room is full — it seats no more people.';
   }
-  const words = message.trim();
+  const words = message.trim().replace(/^[a-z]/, (letter) => letter.toUpperCase());
   const sentence = /[.!?]$/.test(words) ? words : `${words}.`;
   return `Selvage: ${sentence}`;
 }
