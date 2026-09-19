@@ -766,21 +766,29 @@ test('following marks the row at once, and leaves the file it names alone', asyn
   assert.equal(adaRow.description, 'not in a file yet', 'the row lost what it said about Ada');
   await bundle.stub.commands.executeCommand('selvage.followParticipant', adaRow);
   await waitFor('the follow to mark the row', () =>
-    viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue ===
+    viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.contextValue ===
     'selvageParticipantFollowing'
       ? true
       : false,
   );
+  const followed = viewNodes(bundle).find((node) => node.peerId === adaRow.peerId);
+  assert.equal(followed?.label, '$(eye) Ada', 'the followed row is not marked as the one followed');
   assert.equal(
-    viewNodes(bundle).find((node) => node.label === 'Ada')?.description,
+    followed?.description,
     'not in a file yet',
     'the follow state displaced what the row says about where Ada is',
   );
   await bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the stop to unmark the row', () =>
-    viewNodes(bundle).find((node) => node.label === 'Ada')?.contextValue === 'selvageParticipantAway'
+    viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.contextValue ===
+    'selvageParticipantAway'
       ? true
       : false,
+  );
+  assert.equal(
+    viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.label,
+    'Ada',
+    'the eye glyph survived the stop',
   );
 });
 
@@ -862,8 +870,13 @@ test('the manifest contributes the view, with the same actions on the row as but
   );
   assert.deepEqual(
     titleMenus.map((entry) => entry.command),
-    ['selvage.copyInvite'],
+    ['selvage.stopFollowing', 'selvage.copyInvite'],
     'the view menu reaches past the commands the palette has',
+  );
+  assert.equal(
+    titleMenus.find((entry) => entry.command === 'selvage.stopFollowing')?.when,
+    'view == selvage.participants && selvage.following',
+    'the follow-stop title button is not gated on the follow context key',
   );
   for (const entry of viewMenus) {
     assert.ok(ids.has(entry.command), `${entry.command} is no contributed command`);

@@ -56,6 +56,15 @@ export function resolveViewRows(rows: readonly RosterRow[]): ViewRow[] {
 }
 
 /**
+ * The label a row wears: the followed peer's gains an eye glyph, so the row itself says
+ * *this is the one you are following* rather than only its buttons and hover doing so. The
+ * file it names stays where it is; the follow is marked, not spelled out.
+ */
+function rowLabel(row: ParticipantRow): string {
+  return row.contextValue === 'selvageParticipantFollowing' ? `$(eye) ${row.label}` : row.label;
+}
+
+/**
  * One roster row: a `TreeItem` carrying the peer id, which is structurally the argument
  * the go-to and follow commands already take — so a view action calls straight through
  * with no new command. The colour dot is the picker's `swatch`, so the row and the caret
@@ -85,7 +94,7 @@ export class ParticipantItem extends vscode.TreeItem {
   /** Brings the row up to date, answering whether anything the tree shows changed. */
   update(row: ParticipantRow): boolean {
     if (
-      this.label === row.label &&
+      this.label === rowLabel(row) &&
       this.description === row.description &&
       this.tooltipText === row.tooltip &&
       this.contextValue === row.contextValue &&
@@ -99,7 +108,7 @@ export class ParticipantItem extends vscode.TreeItem {
   }
 
   private apply(row: ParticipantRow): void {
-    this.label = row.label;
+    this.label = rowLabel(row);
     this.description = row.description;
     // A string tooltip is converted to a markdown string by the workbench and rendered as
     // markdown, so a peer's `![](http://…/l.png)` name — a legal 24-code-unit name — is an

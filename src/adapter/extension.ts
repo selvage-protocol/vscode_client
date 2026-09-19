@@ -308,7 +308,16 @@ class Session {
    * tells a fresh open of it apart from a document the room never wrote to.
    */
   private readonly seenListed = new Set<string>();
-  private detachedMs: number | undefined;
+  /**
+   * The moment the room closes if the host does not return, taken from the grace
+   * `host.detached` carried. A deadline rather than a duration, because the status bar shows
+   * a clock that ticks: the number captured when the host left would read 30s for ever.
+   */
+  private detachedDeadline: number | undefined;
+  /** Recomputes the countdown while the host is away; cleared with the deadline. */
+  private detachedTimer: ReturnType<typeof setInterval> | undefined;
+  /** The host's name as last seen in membership: `host.detached` names only the grace. */
+  private hostName = '';
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
   private finished = false;
@@ -336,6 +345,12 @@ class Session {
   private followingName = '';
   /** The indicator: created when a follow begins, gone when it ends, and the stop control. */
   private followStatus: vscode.StatusBarItem | undefined;
+  /**
+   * How many remote landings are in flight. A landing places the caret itself, and the editor
+   * reports that move back as a selection change; this is what tells that report apart from
+   * the person's own move, so the follow does not end the instant it lands.
+   */
+  private applyingRemote = 0;
   /** A go-to whose document has not arrived yet: re-resolved on every room event. */
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
@@ -355,6 +370,7 @@ class Session {
     this.engine = engine;
     this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
+    this.rememberHost();
     this.documents = engine.documents();
     this.granted = engine.grantedPaths();
     for (const path of this.granted) {
@@ -400,6 +416,7 @@ class Session {
         this.saved(document);
       }),
       vscode.window.onDidChangeTextEditorSelection(() => {
+        this.localMoveEndsFollow();
         this.scheduleSelection();
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
@@ -1189,6 +1206,7 @@ class Session {
     this.followingPeerId = peerId;
     this.followingName = this.displayLabel(peerId);
     this.pendingGoTo = undefined;
+    this.setFollowContext(true);
     this.showFollowStatus();
     refreshParticipants();
     await this.followTick();
@@ -1327,11 +1345,16 @@ class Session {
       return 'refused';
     }
     const position = editor.document.positionAt(resolved.head);
-    editor.selection = new vscode.Selection(position, position);
-    editor.revealRange(
-      new vscode.Range(position, position),
-      vscode.TextEditorRevealType.InCenterIfOutsideViewport,
-    );
+    this.applyingRemote += 1;
+    try {
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(
+        new vscode.Range(position, position),
+        vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+      );
+    } finally {
+      this.applyingRemote -= 1;
+    }
     this.scheduleSelection();
     return 'landed';
   }
@@ -1370,9 +1393,18 @@ class Session {
    */
   private clearFollow(): void {
     this.followingPeerId = undefined;
+    this.setFollowContext(false);
     this.followStatus?.dispose();
     this.followStatus = undefined;
     refreshParticipants();
+  }
+
+  /**
+   * Publishes the follow state as an editor context key, so a menu or a title button the
+   * manifest gates on `selvage.following` appears exactly while a follow stands.
+   */
+  private setFollowContext(active: boolean): void {
+    void vscode.commands.executeCommand('setContext', 'selvage.following', active);
   }
 
   private showFollowStatus(): void {
@@ -1385,11 +1417,14 @@ class Session {
     }
     this.followStatus.text = `$(person) Selvage: following ${this.followingName}`;
     // The foreground is the peer's marker colour: the mapping the caret wears, so the
-    // indicator and the caret cannot disagree. Only the foreground — a status-bar background
-    // takes two theme colours, never an arbitrary one.
+    // indicator and the caret cannot disagree. The background is the editor's own warning
+    // colour, which paints the whole item and lifts it out of the strip of session-state
+    // items it shares with the room's status — the nearest thing this editor has to the
+    // Neovim client's full-width row.
     if (this.followingPeerId !== undefined) {
       this.followStatus.color = peerColour(this.followingPeerId);
     }
+    this.followStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     this.followStatus.tooltip = `Following ${this.followingName} — select to stop following`;
     this.followStatus.show();
   }
@@ -1404,15 +1439,47 @@ class Session {
     return peerName(display, peerId);
   }
 
-  dispose(): void {
+  /** Remembers the host's name while it is present: `host.detached` carries only the grace. */
+  private rememberHost(): void {
+    const host = this.peers.find((peer) => peer.role === 'host');
+    if (host !== undefined) {
+      this.hostName = peerName(host.display_name, host.peer_id);
+    }
+  }
+
+  /**
+   * Starts the countdown the host's grace is. The deadline is the moment the room closes, so
+   * every redraw recomputes how long is left rather than repeating how long there was; the
+   * timer is what makes that recomputation happen while nothing else does.
+   */
+  private armHostAway(graceMs: number): void {
+    this.clearHostAway();
+    this.detachedDeadline = Date.now() + Math.max(0, graceMs);
+    this.detachedTimer = setInterval(() => {
+      this.refreshStatus();
+    }, 1000);
+    this.refreshStatus();
+  }
+
+  private clearHostAway(): void {
+    if (this.detachedTimer !== undefined) {
+      clearInterval(this.detachedTimer);
+      this.detachedTimer = undefined;
+    }
+    this.detachedDeadline = undefined;
+  }
+
+  dispose(options: { keepMirror?: boolean } = {}): void {
     if (this.finished) {
       return;
     }
     this.finished = true;
+    this.clearHostAway();
     // The follow is session state: it goes with the session, with no sentence, the way the
     // caret drawing and the room's document set do.
     this.stopEngine();
     this.followingPeerId = undefined;
+    this.setFollowContext(false);
     this.pendingGoTo = undefined;
     this.followStatus?.dispose();
     this.followStatus = undefined;
@@ -1430,7 +1497,11 @@ class Session {
     // removing the only folder reloads the window, so there must be no session left to
     // lose. The close is requested, not awaited: teardown is synchronous, and the stub
     // records the request order, which is the order the editor honours them in.
-    if (this.mirror !== undefined) {
+    //
+    // A room that closed under the guest is the one teardown that keeps the copy: what is in
+    // the mirror is the only place the guest's work exists, so the directory stays and the
+    // tabs and folder stay with it. `keepMirror` is set only from `roomGone`.
+    if (this.mirror !== undefined && options.keepMirror !== true) {
       const mirror = this.mirror;
       const tabs = (vscode.window.tabGroups?.all ?? [])
         .flatMap((group) => group.tabs)
@@ -1606,6 +1677,21 @@ class Session {
   }
 
   /**
+   * A caret move the follow did not make ends it. While following, the next room frame would
+   * drag the caret back, so a person who reached for the arrow key would be fighting the
+   * client; a landing raises `applyingRemote` around the move it makes, which is what tells
+   * the two apart without comparing positions a peer may legitimately share.
+   */
+  private localMoveEndsFollow(): void {
+    if (this.applyingRemote > 0 || this.followingPeerId === undefined) {
+      return;
+    }
+    const name = this.followingName;
+    this.clearFollow();
+    void vscode.window.showInformationMessage(`Stopped following ${name} — you moved.`);
+  }
+
+  /**
    * Arms the one flush the interval allows. A burst of caret events — typing, an auto-repeat
    * arrow key, a drag — becomes a single read of the editor and a single presence frame. The
    * flush reads the selection when it runs, so what a burst publishes is where the caret
@@ -1686,6 +1772,7 @@ class Session {
       }
       case 'peers': {
         this.peers = report.peers;
+        this.rememberHost();
         this.refreshStatus();
         refreshParticipants();
         // The follow target is a peer id, so a rename only re-labels the indicator while a
@@ -1704,24 +1791,33 @@ class Session {
         break;
       }
       case 'hostDetached': {
-        this.detachedMs = report.graceMs;
-        this.refreshStatus();
+        this.armHostAway(report.graceMs);
         void vscode.window.showWarningMessage(
-          `Selvage: the host left the room; it closes in ${seconds(report.graceMs)} unless they come back.`,
+          `Host disconnected. ${this.hostName} left — if they return within ${seconds(report.graceMs)} the session continues, otherwise this room closes and work in it is lost.`,
         );
         break;
       }
       case 'hostAttached': {
-        this.detachedMs = undefined;
+        this.clearHostAway();
+        this.hostName = peerName(report.peer.display_name, report.peer.peer_id);
         this.refreshStatus();
         void vscode.window.showInformationMessage(
-          `Selvage: ${report.peer.display_name} is hosting again.`,
+          `${this.hostName} is back — the session continues.`,
         );
         break;
       }
       case 'roomGone': {
-        void vscode.window.showWarningMessage(`Selvage: the room is gone (${report.reason}).`);
-        this.dispose();
+        // A guest's mirror is the only copy of what it wrote during the grace, so the room
+        // closing does not take it: the directory stays and one sentence says where.
+        if (this.mirror !== undefined) {
+          void vscode.window.showWarningMessage(
+            `The room closed. Your copy is kept at ${this.mirror.root}.`,
+          );
+          this.dispose({ keepMirror: true });
+        } else {
+          void vscode.window.showWarningMessage(`Selvage: the room is gone (${report.reason}).`);
+          this.dispose();
+        }
         break;
       }
       case 'sessionError': {
@@ -1765,14 +1861,18 @@ class Session {
 
   private refreshStatus(): void {
     const shared = this.bridge.openDocuments();
+    // The background belongs to the host-away alarm alone; every other state draws plain.
+    this.status.backgroundColor = undefined;
     if (this.reconnecting) {
       this.status.text = '$(sync~spin) Selvage: reconnecting…';
       this.status.tooltip = 'The connection dropped; trying to rejoin the room.';
       return;
     }
-    if (this.detachedMs !== undefined) {
-      this.status.text = '$(warning) Selvage: the host is away';
-      this.status.tooltip = `The room closes in ${seconds(this.detachedMs)} if the host does not come back.`;
+    if (this.detachedDeadline !== undefined) {
+      const remaining = Math.max(0, Math.ceil((this.detachedDeadline - Date.now()) / 1000));
+      this.status.text = `$(warning) Selvage: host away — room closes in ${remaining}s`;
+      this.status.tooltip = `The host is away; the room closes in ${remaining}s if they do not come back. Work in the room is lost when it closes.`;
+      this.status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }
     // The bar is the one Selvage surface a window always has, so it says the two things a

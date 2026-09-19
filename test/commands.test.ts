@@ -79,6 +79,13 @@ function roomOffer(bundle: LoadedExtension): string {
   );
 }
 
+/** The session status item's text: the one surface that shows the host-away countdown. */
+function statusText(bundle: LoadedExtension): string {
+  return String(
+    bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+  );
+}
+
 /** A server with a room, minted by a source engine, and its invite. */
 async function room(
   t: TestContext,
@@ -1012,15 +1019,18 @@ test('a host that goes away and comes back is announced', async (t) => {
   bundle.stub.reset();
   server.drop('Ada');
   const away = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('host left')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('Host disconnected')) ??
+    false,
   );
-  assert.equal(away, 'Selvage: the host left the room; it closes in 30s unless they come back.');
+  assert.equal(
+    away,
+    'Host disconnected. Ada left — if they return within 30s the session continues, otherwise this room closes and work in it is lost.',
+  );
 
   const back = await waitFor('the announcement', () =>
-    bundle.stub.registered.information.find((message) => message.includes('hosting again')) ??
-      false,
+    bundle.stub.registered.information.find((message) => message.includes('is back')) ?? false,
   );
-  assert.equal(back, 'Selvage: Ada is hosting again.');
+  assert.equal(back, 'Ada is back — the session continues.');
 });
 
 test('a room that is gone is named before the session ends', async (t) => {
@@ -1043,14 +1053,21 @@ test('a room that is gone is named before the session ends', async (t) => {
   bundle.stub.reset();
   await host.disconnect();
   const away = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('host left')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('Host disconnected')) ??
+    false,
   );
-  assert.equal(away, 'Selvage: the host left the room; it closes in 2s unless they come back.');
+  assert.equal(
+    away,
+    'Host disconnected. Ada left — if they return within 2s the session continues, otherwise this room closes and work in it is lost.',
+  );
 
   const gone = await waitFor('the room to be reported gone', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('gone')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('The room closed')) ?? false,
   );
-  assert.equal(gone, 'Selvage: the room is gone (host did not return).');
+  assert.equal(
+    gone,
+    `The room closed. Your copy is kept at ${mirrorWindowDir(storage, roomOf(invite))}.`,
+  );
 
   // The session goes with the room, so the window is in nothing.
   bundle.stub.reset();
@@ -1059,6 +1076,83 @@ test('a room that is gone is named before the session ends', async (t) => {
     bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
   );
   assert.equal(ended, 'Selvage: join a session first.');
+});
+
+test('the countdown to the room closing ticks while the host is away', async (t) => {
+  const server = await FakeServer.start({ roomGraceMs: 3000 });
+  t.after(async () => {
+    await server.stop();
+  });
+  // A host that does not come back: the engine's retry would reclaim the room long before the
+  // first tick, so the away state has to stand on its own for the countdown to be observed.
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
+  t.after(async () => {
+    await host.disconnect();
+  });
+  await host.open('workspace/README.md');
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the host was given no invite link');
+
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
+  // No reset here: it would drop the session's status item from what the stub records, and
+  // the countdown is read off that item rather than off a message.
+
+  await host.disconnect();
+  const first = await waitFor('the host-away status to appear', () => {
+    const text = statusText(bundle);
+    return text.includes('room closes in') ? text : false;
+  });
+  assert.equal(first, '$(warning) Selvage: host away — room closes in 3s');
+  // The number captured at the detach would read 3s for ever. A tick to 2s (or 1s, if the poll
+  // lands late) is only possible from a live deadline, and the deadline fails loudly if not.
+  const ticked = await waitFor(
+    'the countdown to move as the deadline approaches',
+    () => {
+      const text = statusText(bundle);
+      return /room closes in [12]s/.test(text) ? text : false;
+    },
+    { timeoutMs: 2600, describe: () => statusText(bundle) },
+  );
+  assert.match(ticked, /room closes in [12]s/);
+});
+
+test('the room closing keeps the guest copy on disk, with its content', async (t) => {
+  const server = await FakeServer.start({ roomGraceMs: 1500 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
+  t.after(async () => {
+    await host.disconnect();
+  });
+  await host.open('workspace/README.md');
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the host was given no invite link');
+
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
+  const roomId = roomOf(invite);
+  await landStashedJoin(bundle, storage, roomId, 'Bob');
+  const root = mirrorWindowDir(storage, roomId);
+  // Work the room never had: a tool writing into the mirror, which is the out-of-editor path
+  // the grace-window loss is about. The room's own listing names only README.md.
+  const work = join(root, 'guest-work.txt');
+  writeFileSync(work, 'typed during the grace window\n');
+
+  bundle.stub.reset();
+  await host.disconnect();
+  const gone = await waitFor('the room to be reported gone', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('The room closed')) ?? false,
+  );
+  assert.equal(gone, `The room closed. Your copy is kept at ${root}.`);
+  assert.ok(existsSync(root), 'the room closing deleted the guest copy');
+  assert.equal(
+    readFileSync(work, 'utf8'),
+    'typed during the grace window\n',
+    'the room closing lost what the guest wrote',
+  );
 });
 
 /** The invite a bundle host copied, read off the clipboard as a user's click would leave it. */
