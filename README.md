@@ -529,7 +529,7 @@ The versions this was last run with, on this host:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
-$ npm run build                        # → dist/extension.js, 546.7 kB, and dist/package.json
+$ npm run build                        # → dist/extension.js, 547.3 kB, and dist/package.json
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then the server-free suite
 $ npm test                             # builds, then the same plus four against a real selvaged
@@ -571,7 +571,7 @@ build a sibling checkout, so the four server-backed tests stay a local run: buil
 This repository's own flake has no git hooks: the shell that installs them is
 `../reference_server`'s, and it writes them into whatever repository it is started in.
 
-**439 tests, 0 failures** in `test:fast`, the suite that needs no server. Waits are bounded polls of
+**443 tests, 0 failures** in `test:fast`, the suite that needs no server. Waits are bounded polls of
 a real predicate that report the state they observed on failure (`test/helpers/wait.ts`), not
 `sleep`-and-hope.
 
