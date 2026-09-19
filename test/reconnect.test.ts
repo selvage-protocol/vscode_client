@@ -4,11 +4,14 @@
  */
 
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
+import type { ConnectOptions } from '../src/engine/engine.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
 import { FakeServer } from './helpers/fake-server.ts';
+import type { FakeServerOptions } from './helpers/fake-server.ts';
 import { fakeSession, options } from './helpers/session.ts';
 import { converge, record, waitFor, waitForPeer } from './helpers/wait.ts';
 
@@ -643,5 +646,175 @@ test('the retry budget falls back to the policy when no grace is advertised', as
     server.acceptedConnections,
     6,
     'with no grace to size against, the policy keeps its own five attempts',
+  );
+});
+
+/**
+ * A host and a guest on a server that answers every connection after the seated pair
+ * silently, so a guest's reconnects run to whatever budget it has rather than to the room's
+ * fate, and the connection count is the guest's alone.
+ */
+async function silentRetryGuest(
+  t: TestContext,
+  serverOptions: FakeServerOptions,
+  guestOptions: Partial<ConnectOptions>,
+): Promise<{ server: FakeServer; guest: SelvageEngine }> {
+  const server = await FakeServer.start(serverOptions);
+  t.after(async () => {
+    await server.stop();
+  });
+  // The host does not come back, so no retry of its own joins the count.
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', options({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    reconnect: false,
+  }));
+  t.after(async () => {
+    await host.disconnect();
+  });
+  const guest = await SelvageEngine.join(
+    host.inviteUrl() ?? '',
+    'Bob',
+    options({
+      baseUrl: server.wsBase,
+      displayName: 'Bob',
+      handshakeTimeoutMs: 20,
+      ...guestOptions,
+    }),
+  );
+  t.after(async () => {
+    await guest.disconnect();
+  });
+  return { server, guest };
+}
+
+test('a guest sizes its reconnect budget from the grace host.detached carried', async (t) => {
+  // §9.1: a room survives its host for the grace period, and a client that knows the number
+  // keeps retrying until the window has passed. This guest reads no `/meta` at all — the
+  // detach is the only place it can learn the grace, and the guest is exactly the peer that
+  // needs it: a host leaves, and a guest left behind is the one whose own socket then drops.
+  const { server, guest } = await silentRetryGuest(
+    t,
+    { roomGraceMs: 500, silentAfter: 2 },
+    { reconnect: { initialDelayMs: 50, maxDelayMs: 50 } },
+  );
+  const events = record(guest);
+
+  server.drop('Ada');
+  const detached = await events.waitForEvent(
+    'the guest to be told the host detached',
+    (event) => event.type === 'hostDetached',
+  );
+  assert.ok(detached.type === 'hostDetached');
+  assert.equal(detached.graceMs, 500);
+
+  server.drop('Bob');
+  await events.waitForEvent(
+    'the guest to give up after its scaled attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(guest.isOpen, false);
+  assert.equal(
+    server.acceptedConnections,
+    12,
+    'the seated pair and the ten retries that span the grace the detach carried',
+  );
+});
+
+test('a caller’s maxAttempts still wins over the grace host.detached carried', async (t) => {
+  const { server, guest } = await silentRetryGuest(
+    t,
+    { roomGraceMs: 500, silentAfter: 2 },
+    { reconnect: { initialDelayMs: 50, maxDelayMs: 50, maxAttempts: 6 } },
+  );
+  const events = record(guest);
+
+  server.drop('Ada');
+  await events.waitForEvent(
+    'the guest to be told the host detached',
+    (event) => event.type === 'hostDetached',
+  );
+
+  // The grace would ask for ten attempts; the caller's own six are the caller's to choose.
+  server.drop('Bob');
+  await events.waitForEvent(
+    'the guest to give up after the caller’s attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(guest.isOpen, false);
+  assert.equal(
+    server.acceptedConnections,
+    8,
+    'the seated pair and the six attempts the caller asked for',
+  );
+});
+
+test('a host.detached with no grace to size against leaves the policy’s attempts', async (t) => {
+  const { server, guest } = await silentRetryGuest(
+    t,
+    { silentAfter: 2 },
+    { reconnect: { initialDelayMs: 50, maxDelayMs: 50 } },
+  );
+  const events = record(guest);
+
+  // An event with no `grace_ms` at all is a peer that reports nothing to size against.
+  server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'host.detached',
+    params: {},
+  }));
+  const detached = await events.waitForEvent(
+    'the detach with no grace to arrive',
+    (event) => event.type === 'hostDetached',
+  );
+  assert.ok(detached.type === 'hostDetached');
+  assert.equal(detached.graceMs, 0);
+
+  server.drop('Bob');
+  await events.waitForEvent(
+    'the guest to give up after the policy’s attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(
+    server.acceptedConnections,
+    7,
+    'a detach with nothing to size against leaves the policy its five attempts',
+  );
+});
+
+test('a zero grace in host.detached does not extend the budget either', async (t) => {
+  const { server, guest } = await silentRetryGuest(
+    t,
+    { silentAfter: 2 },
+    { reconnect: { initialDelayMs: 50, maxDelayMs: 50 } },
+  );
+  const events = record(guest);
+
+  // A grace of zero is a room that is already gone: there is no window to span.
+  server.sendToClient('Bob', JSON.stringify({
+    v: 'selvage/1',
+    event: 'host.detached',
+    params: { grace_ms: 0 },
+  }));
+  const detached = await events.waitForEvent(
+    'the zero-grace detach to arrive',
+    (event) => event.type === 'hostDetached',
+  );
+  assert.ok(detached.type === 'hostDetached');
+  assert.equal(detached.graceMs, 0);
+
+  server.drop('Bob');
+  await events.waitForEvent(
+    'the guest to give up after the policy’s attempts',
+    (event) => event.type === 'disconnected',
+    { timeoutMs: 5000 },
+  );
+  assert.equal(
+    server.acceptedConnections,
+    7,
+    'a zero grace leaves the policy its five attempts',
   );
 });
