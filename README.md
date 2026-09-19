@@ -523,8 +523,8 @@ The versions this was last run with, on this host:
 
 | Tool | Version here | Notes |
 |---|---|---|
-| Node | `v26.8.1` (`/etc/profiles/per-user/user/bin/node`) | **≥ 22.18** is required: the tests are `.ts` run directly by `node --test`, which needs type stripping |
-| npm | `11.19.0` | `npm ci` reaches the registry |
+| Node | `v26.8.2` (`/etc/profiles/per-user/user/bin/node`) | **≥ 22.18** is required: the tests are `.ts` run directly by `node --test`, which needs type stripping |
+| npm | `11.19.1` | `npm ci` reaches the registry |
 | nix | `2.34.8` | `nix develop` gives the Node above, `nix flake check` runs the server-free half in a sandbox, and `nix develop ../reference_server` builds `selvaged` out of the sibling checkout, which the four server-backed tests need |
 
 ```console
