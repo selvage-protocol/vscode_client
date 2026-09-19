@@ -144,7 +144,7 @@ const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
  * never a commitment — the `selvage.webOrigin` setting always wins —
  * so moving the page is this one line.
  */
-const DEFAULT_WEB_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8443';
+const DEFAULT_WEB_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8444';
 
 export function activate(context: vscode.ExtensionContext): void {
   deactivated = false;
