@@ -1,12 +1,11 @@
 name: release
 
 # A release packages the extension (`vsce package`), attaches the `.vsix` to a GitHub
-# Release, and — once the owner has added a trusted publishing policy for this repository
-# on the Marketplace — publishes it to the VS Code Marketplace as
-# `selvage-protocol.selvage-client`. There is no `VSCE_PAT`: publishing uses
-# `vsce publish --oidc`, which exchanges this job's GitHub Actions token for a short-lived
-# Marketplace credential (see the publish step below and
-# https://github.com/microsoft/vscode-vsce#trusted-publishing).
+# Release, and publishes it to the VS Code Marketplace as `selvage-protocol.selvage-client`.
+# There is no `VSCE_PAT`: publishing uses `vsce publish --azure-credential`, authenticating as
+# a Microsoft Entra ID app registration federated to this repository's `marketplace`
+# environment (see the publish job below). Trusted publishing (`--oidc`) is not available for
+# this Marketplace publisher, so the workflow does not use it.
 #
 # The owner triggers a release from this workflow. `workflow_dispatch` (with a required
 # `version` input, no default) is the manual button; pushing a tag `v*` runs the same job
@@ -26,7 +25,9 @@ name: release
 # holds neither permission. A compromised install script there cannot reach the OIDC-token
 # request endpoint or push a tag; the `.vsix` and the installed publisher both cross the
 # boundary as artifacts, and `publish` only runs the `vsce` binary it downloaded, never
-# `npm install` or `npm ci`.
+# `npm install` or `npm ci`. `publish` also runs under the `marketplace` GitHub environment,
+# so the Marketplace credential exchange (and any required reviewers the owner adds there)
+# gates on every trigger shape, tag push and manual dispatch alike.
 on:
   workflow_dispatch:
     inputs:
@@ -143,9 +144,16 @@ jobs:
     if: inputs.dry_run != true
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
+    # The `marketplace` environment scopes the Microsoft Entra ID federated credential's
+    # subject (`repo:selvage-protocol/vscode_client:environment:marketplace`), so azure/login
+    # below succeeds only when this job names it — on a tag push and a manual dispatch alike,
+    # since GitHub keys the OIDC subject to the environment name rather than the triggering
+    # ref once a job declares one. It also gives the owner a place to add required reviewers.
+    environment: marketplace
     # `contents: write` creates and pushes the tag and the GitHub Release. `id-token: write`
-    # is the OIDC token the Marketplace trusted-publishing exchange needs. Nothing else is
-    # granted, and nothing in this job installs the project's own dependency tree.
+    # is the OIDC token azure/login exchanges for a Marketplace publishing credential.
+    # Nothing else is granted, and nothing in this job installs the project's own dependency
+    # tree.
     permissions:
       contents: write
       id-token: write
@@ -224,23 +232,35 @@ jobs:
         with:
           node-version: "22.18.0"
 
-      # `--oidc` exchanges this job's GitHub Actions token for a short-lived Marketplace
-      # credential; it does not fall back to a PAT if that exchange fails. The exchange
-      # only works once the owner has added a trusted publishing policy on the Marketplace
-      # publisher management page naming this repository (selvage-protocol/vscode_client)
-      # and this workflow file (.github/workflows/release.yml). Until then this step fails
-      # loudly, on purpose, rather than reporting success: the tag and GitHub Release above
-      # already exist independently of it and need nothing from this step to be useful.
+      # Federated identity, not a stored secret: this exchanges the job's OIDC token (minted
+      # because `publish` runs under the `marketplace` environment and holds `id-token:
+      # write`) for a short-lived Microsoft Entra ID credential. The app registration has no
+      # role assignment on any Azure subscription — it exists only to authenticate to the
+      # Marketplace — so `allow-no-subscriptions` skips the subscription lookup `azure/login`
+      # otherwise requires. Client ID and tenant ID are public identifiers, not secrets;
+      # hardcoded here rather than as repository variables because nothing in this session's
+      # tooling can create Actions variables, and a workflow file is itself reviewable
+      # provenance for which identity a release runs as.
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: 0538596d-b7e5-4f25-979f-49c437e48820
+          tenant-id: eca3c161-254f-49bc-b981-b638ee9d0fa6
+          allow-no-subscriptions: true
+
+      # `--azure-credential` authenticates as the Microsoft Entra ID identity `azure/login`
+      # just signed in as; trusted publishing (`--oidc`) is not available for this Marketplace
+      # publisher (checked on the publisher's own management page: no trusted-publishing
+      # policy form exists there), so this is the working route rather than a fallback. It
+      # does not swallow a failure: a non-zero exit here fails the job, and the tag and GitHub
+      # Release above already exist independently of whether this step succeeds.
       - name: publish to the VS Code Marketplace
         run: |
-          if ! ./.vsce-publish/node_modules/.bin/vsce publish --oidc --packagePath "$VSIX"; then
+          if ! ./.vsce-publish/node_modules/.bin/vsce publish --azure-credential --packagePath "$VSIX"; then
             cat >&2 <<EOF
-          Marketplace publish failed. If the trusted publishing policy for
-          selvage-protocol/vscode_client + .github/workflows/release.yml does not exist yet
-          on the Marketplace publisher management page, this is expected: add it there,
-          then re-run this workflow (it will find v${RELEASE_VERSION} already tagged and
-          released, and publish without redoing that part). The tag and GitHub Release
-          above already exist regardless of this step's outcome.
+          Marketplace publish failed. If this is a new identity, confirm its Visual Studio
+          profile id has been added to the selvage-protocol publisher's Members with a
+          publishing role (Creator or above). The tag and GitHub Release above already exist
+          regardless of this step's outcome.
           EOF
             exit 1
           fi
