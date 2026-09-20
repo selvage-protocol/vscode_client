@@ -2109,8 +2109,12 @@ async function host(
     return;
   }
   const given = args?.serverUrl?.trim();
-  const baseUrl = given === undefined || given === '' ? await resolveServerUrl() : given;
-  if (baseUrl === undefined) {
+  const resolved = given === undefined || given === '' ? await resolveServerUrl() : undefined;
+  const baseUrl = resolved?.url ?? given;
+  // Only a silently reused address earns the offer to change it: an argument names its
+  // own address, and a configured one is changed where it is set, in Settings.
+  const reusedMemory = resolved?.fromMemory ?? false;
+  if (baseUrl === undefined || baseUrl === '') {
     return;
   }
   lastServer = baseUrl;
@@ -2136,7 +2140,17 @@ async function host(
       error,
       'check the address is the one the server printed, and that the server is running.',
     );
-    void vscode.window.showErrorMessage(`Selvage: could not host on ${baseUrl}. ${why}`);
+    // A remembered address that dials nothing is the moment its owner needs the change
+    // the palette never offered: the failure already names the address, so the button
+    // beside it reaches the same question the first run asked, prefilled with that address.
+    const buttons = reusedMemory ? ['Change the server'] : [];
+    const answer = await vscode.window.showErrorMessage(
+      `Selvage: could not host on ${baseUrl}. ${why}`,
+      ...buttons,
+    );
+    if (answer === 'Change the server') {
+      await offerServerChange(context, baseUrl);
+    }
     return;
   }
   current = new Session(engine);
@@ -2160,13 +2174,21 @@ async function host(
   }
   // The invitation is the host's whole next step, so it is said as one and the copy is
   // repeatable from the notice: a clipboard that has moved on is one click from being right.
+  // A reused address is the one case the notice names: it arrived silently, and the button
+  // beside it is the change the palette never offered. Any other host already knows its
+  // address — typed, given, or configured — so the notice stays exactly as it was.
   const copyAgain = 'Copy again';
-  const answer = await vscode.window.showInformationMessage(
-    `Selvage: the room is open. Send this link to your friend — it is on the clipboard.`,
-    copyAgain,
-  );
+  const changeServer = 'Change the server';
+  const notice =
+    reusedMemory === true
+      ? `Selvage: the room is open on ${baseUrl}. Send this link to your friend — it is on the clipboard.`
+      : 'Selvage: the room is open. Send this link to your friend — it is on the clipboard.';
+  const buttons = reusedMemory === true ? [copyAgain, changeServer] : [copyAgain];
+  const answer = await vscode.window.showInformationMessage(notice, ...buttons);
   if (answer === copyAgain) {
     await copyInviteLink();
+  } else if (answer === changeServer) {
+    await offerServerChange(context, baseUrl);
   }
 }
 
@@ -3151,27 +3173,61 @@ function stopFollowing(): void {
  * address are worth: the first of them answers, silently. Only a window with none of
  * the three asks, prefilled with the demo default (`DEFAULT_SERVER_URL`) — a prefill,
  * not a commitment, because the answer is what the next host reuses.
+ *
+ * `fromMemory` names the silent reuse the host notice offers to change: a configured
+ * address and an asked one name their own source, so only a remembered one earns
+ * the button.
  */
-async function resolveServerUrl(): Promise<string | undefined> {
+async function resolveServerUrl(): Promise<{ url: string; fromMemory: boolean } | undefined> {
   const configured = config().get<string>('serverUrl', '').trim();
   if (configured !== '') {
-    return configured;
+    return { url: configured, fromMemory: false };
   }
   if (lastServer !== undefined && lastServer.trim() !== '') {
-    return lastServer;
+    return { url: lastServer, fromMemory: true };
   }
-  const answer = await vscode.window.showInputBox({
+  const answer = await vscode.window.showInputBox(serverInput(DEFAULT_SERVER_URL));
+  const trimmed = answer?.trim();
+  return trimmed === undefined || trimmed === '' ? undefined : { url: trimmed, fromMemory: false };
+}
+
+/**
+ * The first run's question, and the remembered address's change box: the same box either
+ * way, starting from the demo default the first time and from the address in force when
+ * it is changed. The value is what the next host reuses, so a change answers once.
+ */
+function serverInput(value: string): vscode.InputBoxOptions {
+  return {
     title: 'The Selvage server to host on',
     prompt:
       'The server you and your guest both connect to. If you started one yourself, it printed this address when it started.',
     placeHolder: 'The address the server prints when it starts',
-    value: DEFAULT_SERVER_URL,
+    value,
     ignoreFocusOut: true,
-    validateInput: (value) =>
-      value.trim() === '' ? 'Enter the address the server printed when it started.' : undefined,
-  });
+    validateInput: (entry) =>
+      entry.trim() === '' ? 'Enter the address the server printed when it started.' : undefined,
+  };
+}
+
+/**
+ * The change the host notice offers beside a reused address: the first run's question
+ * prefilled with the address in force, remembered the same way a typed answer is, so the
+ * next host reuses it. A dismissed box changes nothing: the room stands on its server.
+ */
+async function offerServerChange(
+  context: vscode.ExtensionContext | undefined,
+  current: string,
+): Promise<void> {
+  const answer = await vscode.window.showInputBox(serverInput(current));
   const trimmed = answer?.trim();
-  return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+  if (trimmed === undefined || trimmed === '' || trimmed === current) {
+    return;
+  }
+  lastServer = trimmed;
+  await rememberServer(context, trimmed);
+  void vscode.window.showInformationMessage(
+    `Selvage: will host on ${trimmed} next. Leave this session and host again to move there.`,
+  );
 }
 
 /**

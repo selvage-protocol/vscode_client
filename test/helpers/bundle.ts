@@ -81,6 +81,7 @@ export interface EditorStub {
     informationItems: unknown[][];
     warnings: string[];
     errors: string[];
+    errorItems: unknown[][];
     quickPicks: Array<{ items: unknown[]; options: unknown }>;
     inputs: Array<Record<string, unknown>>;
     /** Every progress notice the extension showed, in order. */
@@ -103,6 +104,7 @@ export interface EditorStub {
     watcherFailure: string | undefined;
     informationReply: unknown;
     warningReply: unknown;
+    errorReply: unknown;
     quickPickReply: unknown;
     inputReply: unknown;
     /** How the editor answers `workspace.applyEdit`; a test may replace it to observe applies. */

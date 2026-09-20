@@ -109,7 +109,9 @@ const SENTENCES = [
   // Joining: the wait, the refusals, and the landing.
   '`Selvage: could not host on ${}. ${}`',
   '`Selvage: the room is open, but the invite link could not be copied (${}).`',
-  '`Selvage: the room is open. Send this link to your friend — it is on the clipboard.`',
+  '`Selvage: the room is open on ${}. Send this link to your friend — it is on the clipboard.`',
+  "'Selvage: the room is open. Send this link to your friend — it is on the clipboard.'",
+  '`Selvage: will host on ${} next. Leave this session and host again to move there.`',
   '`Selvage: ${}`',
   '`Selvage: could not join the session: the editor gave this window no storage for the room\'s files.`',
   '`Selvage: could not open the room\'s folder in this window (${}); join again.`',

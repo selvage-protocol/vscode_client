@@ -25,6 +25,8 @@ const registered = {
   informationItems: [],
   warnings: [],
   errors: [],
+  /** The buttons each error message offered, in order, beside `errors`. */
+  errorItems: [],
   quickPicks: [],
   /** Every progress notice the extension showed, in order: a fetch in flight names its path. */
   progress: [],
@@ -45,6 +47,7 @@ const registered = {
   statusBarItems: [],
   informationReply: undefined,
   warningReply: undefined,
+  errorReply: undefined,
   quickPickReply: undefined,
   inputReply: undefined,
   /** The window's open documents, as a test seeded them before the session started. */
@@ -379,6 +382,7 @@ function reset() {
   folders.push({ uri: parseUri(WORKSPACE_FOLDER), name: 'workspace', index: 0 });
   registered.informationReply = undefined;
   registered.warningReply = undefined;
+  registered.errorReply = undefined;
   registered.quickPickReply = undefined;
   registered.inputReply = undefined;
   configured.clear();
@@ -888,9 +892,10 @@ module.exports = {
       void rest;
       return Promise.resolve(registered.warningReply);
     },
-    showErrorMessage: (message) => {
+    showErrorMessage: (message, ...rest) => {
       registered.errors.push(message);
-      return Promise.resolve(undefined);
+      registered.errorItems.push(rest);
+      return Promise.resolve(registered.errorReply);
     },
     showQuickPick: (items, options) => {
       registered.quickPicks.push({ items, options });
