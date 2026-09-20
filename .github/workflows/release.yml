@@ -145,7 +145,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     # The `marketplace` environment scopes the Microsoft Entra ID federated credential's
-    # subject (`repo:selvage-protocol/vscode_client:environment:marketplace`), so azure/login
+    # subject. The organisation has ID-based (immutable) OIDC subject claims enabled, so GitHub
+    # embeds the numeric org and repository ids:
+    # `repo:selvage-protocol@328844633/vscode_client@1368869486:environment:marketplace`. That
+    # is the exact string the federated credential is registered against, so azure/login
     # below succeeds only when this job names it — on a tag push and a manual dispatch alike,
     # since GitHub keys the OIDC subject to the environment name rather than the triggering
     # ref once a job declares one. It also gives the owner a place to add required reviewers.
