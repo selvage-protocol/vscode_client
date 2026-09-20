@@ -26,7 +26,10 @@ jobs:
 
       # 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps resource id,
       # identical for every tenant and safe to hardcode.
+      # Only the id is printed: the full response also carries the identity's display name and
+      # email address, which the workflow log for this public repository should not hold.
       - name: print the identity's Visual Studio profile id
         run: |
           az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me \
-            --resource 499b84ac-1321-427f-aa17-267ca6975798
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+            --query id --output tsv
