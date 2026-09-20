@@ -96,6 +96,13 @@ with a `Change the server` button that asks the same question again for the next
 the setting or on an explicit address has no such button, because that address is changed where
 it was set.
 
+`Selvage: Change the server` answers the same question without hosting first: it reports the
+address the next host uses and offers the same box to change it, prefilled with the current one.
+While `selvage.serverUrl` is configured that setting outranks the remembered address, so the
+command says the setting is in force and changes nothing — writing the memento would be a change
+the next host silently ignores. Either way the write reaches the next host only; it never touches
+a room already open.
+
 A host's `Selvage: Copy the invite link` links to the page named by `selvage.webOrigin`, which
 defaults to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`. The setting must name
 an https origin and anything else falls back to the default, so a host's copied link never carries
@@ -161,18 +168,19 @@ how the caller settles what the server did.
 
 ## Commands
 
-Eleven, the same eleven the Neovim client is specified to have with `:SelvageHost`,
-`:SelvageJoin`, `:SelvageDisplayName`, `:SelvageOpen`, `:SelvageFetch`, `:SelvageCopyInvite`,
-`:SelvageLeave`, `:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and `:SelvageStopFollowing`.
-Only the presentation differs: an editor command is a palette entry here and a `:command` there, so
-going to or following a participant is a palette pick here and a completing command there, while
-the three intents stay one-to-one.
+Twelve, the same twelve the Neovim client is specified to have with `:SelvageHost`,
+`:SelvageJoin`, `:SelvageDisplayName`, `:SelvageChangeServer`, `:SelvageOpen`, `:SelvageFetch`,
+`:SelvageCopyInvite`, `:SelvageLeave`, `:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and
+`:SelvageStopFollowing`. Only the presentation differs: an editor command is a palette entry here
+and a `:command` there, so going to or following a participant is a palette pick here and a
+completing command there, while the intents stay one-to-one.
 
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's documents. Asks for the server address only when no argument, setting or remembered address names one; hosting again after a leave reuses the last one with no question. Asks for the name once. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. The handshake is announced while it happens (`withProgress`), as the reconnect path's own indicator already was; the notice that follows carries the invite's next step and a Copy again button. |
 | `Selvage: Join a session from an invite link` | Join the room named by an invite link entered by the user, replacing this window's tree with the room mirror (one reload, never a second root beside the local workspace). Accepts the https page link the host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join (a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address) is refused before the name is asked and before the window reloads, in words that never quote the link's token. A window holding a folder of its own is asked before the reload takes it, and the folder stays on disk either way. The handshake after the reload is announced while it happens. A refused join says what happened in a sentence with no room id and no wire word in it: the room's own `no such room: <id>` and `invalid room token` reach the person as ordinary words. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
+| `Selvage: Change the server` | Report the server the next host uses, and set it, without hosting first. Reuses the host notice's own change box, prefilled with the address in force. While `selvage.serverUrl` is configured that setting outranks the remembered address, so the command says so and changes nothing; the write never touches a room already open, only the next host. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Download a file from the room` | Hold one listed path, or a directory of them, in the room so every peer receives it, filling the mirror. Refused while hosting: the disk already holds what a mirror would. |
 | `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest holds the token it joined with, and the invite is the permission, so it hands on the link it joined by, exactly as it stood: that same page link, or the `ws://` link where that is how the room was reached. |

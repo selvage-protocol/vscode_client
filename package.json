@@ -116,6 +116,11 @@
         "title": "Set the name other participants see"
       },
       {
+        "command": "selvage.changeServer",
+        "category": "Selvage",
+        "title": "Change the server"
+      },
+      {
         "command": "selvage.peers",
         "category": "Selvage",
         "title": "List the room's participants"
@@ -204,7 +209,7 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The server to host on, as a WebSocket address. When unset, hosting reuses the last server used and asks only in a window with none to reuse — that one question starts from the demo server. An address given to the command always wins."
+          "description": "The server to host on, as a WebSocket address, outranking the last server used. When unset, hosting reuses the last server used and asks only in a window with none to reuse — that one question starts from the demo server. An address given to the command always wins. The Selvage: Change the server command reports which address is in force and lets you change the remembered one; while this setting is set, it says so instead."
         },
         "selvage.webOrigin": {
           "type": "string",
