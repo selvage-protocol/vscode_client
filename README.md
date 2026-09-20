@@ -21,8 +21,11 @@ You need:
 
 ### Install the packaged extension
 
-The extension is not published, so a built `.vsix` is the way in for anyone who is not developing
-it from a checkout:
+The extension is not yet on the VS Code Marketplace: `.github/workflows/release.yml` publishes
+each tagged release there, but only once the owner has added the Marketplace's trusted
+publishing policy for this repository. Until then, a built `.vsix` — your own, or the one
+attached to a [GitHub Release](https://github.com/selvage-protocol/vscode_client/releases) —
+is the way in for anyone who is not developing it from a checkout:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
@@ -653,8 +656,8 @@ manual verification step, not part of `npm test`/`test:fast`, and not wired into
 
 A sidecar or second process, and create/rename/delete on the wire (`PROTOCOL.md` §12), read-only
 guests (`PROTOCOL.md` §12.3), per-user undo, host-filesystem reads beyond a granted path a peer asked
-for, multi-room windows, and publication (`vsce package`, a Marketplace publisher). Also deliberately
-absent: a `y-websocket` provider (Selvage's envelope is not y-websocket's), `terminal/1`, and any
+for, and multi-room windows. Also deliberately absent: a `y-websocket` provider (Selvage's
+envelope is not y-websocket's), `terminal/1`, and any
 server address used without asking beyond the one hosting remembered. The first host's question
 prefills the demo server, and every host after it reuses the answer until an argument or the setting
 names another.

@@ -1,0 +1,246 @@
+name: release
+
+# A release packages the extension (`vsce package`), attaches the `.vsix` to a GitHub
+# Release, and — once the owner has added a trusted publishing policy for this repository
+# on the Marketplace — publishes it to the VS Code Marketplace as
+# `selvage-protocol.selvage-client`. There is no `VSCE_PAT`: publishing uses
+# `vsce publish --oidc`, which exchanges this job's GitHub Actions token for a short-lived
+# Marketplace credential (see the publish step below and
+# https://github.com/microsoft/vscode-vsce#trusted-publishing).
+#
+# The owner triggers a release from this workflow. `workflow_dispatch` (with a required
+# `version` input, no default) is the manual button; pushing a tag `v*` runs the same job
+# for a release cut by hand. Either way the job is idempotent: the manifest version is
+# asserted first, an existing tag must point at this run's commit before anything is
+# tagged or released, and an existing release has its `.vsix` asset refreshed rather than
+# a second release. A pull request runs ci.yml instead and can never publish or release.
+# `version` has no default (unlike the sibling repositories' release workflows) because the
+# Marketplace already carries a hand-uploaded `0.1.0` build with no git provenance: a run
+# started without a deliberately chosen version would otherwise collide with it.
+#
+# `package.json:4` carries the version the run asserts against.
+#
+# Two jobs, not one: `contents: write` and `id-token: write` are held only by `publish`,
+# which installs nothing. `npm ci`, the build, the test suite and the standalone install of
+# `@vscode/vsce` — every step that runs code from a registry — happen in `build`, which
+# holds neither permission. A compromised install script there cannot reach the OIDC-token
+# request endpoint or push a tag; the `.vsix` and the installed publisher both cross the
+# boundary as artifacts, and `publish` only runs the `vsce` binary it downloaded, never
+# `npm install` or `npm ci`.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, without the leading v (must match package.json; the tag v<version> is created)"
+        required: true
+      dry_run:
+        description: "Assert the version, run the suite and package the extension without tagging, releasing or publishing"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vsix: ${{ steps.package.outputs.vsix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+          cache: npm
+
+      - run: npm ci
+
+      # The release version comes from the dispatch input, or from the tag name on a tag
+      # push. It passes through `env` rather than a workflow expression inside `run:`, and
+      # anything that is not exactly X.Y.Z (all-digit components, no suffix) stops the job
+      # before anything is asserted, tagged or released.
+      - name: resolve the release version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$DISPATCH_VERSION" ]; then
+            version="$DISPATCH_VERSION"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'refusing: %s is not a release version\n' "$version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The manifest version is the release version: refuse to tag or package anything else.
+      - name: assert the manifest version matches
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$pkg" != "${{ steps.version.outputs.version }}" ]; then
+            printf 'package.json version %s != release %s; bump package.json first\n' "$pkg" "${{ steps.version.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - run: npm run typecheck
+
+      # Same suite ci.yml runs: the four server-backed tests in test/selvaged.test.ts need
+      # a built `selvaged` from the sibling reference_server repository, which this
+      # workflow does not check out.
+      - run: npm run test:fast
+        env:
+          SELVAGE_WAIT_MS: "30000"
+
+      # `vsce package` runs `vscode:prepublish` (`npm run build`) first, so the `.vsix`
+      # always carries a fresh `dist/extension.js`.
+      - name: package the extension
+        id: package
+        run: |
+          npm run package
+          vsix="selvage-client-${{ steps.version.outputs.version }}.vsix"
+          echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsix
+          path: ${{ steps.package.outputs.vsix }}
+          if-no-files-found: error
+
+      # Installed here, in the job that already runs `npm ci` and holds no write
+      # permission, rather than in `publish`: `@vscode/vsce` is third-party code with its own
+      # install scripts, and `publish` should run only the resulting binary, never `npm
+      # install`. Pinned to the exact version `package-lock.json` resolved, into a throwaway
+      # prefix rather than the project's own `node_modules`, so the artifact carries only the
+      # packager and not the whole extension dependency tree.
+      - name: install the extension publisher
+        run: |
+          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
+          npm install --prefix .vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsce-publish
+          path: .vsce-publish
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: inputs.dry_run != true
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    # `contents: write` creates and pushes the tag and the GitHub Release. `id-token: write`
+    # is the OIDC token the Marketplace trusted-publishing exchange needs. Nothing else is
+    # granted, and nothing in this job installs the project's own dependency tree.
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      VSIX: ${{ needs.build.outputs.vsix }}
+    steps:
+      # Not persisted: this job's git commands authenticate with an explicit token scoped to
+      # the one step that pushes, rather than a credential left in `.git/config` for every
+      # step in the job to find.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsix
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsce-publish
+          path: .vsce-publish
+
+      # Tags are resolved against `origin`, not local refs: the checkout may not have
+      # fetched them. An existing tag must point at this run's commit; anything else is
+      # someone else's release and stops the job. An annotated tag's own ref resolves to
+      # the tag object, not the commit it names, so both the plain ref and its peeled `^{}`
+      # form are queried and the peeled (commit) sha is preferred when present. A push that
+      # is rejected because another run created the same tag a moment earlier is not itself
+      # a failure: the tag is re-queried and accepted if it now names this run's commit, and
+      # only anything else fails the job.
+      - name: create and push the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+          if [ -z "$remote_refs" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
+            if ! git push origin "v${RELEASE_VERSION}"; then
+              echo "push of v${RELEASE_VERSION} was rejected; another run may have created it first"
+              remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+            fi
+          fi
+          if [ -n "$remote_refs" ]; then
+            remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
+            echo "tag v${RELEASE_VERSION} already exists at ${remote_sha}"
+            if [ "$remote_sha" != "$GITHUB_SHA" ]; then
+              printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
+              exit 1
+            fi
+          fi
+
+      - name: create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<EOF
+          # Selvage for VS Code v${RELEASE_VERSION}
+
+          Install the attached \`${VSIX}\` (\`code --install-extension ${VSIX}\`), or from the
+          VS Code Marketplace once this version has published there
+          (\`selvage-protocol.selvage-client\`).
+          EOF
+          if gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "release v${RELEASE_VERSION} already exists; refreshing the vsix asset."
+            gh release upload "v${RELEASE_VERSION}" "$VSIX" --clobber
+          else
+            gh release create "v${RELEASE_VERSION}" --title "v${RELEASE_VERSION}" --notes-file release-notes.md "$VSIX"
+          fi
+
+      # Node to run the `vsce` binary downloaded above; nothing is installed with it.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # `--oidc` exchanges this job's GitHub Actions token for a short-lived Marketplace
+      # credential; it does not fall back to a PAT if that exchange fails. The exchange
+      # only works once the owner has added a trusted publishing policy on the Marketplace
+      # publisher management page naming this repository (selvage-protocol/vscode_client)
+      # and this workflow file (.github/workflows/release.yml). Until then this step fails
+      # loudly, on purpose, rather than reporting success: the tag and GitHub Release above
+      # already exist independently of it and need nothing from this step to be useful.
+      - name: publish to the VS Code Marketplace
+        run: |
+          if ! ./.vsce-publish/node_modules/.bin/vsce publish --oidc --packagePath "$VSIX"; then
+            cat >&2 <<EOF
+          Marketplace publish failed. If the trusted publishing policy for
+          selvage-protocol/vscode_client + .github/workflows/release.yml does not exist yet
+          on the Marketplace publisher management page, this is expected: add it there,
+          then re-run this workflow (it will find v${RELEASE_VERSION} already tagged and
+          released, and publish without redoing that part). The tag and GitHub Release
+          above already exist regardless of this step's outcome.
+          EOF
+            exit 1
+          fi
