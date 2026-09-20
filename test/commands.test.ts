@@ -1661,11 +1661,14 @@ test('the typed server is remembered across windows, and hosting reuses it witho
   first.deactivate();
 
   // A new window is a new module: nothing in memory names the address, only the memento.
-  // The recorded boxes are cleared but the memento is deliberately not reset. Hosting
-  // again reuses the remembered address with no question — which is read here off the
-  // failure the dead address earns, so the box count is the assertion and not the poll.
+  // The recorded messages are cleared alongside the boxes — but the memento is deliberately
+  // not reset. Hosting again reuses the remembered address with no question — which is read
+  // here off the failure the dead address earns, so the box count is the assertion and not
+  // the poll.
   const second = freshBundle();
   second.stub.registered.inputs.length = 0;
+  second.stub.registered.errors.length = 0;
+  second.stub.registered.errorItems.length = 0;
   second.stub.registered.inputReply = undefined;
   second.activate({ subscriptions: [], globalState: first.stub.globalState });
   t.after(() => {
@@ -1682,6 +1685,37 @@ test('the typed server is remembered across windows, and hosting reuses it witho
     second.stub.registered.inputs.length,
     0,
     'the remembered server was asked for again',
+  );
+  // Only the reuse offers the change: the typed host's own failure named an address that
+  // was asked for, not reused.
+  const at = second.stub.registered.errors.indexOf(said);
+  assert.deepEqual(second.stub.registered.errorItems[at], ['Change the server']);
+
+  // The failure already names the dead address, so its button reaches the same question
+  // the first run asked, prefilled with that address — and the typed answer is what the
+  // next host reuses.
+  second.stub.registered.errorReply = 'Change the server';
+  second.stub.registered.inputReply = 'ws://127.0.0.1:2';
+  await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  await waitFor('the dead host to fail again', () =>
+    second.stub.registered.errors.filter((message) =>
+      message.includes('could not host on ws://127.0.0.1:1'),
+    ).length >= 2
+      ? true
+      : false,
+  );
+  const changed = await waitFor('the change box', () =>
+    second.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(changed.value, 'ws://127.0.0.1:1', 'the change box started from the demo, not the address');
+  assert.equal(second.stub.globalState.get('selvage.lastServer'), 'ws://127.0.0.1:2');
+  const confirmed = await waitFor('the change to be confirmed', () =>
+    second.stub.registered.information.find((message) => message.includes('will host on')) ??
+      false,
+  );
+  assert.equal(
+    confirmed,
+    'Selvage: will host on ws://127.0.0.1:2 next. Leave this session and host again to move there.',
   );
 });
 

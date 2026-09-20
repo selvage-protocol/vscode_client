@@ -348,6 +348,7 @@ function reset() {
   registered.informationItems.length = 0;
   registered.warnings.length = 0;
   registered.errors.length = 0;
+  registered.errorItems.length = 0;
   registered.quickPicks.length = 0;
   registered.progress.length = 0;
   registered.inputs.length = 0;
