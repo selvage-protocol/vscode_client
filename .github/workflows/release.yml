@@ -19,6 +19,17 @@ name: release
 # started without a deliberately chosen version would otherwise collide with it.
 #
 # `package.json:4` carries the version the run asserts against.
+#
+# Two jobs, not one: `contents: write` and `id-token: write` are held only by `publish`,
+# which runs no untrusted code. `npm ci`, the build and the test suite — the steps that
+# execute whatever this repository's dependency tree pulls in — run in `build`, which holds
+# neither. A compromised install script during `npm ci` therefore cannot reach the
+# OIDC-token request endpoint or push a tag; the `.vsix` crosses the boundary as an
+# artifact. `publish` still needs the extension packager to talk to the Marketplace, so it
+# installs `@vscode/vsce` on its own, pinned to the exact version `package-lock.json`
+# resolved in `build`, into a throwaway prefix — never the project's own `npm ci`, which
+# would pull the whole dependency tree (`ws`, `yjs`, `esbuild`, `@vscode/test-electron`, …)
+# back into the privileged job.
 on:
   workflow_dispatch:
     inputs:
@@ -38,18 +49,20 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# `contents: write` creates and pushes the tag and the GitHub Release. `id-token: write` is
-# the OIDC token the Marketplace trusted-publishing exchange needs. Nothing else is granted.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vsix: ${{ steps.package.outputs.vsix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -60,9 +73,10 @@ jobs:
 
       # The release version comes from the dispatch input, or from the tag name on a tag
       # push. It passes through `env` rather than a workflow expression inside `run:`, and
-      # anything outside `X.Y.Z` stops the job before anything is asserted, tagged or
-      # released.
+      # anything that is not exactly X.Y.Z (all-digit components, no suffix) stops the job
+      # before anything is asserted, tagged or released.
       - name: resolve the release version
+        id: version
         env:
           DISPATCH_VERSION: ${{ inputs.version }}
         run: |
@@ -71,22 +85,18 @@ jobs:
           else
             version="${GITHUB_REF_NAME#v}"
           fi
-          case "$version" in
-            [0-9]*.[0-9]*.[0-9]*)
-              ;;
-            *)
-              printf 'refusing: %s is not a release version\n' "$version" >&2
-              exit 1
-              ;;
-          esac
-          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'refusing: %s is not a release version\n' "$version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # The manifest version is the release version: refuse to tag or package anything else.
       - name: assert the manifest version matches
         run: |
           pkg=$(node -p "require('./package.json').version")
-          if [ "$pkg" != "$RELEASE_VERSION" ]; then
-            printf 'package.json version %s != release %s; bump package.json first\n' "$pkg" "$RELEASE_VERSION" >&2
+          if [ "$pkg" != "${{ steps.version.outputs.version }}" ]; then
+            printf 'package.json version %s != release %s; bump package.json first\n' "$pkg" "${{ steps.version.outputs.version }}" >&2
             exit 1
           fi
 
@@ -100,18 +110,40 @@ jobs:
           SELVAGE_WAIT_MS: "30000"
 
       # `vsce package` runs `vscode:prepublish` (`npm run build`) first, so the `.vsix`
-      # always carries a fresh `dist/extension.js`. Built once here and reused for both the
-      # GitHub Release asset and the Marketplace publish below, so the two carry the same
-      # bytes.
+      # always carries a fresh `dist/extension.js`.
       - name: package the extension
+        id: package
         run: |
           npm run package
-          echo "VSIX=selvage-client-${RELEASE_VERSION}.vsix" >> "$GITHUB_ENV"
+          vsix="selvage-client-${{ steps.version.outputs.version }}.vsix"
+          echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
 
-      - name: stop before tagging on a dry run
-        if: inputs.dry_run == true
-        run: |
-          echo "dry_run: version asserted, suite green, packaged $VSIX; tagging, releasing and publishing nothing."
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsix
+          path: ${{ steps.package.outputs.vsix }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: inputs.dry_run != true
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    # `contents: write` creates and pushes the tag and the GitHub Release. `id-token: write`
+    # is the OIDC token the Marketplace trusted-publishing exchange needs. Nothing else is
+    # granted, and nothing in this job installs the project's own dependency tree.
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      VSIX: ${{ needs.build.outputs.vsix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsix
 
       # Tags are resolved against `origin`, not local refs: the checkout may not have
       # fetched them. An existing tag must point at this run's commit; anything else is
@@ -119,7 +151,6 @@ jobs:
       # the tag object, not the commit it names, so both the plain ref and its peeled `^{}`
       # form are queried and the peeled (commit) sha is preferred when present.
       - name: create and push the tag
-        if: inputs.dry_run != true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -139,7 +170,6 @@ jobs:
           fi
 
       - name: create the GitHub Release
-        if: inputs.dry_run != true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -157,6 +187,19 @@ jobs:
             gh release create "v${RELEASE_VERSION}" --title "v${RELEASE_VERSION}" --notes-file release-notes.md "$VSIX"
           fi
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # Installed standalone, pinned to the exact version `build` resolved from
+      # package-lock.json, rather than via this repository's own `npm ci`: that would pull
+      # the whole extension dependency tree into a job that holds `id-token: write`, for a
+      # step that needs only the packager.
+      - name: install the extension publisher
+        run: |
+          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
+          npm install --prefix .vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
+
       # `--oidc` exchanges this job's GitHub Actions token for a short-lived Marketplace
       # credential; it does not fall back to a PAT if that exchange fails. The exchange
       # only works once the owner has added a trusted publishing policy on the Marketplace
@@ -165,9 +208,8 @@ jobs:
       # loudly, on purpose, rather than reporting success: the tag and GitHub Release above
       # already exist independently of it and need nothing from this step to be useful.
       - name: publish to the VS Code Marketplace
-        if: inputs.dry_run != true
         run: |
-          if ! npx @vscode/vsce publish --oidc --packagePath "$VSIX"; then
+          if ! ./.vsce-publish/node_modules/.bin/vsce publish --oidc --packagePath "$VSIX"; then
             cat >&2 <<EOF
           Marketplace publish failed. If the trusted publishing policy for
           selvage-protocol/vscode_client + .github/workflows/release.yml does not exist yet
