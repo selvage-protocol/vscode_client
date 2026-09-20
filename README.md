@@ -87,10 +87,14 @@ the server's grace period, and tells the guest.
 ### Settings and addresses
 
 Set `selvage.serverUrl`, `selvage.webOrigin` and `selvage.displayName` in settings to stop being
-asked. The server is resolved in this order: an explicit address given to the command, then the
-`selvage.serverUrl` setting, then the last server used. The first of those answers silently, so
-hosting asks only in a window that has none of them, and that one question starts from the demo
-server `ws://100.64.0.3:8080`, a prefill rather than a commitment.
+asked. The server is resolved in this order: an explicit address given to the command
+programmatically (the palette takes none), then the `selvage.serverUrl` setting, then the last
+server used. The first of those answers silently, so hosting asks only in a window that has none
+of them, and that one question starts from the demo server `ws://100.64.0.3:8080`, a prefill
+rather than a commitment. A host that reused the last server names it in the room-open notice,
+with a `Change the server` button that asks the same question again for the next host; a host on
+the setting or on an explicit address has no such button, because that address is changed where
+it was set.
 
 A host's `Selvage: Copy the invite link` links to the page named by `selvage.webOrigin`, which
 defaults to the Pi page `https://lumi-raspberrypi.muskellunge-yo.ts.net:8443`. The setting must name

@@ -1661,11 +1661,14 @@ test('the typed server is remembered across windows, and hosting reuses it witho
   first.deactivate();
 
   // A new window is a new module: nothing in memory names the address, only the memento.
-  // The recorded boxes are cleared but the memento is deliberately not reset. Hosting
-  // again reuses the remembered address with no question — which is read here off the
-  // failure the dead address earns, so the box count is the assertion and not the poll.
+  // The recorded messages are cleared alongside the boxes — but the memento is deliberately
+  // not reset. Hosting again reuses the remembered address with no question — which is read
+  // here off the failure the dead address earns, so the box count is the assertion and not
+  // the poll.
   const second = freshBundle();
   second.stub.registered.inputs.length = 0;
+  second.stub.registered.errors.length = 0;
+  second.stub.registered.errorItems.length = 0;
   second.stub.registered.inputReply = undefined;
   second.activate({ subscriptions: [], globalState: first.stub.globalState });
   t.after(() => {
@@ -1682,6 +1685,37 @@ test('the typed server is remembered across windows, and hosting reuses it witho
     second.stub.registered.inputs.length,
     0,
     'the remembered server was asked for again',
+  );
+  // Only the reuse offers the change: the typed host's own failure named an address that
+  // was asked for, not reused.
+  const at = second.stub.registered.errors.indexOf(said);
+  assert.deepEqual(second.stub.registered.errorItems[at], ['Change the server']);
+
+  // The failure already names the dead address, so its button reaches the same question
+  // the first run asked, prefilled with that address — and the typed answer is what the
+  // next host reuses.
+  second.stub.registered.errorReply = 'Change the server';
+  second.stub.registered.inputReply = 'ws://127.0.0.1:2';
+  await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  await waitFor('the dead host to fail again', () =>
+    second.stub.registered.errors.filter((message) =>
+      message.includes('could not host on ws://127.0.0.1:1'),
+    ).length >= 2
+      ? true
+      : false,
+  );
+  const changed = await waitFor('the change box', () =>
+    second.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(changed.value, 'ws://127.0.0.1:1', 'the change box started from the demo, not the address');
+  assert.equal(second.stub.globalState.get('selvage.lastServer'), 'ws://127.0.0.1:2');
+  const confirmed = await waitFor('the change to be confirmed', () =>
+    second.stub.registered.information.find((message) => message.includes('will host on')) ??
+      false,
+  );
+  assert.equal(
+    confirmed,
+    'Selvage: will host on ws://127.0.0.1:2 next. Leave this session and host again to move there.',
   );
 });
 
@@ -1787,6 +1821,112 @@ test('a configured server address beats the remembered server', async (t) => {
   );
   assert.ok(said, 'hosting did not use the configured address');
   assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
+});
+
+test('the host notice names a reused server and offers to change it', async (t) => {
+  const first = await FakeServer.start();
+  t.after(async () => {
+    await first.stop();
+  });
+  const second = await FakeServer.start();
+  t.after(async () => {
+    await second.stop();
+  });
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.stub.configure({ displayName: 'Ada' });
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // The first host types nothing: the box answers with the first server, and hosting
+  // remembers it. The notice on a typed address offers no change — nothing was reused.
+  bundle.stub.registered.inputReply = first.wsBase;
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const seated = await waitFor('the first host to be seated', () =>
+    bundle.stub.registered.information.find((message) => message.includes('the room is open')) ??
+      false,
+  );
+  assert.equal(
+    seated,
+    'Selvage: the room is open. Send this link to your friend — it is on the clipboard.',
+  );
+  const remembered = await waitFor('the server to be remembered', () =>
+    bundle.stub.globalState.get('selvage.lastServer') === first.wsBase ? true : false,
+  );
+  assert.ok(remembered);
+
+  // A second window is a new module: nothing in memory names the address, only the
+  // memento. Hosting reuses it silently, names it in the notice, and offers the change
+  // the palette never had — the recorded boxes are cleared but the memento is not reset.
+  bundle.deactivate();
+  const next = freshBundle();
+  next.stub.registered.inputs.length = 0;
+  next.stub.registered.information.length = 0;
+  next.stub.registered.informationItems.length = 0;
+  next.stub.configure({ displayName: 'Ada' });
+  next.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    next.deactivate();
+  });
+
+  // The reuse answers the notice's own question: taking the button opens the same box
+  // the first run asked, prefilled with the address in force, and the typed answer is
+  // what the next host reuses.
+  next.stub.registered.informationReply = 'Change the server';
+  next.stub.registered.inputReply = second.wsBase;
+  await next.stub.commands.executeCommand('selvage.host');
+  const reused = await waitFor('the reused host to be seated', () =>
+    next.stub.registered.information.find((message) => message.includes('the room is open on')) ??
+      false,
+  );
+  assert.equal(
+    reused,
+    `Selvage: the room is open on ${first.wsBase}. Send this link to your friend — it is on the clipboard.`,
+  );
+  const at = next.stub.registered.information.indexOf(reused);
+  assert.deepEqual(next.stub.registered.informationItems[at], ['Copy again', 'Change the server']);
+  const asked = await waitFor('the change box', () =>
+    next.stub.registered.inputs[0] ?? false,
+  );
+  assert.equal(asked.value, first.wsBase, 'the change box started from the demo, not the address');
+  const kept = await waitFor('the changed server to be remembered', () =>
+    next.stub.globalState.get('selvage.lastServer') === second.wsBase ? true : false,
+  );
+  assert.ok(kept);
+  const confirmed = await waitFor('the change to be confirmed', () =>
+    next.stub.registered.information.find((message) => message.includes('will host on')) ??
+      false,
+  );
+  assert.equal(
+    confirmed,
+    `Selvage: will host on ${second.wsBase} next. Leave this session and host again to move there.`,
+  );
+
+  // A configured address still wins over the changed memory — and its notice offers no
+  // change, because the setting is changed where it is set, in Settings.
+  await next.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the session to be left', () =>
+    next.stub.registered.information.some((message) => message.includes('left the session')) ? true : false,
+  );
+  next.stub.registered.information.length = 0;
+  next.stub.registered.informationItems.length = 0;
+  next.stub.registered.inputs.length = 0;
+  next.stub.configure({ serverUrl: first.wsBase });
+  next.stub.registered.informationReply = undefined;
+  await next.stub.commands.executeCommand('selvage.host');
+  const configuredNotice = await waitFor('the configured host to be seated', () =>
+    next.stub.registered.information.find((message) => message.includes('the room is open')) ??
+      false,
+  );
+  assert.match(
+    String(configuredNotice),
+    /^Selvage: the room is open\. Send this link to your friend/,
+  );
+  const configuredAt = next.stub.registered.information.indexOf(configuredNotice);
+  assert.deepEqual(next.stub.registered.informationItems[configuredAt], ['Copy again']);
+  assert.equal(next.stub.registered.inputs.length, 0, 'a configured server was asked about');
 });
 
 test('the typed name is remembered across windows, and hosting skips the question', async (t) => {
