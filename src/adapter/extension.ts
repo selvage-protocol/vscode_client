@@ -189,6 +189,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
       void displayName(args, context);
     }),
+    vscode.commands.registerCommand('selvage.changeServer', (args?: ChangeServerArgs) => {
+      void changeServer(args, context);
+    }),
     vscode.commands.registerCommand('selvage.peers', () => {
       void listPeers();
     }),
@@ -3223,10 +3226,63 @@ async function offerServerChange(
   if (trimmed === undefined || trimmed === '' || trimmed === current) {
     return;
   }
-  lastServer = trimmed;
-  await rememberServer(context, trimmed);
+  await writeServer(context, trimmed);
+}
+
+/** See `HostArgs`: the same programmatic seam for `selvage.changeServer`. */
+export interface ChangeServerArgs {
+  serverUrl?: string;
+}
+
+/**
+ * The palette-reachable answer to "how do I change which server I am using", without hosting
+ * first: reports the server the next host uses and offers to change it, reusing the same box
+ * the host notice's own button opens. A configured `selvage.serverUrl` outranks the remembered
+ * address (`resolveServerUrl()`), so writing the memento while it is set would be silently
+ * ignored by the next host; this says the setting is in force instead of pretending to change
+ * anything. Either way the write only reaches the *next* host, never a live room.
+ */
+async function changeServer(
+  args?: ChangeServerArgs,
+  context?: vscode.ExtensionContext,
+): Promise<void> {
+  const configured = config().get<string>('serverUrl', '').trim();
+  if (configured !== '') {
+    void vscode.window.showInformationMessage(
+      `Selvage: the "selvage.serverUrl" setting fixes the server at ${configured}; change it in Settings to use a different one.`,
+    );
+    return;
+  }
+  const given = args?.serverUrl?.trim();
+  if (given !== undefined && given !== '') {
+    await writeServer(context, given);
+    return;
+  }
+  const current = lastServer !== undefined && lastServer.trim() !== '' ? lastServer : undefined;
+  const reported =
+    current === undefined
+      ? 'Selvage: no server is remembered yet; the next host asks.'
+      : `Selvage: the next host uses ${current}.`;
+  const change = 'Change the server';
+  const choice = await vscode.window.showInformationMessage(reported, change);
+  if (choice !== change) {
+    return;
+  }
+  await offerServerChange(context, current ?? DEFAULT_SERVER_URL);
+}
+
+/**
+ * Writes a server address the memento keeps for the next host, in memory and in
+ * `globalState`, and confirms when it takes effect: never the live room, only the next host.
+ */
+async function writeServer(
+  context: vscode.ExtensionContext | undefined,
+  value: string,
+): Promise<void> {
+  lastServer = value;
+  await rememberServer(context, value);
   void vscode.window.showInformationMessage(
-    `Selvage: will host on ${trimmed} next. Leave this session and host again to move there.`,
+    `Selvage: will host on ${value} next. Leave this session and host again to move there.`,
   );
 }
 

@@ -1929,6 +1929,109 @@ test('the host notice names a reused server and offers to change it', async (t) 
   assert.equal(next.stub.registered.inputs.length, 0, 'a configured server was asked about');
 });
 
+test('the change-server command reports the address in force and offers to change it', async (t) => {
+  // Fresh module state: `lastServer` is a module-level variable, and other tests in this file
+  // remember real addresses that a shared module would still carry.
+  const bundle = freshBundle();
+  bundle.stub.reset();
+  bundle.activate({ subscriptions: [], globalState: bundle.stub.globalState });
+  t.after(() => {
+    bundle.deactivate();
+  });
+
+  // Nothing remembered and nothing configured: the report is the first thing the command
+  // says, and the box it offers starts from the demo default.
+  await bundle.stub.commands.executeCommand('selvage.changeServer');
+  const first = await waitFor('the first report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('remembered')) ?? false,
+  );
+  assert.equal(first, 'Selvage: no server is remembered yet; the next host asks.');
+  assert.deepEqual(bundle.stub.registered.informationItems[0], ['Change the server']);
+
+  bundle.stub.registered.informationReply = 'Change the server';
+  bundle.stub.registered.inputReply = 'ws://198.51.100.1:9';
+  await bundle.stub.commands.executeCommand('selvage.changeServer');
+  const asked = await waitFor('the change box', () => bundle.stub.registered.inputs[0] ?? false);
+  assert.equal(asked.value, 'ws://100.64.0.3:8080', 'the box did not start from the demo default');
+  const kept = await waitFor('the address to be remembered', () =>
+    bundle.stub.globalState.get('selvage.lastServer') === 'ws://198.51.100.1:9' ? true : false,
+  );
+  assert.ok(kept);
+  const confirmed = await waitFor('the change to be confirmed', () =>
+    bundle.stub.registered.information.find((message) => message.includes('will host on')) ?? false,
+  );
+  assert.equal(
+    confirmed,
+    'Selvage: will host on ws://198.51.100.1:9 next. Leave this session and host again to move there.',
+  );
+
+  // The remembered address is now in force: the next report names it, and asking for it
+  // opens no box until the button is taken.
+  bundle.stub.registered.information.length = 0;
+  bundle.stub.registered.informationItems.length = 0;
+  bundle.stub.registered.inputs.length = 0;
+  bundle.stub.registered.informationReply = undefined;
+  await bundle.stub.commands.executeCommand('selvage.changeServer');
+  const second = await waitFor('the second report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('next host uses')) ?? false,
+  );
+  assert.equal(second, 'Selvage: the next host uses ws://198.51.100.1:9.');
+  assert.deepEqual(bundle.stub.registered.informationItems[0], ['Change the server']);
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'the box opened before the button was taken');
+
+  // A configured setting outranks the remembered address: the command says so and offers
+  // no button, so writing the memento — which the next host would ignore — never happens.
+  bundle.stub.configure({ serverUrl: 'ws://203.0.113.5:9' });
+  bundle.stub.registered.information.length = 0;
+  bundle.stub.registered.informationItems.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.changeServer');
+  const configuredReport = await waitFor('the configured report', () =>
+    bundle.stub.registered.information.find((message) => message.includes('selvage.serverUrl')) ?? false,
+  );
+  assert.equal(
+    configuredReport,
+    'Selvage: the "selvage.serverUrl" setting fixes the server at ws://203.0.113.5:9; change it in Settings to use a different one.',
+  );
+  assert.deepEqual(bundle.stub.registered.informationItems[0], []);
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'a configured server was asked about');
+  assert.equal(
+    bundle.stub.globalState.get('selvage.lastServer'),
+    'ws://198.51.100.1:9',
+    'the configured setting changed the remembered address',
+  );
+
+  // The same honesty applies to a programmatic argument: it is not a second way around the
+  // setting the palette respects.
+  bundle.stub.registered.information.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.changeServer', { serverUrl: 'ws://192.0.2.9:9' });
+  const trapped = await waitFor('the report on the trapped write', () =>
+    bundle.stub.registered.information.find((message) => message.includes('selvage.serverUrl')) ?? false,
+  );
+  assert.equal(
+    trapped,
+    'Selvage: the "selvage.serverUrl" setting fixes the server at ws://203.0.113.5:9; change it in Settings to use a different one.',
+  );
+  assert.equal(
+    bundle.stub.globalState.get('selvage.lastServer'),
+    'ws://198.51.100.1:9',
+    'an explicit argument wrote the memento while the setting outranks it',
+  );
+
+  // With the setting cleared, the same argument writes directly: no box is opened.
+  bundle.stub.configure({ serverUrl: '' });
+  bundle.stub.registered.information.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.changeServer', { serverUrl: 'ws://192.0.2.9:9' });
+  const direct = await waitFor('the direct confirmation', () =>
+    bundle.stub.registered.information.find((message) => message.includes('will host on')) ?? false,
+  );
+  assert.equal(
+    direct,
+    'Selvage: will host on ws://192.0.2.9:9 next. Leave this session and host again to move there.',
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'an explicit argument opened a box');
+  assert.equal(bundle.stub.globalState.get('selvage.lastServer'), 'ws://192.0.2.9:9');
+});
+
 test('the typed name is remembered across windows, and hosting skips the question', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
