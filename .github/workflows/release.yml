@@ -21,15 +21,12 @@ name: release
 # `package.json:4` carries the version the run asserts against.
 #
 # Two jobs, not one: `contents: write` and `id-token: write` are held only by `publish`,
-# which runs no untrusted code. `npm ci`, the build and the test suite — the steps that
-# execute whatever this repository's dependency tree pulls in — run in `build`, which holds
-# neither. A compromised install script during `npm ci` therefore cannot reach the
-# OIDC-token request endpoint or push a tag; the `.vsix` crosses the boundary as an
-# artifact. `publish` still needs the extension packager to talk to the Marketplace, so it
-# installs `@vscode/vsce` on its own, pinned to the exact version `package-lock.json`
-# resolved in `build`, into a throwaway prefix — never the project's own `npm ci`, which
-# would pull the whole dependency tree (`ws`, `yjs`, `esbuild`, `@vscode/test-electron`, …)
-# back into the privileged job.
+# which installs nothing. `npm ci`, the build, the test suite and the standalone install of
+# `@vscode/vsce` — every step that runs code from a registry — happen in `build`, which
+# holds neither permission. A compromised install script there cannot reach the OIDC-token
+# request endpoint or push a tag; the `.vsix` and the installed publisher both cross the
+# boundary as artifacts, and `publish` only runs the `vsce` binary it downloaded, never
+# `npm install` or `npm ci`.
 on:
   workflow_dispatch:
     inputs:
@@ -124,6 +121,23 @@ jobs:
           path: ${{ steps.package.outputs.vsix }}
           if-no-files-found: error
 
+      # Installed here, in the job that already runs `npm ci` and holds no write
+      # permission, rather than in `publish`: `@vscode/vsce` is third-party code with its own
+      # install scripts, and `publish` should run only the resulting binary, never `npm
+      # install`. Pinned to the exact version `package-lock.json` resolved, into a throwaway
+      # prefix rather than the project's own `node_modules`, so the artifact carries only the
+      # packager and not the whole extension dependency tree.
+      - name: install the extension publisher
+        run: |
+          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
+          npm install --prefix .vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsce-publish
+          path: .vsce-publish
+          if-no-files-found: error
+
   publish:
     needs: build
     if: inputs.dry_run != true
@@ -139,22 +153,45 @@ jobs:
       RELEASE_VERSION: ${{ needs.build.outputs.version }}
       VSIX: ${{ needs.build.outputs.vsix }}
     steps:
+      # Not persisted: this job's git commands authenticate with an explicit token scoped to
+      # the one step that pushes, rather than a credential left in `.git/config` for every
+      # step in the job to find.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: vsix
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsce-publish
+          path: .vsce-publish
+
       # Tags are resolved against `origin`, not local refs: the checkout may not have
       # fetched them. An existing tag must point at this run's commit; anything else is
       # someone else's release and stops the job. An annotated tag's own ref resolves to
       # the tag object, not the commit it names, so both the plain ref and its peeled `^{}`
-      # form are queried and the peeled (commit) sha is preferred when present.
+      # form are queried and the peeled (commit) sha is preferred when present. A push that
+      # is rejected because another run created the same tag a moment earlier is not itself
+      # a failure: the tag is re-queried and accepted if it now names this run's commit, and
+      # only anything else fails the job.
       - name: create and push the tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+          if [ -z "$remote_refs" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
+            if ! git push origin "v${RELEASE_VERSION}"; then
+              echo "push of v${RELEASE_VERSION} was rejected; another run may have created it first"
+              remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+            fi
+          fi
           if [ -n "$remote_refs" ]; then
             remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
             echo "tag v${RELEASE_VERSION} already exists at ${remote_sha}"
@@ -162,11 +199,6 @@ jobs:
               printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
               exit 1
             fi
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
-            git push origin "v${RELEASE_VERSION}"
           fi
 
       - name: create the GitHub Release
@@ -187,18 +219,10 @@ jobs:
             gh release create "v${RELEASE_VERSION}" --title "v${RELEASE_VERSION}" --notes-file release-notes.md "$VSIX"
           fi
 
+      # Node to run the `vsce` binary downloaded above; nothing is installed with it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.18.0"
-
-      # Installed standalone, pinned to the exact version `build` resolved from
-      # package-lock.json, rather than via this repository's own `npm ci`: that would pull
-      # the whole extension dependency tree into a job that holds `id-token: write`, for a
-      # step that needs only the packager.
-      - name: install the extension publisher
-        run: |
-          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
-          npm install --prefix .vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
 
       # `--oidc` exchanges this job's GitHub Actions token for a short-lived Marketplace
       # credential; it does not fall back to a PAT if that exchange fails. The exchange
