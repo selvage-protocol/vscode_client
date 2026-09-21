@@ -201,23 +201,24 @@ jobs:
       # fetched them. An existing tag must point at this run's commit; anything else is
       # someone else's release and stops the job — except a manual re-run of the same
       # version, which is exactly what retrying a failed publish looks like and is expected
-      # to land on a different commit once the workflow itself needed a fix. The tag then
-      # stays where it is rather than moving: the release it names already carries this
-      # version's content, and the retry only needs the Marketplace publish step to run
-      # again. An annotated tag's own ref resolves to the tag object, not the commit it
-      # names, so both the plain ref and its peeled `^{}` form are queried and the peeled
-      # (commit) sha is preferred when present. A push that is rejected because another run
-      # created the same tag a moment earlier is not itself a failure: the tag is re-queried
-      # and accepted if it now names this run's commit, and only anything else fails the job.
+      # to land on a different commit once the workflow itself needed a fix. There the tag is
+      # moved to this run's commit rather than left behind: the Release's `.vsix` asset is
+      # about to be refreshed from this commit regardless, and a tag pointing elsewhere while
+      # the asset it names came from somewhere else is the inconsistency, not the move. An
+      # annotated tag's own ref resolves to the tag object, not the commit it names, so both
+      # the plain ref and its peeled `^{}` form are queried and the peeled (commit) sha is
+      # preferred when present. A push that is rejected because another run created the same
+      # tag a moment earlier is not itself a failure: the tag is re-queried and accepted if it
+      # now names this run's commit, and only anything else fails the job.
       - name: create and push the tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
           if [ -z "$remote_refs" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
             if ! git push origin "v${RELEASE_VERSION}"; then
               echo "push of v${RELEASE_VERSION} was rejected; another run may have created it first"
@@ -229,7 +230,9 @@ jobs:
             echo "tag v${RELEASE_VERSION} already exists at ${remote_sha}"
             if [ "$remote_sha" != "$GITHUB_SHA" ]; then
               if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-                echo "manual re-run of an existing version; leaving the tag at ${remote_sha} and continuing"
+                echo "manual re-run of an existing version; moving the tag from ${remote_sha} to ${GITHUB_SHA}"
+                git tag -f -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
+                git push --force origin "v${RELEASE_VERSION}"
               else
                 printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
                 exit 1
