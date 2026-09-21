@@ -210,10 +210,6 @@
           "type": "string",
           "description": "The WebSocket address to host on. Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
         },
-        "selvage.webOrigin": {
-          "type": "string",
-          "description": "The page a copied invite links to, as an https origin. Anything else falls back to the default page, and a host's link never carries the room's token over cleartext."
-        },
         "selvage.displayName": {
           "type": "string",
           "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused. A change while a session is live renames this connection at once, and applies to the next host or join."

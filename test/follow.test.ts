@@ -940,7 +940,7 @@ test('a host jumps to a peer through its own working copy', async (t) => {
     () => {
       void bundle.stub.commands.executeCommand('selvage.copyInvite');
       const text = bundle.stub.registered.clipboard;
-      return text.startsWith('https://') ? text : false;
+      return /^https?:\/\//.test(text) ? text : false;
     },
     { describe: () => bundle.stub.registered.clipboard },
   );
@@ -1277,7 +1277,7 @@ test('a host jump to a path it does not share is refused without opening', async
     () => {
       void bundle.stub.commands.executeCommand('selvage.copyInvite');
       const text = bundle.stub.registered.clipboard;
-      return text.startsWith('https://') ? text : false;
+      return /^https?:\/\//.test(text) ? text : false;
     },
     { describe: () => bundle.stub.registered.clipboard },
   );

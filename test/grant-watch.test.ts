@@ -56,10 +56,10 @@ function wireOf(link: string): string {
   const page = new URL(link);
   const room = page.searchParams.get('room');
   const token = page.searchParams.get('token');
-  const server = page.searchParams.get('server');
   assert.ok(room !== null && room !== '', `the link names no room: ${link}`);
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
-  assert.ok(server !== null && server !== '', `the link carries no server: ${link}`);
+  // The origin is the server: the scheme a browser speaks read back as the one a socket does.
+  const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
   return sessionUrl(server, room, token);
 }
 
@@ -84,7 +84,7 @@ async function inviteOf(bundle: LoadedExtension): Promise<string> {
   return await waitFor('the invite link', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('https://') ? clipboard : false;
+    return /^https?:\/\//.test(clipboard) ? clipboard : false;
   });
 }
 

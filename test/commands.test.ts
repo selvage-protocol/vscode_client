@@ -50,10 +50,10 @@ function wireOf(link: string): string {
   const page = new URL(link);
   const room = page.searchParams.get('room');
   const token = page.searchParams.get('token');
-  const server = page.searchParams.get('server');
   assert.ok(room !== null && room !== '', `the link names no room: ${link}`);
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
-  assert.ok(server !== null && server !== '', `the link carries no server: ${link}`);
+  // The origin is the server: the scheme a browser speaks read back as the one a socket does.
+  const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
   return sessionUrl(server, room, token);
 }
 
@@ -166,7 +166,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
   const invite = await waitFor('the first session to be ready', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('https://') ? text : false;
+    return /^https?:\/\//.test(text) ? text : false;
   });
   assert.equal(server.acceptedConnections, 1, 'the first host opened one connection');
 
@@ -176,7 +176,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
   await bundle.stub.commands.executeCommand('selvage.host', { ...hostArgs, displayName: 'Ada again' });
   const copied = await waitFor('the invite to be copied again', () => {
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('https://') ? text : false;
+    return /^https?:\/\//.test(text) ? text : false;
   });
   assert.equal(copied, invite, 'the second host copied a different invite');
   assert.equal(server.acceptedConnections, 1, 'the second host minted a second room');
@@ -259,18 +259,18 @@ test('the copy command says where the invite went, and a window with none is tol
     bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
   );
   assert.equal(said, 'Selvage: the invite link is on the clipboard.');
-  assert.ok(bundle.stub.registered.clipboard.startsWith('https://'), 'nothing reached the clipboard');
+  assert.ok(/^https?:\/\//.test(bundle.stub.registered.clipboard), 'nothing reached the clipboard');
 });
 
 test('a guest hands on the page link it joined by, origin and all', async (t) => {
   const { invite, roomId } = await room(t, []);
   const wire = parseSessionUrl(invite);
   assert.ok(wire !== undefined, `the room gave no wire invite: ${invite}`);
-  // A page link off the page default, as a host on another origin produces: the guest's
-  // copy keeps that origin instead of re-homing the link on this window's own setting.
+  // The page the room's server serves, which is the link a host on it produces: the guest's
+  // copy keeps that origin — the origin *is* the server — instead of re-homing the link on
+  // an address of this window's own.
   const page =
-    `https://elsewhere.example/room?room=${wire.join.room}&token=${wire.join.token}` +
-    `&server=${encodeURIComponent(wire.base)}`;
+    `${wire.base.replace(/^ws/, 'http')}/?room=${wire.join.room}&token=${wire.join.token}`;
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite: page, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, roomId, 'Bob');
@@ -337,7 +337,7 @@ test('hosting puts the invite link on the clipboard without being asked', async 
   });
   const link = await waitFor('the invite to be copied on host', () => {
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('https://') ? text : false;
+    return /^https?:\/\//.test(text) ? text : false;
   });
   assert.equal(
     bundle.stub.registered.clipboardWrites.length,
@@ -397,7 +397,7 @@ test('a host never sees the room id: notices, tooltip and warnings say the room'
   const invite = await waitFor('the invite link', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const text = bundle.stub.registered.clipboard;
-    return text.startsWith('https://') ? text : false;
+    return /^https?:\/\//.test(text) ? text : false;
   });
   const roomId = roomOf(invite);
 
@@ -682,7 +682,7 @@ test('joining while hosting asks before ending the room', async (t) => {
   });
   await waitFor('the host to be seated', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
-    return bundle.stub.registered.clipboard.startsWith('https://') ? true : false;
+    return /^https?:\/\//.test(bundle.stub.registered.clipboard) ? true : false;
   });
   const before = server.acceptedConnections;
 
@@ -1162,7 +1162,7 @@ async function inviteOf(bundle: LoadedExtension): Promise<string> {
   return await waitFor('the invite link', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('https://') ? clipboard : false;
+    return /^https?:\/\//.test(clipboard) ? clipboard : false;
   });
 }
 
@@ -1587,7 +1587,7 @@ test('the status tooltip names the session but never the room id or the invite t
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const invite = await waitFor('the invite link', () => {
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('https://') ? clipboard : false;
+    return /^https?:\/\//.test(clipboard) ? clipboard : false;
   });
   const token = invite.slice(invite.indexOf('token='));
   const roomId = roomOf(invite);
@@ -2244,14 +2244,17 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a secure invite link was refused',
   );
+  // A link written before the format changed carries `server`. The format defines `room` and
+  // `token` alone, so the parameter is unknown and ignored: the link is valid, and the server
+  // a guest reaches is the one its origin names.
   assert.equal(
     validate('https://page.example/?room=r&token=t&server=ws%3A%2F%2Fother%3A8080'),
     undefined,
-    'a page link naming another server was refused',
+    'a link whose unknown parameter names another server was refused',
   );
-  // A truncated paste, a server address, a page link whose server is no WebSocket
-  // address, a wire invite the engine would not dial as pasted, and nothing at all: all
-  // fail here, in plain words, rather than later as whatever the engine said.
+  // A truncated paste, a server address, a page link missing half of itself, a wire invite
+  // the engine would not dial as pasted, and nothing at all: all fail here, in plain words,
+  // rather than later as whatever the engine said.
   for (const bad of [
     'ws://127.0.0.1:8080/session?room=r',
     'ws://127.0.0.1:8080/not-a-session',
@@ -2259,8 +2262,6 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     'not-a-url/session?room=r&token=t',
     'https://host/?room=r',
     'https://host/',
-    'https://host/?room=r&token=t&server=not-a-url',
-    'https://host/?room=r&token=t&server=http%3A%2F%2Fother%3A8080',
     'ws:///session?room=r&token=t',
     'ws://127.0.0.1:8080//session?room=r&token=t',
     '',
@@ -2340,14 +2341,14 @@ test('an invite that arrives by argument is refused before the name question', a
   const token = 'tok-by-argument';
   // Each one is a link no socket can open: `ws://` shapes `parseSessionUrl` alone would
   // pass, two of them bases the engine would rewrite before it dialled, and two page
-  // links whose `&server=` is not a ws/wss base. An invite that arrives by argument used
-  // to skip the box's own check entirely, so it was not refused until after the name was
-  // asked and the window had reloaded onto the mirror.
+  // links with half the query missing. An invite that arrives by argument used to skip
+  // the box's own check entirely, so it was not refused until after the name was asked
+  // and the window had reloaded onto the mirror.
   const unusable = [
     'wss://host:8080/session?room=r',
     `not-a-url/session?room=r&token=${token}`,
-    `https://page.example/?room=r&token=${token}&server=not-a-url`,
-    `https://page.example/?room=r&token=${token}&server=http%3A%2F%2Fhost%3A8080`,
+    `https://page.example/?room=r`,
+    `https://page.example/?room=r&token=`,
     `ws:///session?room=r&token=${token}`,
     `ws://127.0.0.1:8080//session?room=r&token=${token}`,
   ];
@@ -2397,7 +2398,7 @@ test('a link the box lets through is refused before the name question, and befor
   // anyway — what a validation that let one through, or another caller than the box,
   // would do. The same check refuses it, and the answer to the name question is never
   // read.
-  bundle.stub.registered.inputReply = `https://page.example/?room=r&token=${token}&server=not-a-url`;
+  bundle.stub.registered.inputReply = `https://page.example/?room=r&token=`;
   await bundle.stub.commands.executeCommand('selvage.join');
   const said = await waitFor('the refusal', () => bundle.stub.registered.errors[0] ?? false);
   assert.match(String(said), /does not look like a Selvage invite link/);

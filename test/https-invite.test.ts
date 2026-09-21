@@ -1,11 +1,12 @@
 /**
  * The invite is an `https://` page link, never `ws://`.
  *
- * CopyInvite copies exactly one page link — room and token in the query, `server`
- * only for rooms off the page default — and a pasted page link joins the same way
- * it loads, while a `ws://` link still joins as the advanced fallback. Each test
- * here fails against the old behaviour: the clipboard held the wire URL, the box
- * refused page links, and the engine never saw them.
+ * CopyInvite copies exactly one page link, at the origin of the room's own server: the room
+ * and token are in the query and nothing else is, because the link *is* the server. A pasted
+ * page link joins the same way it loads, resolving the socket from that same origin, while a
+ * `ws://` link joins as it stands — a room whose server serves no page is handed on by its wire
+ * address. Each test here fails against the old behaviour: the clipboard held the wire URL, the
+ * box refused page links, and the engine never saw them.
  */
 
 import { test } from 'node:test';
@@ -32,22 +33,17 @@ const BUNDLE = resolve(ROOT, 'dist', 'extension.js');
 const STUB = resolve(ROOT, 'test', 'helpers', 'vscode-stub.cjs');
 
 /** The page the client links to when nothing is configured. */
-const DEFAULT_ORIGIN = 'https://selvage.dontblameme.dev';
-/** The server the page joins when a link carries none. */
-const PAGE_DEFAULT_SERVER = 'ws://100.64.0.3:8080';
+/** The page a room's own server serves, over the scheme a browser speaks. */
+function pageOf(server: FakeServer): string {
+  return server.wsBase.replace(/^ws/, 'http');
+}
 
 const require = createRequire(import.meta.url);
 
 /** The bundle's pure invite helpers, without an editor. */
 function inviteHelpers(): {
-  buildPageLink: (
-    origin: string,
-    room: string,
-    token: string,
-    server: string,
-    defaultServer: string,
-  ) => string;
-  parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+  buildPageLink: (serverBase: string, room: string, token: string) => string;
+  parsePageLink: (text: string) => { room: string; token: string; origin: string } | undefined;
   sessionAddress: (wire: string) => string;
 } {
   const Module = require('node:module') as {
@@ -58,14 +54,8 @@ function inviteHelpers(): {
     args[0] === 'vscode' ? STUB : resolveFilename(...args);
   try {
     const bundle = require(BUNDLE) as {
-      buildPageLink: (
-        origin: string,
-        room: string,
-        token: string,
-        server: string,
-        defaultServer: string,
-      ) => string;
-      parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+      buildPageLink: (serverBase: string, room: string, token: string) => string;
+      parsePageLink: (text: string) => { room: string; token: string; origin: string } | undefined;
       sessionAddress: (wire: string) => string;
     };
     assert.equal(typeof bundle.buildPageLink, 'function', 'the bundle exports no page-link builder');
@@ -118,37 +108,38 @@ async function copiedInvite(
   // off a notice — no user-visible surface names it.
   const link = await waitFor('the invite link', () => {
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('https://') ? clipboard : false;
+    return /^https?:\/\//.test(clipboard) ? clipboard : false;
   });
   const roomId = new URL(link).searchParams.get('room');
   assert.ok(roomId !== null && roomId !== '', `the copied link names no room: ${link}`);
   return { link, roomId };
 }
 
-test('a page link omits server for the default room and keeps it otherwise', () => {
+test('a copied link is the room\'s own server, over the scheme a browser speaks', () => {
   const { buildPageLink } = inviteHelpers();
+  assert.equal(buildPageLink('wss://edit.example', 'r-1', 'tok'), 'https://edit.example/?room=r-1&token=tok');
   assert.equal(
-    buildPageLink('https://edit.example', 'r-1', 'tok', PAGE_DEFAULT_SERVER, PAGE_DEFAULT_SERVER),
-    'https://edit.example/?room=r-1&token=tok',
+    buildPageLink('ws://127.0.0.1:8080', 'r-1', 'tok'),
+    'http://127.0.0.1:8080/?room=r-1&token=tok',
   );
+  // A server behind a prefix is served there, so its page is linked there too.
   assert.equal(
-    buildPageLink('https://edit.example', 'r-1', 'tok', 'ws://other:8080', PAGE_DEFAULT_SERVER),
-    'https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080',
+    buildPageLink('wss://edit.example/prefix', 'r-1', 'tok'),
+    'https://edit.example/prefix/?room=r-1&token=tok',
   );
 });
 
 test('a pasted page link reads back into the same join, and nothing else does', () => {
   const { buildPageLink, parsePageLink } = inviteHelpers();
-  const link = buildPageLink(
-    'https://edit.example',
-    'r-1',
-    'tok',
-    'ws://other:8080',
-    PAGE_DEFAULT_SERVER,
+  const link = buildPageLink('wss://edit.example', 'r-1', 'tok');
+  assert.deepEqual(parsePageLink(link), { room: 'r-1', token: 'tok', origin: 'https://edit.example' });
+  // A link written before the format changed carries `server`. Nothing reads it: the format
+  // defines `room` and `token` alone, so it is an unknown query parameter and the link's own
+  // origin is the server a guest reaches.
+  assert.deepEqual(
+    parsePageLink('https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080'),
+    { room: 'r-1', token: 'tok', origin: 'https://edit.example' },
   );
-  assert.deepEqual(parsePageLink(link), { room: 'r-1', token: 'tok', server: 'ws://other:8080' });
-  const bare = buildPageLink('https://edit.example', 'r-1', 'tok', PAGE_DEFAULT_SERVER, PAGE_DEFAULT_SERVER);
-  assert.deepEqual(parsePageLink(bare), { room: 'r-1', token: 'tok' });
   assert.equal(parsePageLink('ws://host:8080/session?room=r-1&token=tok'), undefined);
   assert.equal(parsePageLink('https://host/?room=r-1'), undefined);
   assert.equal(parsePageLink('https://host/'), undefined);
@@ -177,12 +168,12 @@ test('CopyInvite copies exactly the page link, never the wire address', async (t
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
   assert.equal(
     link,
-    `${DEFAULT_ORIGIN}/?room=${roomId}&token=${token}&server=${encodeURIComponent(server.wsBase)}`,
+    `${pageOf(server)}/?room=${roomId}&token=${token}`,
     'the clipboard holds anything but the one page link',
   );
   assert.ok(!link.includes('ws://'), 'the wire address reached the clipboard');
   for (const written of bundle.stub.registered.clipboardWrites) {
-    assert.ok(written.startsWith('https://'), `a clipboard write was not the page link: ${written}`);
+    assert.ok(/^https?:\/\//.test(written), `a clipboard write was not the page link: ${written}`);
     assert.ok(!written.includes('ws://'), `a clipboard write carried the wire address: ${written}`);
   }
 });
@@ -226,12 +217,12 @@ test('a remembered non-default server survives host-leave-host into the copied l
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const link = await waitFor('the invite link', () => {
     const clipboard = bundle.stub.registered.clipboard;
-    return clipboard.startsWith('https://') ? clipboard : false;
+    return /^https?:\/\//.test(clipboard) ? clipboard : false;
   });
   assert.equal(
-    new URL(link).searchParams.get('server'),
-    server.wsBase,
-    'the copied link lost the remembered server',
+    new URL(link).origin,
+    pageOf(server),
+    'the copied link does not name the remembered server',
   );
 });
 
@@ -255,7 +246,7 @@ test('a pasted page link joins the room it names', async (t) => {
   assert.equal(joined, `Selvage: joined the room; the room has no open documents yet.`);
 });
 
-test('a ws:// invite still joins, as the fallback for rooms off the page default', async (t) => {
+test('a ws:// invite still joins, for a room whose server serves no page', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
     await server.stop();
@@ -263,8 +254,7 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   const { bundle } = activated(t);
   const { link } = await copiedInvite(bundle, server);
 
-  const wire = new URL(link).searchParams.get('server');
-  assert.ok(wire !== null && wire !== '', `the copied link carries no server: ${link}`);
+  const wire = server.wsBase;
   const guest = freshActivated(t);
   const wireRoom = new URL(link).searchParams.get('room');
   assert.ok(wireRoom !== null && wireRoom !== '', `the copied link names no room: ${link}`);
@@ -279,32 +269,21 @@ test('a ws:// invite still joins, as the fallback for rooms off the page default
   assert.match(joined, /Selvage: joined the room/);
 });
 
-test('the webOrigin setting moves the copied link', async (t) => {
+test('a page address is not a setting any more: the link is the server', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
     await server.stop();
   });
-  const { bundle } = activated(t);
-  bundle.stub.configure({ webOrigin: 'https://custom.example:9443/' });
-  const { link } = await copiedInvite(bundle, server);
-  assert.ok(
-    link.startsWith('https://custom.example:9443/?room='),
-    `the setting did not move the link: ${link}`,
-  );
-});
-
-test('a non-https webOrigin falls back to the default page', async (t) => {
-  const server = await FakeServer.start();
-  t.after(async () => {
-    await server.stop();
-  });
-  for (const configured of ['http://custom.example:9443/', 'not a url']) {
+  for (const configured of ['https://custom.example:9443/', 'http://custom.example:9443/', 'not a url']) {
     const fresh = freshActivated(t);
+    // The setting is gone. A window that still has it configured — an old settings file — must
+    // not be able to send a link to a page that dials another server, which is what a separate
+    // page address allowed.
     fresh.bundle.stub.configure({ webOrigin: configured });
     const { link } = await copiedInvite(fresh.bundle, server);
     assert.ok(
-      link.startsWith(`${DEFAULT_ORIGIN}/?room=`),
-      `${configured} minted a link off the default page: ${link}`,
+      link.startsWith(pageOf(server)),
+      `${configured} moved the link off the room's own server: ${link}`,
     );
   }
 });

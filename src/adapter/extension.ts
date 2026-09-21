@@ -152,13 +152,6 @@ const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
  */
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
-/**
- * The page CopyInvite links to when nothing is configured: the published demo page.
- * An overridable default, never a commitment — the `selvage.webOrigin` setting always
- * wins — so moving the page is this one line.
- */
-const DEFAULT_WEB_ORIGIN = 'https://selvage.dontblameme.dev';
-
 export function activate(context: vscode.ExtensionContext): void {
   deactivated = false;
   // A window the user typed a server into leaves it behind for the next one. The in-memory
@@ -2520,12 +2513,9 @@ function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
   const page = parsePageLink(invite);
   if (page !== undefined) {
-    // A page link joins on the server it names, or on the page default when it names
-    // none: a `&server=` that is not an absolute ws/wss base builds a wire URL no socket
-    // can open, so it is refused here rather than after the question and the reload.
-    if (page.server !== undefined && !isSessionBase(page.server)) {
-      return inviteLinkHint();
-    }
+    // A page link joins on the server its own origin names. Nothing else in it can name
+    // one: `room` and `token` are the whole query the format defines, and any other
+    // parameter is ignored the way an unknown query parameter is.
     return undefined;
   }
   // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
@@ -2562,8 +2552,8 @@ function inviteLinkRefusal(value: string): string | undefined {
 }
 
 /**
- * Whether `value` is an absolute `ws:`/`wss:` address: what a session URL can be built
- * on, whether it is the whole invite or only the `&server=` a page link carries.
+ * Whether `value` is an absolute `ws:`/`wss:` address: what a session URL can be built on,
+ * which only a wire invite is.
  */
 function isSessionBase(value: string): boolean {
   try {
@@ -2580,24 +2570,45 @@ function inviteLinkHint(): string {
 }
 
 /**
- * The guest link for a room: the page URL carrying room and token, with `server`
- * only when the room lives off the page default — the shape the page itself
- * offers and reads back (`web_client/BROWSER_NOTES.md`, `src/browser/share.ts`).
- * Pure so tests pin it without an editor: `origin` is the page, `server` the room's.
+ * The page a room's server serves, over the scheme a browser speaks: `wss://` as `https://`,
+ * `ws://` as `http://`, with the host, port and any path prefix kept. One address decides the
+ * whole invite, so this is the only place the page half comes from.
  */
-export function buildPageLink(
-  origin: string,
-  room: string,
-  token: string,
-  server: string,
-  defaultServer: string,
-): string {
-  let link =
-    `${origin}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
-  if (server !== defaultServer) {
-    link += `&server=${encodeURIComponent(server)}`;
+export function pageOriginOf(serverBase: string): string {
+  const wanted = serverBase.trim().replace(/\/+$/, '');
+  if (wanted.startsWith('wss://')) {
+    return `https://${wanted.slice('wss://'.length)}`;
   }
-  return link;
+  if (wanted.startsWith('ws://')) {
+    return `http://${wanted.slice('ws://'.length)}`;
+  }
+  return wanted;
+}
+
+/**
+ * The server a page origin names, which is what a guest dials: the scheme a browser speaks
+ * read back as the one a socket does. The engine appends `/session` to the base this returns.
+ */
+export function serverBaseOf(page: string): string {
+  const wanted = page.trim().replace(/\/+$/, '');
+  if (wanted.startsWith('https://')) {
+    return `wss://${wanted.slice('https://'.length)}`;
+  }
+  if (wanted.startsWith('http://')) {
+    return `ws://${wanted.slice('http://'.length)}`;
+  }
+  return wanted;
+}
+
+/**
+ * The guest link for a room: the page the room's own server serves, carrying room and token.
+ * The link *is* the server — its origin is the address the guest dials — so it carries nothing
+ * else, and a room cannot be linked at a page that dials another server. The shape is the page's
+ * own (`web_client/BROWSER_NOTES.md`, `src/browser/share.ts`). Pure so tests pin it without an
+ * editor: `serverBase` is the room's server, and the page is derived from it.
+ */
+export function buildPageLink(serverBase: string, room: string, token: string): string {
+  return `${pageOriginOf(serverBase)}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
 }
 
 /**
@@ -2605,7 +2616,7 @@ export function buildPageLink(
  * page's own parsing, mirrored so a copied link joins the same way it loads.
  * Pure so tests pin it without an editor.
  */
-export function parsePageLink(text: string): { room: string; token: string; server?: string } | undefined {
+export function parsePageLink(text: string): { room: string; token: string; origin: string } | undefined {
   let url: URL;
   try {
     url = new URL(text.trim());
@@ -2620,33 +2631,10 @@ export function parsePageLink(text: string): { room: string; token: string; serv
   if (room === null || room === '' || token === null || token === '') {
     return undefined;
   }
-  const server = url.searchParams.get('server');
-  if (server === null || server === '') {
-    return { room, token };
-  }
-  return { room, token, server };
-}
-
-/**
- * The page CopyInvite links to: the `selvage.webOrigin` setting when it names an
- * absolute `https:` origin, else the demo page default (`DEFAULT_WEB_ORIGIN`). A
- * non-HTTPS or unparsable value falls back rather than minting a cleartext link
- * carrying the room's token. A trailing slash is not a second page, so it is
- * stripped before the link is built.
- */
-function webOrigin(): string {
-  const configured = config().get<string>('webOrigin', '').trim();
-  if (configured !== '') {
-    try {
-      const origin = normalisePageOrigin(configured);
-      if (new URL(origin).protocol === 'https:') {
-        return origin;
-      }
-    } catch {
-      // Not an absolute URL at all: the default below stands.
-    }
-  }
-  return DEFAULT_WEB_ORIGIN;
+  // The origin is the server, so nothing in the query names one. An unknown parameter —
+  // `server` from a link written before this, or anything else — is ignored, exactly as an
+  // unknown query parameter is.
+  return { room, token, origin: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}` };
 }
 
 /** True for a value that opens with a scheme, `ws://` or `https://`, rather than a bare host. */
@@ -2673,30 +2661,6 @@ export function normaliseServerUrl(text: string): string {
   return addressed.replace(/\/+$/, '').replace(/\/session$/, '');
 }
 
-/**
- * The page origin from whatever was typed in a page-origin position, where the default is the
- * other one: a page is served over TLS or not at all, so a bare host means `https://<host>`. A
- * scheme that is not https is left for the caller to refuse rather than rewritten — a cleartext
- * page link carries the room's token, and that is not a guess to make on someone's behalf. Pure
- * so tests pin it without an editor.
- */
-export function normalisePageOrigin(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed === '') {
-    return '';
-  }
-  const addressed = hasScheme(trimmed) ? trimmed : `https://${trimmed}`;
-  return addressed.replace(/\/+$/, '');
-}
-
-/**
- * The guest link for this window's room, with the configured page as its origin:
- * `buildPageLink` bound to the setting and the page default.
- */
-function buildPageInvite(room: string, token: string, serverBase: string): string {
-  return buildPageLink(webOrigin(), room, token, serverBase, DEFAULT_SERVER_URL);
-}
-
 /** The page link for an engine's session, or `undefined` when it holds no token. */
 function pageInviteFor(engine: SelvageEngine): string | undefined {
   const wire = engine.inviteUrl();
@@ -2709,20 +2673,19 @@ function pageInviteFor(engine: SelvageEngine): string | undefined {
   if (parsed === undefined || room === undefined || room === '' || token === undefined || token === '') {
     return undefined;
   }
-  return buildPageInvite(room, token, parsed.base);
+  return buildPageLink(parsed.base, room, token);
 }
 
 /**
- * The wire URL an invite joins on: a page link resolves to its room's server
- * (the page default when the link carries none), while a `ws://` invite — the
- * advanced fallback for non-default servers — joins as it always has.
+ * The wire URL an invite joins on: a page link resolves to the server its own origin names,
+ * while a `ws://` invite — a room whose server serves no page — joins as it stands.
  */
 function resolveInviteToWire(invite: string): string {
   const page = parsePageLink(invite);
   if (page === undefined) {
     return invite;
   }
-  return sessionUrl(page.server ?? DEFAULT_SERVER_URL, page.room, page.token);
+  return sessionUrl(serverBaseOf(page.origin), page.room, page.token);
 }
 
 /**
