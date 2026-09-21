@@ -41,7 +41,7 @@ somewhere other than the repo root.
 ### Run it from a checkout
 
 ```console
-$ code --extensionDevelopmentPath=$PWD <a folder to work in>
+$ code --extensionDevelopmentPath="$PWD" path/to/folder
 ```
 
 Pressing `F5` does the same through `.vscode/launch.json`, which builds `dist/` first. That file
@@ -112,7 +112,7 @@ since a workspace is not where a person's name belongs.
 
 The room is a folder on disk in both windows. A host shares the `file:` documents it has open
 under its workspace folder, and that folder is the grant: a guest can list it, open any of its
-files, and read one the host never opened. The listing follows the host's folder, so a file a
+files, and read one the host never opened, on request. The listing follows the host's folder, so a file a
 build, a branch switch or another terminal creates or removes reaches the room without anybody
 asking.
 
@@ -166,7 +166,8 @@ completing command there, while the intents stay one-to-one.
   undo, host-filesystem reads beyond a granted path a peer asked for, and multi-room windows: one
   session per window.
 - A `y-websocket` provider (Selvage's envelope is not y-websocket's) and `terminal/1`.
-- Exclude globs. What a host shares is what it has open, which is visible in its own window. A
+- Exclude globs. What a host shares without being asked is what it has open, which is visible in
+  its own window; any other file under the shared folder a guest reaches is read on request. A
   file a room asks for is checked before it is read, and only when the grant would publish it and
   every directory on the way is a plain directory of the shared folder, never a link out of it.
   The window between that check and the read is a stated residual: `vscode.workspace.fs` exposes

@@ -3115,7 +3115,7 @@ async function listPeers(): Promise<void> {
     })),
     {
       title: `Selvage: who is in the room`,
-      placeHolder: 'Everyone in the room, and each one\'s caret colour',
+      placeHolder: 'Other participants, and each one\'s caret colour',
       matchOnDescription: true,
       matchOnDetail: true,
     },
