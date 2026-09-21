@@ -39,9 +39,6 @@ export type ViewRow = (ParticipantRow & { kind: 'peer' }) | NoteRow;
  *
  * No session is no row at all. The view is then empty, which is exactly when the editor draws
  * the welcome the manifest contributes for it: one sentence and a **Host a session** button.
- * The row this replaces said `Selvage: join a session first.` to someone whose intent was to
- * host, and offered nothing to click; that sentence still stands where it belongs, on the
- * commands that need a session before they can run.
  */
 export function resolveViewRows(rows: readonly RosterRow[]): ViewRow[] {
   const resolved: ViewRow[] = [];

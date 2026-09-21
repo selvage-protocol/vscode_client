@@ -2729,9 +2729,8 @@ export function parsePageLink(text: string): { room: string; token: string; orig
   if (room === null || room === '' || token === null || token === '') {
     return undefined;
   }
-  // The origin is the server, so nothing in the query names one. An unknown parameter —
-  // `server` from a link written before this, or anything else — is ignored, exactly as an
-  // unknown query parameter is.
+  // The origin is the server, so nothing in the query names one. `server` is ignored like any
+  // other unknown parameter.
   return { room, token, origin: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}` };
 }
 

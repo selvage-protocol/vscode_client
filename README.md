@@ -97,12 +97,12 @@ notice, with a `Change the server` button that asks the same question again for 
 host on the setting or on an explicit address gets no such button; that address is changed where
 it was set.
 
-Everywhere a *server* address is typed — the argument, the box's answer, the setting, a
-remembered one — the host on its own is enough, and it means the published shape: a bare host
-becomes `wss://<host>`, because the room is dialled over TLS. The `/session` path every Selvage
-server answers belongs to the engine, which adds it to whatever base it is given, so an address
-that already names it (`wss://host/session`) loses it rather than gaining a second one; any other
-path is kept, since a server behind a prefix was addressed deliberately.
+A server address is typed in the command's argument, the box's answer, the `selvage.serverUrl`
+setting, or a remembered address, and all four read it the same way: a bare host means the
+published shape, `wss://<host>`, because the room is dialled over TLS. The `/session` path every
+Selvage server answers belongs to the engine, which appends it to whatever base it is given, so a
+base that already ends in `/session` has that suffix removed before the engine appends its own;
+any other path is kept, because a server behind a prefix was named on purpose.
 
 `Selvage: Change the server` reports the address the next host will use and offers the same box
 to change it, without hosting first. While `selvage.serverUrl` is configured that setting
@@ -152,13 +152,13 @@ completing command there.
 
 | | |
 |---|---|
-| `Selvage: Host a session` | Mint a room on a server and share this window's folder. Asks for the server address only when no argument, setting or remembered address names one — a bare host is completed to `wss://<host>` either way — and for the name once. Running it while already hosting copies the invite instead of minting a second room. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. The notice that follows carries the invite's next step and a `Copy again` button; a copy the editor refused, or a room this connection was given no invite for, is said instead of that notice. |
+| `Selvage: Host a session` | Mint a room on a server and share this window's folder. Asks for the server address only when no argument, setting or remembered address names one (a bare host is completed to `wss://<host>` either way), and for the name once. Running it while already hosting copies the invite instead of minting a second room. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. The notice that follows carries the invite's next step and a `Copy again` button; a copy the editor refused, or a connection given no invite, is named in it. |
 | `Selvage: Join a session from an invite link` | Join the room an invite link names, replacing this window's folder with the room's mirror. Accepts the page link a host copies, whose origin is the server the room lives on; a `ws://` link joins as it stands, which is how a room whose server serves no page is handed on. A link that cannot join (a truncated paste, half a query) is refused before the name is asked and before the window reloads, in words that leave the link's token out. A window holding a folder of its own is asked before the reload takes it, and that folder stays on disk either way. A refusal says what happened in ordinary words; the room's own `no such room: <id>` and `invalid room token` never reach the person. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Change the server` | Report the server the next host uses, and set it, without hosting first. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Download a file from the room` | Hold one listed path, or a directory of them, in the room so every peer receives it, filling the mirror. Refused while hosting: your files are already on your disk. |
-| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A session the server gave no invite to says that rather than that there is no room, and a clipboard the editor refuses says why rather than claiming the copy. A host copies the page its own server serves, carrying the room and its token: the link's origin is the server, so one address decides both the page a guest opens and the socket they join on — a link cannot be sent to a page that dials another server. A guest hands on the link it joined by, as it stood; the invite is the permission, so the token it joined with is the guest's to pass on. |
+| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A session the server gave no invite to says so, and a clipboard the editor refuses says why. A host copies the page its own server serves, carrying the room and its token, so one address decides both the page a guest opens and the socket they join on. A guest hands on the link it joined by, as it stood; the invite is the permission, so the token it joined with is the guest's to pass on. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room, with each one's colour, name, role and the document they are in. Drawn as a quick pick with a coloured dot per row, because `QuickPickItem.iconPath` is the only field an editor renders a colour from. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
