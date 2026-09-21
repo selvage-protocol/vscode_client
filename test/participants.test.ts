@@ -507,13 +507,24 @@ test('a clipped caption never splits a surrogate pair', () => {
   assert.equal(clip(inside), inside, 'a path a room can carry was clipped');
   const atBound = 'x'.repeat(MAX_GRANT_PATH_BYTES);
   assert.equal(clip(atBound), atBound, 'the longest path a room can carry was clipped');
-  // An astral character straddling the bound: the clip takes the whole pair or neither
-  // half of it, never a lone surrogate the editor cannot draw.
-  const straddle = `${'x'.repeat(MAX_GRANT_PATH_BYTES - 1)}\u{1f600}${'y'.repeat(10)}`;
-  const clipped = clip(straddle);
-  assert.equal(clipped.endsWith('\u2026'), true, 'a clipped caption says nothing about it');
+  // An astral character whose *high half* is the code unit the slice ends on: the pair is
+  // cut by the clip and has to be dropped whole. (`MAX - 2` is what puts the high surrogate
+  // at index `MAX - 2`, which is the last unit the slice keeps: two units earlier and the
+  // pair is entirely inside the kept head, and the clip never has to rule on it.)
+  const straddle = `${'x'.repeat(MAX_GRANT_PATH_BYTES - 2)}\u{1f600}${'y'.repeat(10)}`;
   assert.equal(
-    [...clipped].some((character) => /\(/.test(character)),
+    straddle.slice(0, MAX_GRANT_PATH_BYTES - 1).charCodeAt(MAX_GRANT_PATH_BYTES - 2) >= 0xd800,
+    true,
+    'the fixture does not put a high surrogate where the clip cuts',
+  );
+  const clipped = clip(straddle);
+  // Both halves went, and nothing but an ellipsis took their place.
+  assert.equal(clipped, `${'x'.repeat(MAX_GRANT_PATH_BYTES - 2)}\u2026`);
+  assert.equal(
+    [...clipped].some((character) => {
+      const code = character.charCodeAt(0);
+      return character.length === 1 && code >= 0xd800 && code <= 0xdfff;
+    }),
     false,
     `a caption carries a lone surrogate: ${JSON.stringify(clipped.slice(-3))}`,
   );
