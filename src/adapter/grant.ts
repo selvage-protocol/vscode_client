@@ -16,6 +16,7 @@ import {
   isGrantedPath,
   sortGrant,
 } from '../bridge/index.ts';
+import type { GrantRefusal, GrantedRead } from '../bridge/index.ts';
 
 /**
  * How many entries a walk will look at before it stops. The path count is the listing's own
@@ -97,14 +98,31 @@ async function walk(
   }
 }
 
-/** A regular file small enough for one `Y.Text`, which is all a document can be. */
+/**
+ * A regular file small enough for one `Y.Text`, which is all a document can be. This is the
+ * half of the read's rule a walk can afford: a file's bytes are not read to decide whether to
+ * name it, so a listing names files a session may carry and not only those it will.
+ */
 export async function isShareableFile(uri: vscode.Uri): Promise<boolean> {
+  const info = await shareableInfo(uri);
+  return typeof info !== 'string';
+}
+
+/**
+ * The leaf's own stat when it is the shape a session will carry, or the cause it is not.
+ * One rule in two shapes: `isShareableFile` is the yes-or-no of it, a read wants the reason.
+ */
+async function shareableInfo(uri: vscode.Uri): Promise<vscode.FileStat | GrantRefusal> {
+  let info: vscode.FileStat;
   try {
-    const stat = await vscode.workspace.fs.stat(uri);
-    return stat.type === vscode.FileType.File && stat.size <= MAX_GRANT_FILE_BYTES;
+    info = await vscode.workspace.fs.stat(uri);
   } catch {
-    return false;
+    return 'missing';
   }
+  if (info.type !== vscode.FileType.File) {
+    return 'not-a-file';
+  }
+  return info.size > MAX_GRANT_FILE_BYTES ? 'too-large' : info;
 }
 
 /**
@@ -138,7 +156,18 @@ function relativeWithin(base: string, path: string): string | undefined {
 }
 
 /**
- * The file a room path names, or `undefined` when no folder this session captured contains one.
+ * The file a room path names, or why this window has none for it.
+ *
+ * `not-granted` is the name: a path that escapes the folders this session captured, or one the
+ * grant leaves out. It is kept apart from the rest so that the bridge can say nothing at all
+ * about such a path — a refusal would confirm that the guess was worth making.
+ */
+export type GrantedFile =
+  | { readonly uri: vscode.Uri }
+  | { readonly refusal: GrantRefusal };
+
+/**
+ * The file a room path names, or why this window has none for it.
  *
  * This is the path a *peer* named, so it is checked rather than trusted: the excludes and the
  * segment rules of `isGrantedPath` apply to it, because a guest that guessed `.env` or
@@ -150,20 +179,21 @@ function relativeWithin(base: string, path: string): string | undefined {
 export async function grantedFile(
   folders: readonly vscode.WorkspaceFolder[],
   path: string,
-): Promise<vscode.Uri | undefined> {
+): Promise<GrantedFile> {
   const resolved = withinFolders(folders, path);
   if (resolved === undefined || !isGrantedPath(resolved.relative)) {
-    return undefined;
+    return { refusal: 'not-granted' };
   }
-  if (!(await throughPlainDirectories(resolved.folder.uri, resolved.relative))) {
-    return undefined;
+  const refusal = await resolutionRefusal(resolved.folder.uri, resolved.relative);
+  if (refusal !== undefined) {
+    return { refusal };
   }
-  return vscode.Uri.joinPath(resolved.folder.uri, resolved.relative);
+  return { uri: vscode.Uri.joinPath(resolved.folder.uri, resolved.relative) };
 }
 
 /**
- * True when every segment matches its directory entry exactly and every directory between
- * the folder and the file is a plain directory of that folder.
+ * Why a room path does not name a file of the folder, walking it one segment at a time, or
+ * `undefined` when every step is where it should be.
  *
  * `vscode.workspace.fs` has no `realpath`, and `Uri.joinPath` resolves nothing: it joins strings.
  * A path that travels through a symbolic link therefore lands on a real file somewhere else
@@ -173,26 +203,30 @@ export async function grantedFile(
  *
  * Each segment also has to be spelled as the directory lists it: on a case-insensitive mount
  * `.GIT` stats as a directory when only `.git` is on disk, and the grant excludes only the
- * spelling it names. An exact entry check refuses the folded variant before it resolves.
+ * spelling it names. An exact entry check refuses the folded variant before it resolves, and
+ * what it refuses is a name this window cannot see, which is `missing`.
  *
  * What this cannot see, because the API does not expose it: a segment that is followed by the
  * editor's own file system without reporting a link (a mount point, a provider that resolves
  * links itself), and a link put in place between this walk and the read that follows it.
  */
-async function throughPlainDirectories(folder: vscode.Uri, relative: string): Promise<boolean> {
+async function resolutionRefusal(
+  folder: vscode.Uri,
+  relative: string,
+): Promise<GrantRefusal | undefined> {
   const segments = relative.split('/');
   let head = folder;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index] ?? '';
     if (!(await hasExactChild(head, segment))) {
-      return false;
+      return 'missing';
     }
     head = vscode.Uri.joinPath(head, segment);
     if (index < segments.length - 1 && !(await isPlainDirectory(head))) {
-      return false;
+      return 'not-a-file';
     }
   }
-  return true;
+  return undefined;
 }
 
 async function hasExactChild(dir: vscode.Uri, name: string): Promise<boolean> {
@@ -231,6 +265,31 @@ function withinFolders(
     return undefined;
   }
   return { folder, relative: path.slice(slash + 1) };
+}
+
+/**
+ * A file's text, or why a session cannot carry it.
+ *
+ * The size and type the listing already asked of this file, then the bytes themselves: a
+ * document is one `Y.Text`, and a room carries text, so a NUL byte or a byte sequence that is
+ * not valid UTF-8 is not something to put into one. The listing deliberately stays with the
+ * first half — a walk that read every file to decide whether to name it would read a whole
+ * project to publish a name list, and the host's own disk is not read for a peer until the
+ * peer asks (`DESIGN.md` §4.2) — so a binary can be listed and is refused here.
+ */
+export async function grantedText(uri: vscode.Uri): Promise<GrantedRead> {
+  const info = await shareableInfo(uri);
+  if (typeof info === 'string') {
+    return { kind: 'refused', cause: info };
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(uri);
+  } catch {
+    return { kind: 'refused', cause: 'missing' };
+  }
+  const text = decodableText(bytes);
+  return text === undefined ? { kind: 'refused', cause: 'binary' } : { kind: 'text', text };
 }
 
 /**

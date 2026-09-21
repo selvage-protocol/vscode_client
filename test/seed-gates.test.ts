@@ -265,14 +265,18 @@ test('one bogus listing is one dialog, never one per path', async (t) => {
   // The ungrantable two were dropped silently: never read, never reported.
   assert.deepEqual(editor.reads, ['gone-1.txt', 'gone-2.txt', 'gone-3.txt']);
 
-  // One failure on its own still reads as it always did.
+  // One failure on its own still reads as it always did: the sentence a file that is gone
+  // is refused with, pinned word for word.
   emit({ type: 'documentsChanged', documents: ['gone-4.txt'] });
   const single = await waitFor('the single refusal', () =>
     editor.reportsOf('sessionError').length === 2
       ? editor.reportsOf('sessionError')[1]
       : false,
   );
-  assert.match(single.message, /not a readable file in the folder this window shares/);
+  assert.equal(
+    single.message,
+    'could not share gone-4.txt: there is no readable file there any more (it may have been deleted after the listing was published); nothing was shared for it',
+  );
 });
 
 test('a refused open leaves no document, no reconcile and no hold', async (t) => {

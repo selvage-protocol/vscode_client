@@ -10,9 +10,16 @@
 import * as vscode from 'vscode';
 
 import { diff } from '../bridge/index.ts';
-import type { Cursor, EditorHost, LineEnding, Report, TextChange } from '../bridge/index.ts';
+import type {
+  Cursor,
+  EditorHost,
+  GrantedRead,
+  LineEnding,
+  Report,
+  TextChange,
+} from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
-import { decodableText, grantedFile, isShareableFile, roomPathOf } from './grant.ts';
+import { grantedFile, grantedText, roomPathOf } from './grant.ts';
 import { MIRROR_MARKER, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
@@ -241,22 +248,16 @@ export class WorkspaceEditor implements EditorHost {
    * The path came from a peer, so it is resolved against the captured folders and has to be a
    * path the grant itself would publish — the `.git/**` and `.env` defaults included, and every
    * directory on the way a plain directory of the folder rather than a symbolic link out of it —
-   * before a single byte is read. `undefined` is then the answer for a directory, a symbolic
-   * link, a file over the size a session will carry, and bytes that are not text; the bridge
-   * reports that rather than putting an empty document into the room.
+   * before a single byte is read. The answer is the text, or why there is none: a name this
+   * window does not share, one that is not there, one that is not a plain file, one over the
+   * size a session will carry, or bytes that are not text. The bridge says which of those
+   * happened, rather than blaming a deletion for all of them.
    */
-  async readGrantedFile(path: string): Promise<string | undefined> {
-    const uri = await grantedFile(this.folders, path);
-    if (uri === undefined || !(await isShareableFile(uri))) {
-      return undefined;
-    }
-    let bytes: Uint8Array;
-    try {
-      bytes = await vscode.workspace.fs.readFile(uri);
-    } catch {
-      return undefined;
-    }
-    return decodableText(bytes);
+  async readGrantedFile(path: string): Promise<GrantedRead> {
+    const found = await grantedFile(this.folders, path);
+    return 'refusal' in found
+      ? { kind: 'refused', cause: found.refusal }
+      : await grantedText(found.uri);
   }
 
   renderCursors(cursors: Cursor[]): void {

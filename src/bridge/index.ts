@@ -10,7 +10,15 @@ export {
   SessionBridge,
   realTimers,
 } from './bridge.ts';
-export type { BridgeOptions, EditorHost, Engine, Report, Timers } from './bridge.ts';
+export type {
+  BridgeOptions,
+  EditorHost,
+  Engine,
+  GrantRefusal,
+  GrantedRead,
+  Report,
+  Timers,
+} from './bridge.ts';
 export {
   applyChange,
   diff,

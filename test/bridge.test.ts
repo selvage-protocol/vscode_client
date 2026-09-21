@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SessionBridge, DEFAULT_MAX_APPLY_ATTEMPTS } from '../src/bridge/bridge.ts';
-import type { BridgeOptions, Engine, Timers } from '../src/bridge/bridge.ts';
+import type { BridgeOptions, Engine, GrantedRead, Timers } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import type { Cursor } from '../src/bridge/cursors.ts';
@@ -1126,11 +1126,15 @@ test("the room's grant reaches the adapter as a report, whole and in order", asy
 class HeldRead extends FakeEditor {
   private release?: () => void;
 
-  override readGrantedFile(path: string): Promise<string | undefined> {
+  override readGrantedFile(path: string): Promise<GrantedRead> {
     this.reads.push(path);
     return new Promise((resolve) => {
       this.release = () => {
-        resolve(this.disk.get(path));
+        resolve(
+          this.disk.has(path)
+            ? { kind: 'text', text: this.disk.get(path) ?? '' }
+            : { kind: 'refused', cause: 'binary' },
+        );
       };
     });
   }
@@ -1163,16 +1167,15 @@ test('a host seeds a path the room asks for that it never opened', async (t) => 
 test('a host refuses a requested path that is not a readable file, and seeds nothing', async (t) => {
   const { session, host, guest } = await twoWindows(t);
 
-  // `readGrantedFile` answers `undefined` for a directory, a binary, a file over the size a
-  // session will carry, and one that escapes or is excluded from the folder being shared. The
-  // path came from a peer, so a refusal is reported rather than guessed at.
+  // The read answers with a cause for a path it will not serve: this one is a name that is
+  // not there. The path came from a peer, so a refusal is reported rather than guessed at.
   guest.editor.open(OTHER, '');
   guest.bridge.documentOpened(OTHER);
 
   const refusal = await waitFor('the refusal to be reported', () =>
     host.editor.reportsOf('sessionError')[0] ?? false,
   );
-  assert.match(refusal.message, /not a readable file in the folder this window shares/);
+  assert.match(refusal.message, /there is no readable file there any more/);
   assert.match(
     refusal.message,
     /may have been deleted after the listing was published/,
@@ -1181,6 +1184,50 @@ test('a host refuses a requested path that is not a readable file, and seeds not
   assert.deepEqual(host.editor.reads, [OTHER], 'the path was not even offered to the disk');
   assert.equal(session.host.has(OTHER), false, 'a refusal was seeded as an empty document');
   assert.equal(session.host.text(OTHER), '');
+});
+
+test('a host refused a binary file the room asked for says what it is, not that it is gone', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+
+  // A zip in the shared folder: a listing names it — the walk rules on a file's type and size
+  // and does not read it — so a guest can ask for it, and the answer has to be about the file
+  // rather than about a deletion nobody made. This is the sentence the owner was sent looking
+  // for a `logs_96234608913.zip` that was on disk the whole time.
+  host.editor.refusals.set(OTHER, 'binary');
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  const refusal = await waitFor('the refusal to be reported', () =>
+    host.editor.reportsOf('sessionError')[0] ?? false,
+  );
+  assert.equal(
+    refusal.message,
+    `could not share ${OTHER}: it is a binary file, and a room carries text, so this is not a file that can be shared at all; nothing was shared for it`,
+  );
+  assert.doesNotMatch(
+    refusal.message,
+    /deleted|readable file/,
+    'a binary file was refused as though it had gone missing',
+  );
+  assert.equal(session.host.has(OTHER), false, 'a refused file was seeded as an empty document');
+  assert.equal(session.host.text(OTHER), '');
+});
+
+test('a host says nothing about a path the grant would never publish', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+
+  // The bridge drops a path the grant excludes before any read; this is the same rule one
+  // layer down, where an adapter's own resolution refuses a name the grant allowed. A peer
+  // that guessed must learn nothing from the answer — not even that the name was refused
+  // rather than absent.
+  host.editor.refusals.set(OTHER, 'not-granted');
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  await waitFor('the read to be offered to the disk', () => host.editor.reads.length > 0);
+  await host.editor.settle();
+  assert.deepEqual(host.editor.reportsOf('sessionError'), [], 'a refusal confirmed a guessed name');
+  assert.equal(session.host.has(OTHER), false, 'the path was seeded');
 });
 
 test('a host refuses a requested path whose read outgrew the size a session will carry', async (t) => {

@@ -1391,9 +1391,23 @@ test('a host serves the path the room asks for, and refuses what the grant leave
   for (const path of refused) {
     assert.equal(guest.has(path), false, `${path} was seeded anyway`);
   }
+  // Each one is refused for what it is: the size it carries, and bytes that are not text.
+  // One sentence used to stand for both and named a deletion neither file had.
   assert.ok(
-    errors.every((message) => message.includes('not a readable file')),
-    `a refusal was worded differently: ${JSON.stringify(errors)}`,
+    errors.some((message) =>
+      message.includes('over the 1048576 bytes a session will carry'),
+    ),
+    `an oversized file was worded differently: ${JSON.stringify(errors)}`,
+  );
+  assert.ok(
+    errors.some((message) =>
+      message.includes('it is a binary file, and a room carries text'),
+    ),
+    `a binary file was worded differently: ${JSON.stringify(errors)}`,
+  );
+  assert.ok(
+    errors.every((message) => !message.includes('deleted')),
+    `a file that was never deleted was refused as a deletion: ${JSON.stringify(errors)}`,
   );
 
   // A refusal is a decision about the file now: a host opening an excluded file in its own
@@ -1445,13 +1459,49 @@ test('a host names deletion when the room asks for a file it removed', async (t)
     bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ??
       false,
   );
-  assert.match(refusal, /not a readable file in the folder this window shares/);
+  assert.match(refusal, /there is no readable file there any more/);
   assert.match(
     refusal,
     /may have been deleted after the listing was published/,
     'a deliberate deletion reads as a failure',
   );
   assert.equal(guest.has('doomed.txt'), false, 'the deleted path was seeded anyway');
+});
+
+test('a host refuses a zip the room asks for as a binary file, never as a deletion', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  // A zip as it is on disk: a local file header, whose first bytes carry a NUL. A listing
+  // names it — the walk rules on a file's type and the size a session will carry, and does
+  // not read it — so a guest can ask for it, and the answer has to be about what the file is
+  // rather than about a deletion nobody made.
+  bundle.stub.put(
+    'logs_96234608913.zip',
+    new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00]),
+  );
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+
+  await guest.open('logs_96234608913.zip');
+  const refusal = await waitFor('the host to refuse the binary path', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('logs_96234608913.zip')) ??
+      false,
+  );
+  assert.equal(
+    refusal,
+    'Selvage: could not share logs_96234608913.zip: it is a binary file, and a room carries text, so this is not a file that can be shared at all; nothing was shared for it.',
+  );
+  assert.equal(guest.has('logs_96234608913.zip'), false, 'the binary path was seeded anyway');
 });
 
 test('a stale openDocument path that left the listing is refused, not silently dropped', async (t) => {
