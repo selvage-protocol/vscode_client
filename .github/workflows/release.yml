@@ -10,9 +10,11 @@ name: release
 # The owner triggers a release from this workflow. `workflow_dispatch` (with a required
 # `version` input, no default) is the manual button; pushing a tag `v*` runs the same job
 # for a release cut by hand. Either way the job is idempotent: the manifest version is
-# asserted first, an existing tag must point at this run's commit before anything is
-# tagged or released, and an existing release has its `.vsix` asset refreshed rather than
-# a second release. A pull request runs ci.yml instead and can never publish or release.
+# asserted first, a manual re-run at a version whose tag already exists moves that tag to
+# this run's commit rather than refusing (a tag push still requires an exact match, since
+# there the pushed ref is the commit), and an existing release has its `.vsix` asset
+# refreshed rather than a second release. A pull request runs ci.yml instead and can never
+# publish or release.
 # `version` has no default (unlike the sibling repositories' release workflows) because the
 # Marketplace already carries a hand-uploaded `0.1.0` build with no git provenance: a run
 # started without a deliberately chosen version would otherwise collide with it.
