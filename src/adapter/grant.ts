@@ -13,6 +13,7 @@ import * as vscode from 'vscode';
 import {
   MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATHS,
+  isBinaryNamedPath,
   isGrantedPath,
   sortGrant,
 } from '../bridge/index.ts';
@@ -92,6 +93,14 @@ async function walk(
     if (type !== vscode.FileType.File) {
       continue;
     }
+    // A file whose name declares a format a room cannot carry is left out, because the read
+    // refuses every file of that format as `binary`: naming it offered a guest a file no fetch
+    // could fill. The rule is the name alone and it is a floor — this walk reads no bytes, so a
+    // binary whose name declares no format stays listed and gets that refusal for asking
+    // (`GRANT_BINARY_SUFFIXES`).
+    if (isBinaryNamedPath(child)) {
+      continue;
+    }
     if (await isShareableFile(target)) {
       out.push(`${prefix}${child}`);
     }
@@ -101,7 +110,9 @@ async function walk(
 /**
  * A regular file small enough for one `Y.Text`, which is all a document can be. This is the
  * half of the read's rule a walk can afford: a file's bytes are not read to decide whether to
- * name it, so a listing names files a session may carry and not only those it will.
+ * name it, so a listing names files a session may carry and not only those it will — a file
+ * whose name declares a format a session cannot carry is a separate rule, drawn from the name
+ * alone (`isBinaryNamedPath`).
  */
 export async function isShareableFile(uri: vscode.Uri): Promise<boolean> {
   const info = await shareableInfo(uri);
