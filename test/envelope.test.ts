@@ -22,6 +22,7 @@ import {
   renameParams,
 } from '../src/engine/envelope.ts';
 import { fetchMeta, metaAccepts } from '../src/engine/meta.ts';
+import { baseOf } from './helpers/base.ts';
 import {
   inviteUrl,
   metaUrl,
@@ -139,7 +140,7 @@ test('a fatal session error code pairs with the close code the server uses', () 
 });
 
 test('the invite URL is the connection URL, and is taken apart again', () => {
-  const invite = sessionUrl('ws://127.0.0.1:8080', 'room 1', 't/k');
+  const invite = sessionUrl(baseOf('ws://127.0.0.1:8080'), 'room 1', 't/k');
   assert.equal(invite, 'ws://127.0.0.1:8080/session?room=room%201&token=t%2Fk');
 
   const parsed = parseSessionUrl(invite);
@@ -149,9 +150,9 @@ test('the invite URL is the connection URL, and is taken apart again', () => {
   assert.equal(parsed.join.token, 't/k');
 
   // A host connection carries no room, and a URL off the endpoint is not a session URL.
-  assert.equal(sessionUrl('ws://h/', undefined, undefined), 'ws://h/session');
+  assert.equal(sessionUrl(baseOf('ws://h/'), undefined, undefined), 'ws://h/session');
   assert.equal(
-    sessionUrl('wss://h/prefix', 'r', undefined),
+    sessionUrl(baseOf('wss://h/prefix'), 'r', undefined),
     'wss://h/prefix/session?room=r',
   );
   assert.equal(parseSessionUrl('ws://h/meta'), undefined);
@@ -175,12 +176,12 @@ test('the invite URL is the connection URL, and is taken apart again', () => {
   assert.equal(percentDecode(percentEncode('üñî ✓')), 'üñî ✓');
 
   assert.equal(
-    inviteUrl({ baseUrl: 'ws://h', roomId: 'r', token: 'tok' }),
+    inviteUrl({ baseUrl: baseOf('ws://h'), roomId: 'r', token: 'tok' }),
     'ws://h/session?room=r&token=tok',
   );
-  assert.equal(inviteUrl({ baseUrl: 'ws://h', roomId: 'r' }), undefined);
-  assert.equal(metaUrl('ws://h:9/'), 'http://h:9/meta');
-  assert.equal(metaUrl('wss://h'), 'https://h/meta');
+  assert.equal(inviteUrl({ baseUrl: baseOf('ws://h'), roomId: 'r' }), undefined);
+  assert.equal(metaUrl(baseOf('ws://h:9/')), 'http://h:9/meta');
+  assert.equal(metaUrl(baseOf('wss://h')), 'https://h/meta');
 });
 
 test('a text frame parses permissively, and unknown fields do not matter', () => {

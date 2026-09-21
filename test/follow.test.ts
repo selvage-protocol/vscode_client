@@ -17,6 +17,7 @@ import type { TestContext } from 'node:test';
 
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
+import { baseOf } from './helpers/base.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -946,7 +947,7 @@ test('a host jumps to a peer through its own working copy', async (t) => {
   );
   const page = new URL(invite);
   const wire = sessionUrl(
-    page.searchParams.get('server') ?? server.wsBase,
+    baseOf(page.searchParams.get('server') ?? server.wsBase),
     page.searchParams.get('room') ?? '',
     page.searchParams.get('token') ?? '',
   );
@@ -1283,7 +1284,7 @@ test('a host jump to a path it does not share is refused without opening', async
   );
   const page = new URL(invite);
   const wire = sessionUrl(
-    page.searchParams.get('server') ?? server.wsBase,
+    baseOf(page.searchParams.get('server') ?? server.wsBase),
     page.searchParams.get('room') ?? '',
     page.searchParams.get('token') ?? '',
   );

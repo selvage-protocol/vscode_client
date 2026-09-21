@@ -22,6 +22,7 @@ import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import { FakeEditor } from './helpers/fake-editor.ts';
 import type { FakeServerOptions } from './helpers/fake-server.ts';
 import { fakeSession } from './helpers/session.ts';
+import { baseOf } from './helpers/base.ts';
 import { waitFor } from './helpers/wait.ts';
 
 /** A host window and a guest window on one room, each with an editor of its own. */
@@ -212,7 +213,7 @@ function stubEngine(): { engine: Engine; emit(event: EngineEvent): void } {
         awareness_renew_ms: 15_000,
         awareness_expire_ms: 30_000,
       },
-      baseUrl: '',
+      baseUrl: baseOf('ws://127.0.0.1:0'),
     }),
     text: () => '',
     has: () => false,

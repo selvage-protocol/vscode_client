@@ -26,6 +26,7 @@ import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 import { sessionUrl } from '../src/engine/index.ts';
+import { baseOf } from './helpers/base.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(here, '..');
@@ -148,7 +149,7 @@ test('a pasted page link reads back into the same join, and nothing else does', 
 
 test('a connect notice names the invite’s address, never the wire URL that carries the token', () => {
   const { sessionAddress } = inviteHelpers();
-  const wire = sessionUrl('ws://127.0.0.1:8080', 'r-1', 'super-secret');
+  const wire = sessionUrl(baseOf('ws://127.0.0.1:8080'), 'r-1', 'super-secret');
   assert.equal(sessionAddress(wire), 'ws://127.0.0.1:8080');
   // The fallback for a URL that will not parse is words, not the URL: the notice is read by a
   // person, and the string it replaces carries the token that joined the room.

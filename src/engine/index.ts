@@ -49,9 +49,10 @@ export {
   inviteUrl,
   metaUrl,
   parseSessionUrl,
+  sessionBase,
   sessionUrl,
 } from './urls.ts';
-export type { JoinQuery, SessionUrl } from './urls.ts';
+export type { JoinQuery, SessionBase, SessionUrl } from './urls.ts';
 export { openSocket } from './transport.ts';
 export type {
   OpenSocket,

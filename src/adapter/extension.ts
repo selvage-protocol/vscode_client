@@ -16,6 +16,7 @@ import {
   code as errCode,
   isProtocolError,
   parseSessionUrl,
+  sessionBase,
   sessionUrl,
 } from '../engine/index.ts';
 import type { PeerInfo, Role } from '../engine/index.ts';
@@ -2633,17 +2634,20 @@ function inviteLinkRefusal(value: string): string | undefined {
     return inviteLinkHint();
   }
   // And it has to be the invitation the engine dials: `parseSessionUrl` splits it into the
-  // base and the query, and `sessionUrl` — the builder the engine connects through — has
-  // to put the same invitation back. A base the URL parser rewrites is not one: in
-  // `ws:///session?…` the authority is swallowed into the path, so the parser reads host
-  // `session` with path `/` while `parseSessionUrl` hands back `ws://` and the wire URL
-  // rebuilt from it is `ws:/session?…` — a link that names no server to join. The room
-  // and its token are in the paste, so a link the engine would rewrite is refused here,
-  // in the fixed words, rather than dialled and lost after the reload.
-  if (
-    !isSessionBase(parsed.base) ||
-    sessionUrl(parsed.base, parsed.join.room, parsed.join.token) !== invite
-  ) {
+  // base and the query, and `sessionUrl` — the builder the engine connects through — has to
+  // name the same endpoint and the same query. The base's own spelling is the engine's
+  // business, not the box's: `ws:host/session?…` and `ws://host/session?…` are one server,
+  // read into one base by `sessionBase`. What is checked here is what a paste can name
+  // *besides* that server: a doubled slash (`ws://host//session?…`), a path the URL parser
+  // rewrote, or a parameter the engine does not read would leave the engine dialling an
+  // endpoint the paste does not name. The room and its token are in the paste, so such a
+  // link is refused here, in the fixed words, rather than dialled and lost after the
+  // reload. `parseSessionUrl` refusing a base that names no server — the `ws:///session?…`
+  // whose authority the parser swallowed into the path — is what makes that case a refusal
+  // above, without a comparison of the paste's own bytes.
+  const dialled = new URL(sessionUrl(parsed.base, parsed.join.room, parsed.join.token));
+  const pasted = new URL(invite);
+  if (pasted.pathname !== dialled.pathname || pasted.search !== dialled.search) {
     return inviteLinkHint();
   }
   return undefined;
@@ -2782,7 +2786,15 @@ function resolveInviteToWire(invite: string): string {
   if (page === undefined) {
     return invite;
   }
-  return sessionUrl(serverBaseOf(page.origin), page.room, page.token);
+  // A page link's origin is the server, read back as the scheme a socket speaks, and the
+  // base is the engine's: it goes through the one reading of one (`sessionBase`). A page
+  // whose origin names no server at all leaves the paste as it stands, which the join
+  // refuses where it reads it.
+  const server = sessionBase(serverBaseOf(page.origin));
+  if (server === undefined) {
+    return invite;
+  }
+  return sessionUrl(server, page.room, page.token);
 }
 
 /**

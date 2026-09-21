@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
+import { baseOf } from './helpers/base.ts';
 import {
   landStashedJoin,
   loadBundle,
@@ -60,7 +61,7 @@ function wireOf(link: string): string {
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
   // The origin is the server: the scheme a browser speaks read back as the one a socket does.
   const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
-  return sessionUrl(server, room, token);
+  return sessionUrl(baseOf(server), room, token);
 }
 
 /** The bundle, activated with its own storage, with its recorded state cleared. */
