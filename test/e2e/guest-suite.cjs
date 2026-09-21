@@ -147,23 +147,19 @@ function rgMirror(pattern, dir) {
   });
 }
 
-/** Routes the guest through the reconnect proxy when one is configured, keeping the room and
- * token the host actually minted. A page link carries the server as a parameter; a wire
- * invite is rewritten as it always was. */
+/** Routes the guest through the reconnect proxy when one is configured, keeping the room and the
+ * token the host actually minted. The invite *is* the server — its origin is the address the
+ * guest dials — so routing means replacing that origin and nothing else, for a page link and a
+ * wire invite alike. Nothing in a link names a second server: `server=` is retired and ignored,
+ * so a link that carried one would leave the relay out of the path and the blip cutting a socket
+ * the guest never held. */
 function routeThroughProxy(invite) {
   if (PROXY_ADDR === undefined) {
     return invite;
   }
-  try {
-    const url = new URL(invite);
-    if (url.protocol === 'http:' || url.protocol === 'https:') {
-      url.searchParams.set('server', `ws://${PROXY_ADDR}`);
-      return url.toString();
-    }
-  } catch {
-    // Not a page link: fall through to the wire rewrite below.
-  }
-  return invite.replace(/^ws:\/\/[^/]+/, `ws://${PROXY_ADDR}`);
+  const url = new URL(invite);
+  url.host = PROXY_ADDR;
+  return url.toString();
 }
 
 async function stageJoin(rawInvite) {
