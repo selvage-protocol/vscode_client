@@ -16,27 +16,30 @@ You need:
 
 ### Install
 
-The extension is not on the VS Code Marketplace yet. `.github/workflows/release.yml` publishes
-each tagged release there, once the owner has added the Marketplace's trusted publishing policy
-for this repository. Until then, install the `.vsix` attached to a
-[GitHub Release](https://github.com/selvage-protocol/vscode_client/releases):
+Install it from the
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=selvage-protocol.selvage-client),
+or search the Extensions view for Selvage:
 
 ```console
-$ code --install-extension selvage-client-<version>.vsix
+$ code --install-extension selvage-protocol.selvage-client
 ```
 
-To build one yourself:
+You can install a `.vsix` instead: the one attached to a
+[GitHub Release](https://github.com/selvage-protocol/vscode_client/releases), or one you build:
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
 $ npm run package                      # → selvage-client-<version>.vsix in the repo root
+$ code --install-extension selvage-client-<version>.vsix
 ```
 
-`npm run package` runs `vsce package`, which runs the `npm run build` used everywhere else first,
-so the `.vsix` always carries a fresh `dist/extension.js`. `scripts/build.mjs` leaves only
-`vscode` external, so that one file bundles the engine, the bridge, `ws`, `yjs` and
-`y-protocols`; there is no `node_modules/` in the `.vsix`. `vsce package -o <path>` writes it
-somewhere other than the repo root.
+`.github/workflows/release.yml` packages the extension, attaches the `.vsix` to the GitHub Release
+and publishes it to the Marketplace as `selvage-protocol.selvage-client`; the owner triggers a
+release from that workflow. `npm run package` runs `vsce package`, which runs the `npm run build`
+used everywhere else first, so the `.vsix` always carries a fresh `dist/extension.js`.
+`scripts/build.mjs` leaves only `vscode` external, so that one file bundles the engine, the bridge,
+`ws`, `yjs` and `y-protocols`; there is no `node_modules/` in the `.vsix`. `vsce package -o <path>`
+writes it somewhere other than the repo root.
 
 ### Run it from a checkout
 
