@@ -1658,6 +1658,17 @@ test('the typed server is remembered across windows, and hosting reuses it witho
     first.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
   );
   assert.ok(kept);
+  // The remembered write lands before the dial even starts; waiting past it and on into the
+  // dial's own failure keeps that failure from landing in the stub's shared record — first and
+  // second are different module instances, but registered.errors/errorItems are one array
+  // underneath both — after it has been reset for the next window.
+  await waitFor('the first window to finish failing to host', () =>
+    first.stub.registered.errors.some((message) =>
+      message.includes('could not host on ws://127.0.0.1:1'),
+    )
+      ? true
+      : false,
+  );
   first.deactivate();
 
   // A new window is a new module: nothing in memory names the address, only the memento.
