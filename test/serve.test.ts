@@ -136,7 +136,7 @@ test('a leaf that is itself a link is not readable, even at a readable target', 
   editor.dispose();
 });
 
-test('a binary file the listing names is refused as binary, not as missing', async (t) => {
+test('a file whose name declares a binary format is refused as binary, and not listed', async (t) => {
   stub.reset();
   t.after(() => {
     stub.reset();
@@ -160,10 +160,14 @@ test('a binary file the listing names is refused as binary, not as missing', asy
     kind: 'text',
     text: 'notes\n',
   });
-  // The listing names it: the walk rules on a file's type and the size a session carries, and
-  // reading every file to decide whether to name it would read a whole project to publish a
-  // name list. So a binary can be listed, and this is the refusal a person gets for asking.
-  assert.ok((await enumerateGrant(folders())).includes('logo.png'));
+  // The listing does not name it: the walk reads no bytes, so the name is all it can judge a
+  // file by (`GRANT_BINARY_SUFFIXES`), and a name is a floor rather than a classification. A
+  // binary whose name declares no format — `latin1.txt` here — is still listed, and asking for
+  // it gets this same refusal.
+  const listed = await enumerateGrant(folders());
+  assert.ok(!listed.includes('logo.png'), `a declared binary is still listed: ${listed.join(', ')}`);
+  assert.ok(listed.includes('latin1.txt'), 'a name that declares no format was left out');
+  assert.ok(listed.includes('notes.txt'), 'a plain text file was left out of the listing');
   editor.dispose();
 });
 

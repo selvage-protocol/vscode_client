@@ -106,6 +106,139 @@ const GRANT_SECRET_KEY_PREFIXES: readonly string[] = [
 const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = ['.pem', '.key'];
 
 /**
+ * File-name suffixes of formats a room cannot carry: an archive or compressed stream, an
+ * image, a font, a media container, a compiled object, a database, or a raw blob.
+ *
+ * A document is one `Y.Text`, so every file of one of these formats has bytes no session can
+ * put into one, and the read refuses every one of them as `binary`. A listing that named one
+ * offered a guest a file it could never fetch, and left the guest to find that out by asking.
+ *
+ * The walk is what this list is for, and it cannot read: reading every file to decide whether
+ * to name it would read a whole project to publish a name list, so a name is the one thing a
+ * walk can judge a file by. The list is a floor and not a classification, and a name is a
+ * declaration rather than proof of content. So a binary file whose name declares no format
+ * (`data`, `dump.db`) is still listed and still refused with the truth, and a text file that
+ * wears one of these names (`LICENSE.zip`) is left out of the listing with them.
+ *
+ * `.pdf` is deliberately absent: a text-only PDF is a file the read serves, so listing it is
+ * what agrees with the read. Matched against the leaf segment only, and folded: a format's
+ * spelling is a convention of its name rather than a fact about a filesystem, so `IMG_01.JPG`
+ * is a JPEG on every platform.
+ */
+export const GRANT_BINARY_SUFFIXES: readonly string[] = [
+  '.3gp',
+  '.7z',
+  '.a',
+  '.aac',
+  '.aif',
+  '.aiff',
+  '.apk',
+  '.asar',
+  '.avif',
+  '.avi',
+  '.avro',
+  '.bin',
+  '.bmp',
+  '.bz2',
+  '.cab',
+  '.class',
+  '.dll',
+  '.dmg',
+  '.doc',
+  '.docx',
+  '.dylib',
+  '.ear',
+  '.elf',
+  '.eot',
+  '.epub',
+  '.exe',
+  '.flac',
+  '.flv',
+  '.gif',
+  '.gguf',
+  '.gz',
+  '.h5',
+  '.hdf5',
+  '.heic',
+  '.heif',
+  '.ico',
+  '.iso',
+  '.jar',
+  '.jpeg',
+  '.jp2',
+  '.jpg',
+  '.jxl',
+  '.ko',
+  '.lib',
+  '.lz4',
+  '.m4a',
+  '.m4v',
+  '.mdb',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.mpeg',
+  '.mpg',
+  '.node',
+  '.npy',
+  '.npz',
+  '.nupkg',
+  '.o',
+  '.obj',
+  '.odp',
+  '.ods',
+  '.odt',
+  '.oga',
+  '.ogg',
+  '.onnx',
+  '.opus',
+  '.otf',
+  '.parquet',
+  '.pb',
+  '.pickle',
+  '.pkl',
+  '.png',
+  '.ppt',
+  '.pptx',
+  '.psd',
+  '.pyd',
+  '.pyc',
+  '.pyo',
+  '.rar',
+  '.rlib',
+  '.rmeta',
+  '.rpm',
+  '.safetensors',
+  '.so',
+  '.sqlite',
+  '.sqlite3',
+  '.svgz',
+  '.tar',
+  '.tflite',
+  '.tgz',
+  '.tif',
+  '.tiff',
+  '.ttc',
+  '.ttf',
+  '.vsix',
+  '.war',
+  '.wasm',
+  '.wav',
+  '.webm',
+  '.webp',
+  '.whl',
+  '.wmv',
+  '.woff',
+  '.woff2',
+  '.xls',
+  '.xlsx',
+  '.xz',
+  '.zip',
+  '.zst',
+];
+
+/**
  * Whether a segment carries a character that spoofs a tree or picker row: a control, a
  * line or paragraph separator breaking a single-line surface, a bidirectional override
  * or isolate, or a zero-width no-break space. Names a shape to refuse, not a rendering
@@ -183,6 +316,22 @@ function isSecretKeyName(folded: string): boolean {
 }
 
 /**
+ * Whether a path's name declares a format a room cannot carry (`GRANT_BINARY_SUFFIXES`).
+ *
+ * The leaf segment only, so a directory named after one of these formats is governed by the
+ * directory excludes alone. Folded unconditionally: a file's format is what its name declares,
+ * and `.JPG` declares the same one as `.jpg` on a case-sensitive checkout too. A leaf that is
+ * nothing but the suffix (`.zip`) has no name a format could be declared on and is not matched.
+ */
+export function isBinaryNamedPath(path: string): boolean {
+  const segments = path.split('/');
+  const leaf = (segments[segments.length - 1] ?? '').toLowerCase();
+  return GRANT_BINARY_SUFFIXES.some(
+    (suffix) => leaf.length > suffix.length && leaf.endsWith(suffix),
+  );
+}
+
+/**
  * Whether a workspace-relative path is one a host may publish or serve.
  *
  * Workspace-relative and `/`-separated, with no leading slash, no `.` or `..` segment and no
@@ -252,10 +401,16 @@ export function sortGrant(paths: Iterable<string>): string[] {
  * The union is deliberate rather than the grant alone, so a server that has no grant — one
  * older than `doc.grant`, which answers `unknown_method` — still offers everything the room
  * knows. Ordering is the listing's.
+ *
+ * A path whose name declares a format a room cannot carry is not offered, whatever the room's
+ * listing says: a host that has not been updated still names its binaries, and nothing here can
+ * fill one. The walk that builds a listing draws the same line (`GRANT_BINARY_SUFFIXES`), so
+ * the two agree on the formats a name declares and neither claims more than a name can say.
  */
 export function grantUnion(
   grant: Iterable<string>,
   documents: Iterable<string>,
 ): string[] {
-  return sortGrant(new Set([...grant, ...documents]));
+  const offered = [...grant, ...documents].filter((path) => !isBinaryNamedPath(path));
+  return sortGrant(new Set(offered));
 }

@@ -49,11 +49,13 @@ export type {
   RosterRow,
 } from './participants.ts';
 export {
+  GRANT_BINARY_SUFFIXES,
   GRANT_EXCLUDED_DIRS,
   MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATHS,
   MAX_GRANT_PATH_BYTES,
   grantUnion,
+  isBinaryNamedPath,
   isGrantedPath,
   sortGrant,
 } from './grant.ts';

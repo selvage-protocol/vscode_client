@@ -11,10 +11,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  GRANT_BINARY_SUFFIXES,
   GRANT_EXCLUDED_DIRS,
   MAX_GRANT_FILE_BYTES,
   MAX_GRANT_PATH_BYTES,
   grantUnion,
+  isBinaryNamedPath,
   isGrantedPath,
   overFileBound,
   sortGrant,
@@ -325,4 +327,55 @@ test('what a window offers is the grant unioned with the room\u2019s open docume
   // A server with no grant still offers everything the room holds open.
   assert.deepEqual(grantUnion([], ['b.rs', 'a.rs']), ['a.rs', 'b.rs']);
   assert.deepEqual(grantUnion([], []), []);
+});
+
+// A room lists the paths a host may serve, and a host that has not been updated still names a
+// file whose bytes no session can carry: the guest is then offered one it can never fetch, and
+// finds that out by asking. The name is what both gates judge by, because a walk reads no bytes.
+test('a name that declares a format a room cannot carry is refused and not offered', () => {
+  for (const path of [
+    'bundle.zip',
+    'blob.bin',
+    'src/assets/logo.png',
+    'docs/logo.PNG',
+    'build/app.wasm',
+    'vendor/libz.so',
+    'notes.db.sqlite3',
+  ]) {
+    assert.equal(isBinaryNamedPath(path), true, `${path} declares a format a room cannot carry`);
+  }
+  // A name is a declaration and not proof: what is shareable keeps its place, whether the
+  // name declares a text format or nothing at all. `.pdf` is the deliberate absence — a
+  // text-only PDF is a file the read serves, so listing one is what agrees with the read.
+  for (const path of [
+    'README.md',
+    'src/main.rs',
+    'docs/report.pdf',
+    'data.bin.txt',
+    'src/images.ts',
+    'chart.eps',
+    'build/Makefile',
+  ]) {
+    assert.equal(isBinaryNamedPath(path), false, `${path} does not declare one`);
+  }
+  // The leaf decides, so a directory named after a format is governed by the directory
+  // excludes alone, and a leaf that is nothing but the suffix declares no name.
+  assert.equal(isBinaryNamedPath('dist/notes.txt'), false);
+  assert.equal(isBinaryNamedPath('.zip'), false);
+  // Folding is the name's and not the filesystem's: `.JPG` declares the same format as `.jpg`
+  // wherever it sits, which is the opposite of what the directory and secret excludes do.
+  assert.equal(isBinaryNamedPath('IMG_01.JPG'), true);
+  assert.equal(isBinaryNamedPath('img_01.jpg'), true);
+
+  for (const suffix of GRANT_BINARY_SUFFIXES) {
+    assert.equal(isBinaryNamedPath(`file${suffix}`), true, `${suffix} was not matched`);
+    assert.equal(suffix, suffix.toLowerCase(), `${suffix} is not spelled in folded form`);
+  }
+
+  // And the offering drops what the room's listing may still name, so a guest is not offered
+  // a path no fetch can fill, whether or not its host was updated.
+  assert.deepEqual(
+    grantUnion(['src/main.rs', 'bundle.zip'], ['logo.png', 'src/main.rs']),
+    ['src/main.rs'],
+  );
 });
