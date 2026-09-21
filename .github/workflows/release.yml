@@ -267,6 +267,12 @@ jobs:
       # hardcoded here rather than as repository variables because nothing in this session's
       # tooling can create Actions variables, and a workflow file is itself reviewable
       # provenance for which identity a release runs as.
+      # The Marketplace authorises this identity by its Visual Studio profile id, which is a
+      # separate value from the client id below and is not shown anywhere in the Azure portal;
+      # if this identity is ever rotated, the replacement's profile id is found by signing in as
+      # it and querying `az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me
+      # --resource 499b84ac-1321-427f-aa17-267ca6975798 --query id --output tsv` before adding
+      # it to the publisher's Members.
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: 0538596d-b7e5-4f25-979f-49c437e48820
