@@ -298,11 +298,22 @@ class Session {
   private documents: string[] = [];
   private granted: string[] = [];
   /**
-   * Every path the room's listing has named while this session is live. A path the
-   * listing named and no longer names is one the host has stopped sharing, which is what
-   * tells a fresh open of it apart from a document the room never wrote to.
+   * The names of the listing in force, and of the one it replaced: what `leftListing`
+   * answers from. The window is one listing wide on purpose — each set is at most what
+   * the server will store for a grant — because the room is a stranger's and a listing
+   * is its word: a set of every name the room ever carried grows by whatever a host
+   * chooses to churn, which is a peer-chosen amount of this window's memory. What the
+   * window costs is that a name dropped more than one listing ago reads as a name the
+   * room never listed, which is the same refusal with one sentence less about why.
    */
-  private readonly seenListed = new Set<string>();
+  private listedNow = new Set<string>();
+  private listedBefore = new Set<string>();
+  /** A listing whose application is still owed at the end of the current window. */
+  private pendingListing: readonly string[] | undefined;
+  /** The window one listing application per burst is spread over. */
+  private listingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Whether a listing application is holding the window open for what arrives next. */
+  private listingWindowOpen = false;
   /**
    * The moment the room closes if the host does not return, taken from the grace
    * `host.detached` carried. A deadline rather than a duration, because the status bar shows
@@ -378,9 +389,7 @@ class Session {
     this.rememberHost();
     this.documents = engine.documents();
     this.granted = engine.grantedPaths();
-    for (const path of this.granted) {
-      this.seenListed.add(path);
-    }
+    this.listedNow = new Set(this.granted);
     this.autoOpen = engine.session().role === 'guest';
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
@@ -452,7 +461,9 @@ class Session {
       void this.publishGrant();
     }
     // The join already carried a listing: fill the mirror before anything opens into it,
-    // so the landing reads placeholders rather than missing files.
+    // so the landing reads placeholders rather than missing files. Applied directly, not
+    // through the window: the room's first report after this one is the join's own fill
+    // in every case but a server that answered nothing, and it has to land at once.
     this.applyListing(this.granted);
     // A guest joins a room that may have documents already, and may join one that has none.
     // Landing in the room's first document is the whole point of "come edit my code with me";
@@ -540,7 +551,7 @@ class Session {
    * still reads as an empty document rather than as a deletion.
    */
   leftListing(path: string): boolean {
-    return this.seenListed.has(path) && !this.granted.includes(path);
+    return this.listedBefore.has(path) && !this.listedNow.has(path);
   }
 
   /**
@@ -1501,6 +1512,13 @@ class Session {
       clearTimeout(this.grantTimer);
       this.grantTimer = undefined;
     }
+    // A queued listing application goes with it: the mirror it would shape is being
+    // removed, and a walk that ran after that would put the directory back.
+    if (this.listingTimer !== undefined) {
+      clearTimeout(this.listingTimer);
+      this.listingTimer = undefined;
+    }
+    this.pendingListing = undefined;
     this.stopWatching();
     // The position the interval was still holding reaches the room before the session ends.
     this.flushSelection();
@@ -1576,6 +1594,50 @@ class Session {
         this.open(document);
       }
     }
+  }
+
+  /**
+   * Fills the mirror's shape from a listing, one window per burst of them.
+   *
+   * The first listing of a window lands at once — a window opens with an application, so a
+   * room's single republish is applied the moment it arrives, before anything open into the
+   * mirror needs the file. Everything the room reports inside that window waits for its end
+   * and only the last of them is applied: the room is a stranger's, and a host that
+   * republishes as fast as its socket allows would otherwise make every guest walk its
+   * whole mirror and write a file per path, per event.
+   *
+   * A listing that names nothing never opens a window, because that listing is the one that
+   * removes everything the mirror holds that no document of this window has open: the
+   * engine emits it when the socket dies, and the room's listing follows it as soon as the
+   * client is seated again. Applied at once it would wipe the mirror and materialise the
+   * room's files empty again — taking with it whatever a tool of the person's own wrote into
+   * the mirror while the room was live. It waits, then, and is superseded by the listing
+   * that follows; a room that really has stopped sharing everything is applied one window
+   * later, once, instead of being applied immediately and followed by the listing that
+   * replaces it.
+   */
+  private applyListingSoon(paths: readonly string[]): void {
+    if (this.mirror === undefined) {
+      return;
+    }
+    if (!this.listingWindowOpen && paths.length > 0) {
+      this.listingWindowOpen = true;
+      this.applyListing(paths);
+    } else {
+      this.pendingListing = paths;
+    }
+    if (this.listingTimer !== undefined) {
+      return;
+    }
+    this.listingTimer = setTimeout(() => {
+      this.listingTimer = undefined;
+      this.listingWindowOpen = false;
+      const pending = this.pendingListing;
+      this.pendingListing = undefined;
+      if (pending !== undefined && !this.finished) {
+        this.applyListing(pending);
+      }
+    }, GRANT_REFRESH_INTERVAL_MS);
   }
 
   /**
@@ -1800,11 +1862,12 @@ class Session {
         break;
       }
       case 'grant': {
+        // The listing being replaced is what "the listing named it and no longer does"
+        // is read against: see `listedNow`.
+        this.listedBefore = this.listedNow;
         this.granted = report.paths;
-        for (const path of report.paths) {
-          this.seenListed.add(path);
-        }
-        this.applyListing(report.paths);
+        this.listedNow = new Set(report.paths);
+        this.applyListingSoon(report.paths);
         this.rejoinListed();
         break;
       }
