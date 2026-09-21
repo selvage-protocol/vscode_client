@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import type { WebSocket } from 'ws';
 
+import type { SessionBase } from '../../src/engine/urls.ts';
 import {
   DEFAULT_KEEPALIVE,
   WIRE_VERSION,
@@ -29,6 +30,7 @@ import {
   method,
 } from '../../src/engine/envelope.ts';
 import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
+import { baseOf } from './base.ts';
 
 export interface FakeServerOptions {
   /** What `/meta` advertises as its wire versions. */
@@ -95,7 +97,7 @@ function hex(bytes: number): string {
 }
 
 export class FakeServer {
-  readonly wsBase: string;
+  readonly wsBase: SessionBase;
   readonly httpBase: string;
 
   private readonly http: Server;
@@ -147,7 +149,7 @@ export class FakeServer {
       metaWireVersions: [WIRE_VERSION],
       ...options,
     };
-    this.wsBase = `ws://127.0.0.1:${port}`;
+    this.wsBase = baseOf(`ws://127.0.0.1:${port}`);
     this.httpBase = `http://127.0.0.1:${port}`;
   }
 

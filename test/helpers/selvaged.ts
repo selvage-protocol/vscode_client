@@ -12,6 +12,9 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 
+import type { SessionBase } from '../../src/engine/urls.ts';
+import { baseOf } from './base.ts';
+
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const REFERENCE_SERVER = resolve(REPO_ROOT, '..', 'reference_server');
 
@@ -36,7 +39,7 @@ export function selvagedBinary(): string {
 
 /** A `selvaged` on an ephemeral loopback port. */
 export class RealServer {
-  readonly wsBase: string;
+  readonly wsBase: SessionBase;
   readonly address: string;
 
   private readonly child: ChildProcessByStdio<null, Readable, Readable>;
@@ -48,7 +51,7 @@ export class RealServer {
   ) {
     this.child = child;
     this.address = address;
-    this.wsBase = `ws://${address}`;
+    this.wsBase = baseOf(`ws://${address}`);
   }
 
   static async start(): Promise<RealServer> {

@@ -63,7 +63,8 @@ import type {
   WebSocketFactory,
   WebSocketLike,
 } from './transport.ts';
-import { inviteUrl, parseSessionUrl, sessionUrl } from './urls.ts';
+import { inviteUrl, parseSessionUrl, sessionBase, sessionUrl } from './urls.ts';
+import type { SessionBase } from './urls.ts';
 
 /** How long the session handshake may take before the connection is abandoned. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -148,7 +149,12 @@ function attemptsForGrace(graceMs: number, policy: ReconnectPolicy): number {
 }
 
 export interface ConnectOptions {
-  /** Scheme and authority, without the `/session` path. */
+  /**
+   * The server address. It is read the one way the engine reads a base (`sessionBase`): an
+   * address with no `//` written out, the http(s) spelling of the same server and a trailing
+   * `/session` all name the server they would dial, and one that names none is refused when
+   * the engine is built.
+   */
   baseUrl: string;
   displayName: string;
   /** Joining an existing room: its id. */
@@ -200,8 +206,11 @@ export interface SessionInfo {
   documents: string[];
   capabilities: string[];
   keepalive: Keepalive;
-  /** The server base URL this connection was opened against, without the endpoint path. */
-  baseUrl: string;
+  /**
+   * The server base this connection was opened against, without the endpoint path, as
+   * `sessionBase` reads a base.
+   */
+  baseUrl: SessionBase;
 }
 
 /** Options for a host that mints a room, or a guest joining one by invite URL. */
@@ -263,6 +272,8 @@ export class SelvageEngine {
   readonly doc: Y.Doc;
 
   private readonly options: ConnectOptions;
+  /** The address the engine dials, read once: every consumer of it reads the same server. */
+  private readonly base: SessionBase;
   private readonly reconnect: ReconnectPolicy;
   private readonly factory: WebSocketFactory;
   private readonly awareness: Awareness;
@@ -309,6 +320,14 @@ export class SelvageEngine {
   private readonly maxAttemptsGiven: boolean;
 
   private constructor(options: ConnectOptions) {
+    const base = sessionBase(options.baseUrl);
+    if (base === undefined) {
+      throw new ProtocolError(
+        errCode.badParams,
+        `not a session address: ${options.baseUrl}`,
+      );
+    }
+    this.base = base;
     this.options = options;
     this.reconnect =
       options.reconnect === false
@@ -425,7 +444,7 @@ export class SelvageEngine {
     }
     let meta;
     try {
-      meta = await fetchMeta(this.options.baseUrl, {
+      meta = await fetchMeta(this.base, {
         ...(this.options.fetchImpl === undefined
           ? {}
           : { fetchImpl: this.options.fetchImpl }),
@@ -440,7 +459,7 @@ export class SelvageEngine {
         : 'nothing';
       throw new ProtocolError(
         errCode.unsupportedVersion,
-        `${this.options.baseUrl} speaks ${offered}, not ${WIRE_VERSION}`,
+        `${this.base} speaks ${offered}, not ${WIRE_VERSION}`,
       );
     }
     // §9.1: a client that knows the room's grace keeps retrying at least until the window has
@@ -471,7 +490,7 @@ export class SelvageEngine {
     // session.error of *this* handshake, not one left over from the socket before.
     this.refusal = undefined;
     const url = sessionUrl(
-      this.options.baseUrl,
+      this.base,
       this.room,
       this.token,
     );
@@ -1516,7 +1535,7 @@ export class SelvageEngine {
     if (waiter === undefined) {
       return;
     }
-    const session = sessionFrom(params, this.options.baseUrl);
+    const session = sessionFrom(params, this.base);
     if (session === undefined) {
       this.rejectSeat(
         new ProtocolError(
@@ -1648,7 +1667,7 @@ function numberParam(params: unknown, key: string): number | undefined {
 }
 
 /** Reads a `room.created` / `room.joined` params object into a session description. */
-function sessionFrom(params: unknown, baseUrl: string): SessionInfo | undefined {
+function sessionFrom(params: unknown, baseUrl: SessionBase): SessionInfo | undefined {
   const body = params as SessionParams | undefined;
   const peer = parsePeer(body?.self);
   const roomId = body?.room_id;

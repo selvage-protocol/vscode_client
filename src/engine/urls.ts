@@ -2,6 +2,10 @@
  * Room and token in the connection URL (spec §5.1). The invite URL *is* the WebSocket
  * URL, so this is what makes "share a link" literal — and why a client can connect with
  * the link alone, without being told a room id and token separately.
+ *
+ * A *base* is the server half: what `sessionUrl` appends the endpoint to and `metaUrl`
+ * derives the `/meta` read from. `sessionBase` is the one reading of it, and `SessionBase`
+ * is the type that says a value has been through it.
  */
 
 import { ENDPOINT_PATH, META_PATH } from './envelope.ts';
@@ -12,10 +16,25 @@ export interface JoinQuery {
   token?: string;
 }
 
+declare const sessionBaseBrand: unique symbol;
+
+/**
+ * A server base in the one spelling the engine reads: a `ws://`/`wss://` URL with an
+ * authority, at most a path prefix, the scheme always written with `//`, and no
+ * credentials, query, fragment or endpoint path. `sessionBase` is the only thing that
+ * produces one, and every component that reads a base — `sessionUrl`, `metaUrl`,
+ * `inviteUrl`, `SessionUrl.base`, `SessionInfo.baseUrl` — takes this type rather than a
+ * `string`, so a component cannot be handed an un-normalised value and read a different
+ * server out of it than the component that produced it. A `ws:` URL needs no `//`
+ * (RFC 3986 §3), so the spelling is part of what has to be normalised rather than
+ * something a caller can be trusted to have written.
+ */
+export type SessionBase = string & { readonly [sessionBaseBrand]: true };
+
 /** A connection URL split into the server base and the room/token it carries. */
 export interface SessionUrl {
   /** Scheme, authority and any path prefix — but not the endpoint path. */
-  base: string;
+  base: SessionBase;
   join: JoinQuery;
 }
 
@@ -93,9 +112,70 @@ export function parseJoinQuery(query: string): JoinQuery {
 }
 
 /**
+ * The socket scheme each spelling of a server address names: the scheme a socket is dialled
+ * with, or the http(s) form a person and a page write the same server in. A base is never
+ * handed on as `http(s)` — the engine's `/meta` read derives that spelling itself.
+ */
+const SOCKET_SCHEME: ReadonlyMap<string, string> = new Map([
+  ['ws:', 'ws:'],
+  ['wss:', 'wss:'],
+  ['http:', 'ws:'],
+  ['https:', 'wss:'],
+]);
+
+/**
+ * The path a base may carry: any prefix a server is addressed under, without the endpoint
+ * path the engine appends and without a trailing slash the URL builders would double.
+ */
+function basePath(pathname: string): string {
+  const trimmed = pathname.replace(/\/+$/, '');
+  if (!trimmed.endsWith(ENDPOINT_PATH)) {
+    return trimmed;
+  }
+  return trimmed.slice(0, trimmed.length - ENDPOINT_PATH.length).replace(/\/+$/, '');
+}
+
+/**
+ * Reads a server address in the one way this engine reads a base, or `undefined` when the
+ * text names no server it can dial.
+ *
+ * The text may be spelled the way a link or a person writes it: either scheme, the
+ * endpoint path or a trailing slash left on, the authority written out or — for a special
+ * scheme, which needs no `//` — not. The base returned is always `scheme://authority`
+ * plus any path prefix, because every consumer of a base decides by that spelling: the
+ * scheme is matched as a prefix (`^ws://`, `^ws(s?)://`) and the endpoint is appended to
+ * it. What it may not name is refused here instead: no authority (a `ws://` or a bare
+ * `host:8080`, which parses as the scheme `host`), no `ws`/`wss`/`http`/`https` scheme,
+ * and nothing that would put a different address in the request than the base reads as
+ * naming — credentials, a query or a fragment.
+ */
+export function sessionBase(text: string): SessionBase | undefined {
+  let url: URL;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return undefined;
+  }
+  const scheme = SOCKET_SCHEME.get(url.protocol);
+  if (scheme === undefined || url.hostname === '') {
+    return undefined;
+  }
+  if (url.username !== '' || url.password !== '') {
+    return undefined;
+  }
+  if (url.search !== '' || url.hash !== '') {
+    return undefined;
+  }
+  // The one place the brand is established, from what the URL parser read rather than from
+  // the text as written.
+  return `${scheme}//${url.host}${basePath(url.pathname)}` as SessionBase;
+}
+
+/**
  * Takes a full connection URL — in particular the invite URL a host publishes — apart
  * into the server base and the join query. Returns `undefined` when the URL does not
- * address the session endpoint.
+ * address the session endpoint, or when the base it names is not one this engine can
+ * dial.
  */
 export function parseSessionUrl(url: string): SessionUrl | undefined {
   const at = url.indexOf('?');
@@ -104,10 +184,11 @@ export function parseSessionUrl(url: string): SessionUrl | undefined {
   if (!endpoint.endsWith(ENDPOINT_PATH)) {
     return undefined;
   }
-  return {
-    base: endpoint.slice(0, endpoint.length - ENDPOINT_PATH.length),
-    join: parseJoinQuery(query),
-  };
+  const base = sessionBase(endpoint.slice(0, endpoint.length - ENDPOINT_PATH.length));
+  if (base === undefined) {
+    return undefined;
+  }
+  return { base, join: parseJoinQuery(query) };
 }
 
 /**
@@ -115,11 +196,11 @@ export function parseSessionUrl(url: string): SessionUrl | undefined {
  * Empty strings are treated as absent, so an invite cannot half-exist.
  */
 export function sessionUrl(
-  base: string,
+  base: SessionBase,
   room?: string,
   token?: string,
 ): string {
-  let url = `${base.replace(/\/+$/, '')}${ENDPOINT_PATH}`;
+  let url = `${base}${ENDPOINT_PATH}`;
   let separator = '?';
   for (const [key, part] of [
     ['room', room],
@@ -135,9 +216,8 @@ export function sessionUrl(
 }
 
 /** The `GET /meta` URL for a session base URL. */
-export function metaUrl(base: string): string {
-  const http = base.replace(/^ws(s?):\/\//, 'http$1://');
-  return `${http.replace(/\/+$/, '')}${META_PATH}`;
+export function metaUrl(base: SessionBase): string {
+  return `${base.replace(/^ws(s?):\/\//, 'http$1://')}${META_PATH}`;
 }
 
 /**
@@ -145,7 +225,7 @@ export function metaUrl(base: string): string {
  * there is no token to share — only the connection that minted the room has one.
  */
 export function inviteUrl(session: {
-  baseUrl: string;
+  baseUrl: SessionBase;
   roomId: string;
   token?: string;
 }): string | undefined {

@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { SelvageEngine, sessionUrl } from '../src/engine/index.ts';
+import { baseOf } from './helpers/base.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { loadBundle, testStoragePath } from './helpers/bundle.ts';
@@ -60,7 +61,7 @@ function wireOf(link: string): string {
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
   // The origin is the server: the scheme a browser speaks read back as the one a socket does.
   const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
-  return sessionUrl(server, room, token);
+  return sessionUrl(baseOf(server), room, token);
 }
 
 test('a host that reclaims its room publishes its current listing, not the dead one', async (t) => {

@@ -10,7 +10,7 @@
 
 import { isCompatible } from './envelope.ts';
 import type { Meta } from './envelope.ts';
-import { metaUrl } from './urls.ts';
+import { metaUrl, sessionBase } from './urls.ts';
 
 export interface MetaOptions {
   /** How long to wait for `/meta` before treating it as unreachable. */
@@ -18,11 +18,19 @@ export interface MetaOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** Reads and parses `/meta`. Throws when it is unreachable or not JSON. */
+/**
+ * Reads and parses `/meta`. Throws when it is unreachable, not JSON, or addressed at
+ * something that is not a session base — the address is read the one way the engine reads
+ * a base (`sessionBase`), so `ws:host` and `wss://host/` are read here as they are dialled.
+ */
 export async function fetchMeta(
   baseUrl: string,
   options: MetaOptions = {},
 ): Promise<Meta> {
+  const base = sessionBase(baseUrl);
+  if (base === undefined) {
+    throw new Error(`not a session address: ${baseUrl}`);
+  }
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (fetchImpl === undefined) {
     throw new Error('no fetch implementation is available');
@@ -32,7 +40,7 @@ export async function fetchMeta(
     controller.abort();
   }, options.timeoutMs ?? 2000);
   try {
-    const response = await fetchImpl(metaUrl(baseUrl), {
+    const response = await fetchImpl(metaUrl(base), {
       signal: controller.signal,
     });
     return (await response.json()) as Meta;

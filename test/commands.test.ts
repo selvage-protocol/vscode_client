@@ -30,6 +30,7 @@ import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
+import { baseOf } from './helpers/base.ts';
 import { peerColour } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
@@ -54,7 +55,7 @@ function wireOf(link: string): string {
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
   // The origin is the server: the scheme a browser speaks read back as the one a socket does.
   const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
-  return sessionUrl(server, room, token);
+  return sessionUrl(baseOf(server), room, token);
 }
 
 /** The directory entries at `dir`, sorted: the mirror's shape read back off disk. */
@@ -2401,6 +2402,22 @@ test('a wire invite is refused when the engine would not dial it as pasted', asy
     undefined,
     'a well-formed invite to a host that is not there was refused as a bad paste',
   );
+  // The spelling a special scheme does not need: `ws:host/session?…` is `ws://host/session?…`
+  // to the URL parser and to the engine's one reading of a base, so it is the invitation the
+  // engine dials and the box admits it. It is also the shape that shipped un-normalised — the
+  // producer kept the spelling, `metaUrl` matched a prefix that was not there, and the `/meta`
+  // read became a cleartext `http://host/meta` GET — so admitting it here is what pins the
+  // engine as the component that reads it, not the box.
+  for (const withoutSlashes of [
+    'ws:127.0.0.1:8080/session?room=r&token=t',
+    'wss:name/session?room=r&token=t',
+  ]) {
+    assert.equal(
+      validate(withoutSlashes),
+      undefined,
+      `${withoutSlashes} names the endpoint the engine dials`,
+    );
+  }
 });
 
 /**
