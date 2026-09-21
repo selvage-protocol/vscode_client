@@ -29,7 +29,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Every command works in a window you have not trusted. What waits for trust is the resume a `.selvage-mirror.json` marker asks for at activation, because a folder can start this extension with nothing but a file named like the marker."
+      "description": "Every command works in a window you have not trusted. What waits for trust is the resume a `.selvage-mirror.json` marker asks for at activation, because a file named like the marker in a folder is enough to start this extension there."
     }
   },
   "activationEvents": [
@@ -154,7 +154,7 @@
     "viewsWelcome": [
       {
         "view": "selvage.participants",
-        "contents": "Share a folder with a friend — they need nothing but a browser.\n[Host a session](command:selvage.host)\n[Join a session from an invite link](command:selvage.join)"
+        "contents": "Share a folder with a friend and edit the same files. They join from a browser.\n[Host a session](command:selvage.host)\n[Join a session from an invite link](command:selvage.join)"
       }
     ],
     "menus": {
@@ -208,15 +208,15 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The WebSocket address to host on. Set it and hosting never asks; it outranks the last server used, and an address given to the command outranks it. The Selvage: Change the server command reports which address is in force."
+          "description": "The WebSocket address to host on. Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
         },
         "selvage.webOrigin": {
           "type": "string",
-          "description": "The page a copied invite links to, as an https origin. Anything else falls back to the default page, so a host's link never carries the room's token over cleartext."
+          "description": "The page a copied invite links to, as an https origin. Anything else falls back to the default page, and a host's link never carries the room's token over cleartext."
         },
         "selvage.displayName": {
           "type": "string",
-          "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused rather than shortened. A change while a session is live renames this connection at once, and applies to the next host or join."
+          "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused. A change while a session is live renames this connection at once, and applies to the next host or join."
         },
         "selvage.autoSave": {
           "type": "boolean",
