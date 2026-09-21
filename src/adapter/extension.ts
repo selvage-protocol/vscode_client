@@ -1811,6 +1811,13 @@ class Session {
       case 'peers': {
         this.peers = report.peers;
         this.rememberHost();
+        // The room's own membership is the all-clear as well as the departure: `hostAttached`
+        // is the only frame that says the host is back, so a guest whose socket was down when
+        // it arrived — the re-seat carries the membership, not the attach — would keep a
+        // countdown, and then a deadline that had already passed, for the rest of the session.
+        if (this.detachedDeadline !== undefined && report.peers.some((peer) => peer.role === 'host')) {
+          this.clearHostAway();
+        }
         this.refreshStatus();
         refreshParticipants();
         // The follow target is a peer id, so a rename only re-labels the indicator while a

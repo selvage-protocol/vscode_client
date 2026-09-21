@@ -1118,6 +1118,45 @@ test('the countdown to the room closing ticks while the host is away', async (t)
   assert.match(ticked, /room closes in [12]s/);
 });
 
+test('a membership frame naming the host ends the countdown too', async (t) => {
+  const server = await FakeServer.start({ roomGraceMs: 30_000 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
+  t.after(async () => {
+    await host.disconnect();
+  });
+  await host.open('workspace/README.md');
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined, 'the host was given no invite link');
+
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
+
+  await host.disconnect();
+  const away = await waitFor('the host-away status to appear', () => {
+    const text = statusText(bundle);
+    return text.includes('room closes in') ? text : false;
+  });
+  assert.match(away, /room closes in \d+s/);
+
+  // The attach frame is the only other thing that says the host is back, so a guest whose
+  // socket was down when it arrived — a re-seat carries the membership, not the attach — kept
+  // this countdown to a deadline that had already passed, for the rest of the session.
+  server.announcePeerToClient('Bob', { peer_id: 'p-host', display_name: 'Ada', role: 'host' });
+  const back = await waitFor(
+    'the countdown to stop',
+    () => {
+      const text = statusText(bundle);
+      return !text.includes('room closes in') ? text : false;
+    },
+    { describe: () => statusText(bundle) },
+  );
+  assert.equal(back, '$(radio-tower) Selvage: guest — 2 people in the room');
+});
+
 test('the room closing keeps the guest copy on disk, with its content', async (t) => {
   const server = await FakeServer.start({ roomGraceMs: 1500 });
   t.after(async () => {
