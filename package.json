@@ -29,7 +29,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Every command is the person's own act and works in an untrusted workspace. What does not run there is the resume a marker asks for at activation — the room a mirror was left by — because a folder can start this extension with nothing but a file named like the marker. Trust the workspace and the resume runs; a hostile repository cannot make this window dial a room."
+      "description": "Every command works in a window you have not trusted. What waits for trust is the resume a `.selvage-mirror.json` marker asks for at activation, because a folder can start this extension with nothing but a file named like the marker."
     }
   },
   "activationEvents": [
@@ -39,42 +39,42 @@
     "colors": [
       {
         "id": "selvage.peer.0",
-        "description": "The colour the first participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 1 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#e06c75", "dark": "#e06c75", "highContrast": "#e06c75" }
       },
       {
         "id": "selvage.peer.1",
-        "description": "The colour the second participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 2 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#e5c07b", "dark": "#e5c07b", "highContrast": "#e5c07b" }
       },
       {
         "id": "selvage.peer.2",
-        "description": "The colour the third participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 3 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#98c379", "dark": "#98c379", "highContrast": "#98c379" }
       },
       {
         "id": "selvage.peer.3",
-        "description": "The colour the fourth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 4 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#56b6c2", "dark": "#56b6c2", "highContrast": "#56b6c2" }
       },
       {
         "id": "selvage.peer.4",
-        "description": "The colour the fifth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 5 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#61afef", "dark": "#61afef", "highContrast": "#61afef" }
       },
       {
         "id": "selvage.peer.5",
-        "description": "The colour the sixth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 6 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#c678dd", "dark": "#c678dd", "highContrast": "#c678dd" }
       },
       {
         "id": "selvage.peer.6",
-        "description": "The colour the seventh participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 7 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#d19a66", "dark": "#d19a66", "highContrast": "#d19a66" }
       },
       {
         "id": "selvage.peer.7",
-        "description": "The colour the eighth participant palette entry is drawn in: a peer's caret, their roster dot, and the badge their file wears.",
+        "description": "Peer colour 8 of 8: one participant's caret, roster dot and file badge.",
         "defaults": { "light": "#b48ead", "dark": "#b48ead", "highContrast": "#b48ead" }
       }
     ],
@@ -208,25 +208,25 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The server to host on, as a WebSocket address, outranking the last server used. When unset, hosting reuses the last server used and asks only in a window with none to reuse — that one question starts from the demo server. An address given to the command always wins. The Selvage: Change the server command reports which address is in force and lets you change the remembered one; while this setting is set, it says so instead."
+          "description": "The WebSocket address to host on. Set it and hosting never asks; it outranks the last server used, and an address given to the command outranks it. The Selvage: Change the server command reports which address is in force."
         },
         "selvage.webOrigin": {
           "type": "string",
-          "description": "The page CopyInvite links to, as an https origin. Anything else — including plain http — falls back to the Pi page default, so a copied link never carries the room's token over cleartext."
+          "description": "The page a copied invite links to, as an https origin. Anything else falls back to the default page, so a host's link never carries the room's token over cleartext."
         },
         "selvage.displayName": {
           "type": "string",
-          "description": "The name other participants see. A change while a session is live renames this connection at once; the change also applies to the next host or join. At most 32 UTF-16 code units; an emoji costs two. A longer name is refused rather than shortened. Asked for once when neither set nor remembered, then kept for the next host or join; the Selvage: Set the name other participants see command changes it."
+          "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused rather than shortened. A change while a session is live renames this connection at once, and applies to the next host or join."
         },
         "selvage.autoSave": {
           "type": "boolean",
           "default": true,
-          "description": "Save a document the room changed, once the room has settled on it. The host's working copy is the room's truth, so a remote edit that is not written leaves the file on disk stale. A guest's mirror file holds what the room already holds, so its save writes the room's own text; the call is also what clears the editor's unsaved marker."
+          "description": "Save a document the room changed, once the room has settled on it. With this off, a remote edit leaves the file on disk stale, with the editor's unsaved marker still on it."
         },
         "selvage.openOnJoin": {
           "type": "boolean",
           "default": true,
-          "description": "Put the room's first document in an editor for a guest: as the join lands when the room already has one, and when a room that was empty at join reports its first document. Only the first, and never one that arrives after that; the Selvage: Open a document from the room command lists every path. A host is unaffected: the files it opens are the room's own, and it already has them open."
+          "description": "Put the room's first document in an editor when a guest joins, and when a room that was empty at join reports its first document. Only the first; the Selvage: Open a document from the room command lists every path. A host is unaffected."
         },
         "selvage.cursorLabel": {
           "type": "string",
@@ -236,12 +236,12 @@
             "chip"
           ],
           "enumDescriptions": [
-            "Draw no name over the document. A peer is shown by their coloured caret bar, their selection fill, a tick in the overview ruler and the name in the caret's hover, and the status bar lists the room.",
-            "A small name box above the peer's caret, out of the line's flow. It covers the line above the caret and leans on undocumented editor behaviour, so it is cosmetic and not guaranteed.",
-            "The peer's name inside the line, behind a coloured border, built from documented decoration fields only. It covers the text it sits against."
+            "Draw no name over the document. A peer is shown by their coloured caret and selection, a tick in the overview ruler, and the name in the caret's hover.",
+            "A small name box above the caret, out of the line's flow. It covers the line above the caret and leans on undocumented editor behaviour.",
+            "The peer's name inside the line, behind a coloured border, from documented decoration fields only. It covers the text it sits against."
           ],
           "default": "none",
-          "description": "How a remote peer's name is drawn at their cursor. The default draws no name over the document; \"floating\" and \"chip\" opt into one and each covers some of the text. The full name is always in the caret's hover and the status bar. Applies to an open session at once."
+          "description": "Whether a remote peer's name is drawn at their cursor. \"floating\" and \"chip\" each cover some of the text; the full name is always in the caret's hover and in the status bar."
         }
       }
     }
