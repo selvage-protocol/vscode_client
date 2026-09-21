@@ -19,6 +19,7 @@ import {
   viewRows,
 } from '../src/bridge/participants.ts';
 import type { RosterRow } from '../src/bridge/participants.ts';
+import { MAX_GRANT_PATH_BYTES } from '../src/bridge/grant.ts';
 
 const ADA = { peerId: 'p-aaa', displayName: 'Ada', role: 'host', path: 'src/a.rs' };
 const BO = { peerId: 'p-bbb', displayName: 'Bo', role: 'guest', path: 'src/b.rs' };
@@ -426,6 +427,97 @@ test('a peer’s name is plain text in the hover, never markdown to render', asy
     `the hover is not the name as plain text: ${hover}`,
   );
   assert.equal(hover.includes('!['), false, `the hover still carries markdown image syntax: ${hover}`);
+});
+
+test('a peer\u2019s claimed path is a caption, so its length is the reader\u2019s and not a peer\u2019s', async (t) => {
+  // The row says what presence said, a path outside the room included — that is pinned
+  // above, where a hostile path still reaches the view. What nothing on the wire bounds is
+  // the path's *length*, and the path becomes a tree row's description, a hover and a
+  // palette detail: captions the editor reads and measures, one per peer, on every presence
+  // frame. No room document's path reaches the bound, so nothing a room can carry is
+  // clipped. Red without the clip: the caption is the stranger's string, however long.
+  const seat_ = await seat(t);
+  const cy = await peerIn(t, seat_, 'Cy', 5);
+  // The row first reads the file the peer was in: the state below is the change, so the
+  // wait that follows cannot pass on the row that was already there.
+  await waitFor('Cy to list with their file known', () => {
+    const found = viewNodes(seat_.bundle).find((node) => node.label === 'Cy');
+    return found?.description === PATH_A ? found : false;
+  });
+
+  const outside = `../${'x'.repeat(64 * 1024)}`;
+  cy.setAwareness({ path: outside });
+  const row = await waitFor(
+    'the caption to come back bounded',
+    () => {
+      const found = viewNodes(seat_.bundle).find((node) => node.label === 'Cy');
+      const caption = found?.description ?? '';
+      // Both halves are the effect: the caption is what presence said, and it is bounded.
+      return caption.startsWith('../xxx') && caption.length <= MAX_GRANT_PATH_BYTES
+        ? found
+        : false;
+    },
+    {
+      describe: () =>
+        viewNodes(seat_.bundle).map((node) => ({
+          label: node.label,
+          bytes: String(node.description ?? '').length,
+        })),
+    },
+  );
+  assert.ok(
+    (row.description ?? '').startsWith('../xxx'),
+    `the caption lost what presence said: ${row.description?.slice(0, 20)}`,
+  );
+  assert.ok(
+    (row.description ?? '').endsWith('\u2026'),
+    'a clipped caption does not say it was clipped',
+  );
+  assert.ok(
+    (row.description ?? '').length <= MAX_GRANT_PATH_BYTES,
+    `a row caption is ${row.description?.length} bytes of a stranger's choosing`,
+  );
+  const hover = markdown(row);
+  assert.ok(
+    hover.length <= MAX_GRANT_PATH_BYTES + 32,
+    `a hover caption is ${hover.length} bytes of a stranger's choosing`,
+  );
+
+  // The palette's rows are built from the same answer, so no detail there can be longer.
+  await seat_.bundle.stub.commands.executeCommand('selvage.peers');
+  const items = await waitFor('the participant picker', () => {
+    const listed = seat_.bundle.stub.registered.quickPicks.at(-1)?.items as
+      | Array<{ label?: string; detail?: string }>
+      | undefined;
+    return listed !== undefined && listed.length > 0 ? listed : false;
+  });
+  for (const item of items) {
+    assert.ok(
+      (item.detail ?? '').length <= MAX_GRANT_PATH_BYTES,
+      `a palette row is ${(item.detail ?? '').length} bytes of a stranger's choosing`,
+    );
+  }
+});
+
+test('a clipped caption never splits a surrogate pair', () => {
+  const exports = bundleExports() as { captionPath?: (path: string) => string };
+  assert.equal(typeof exports.captionPath, 'function', 'the bundle exports no caption clip');
+  const clip = exports.captionPath as (path: string) => string;
+  const inside = 'src/main.ts';
+  assert.equal(clip(inside), inside, 'a path a room can carry was clipped');
+  const atBound = 'x'.repeat(MAX_GRANT_PATH_BYTES);
+  assert.equal(clip(atBound), atBound, 'the longest path a room can carry was clipped');
+  // An astral character straddling the bound: the clip takes the whole pair or neither
+  // half of it, never a lone surrogate the editor cannot draw.
+  const straddle = `${'x'.repeat(MAX_GRANT_PATH_BYTES - 1)}\u{1f600}${'y'.repeat(10)}`;
+  const clipped = clip(straddle);
+  assert.equal(clipped.endsWith('\u2026'), true, 'a clipped caption says nothing about it');
+  assert.equal(
+    [...clipped].some((character) => /\(/.test(character)),
+    false,
+    `a caption carries a lone surrogate: ${JSON.stringify(clipped.slice(-3))}`,
+  );
+  assert.ok(clipped.length <= MAX_GRANT_PATH_BYTES, 'the clip is not a bound');
 });
 
 test('a peer in a document is one click away, and a peer in none is not', async (t) => {
