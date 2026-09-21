@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
+import { MAX_GRANT_PATH_BYTES, SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
 import type { FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
@@ -237,6 +237,32 @@ export function deactivate(): void {
   participantsSource = () => undefined;
   participantsView = undefined;
   peerBadges = undefined;
+}
+
+/**
+ * A peer's claimed document path as a caption: the path, or — past the longest path a room
+ * can carry — that much of it and an ellipsis.
+ *
+ * This window shows a peer's path the way presence named it, one outside the room included:
+ * that is a peer's own word about where it is, and the row says it (`participants.ts`).
+ * What nothing bounds is its length, and the path becomes a tree row's description, that
+ * row's hover and a palette detail — captions the editor reads and measures, one per peer,
+ * on every presence frame. A room document's path is at most `MAX_GRANT_PATH_BYTES` UTF-8
+ * bytes and so at most that many UTF-16 code units, so nothing a room can carry is clipped
+ * here; what is clipped is a claim no room could keep. The clip is by code point, which is
+ * what keeps a surrogate pair whole — `boundedLabel` in `labels.ts` makes the same point
+ * about a name. Pure so tests pin it without an editor.
+ */
+export function captionPath(path: string): string {
+  if (path.length <= MAX_GRANT_PATH_BYTES) {
+    return path;
+  }
+  const head = path.slice(0, MAX_GRANT_PATH_BYTES - 1);
+  const last = head.charCodeAt(head.length - 1);
+  // A trailing high surrogate is half of one code point: the ellipsis replaces it, rather
+  // than the caption carrying half a character the editor cannot draw.
+  const whole = last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head;
+  return `${whole}\u2026`;
 }
 
 /**
@@ -1021,7 +1047,7 @@ class Session {
       const peer = presence.peer;
       const path = presence.state?.path;
       if (peer !== undefined && path !== undefined) {
-        paths.set(peer.peer_id, path);
+        paths.set(peer.peer_id, captionPath(path));
       }
     }
     return this.engine.peers().map((peer) => ({
