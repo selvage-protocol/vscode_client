@@ -251,7 +251,7 @@ export class WorkspaceEditor implements EditorHost {
    * before a single byte is read. The answer is the text, or why there is none: a name this
    * window does not share, one that is not there, one that is not a plain file, one over the
    * size a session will carry, or bytes that are not text. The bridge says which of those
-   * happened, rather than blaming a deletion for all of them.
+   * happened.
    */
   async readGrantedFile(path: string): Promise<GrantedRead> {
     const found = await grantedFile(this.folders, path);
