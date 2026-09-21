@@ -53,6 +53,13 @@ export interface FakeServerOptions {
    * own bound (`PROTOCOL.md` §5) — so `doc.grant` is answered `bad_params`.
    */
   refuseGrant?: boolean;
+  /**
+   * Models a server that seats a host without handing it the room's token: `room.created` names
+   * the room and carries no token. That is the one way a live room reaches a client with no
+   * invite to hand on, and it is a fault to survive rather than a shape to expect — `PROTOCOL.md`
+   * §6.1 says the mint is the frame that carries the token.
+   */
+  omitHostToken?: boolean;
 }
 
 interface Client {
@@ -373,7 +380,9 @@ export class FakeServer {
       this.send(
         client,
         event.roomCreated,
-        this.sessionParams(minted, client, { token: minted.token }),
+        this.sessionParams(minted, client, {
+          ...(this.options.omitHostToken === true ? {} : { token: minted.token }),
+        }),
       );
       return;
     }
