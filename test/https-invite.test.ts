@@ -32,7 +32,7 @@ const BUNDLE = resolve(ROOT, 'dist', 'extension.js');
 const STUB = resolve(ROOT, 'test', 'helpers', 'vscode-stub.cjs');
 
 /** The page the client links to when nothing is configured. */
-const DEFAULT_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8444';
+const DEFAULT_ORIGIN = 'https://selvage.dontblameme.dev';
 /** The server the page joins when a link carries none. */
 const PAGE_DEFAULT_SERVER = 'ws://100.64.0.3:8080';
 
