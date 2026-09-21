@@ -32,7 +32,8 @@ const require = createRequire(import.meta.url);
 /** The bundle's pure address helpers, without an editor. */
 function addressHelpers(): {
   normaliseServerUrl: (text: string) => string;
-  normalisePageOrigin: (text: string) => string;
+  pageOriginOf: (serverBase: string) => string;
+  serverBaseOf: (page: string) => string;
 } {
   const Module = require('node:module') as {
     _resolveFilename: (...args: unknown[]) => string;
@@ -43,18 +44,16 @@ function addressHelpers(): {
   try {
     const bundle = require(BUNDLE) as {
       normaliseServerUrl: (text: string) => string;
-      normalisePageOrigin: (text: string) => string;
+      pageOriginOf: (serverBase: string) => string;
+      serverBaseOf: (page: string) => string;
     };
     assert.equal(
       typeof bundle.normaliseServerUrl,
       'function',
       'the bundle exports no server-address helper',
     );
-    assert.equal(
-      typeof bundle.normalisePageOrigin,
-      'function',
-      'the bundle exports no page-origin helper',
-    );
+    assert.equal(typeof bundle.pageOriginOf, 'function', 'the bundle exports no page-origin helper');
+    assert.equal(typeof bundle.serverBaseOf, 'function', 'the bundle exports no server-base helper');
     return bundle;
   } finally {
     Module._resolveFilename = resolveFilename;
@@ -99,14 +98,19 @@ test('an address that names the endpoint loses it, and one with a path keeps it'
   assert.equal(normaliseServerUrl('ws://127.0.0.1:8080'), 'ws://127.0.0.1:8080');
 });
 
-test('a bare page origin means https, and a cleartext one is left for the caller to refuse', () => {
-  const { normalisePageOrigin } = addressHelpers();
-  assert.equal(normalisePageOrigin('custom.example:9443'), 'https://custom.example:9443');
-  assert.equal(normalisePageOrigin('custom.example:9443/'), 'https://custom.example:9443');
-  assert.equal(normalisePageOrigin('https://custom.example:9443/'), 'https://custom.example:9443');
-  // Not rewritten into an https link: the caller falls back rather than minting a page link
-  // that carries the room's token over cleartext.
-  assert.equal(normalisePageOrigin('http://custom.example'), 'http://custom.example');
+test('a page origin is the server over the scheme a browser speaks, and the way back too', () => {
+  const { pageOriginOf, serverBaseOf } = addressHelpers();
+  assert.equal(pageOriginOf('wss://selvage.dontblameme.dev'), 'https://selvage.dontblameme.dev');
+  assert.equal(pageOriginOf('ws://127.0.0.1:8080/'), 'http://127.0.0.1:8080');
+  // A server behind a prefix is served there, so its page is linked there.
+  assert.equal(pageOriginOf('wss://selvage.example/prefix'), 'https://selvage.example/prefix');
+  assert.equal(serverBaseOf('https://selvage.dontblameme.dev'), 'wss://selvage.dontblameme.dev');
+  assert.equal(serverBaseOf('http://127.0.0.1:8080'), 'ws://127.0.0.1:8080');
+  assert.equal(serverBaseOf('https://selvage.example/prefix/'), 'wss://selvage.example/prefix');
+  // One address, both halves: what a page is linked at is what a guest dials back.
+  for (const base of ['wss://host', 'ws://127.0.0.1:8080', 'wss://host/prefix']) {
+    assert.equal(serverBaseOf(pageOriginOf(base)), base);
+  }
 });
 
 test('the change-server command completes a bare host and remembers the completion', async (t) => {

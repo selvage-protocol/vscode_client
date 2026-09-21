@@ -644,7 +644,7 @@ test('two peers sharing a name badge their file with the count, not one dot', as
 });
 /** The bundle's pure helpers, read off the built bundle like the invite tests do. */
 function bundleExports(): {
-  parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+  parsePageLink: (text: string) => { room: string; token: string; origin: string } | undefined;
 } {
   const require = createRequire(import.meta.url);
   const Module = require('node:module') as {
@@ -656,7 +656,7 @@ function bundleExports(): {
     args[0] === 'vscode' ? stub : resolveModule(...args);
   try {
     return require(resolve(HERE, 'dist', 'extension.js')) as {
-      parsePageLink: (text: string) => { room: string; token: string; server?: string } | undefined;
+      parsePageLink: (text: string) => { room: string; token: string; origin: string } | undefined;
     };
   } finally {
     Module._resolveFilename = resolveModule;
@@ -691,7 +691,8 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const page = bundleExports().parsePageLink(bundle.stub.registered.clipboard);
   assert.ok(page !== undefined, 'the host copied no invite link');
-  const wire = sessionUrl(page.server ?? server.wsBase, page.room, page.token);
+  // The origin is the server, which for this room is the fake server it was hosted on.
+  const wire = sessionUrl(server.wsBase, page.room, page.token);
   const mallory = await SelvageEngine.join(
     wire,
     'Mallory',
