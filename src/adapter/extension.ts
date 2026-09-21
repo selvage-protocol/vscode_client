@@ -1444,7 +1444,7 @@ class Session {
       this.followStatus.color = peerColour(this.followingPeerId);
     }
     this.followStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-    this.followStatus.tooltip = `Following ${this.followingName} — select to stop following`;
+    this.followStatus.tooltip = `Following ${this.followingName}; select to stop following`;
     this.followStatus.show();
   }
 

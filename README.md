@@ -1,16 +1,16 @@
 # Selvage for VS Code
 
 A VS Code extension for the [Selvage `selvage/1` session protocol](https://github.com/selvage-protocol/specification):
-share a folder with someone and edit the same files at the same time. It is for two people who
-want to work in one checkout, and one of them starts a `selvaged` to hold the room.
+share a folder with someone and edit the same files at the same time. It is for two people
+working in one checkout, one of whom starts a `selvaged` to hold the room.
 
 ## Get started
 
 You need:
 
 - VS Code 1.85 or newer. The manifest pins `engines.vscode` at `^1.85.0`.
-- A `selvaged` to connect to. The host starts one and notes the address it prints. The guest needs
-  the invite link and nothing else from the server side.
+- A `selvaged` to connect to. The host starts one and notes the address it prints; the guest needs
+  just the invite link.
 - Node 22.18 or newer, if you build or test the extension from a checkout: the tests are `.ts`
   files run directly by `node --test`, which needs type stripping.
 
@@ -63,8 +63,8 @@ Launch the first, then start the second from the same window you launched the fi
    for twice.
 5. The room's first document opens by itself as a real file under the room's folder, and both
    windows type into the same text. Each sees the other's caret as a bar in the peer's colour,
-   with their selection tinted; hovering a caret names the peer, and nothing is drawn over the
-   text unless `selvage.cursorLabel` asks for it.
+   with their selection tinted; hovering a caret names the peer. Nothing is drawn over the text
+   unless `selvage.cursorLabel` asks for it.
 
 Open a file inside the shared folder to share it: it is shared as soon as it is open. With
 several documents in the room only the first opens for a guest, so run
@@ -82,7 +82,7 @@ them.
 | Setting | Default | What it does |
 |---|---|---|
 | `selvage.serverUrl` | unset | The WebSocket address to host on. Setting it means hosting never asks, and it outranks the last server used. |
-| `selvage.webOrigin` | the demo page | The page invite links point to, as an `https` origin. Anything else falls back to the default, so a host's copied link never carries the room's token over cleartext. A guest copies the link it joined by, so this does not touch a guest's copy. |
+| `selvage.webOrigin` | the demo page | The page invite links point to, as an `https` origin. Anything else falls back to the default page, and a copied link never carries the room's token over cleartext. A guest copies the link it joined by, so this setting does not touch a guest's copy. |
 | `selvage.displayName` | unset | The name other participants see. A change while a session is live renames this connection at once. |
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |
@@ -90,41 +90,40 @@ them.
 
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
-silently, so hosting asks only in a window that has none of them, and that one question starts
-from the demo server `ws://100.64.0.3:8080`. A host that reused the last server names it in the
-room-open notice, with a `Change the server` button that asks the same question again for the
-next host; a host on the setting or on an explicit address has no such button, because that
-address is changed where it was set.
+silently, so hosting asks only in a window that has neither, and that one question starts from the
+demo server `ws://100.64.0.3:8080`. A host that reused the last server names it in the room-open
+notice, with a `Change the server` button that asks the same question again for the next host. A
+host on the setting or on an explicit address gets no such button; that address is changed where
+it was set.
 
 `Selvage: Change the server` reports the address the next host will use and offers the same box
 to change it, without hosting first. While `selvage.serverUrl` is configured that setting
-outranks the remembered address, so the command says so and changes nothing. Either way the
-write reaches the next host only; it never touches a room already open.
+outranks the remembered address, so the command says so and changes nothing. Either way the write
+reaches the next host only, and never a room already open.
 
 A display name is resolved when a session starts, in this order: `selvage.displayName`, then the
-remembered answer, then a question pre-filled with the login name. It is bounded at 32 UTF-16
-code units, so an emoji costs two, and a longer name is refused wherever it comes from rather
-than shortened, because a name must be the one its owner chose. `Selvage: Set the name other
-participants see` reports the name in force and changes it; the write goes to the global scope,
-since a workspace is not where a person's name belongs.
+remembered answer, then a question pre-filled with the login name. It is bounded at 32 UTF-16 code
+units, so an emoji costs two, and a longer name is refused wherever it came from.
+`Selvage: Set the name other participants see` reports the name in force and changes it; the write
+goes to the global scope.
 
 ## What it does
 
 The room is a folder on disk in both windows. A host shares the `file:` documents it has open
 under its workspace folder, and that folder is the grant: a guest can list it, open any of its
-files, and read one the host never opened, on request. The listing follows the host's folder, so a file a
-build, a branch switch or another terminal creates or removes reaches the room without anybody
-asking.
+files, and read one the host never opened, on request. The listing follows the host's folder, so a
+file a build, a branch switch or another terminal creates or removes reaches the room without
+anybody asking.
 
-A guest's window ends up holding the room as a real directory, under the extension's global
-storage. That is what makes an ordinary editor setup useful on it: the trees, search and language
-servers a person already runs can read the room's files. The join reloads the window onto that
-directory, replacing whatever tree was there, and leaving deletes it again. `Selvage: Download a file from the room` is how content that
-nobody has opened yet arrives in it, and how a whole project is published to the other side.
+A guest's window holds the room as a real directory under the extension's global storage, so the
+trees, search and language servers a person already runs work on the room's files. The join
+reloads the window onto that directory, replacing whatever tree was there, and leaving deletes it
+again. `Selvage: Download a file from the room` is how content that nobody has opened yet arrives
+in it, and how a whole project is published to the other side.
 
 In the editor a peer is a coloured caret, a selection fill, a tick in the overview ruler, and
-their initials on a badge in the gutter and on the Explorer row of the file they are in. A
-peer's colour comes from their id, so both clients paint the same person the same way, and
+their initials on a badge in the gutter and on the Explorer row of the file they are in. A peer's
+colour comes from their id, so both clients paint the same person the same way, and
 `Selvage: List the room's participants` turns a colour back into a name and a role. The same
 roster is a `Selvage: Participants` view beside the Explorer: one row per peer, with go-to and
 follow on the row, and clicking a peer lands where they are.
@@ -139,19 +138,19 @@ saved once the room settles, because the host's working copy is the room's truth
 Twelve, the same twelve the Neovim client has as `:SelvageHost`, `:SelvageJoin`,
 `:SelvageDisplayName`, `:SelvageChangeServer`, `:SelvageOpen`, `:SelvageFetch`,
 `:SelvageCopyInvite`, `:SelvageLeave`, `:SelvagePeers`, `:SelvageGoTo`, `:SelvageFollow` and
-`:SelvageStopFollowing`. Only the presentation differs: an editor command is a palette entry here
-and a `:command` there, so going to or following a participant is a palette pick here and a
-completing command there, while the intents stay one-to-one.
+`:SelvageStopFollowing`. The presentation is the editor's: an editor command is a palette entry
+here and a `:command` there, so going to or following a participant is a palette pick here and a
+completing command there.
 
 | | |
 |---|---|
 | `Selvage: Host a session` | Mint a room on a server and share this window's folder. Asks for the server address only when no argument, setting or remembered address names one, and for the name once. Running it while already hosting copies the invite instead of minting a second room. Refused in a window with no folder open: a room is a grant of that folder, so it would have nothing to share. The notice that follows carries the invite's next step and a `Copy again` button. |
-| `Selvage: Join a session from an invite link` | Join the room an invite link names, replacing this window's folder with the room's mirror. Accepts the `https` page link a host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join (a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address) is refused before the name is asked and before the window reloads, in words that never quote the link's token. A window holding a folder of its own is asked before the reload takes it, and that folder stays on disk either way. A refusal names what happened rather than the room's own `no such room: <id>` or `invalid room token`. |
+| `Selvage: Join a session from an invite link` | Join the room an invite link names, replacing this window's folder with the room's mirror. Accepts the `https` page link a host copies; a `ws://` link still joins as the advanced fallback for rooms off the page default. A link that cannot join (a truncated paste, a page link whose `&server=` is not a `ws://`/`wss://` address) is refused before the name is asked and before the window reloads, in words that leave the link's token out. A window holding a folder of its own is asked before the reload takes it, and that folder stays on disk either way. A refusal says what happened in ordinary words; the room's own `no such room: <id>` and `invalid room token` never reach the person. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Change the server` | Report the server the next host uses, and set it, without hosting first. |
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Download a file from the room` | Hold one listed path, or a directory of them, in the room so every peer receives it, filling the mirror. Refused while hosting: your files are already on your disk. |
-| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite, an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest holds the token it joined with, and the invite is the permission, so it hands on the link it joined by, as it stood. |
+| `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A host copies the page invite: an `https://` link opening the guest page with the room and its token (`&server=` only for rooms off the page default). A guest hands on the link it joined by, as it stood; the invite is the permission, so the token it joined with is the guest's to pass on. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
 | `Selvage: List the room's participants` | List everyone else in the room, with each one's colour, name, role and the document they are in. Drawn as a quick pick with a coloured dot per row, because `QuickPickItem.iconPath` is the only field an editor renders a colour from. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
@@ -160,49 +159,50 @@ completing command there, while the intents stay one-to-one.
 
 ## What is not here
 
-- A sidecar or second process. The sync engine and the CRDT live in the extension host next to
-  the editor; everything is one event loop, with no worker and no native module.
-- Create, rename and delete on the wire (`PROTOCOL.md` §12), read-only guests (§12.3), per-user
-  undo, host-filesystem reads beyond a granted path a peer asked for, and multi-room windows: one
-  session per window.
-- A `y-websocket` provider (Selvage's envelope is not y-websocket's) and `terminal/1`.
-- Exclude globs. What a host shares without being asked is what it has open, which is visible in
-  its own window; any other file under the shared folder a guest reaches is read on request. A
-  file a room asks for is checked before it is read, and only when the grant would publish it and
-  every directory on the way is a plain directory of the shared folder, never a link out of it.
-  The window between that check and the read is a stated residual: `vscode.workspace.fs` exposes
-  no `realpath`, so a link swapped in after the walk is read on the peer's behalf.
-- Offline changes, republished. The room keeps the listing it held across the host's disconnect
-  grace and a re-seated host is sent it again, but nothing republishes because of the
-  reconnection, so the room learns of a change made during the blip at the next filesystem event
-  or not at all. A folder the editor accepts a watcher for and then never delivers an event for
-  has no error channel, so it leaves the listing as of session start and nothing says so.
-- A file the room holds without listing it: there is no file to open, so it is not openable here
-  the way it is in Neovim. A save of a path the room does not list is written, since the editor
-  cannot refuse it, and said about afterwards; Neovim refuses it upfront.
-- The room's folder, kept. Leaving deletes the mirror from the window; a document the room holds
-  stays open and readable when the listing stops naming it, since a hold is released with
-  `doc.close` and not by the listing.
-- A trusted window, for the resume. A folder can start this extension with nothing but a
-  `.selvage-mirror.json` in it, and VS Code does not condition a `workspaceContains` activation
-  on workspace trust, which is the only way back in after the reload that puts the room's folder
-  in the window. So in an untrusted window the extension starts, registers its commands and stops
-  there; the triage a marker asks for runs once you trust the workspace. Every command is your
-  own act and works in a window you have not trusted.
-  The manifest claims `limited` untrusted support for exactly that reason.
-- A name drawn over the text, guaranteed. `selvage.cursorLabel: "floating"` writes declarations
-  into a field documented as one CSS declaration, which is undocumented editor behaviour: it can
-  change in a release with no change to the API, and nothing in the suite can see a pixel. It
-  covers the line above the caret and cannot leave the editor's top edge. `chip` uses documented
-  decoration fields only and covers the text it sits against. Either way a drawn name is clipped
-  at 24 code points, with the whole name still in the caret's hover.
-- One badge per row, which is the decoration API's limit. A file several peers are in answers
-  with their count and claims no colour; the hover names everyone.
-- Per-user undo. A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a peer's
-  edit; the resulting change event is published like any other and the room reconverges.
-- Format-on-save, fought. A formatter's edit is an ordinary change event and is published, so
-  with peers running formatters this can echo (`SPIKES.md`, spike 3); turn format-on-type off
-  while collaborating.
+The whole client runs in the extension host: the sync engine and the CRDT live next to the editor on
+one event loop. There is no worker, no native module and no second process.
+
+- Nothing is created, renamed or deleted on the wire (`PROTOCOL.md` §12), and a guest holds the
+  same right to edit as the host (§12.3). A window holds one session, and a host reads its own
+  filesystem only for a granted path a peer asked for.
+- There is no `y-websocket` provider, because Selvage has its own envelope, and no `terminal/1`.
+- There are no exclude globs. A host shares live the documents it has open, so what is on offer is
+  visible in its own window, and any other file under the shared folder a guest reaches is read on
+  request. A file a room asks for is checked before it is read, and only when the grant would
+  publish it and every directory on the way is a plain directory of the shared folder, never a
+  link out of it. The window between that check and the read is a stated residual:
+  `vscode.workspace.fs` exposes no `realpath`, so a link swapped in after the walk is read on the
+  peer's behalf.
+- A change made while the connection is down is not republished when it comes back. The room keeps
+  the listing it held across the host's disconnect grace and a re-seated host is sent it again, so
+  the two agree; the room learns of the change at the next filesystem event or not at all. A
+  folder the editor accepts a watcher for and then never delivers an event for has no error
+  channel, so it leaves the listing as of session start and nothing says so.
+- A document the room holds without listing it has no file here, so it cannot be opened the way
+  the Neovim client opens it. A save to a path the room does not list is written, since the editor
+  cannot refuse a save, and reported afterwards; the Neovim client refuses it upfront.
+- Leaving deletes the mirror from the window. A document the room holds stays open and readable
+  when the listing stops naming it, because a hold is released with `doc.close` and not by the
+  listing.
+- The resume a marker asks for waits for a trusted window. A folder can start this extension with
+  nothing but a `.selvage-mirror.json` in it, and VS Code does not condition a `workspaceContains`
+  activation on workspace trust, which is the only way back in after the reload that puts the
+  room's folder in the window. In an untrusted window the extension starts, registers its commands
+  and stops there; the triage a marker asks for runs once you trust the workspace. Every command
+  is your own act and works in a window you have not trusted, which is why the manifest claims
+  `limited` untrusted support.
+- A name drawn over the text can break. `selvage.cursorLabel: "floating"` writes declarations into
+  a field documented as one CSS declaration, which is undocumented editor behaviour: it can change
+  in a release with no change to the API, and nothing in the suite can see a pixel. It covers the
+  line above the caret and cannot leave the editor's top edge. `chip` uses documented decoration
+  fields only and covers the text it sits against. Either way a drawn name is clipped at 24 code
+  points, with the whole name still in the caret's hover.
+- One badge per row, which is the decoration API's limit. A file several peers are in answers with
+  their count and claims no colour; the hover names everyone.
+- Undo is shared. A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a peer's
+  edit; that change is published like any other and the room reconverges.
+- Format-on-save is published like any other change, so with peers running formatters a session
+  can echo (`SPIKES.md`, spike 3). Turn format-on-type off while collaborating.
 
 ## How it is built
 
@@ -221,10 +221,10 @@ no `vscode` import is allowed outside `src/adapter/`, along with three others: n
 dependency, every module of the editor-independent half reachable from a test, and every module
 in `src/adapter/` one that imports `vscode`.
 
-`connect()` is bounded by `handshakeTimeoutMs` (10 s by default), which covers the upgrade *and*
-the handshake. `open()` and `close()` are bounded by `requestTimeoutMs` (10 s by default),
-because the bound belongs to the client and not to the wire: a server that holds the socket up
-and never answers fails the caller with `EngineClosedError` instead of leaving it pending.
+`connect()` is bounded by `handshakeTimeoutMs` (10 s by default), which covers both the upgrade
+and the handshake. `open()` and `close()` are bounded by `requestTimeoutMs` (10 s by default): a
+server can hold the socket up and never answer, and the caller then fails with
+`EngineClosedError`.
 
 `src/adapter/extension.ts` is `activate`, the twelve commands, the status bar and the window's
 listeners; `documents.ts` decides which documents are shared; `mirror.ts` is the room's mirror on
@@ -252,12 +252,11 @@ $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo buil
 ```
 
 `test:selvaged` finds that binary at `../reference_server/target/{debug,release}/selvaged`, or
-wherever `SELVAGE_SELVAGED` points. A missing binary fails the test with the command that builds
-it rather than skipping. `cargo` is not on the ambient `PATH`, and `nix develop
-../reference_server` runs its command with the current directory, hence the `cd`. That flake's
-shellHook installs Rust git hooks into this checkout; they are harmless and ignored, and CI does
-not use them. `nix flake check` runs the server-free half in a sandbox, where a check cannot build
-a sibling checkout.
+wherever `SELVAGE_SELVAGED` points. A missing binary fails the test, which prints the command that
+builds it. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server` runs its
+command with the current directory, hence the `cd`. That flake's shellHook installs Rust git hooks
+into this checkout; they are harmless and ignored, and CI does not use them. `nix flake check`
+runs the server-free half in a sandbox, where a check cannot build a sibling checkout.
 
 The suite runs against a fake `selvaged` (`test/helpers/fake-server.ts`) for the faults the real
 server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta` naming a
