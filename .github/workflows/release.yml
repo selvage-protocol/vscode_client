@@ -199,12 +199,16 @@ jobs:
 
       # Tags are resolved against `origin`, not local refs: the checkout may not have
       # fetched them. An existing tag must point at this run's commit; anything else is
-      # someone else's release and stops the job. An annotated tag's own ref resolves to
-      # the tag object, not the commit it names, so both the plain ref and its peeled `^{}`
-      # form are queried and the peeled (commit) sha is preferred when present. A push that
-      # is rejected because another run created the same tag a moment earlier is not itself
-      # a failure: the tag is re-queried and accepted if it now names this run's commit, and
-      # only anything else fails the job.
+      # someone else's release and stops the job — except a manual re-run of the same
+      # version, which is exactly what retrying a failed publish looks like and is expected
+      # to land on a different commit once the workflow itself needed a fix. The tag then
+      # stays where it is rather than moving: the release it names already carries this
+      # version's content, and the retry only needs the Marketplace publish step to run
+      # again. An annotated tag's own ref resolves to the tag object, not the commit it
+      # names, so both the plain ref and its peeled `^{}` form are queried and the peeled
+      # (commit) sha is preferred when present. A push that is rejected because another run
+      # created the same tag a moment earlier is not itself a failure: the tag is re-queried
+      # and accepted if it now names this run's commit, and only anything else fails the job.
       - name: create and push the tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -224,8 +228,12 @@ jobs:
             remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
             echo "tag v${RELEASE_VERSION} already exists at ${remote_sha}"
             if [ "$remote_sha" != "$GITHUB_SHA" ]; then
-              printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
-              exit 1
+              if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+                echo "manual re-run of an existing version; leaving the tag at ${remote_sha} and continuing"
+              else
+                printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
+                exit 1
+              fi
             fi
           fi
 
