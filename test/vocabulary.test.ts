@@ -105,11 +105,14 @@ const SENTENCES = [
   "'Selvage: the room is full — it seats no more people.'",
   // Hosting, and the invite it leaves on the clipboard.
   '`Selvage: you are already hosting this session; the invite link is on the clipboard.`',
+  '`Selvage: you are already hosting this session, but the invite link could not be copied (${}).`',
+  "'Selvage: you are already hosting this session, but this connection holds no invite link to send.'",
   "'Selvage: open a folder first — hosting shares the folder this window is open on, and a room from a window with no folder would share nothing.'",
   '`Selvage: connecting to ${}…`',
   // Joining: the wait, the refusals, and the landing.
   '`Selvage: could not host on ${}. ${}`',
   '`Selvage: the room is open, but the invite link could not be copied (${}).`',
+  "'Selvage: the room is open, but this connection holds no invite link to send.'",
   '`Selvage: the room is open on ${}. Send this link to your friend — it is on the clipboard.`',
   "'Selvage: the room is open. Send this link to your friend — it is on the clipboard.'",
   '`Selvage: will host on ${} next. Leave this session and host again to move there.`',
@@ -129,6 +132,8 @@ const SENTENCES = [
   // The invite, and the room's documents.
   "'Selvage: there is no invite link; host or join a room first.'",
   "'Selvage: the invite link is on the clipboard.'",
+  '`Selvage: the invite link could not be copied (${}).`',
+  "'Selvage: this session holds no invite link to copy.'",
   "'Selvage: join a session first.'",
   "'Selvage: you are the host — the files you open are the ones your guests see.'",
   "'Selvage: the room has no open documents yet.'",

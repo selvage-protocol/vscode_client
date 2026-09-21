@@ -2080,9 +2080,18 @@ async function host(
   if (inSession !== undefined) {
     if (inSession.role() === 'host') {
       // Hosting again is reaching for the invite, not asking for a second room.
-      if ((await copyInviteLink()) !== undefined) {
+      const reach = await reachForInvite();
+      if (reach.outcome === 'copied') {
         void vscode.window.showInformationMessage(
           `Selvage: you are already hosting this session; the invite link is on the clipboard.`,
+        );
+      } else if (reach.outcome === 'refused') {
+        void vscode.window.showWarningMessage(
+          `Selvage: you are already hosting this session, but the invite link could not be copied (${reach.why}).`,
+        );
+      } else {
+        void vscode.window.showWarningMessage(
+          'Selvage: you are already hosting this session, but this connection holds no invite link to send.',
         );
       }
       return;
@@ -2110,7 +2119,8 @@ async function host(
     );
     return;
   }
-  const given = args?.serverUrl?.trim();
+  const given =
+    args?.serverUrl === undefined ? undefined : normaliseServerUrl(args.serverUrl);
   const resolved = given === undefined || given === '' ? await resolveServerUrl() : undefined;
   const baseUrl = resolved?.url ?? given;
   // Only a silently reused address earns the offer to change it: an argument names its
@@ -2159,18 +2169,21 @@ async function host(
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();
-  const invite = pageInviteFor(engine);
-  if (invite === undefined) {
-    return;
-  }
   // Hosting ends with the guest's next step already done: the link is on the clipboard
   // before the notice says so, with no button and no setting — a host always sends it next.
-  // A clipboard that will not take it is said out loud instead: the session stands either way.
-  try {
-    await vscode.env.clipboard.writeText(invite);
-  } catch (error) {
+  // A copy that did not happen says which way it did not happen: a refused clipboard and a
+  // room this connection was given no link for are different faults, and neither leaves the
+  // person to guess which one they are in.
+  const reach = await reachForInvite();
+  if (reach.outcome === 'no-invite') {
     void vscode.window.showWarningMessage(
-      `Selvage: the room is open, but the invite link could not be copied (${message(error)}).`,
+      'Selvage: the room is open, but this connection holds no invite link to send.',
+    );
+    return;
+  }
+  if (reach.outcome === 'refused') {
+    void vscode.window.showWarningMessage(
+      `Selvage: the room is open, but the invite link could not be copied (${reach.why}).`,
     );
     return;
   }
@@ -2188,7 +2201,7 @@ async function host(
   const buttons = reusedMemory === true ? [copyAgain, changeServer] : [copyAgain];
   const answer = await vscode.window.showInformationMessage(notice, ...buttons);
   if (answer === copyAgain) {
-    await copyInviteLink();
+    await copyInvite();
   } else if (answer === changeServer) {
     await offerServerChange(context, baseUrl);
   }
@@ -2625,14 +2638,55 @@ function webOrigin(): string {
   const configured = config().get<string>('webOrigin', '').trim();
   if (configured !== '') {
     try {
-      if (new URL(configured).protocol === 'https:') {
-        return configured.replace(/\/+$/, '');
+      const origin = normalisePageOrigin(configured);
+      if (new URL(origin).protocol === 'https:') {
+        return origin;
       }
     } catch {
       // Not an absolute URL at all: the default below stands.
     }
   }
   return DEFAULT_WEB_ORIGIN;
+}
+
+/** True for a value that opens with a scheme, `ws://` or `https://`, rather than a bare host. */
+function hasScheme(text: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+}
+
+/**
+ * The address the engine dials, from whatever was typed in a server-address position.
+ *
+ * A person types a host, not a URL: `selvage.dontblameme.dev` means the published shape,
+ * which is TLS, so a bare address means `wss://<host>`. The endpoint path is not part of a
+ * server address — the engine appends `/session` to the base it is given — so an address that
+ * already names the endpoint loses it, or the room would be dialled at `/session/session`, and
+ * a trailing slash is not a second server. Any other path is kept: a server behind a prefix was
+ * addressed deliberately, not mistyped. Pure so tests pin it without an editor.
+ */
+export function normaliseServerUrl(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  const addressed = hasScheme(trimmed) ? trimmed : `wss://${trimmed}`;
+  return addressed.replace(/\/+$/, '').replace(/\/session$/, '');
+}
+
+/**
+ * The page origin from whatever was typed in a page-origin position, where the default is the
+ * other one: a page is served over TLS or not at all, so a bare host means `https://<host>`. A
+ * scheme that is not https is left for the caller to refuse rather than rewritten — a cleartext
+ * page link carries the room's token, and that is not a guess to make on someone's behalf. Pure
+ * so tests pin it without an editor.
+ */
+export function normalisePageOrigin(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  const addressed = hasScheme(trimmed) ? trimmed : `https://${trimmed}`;
+  return addressed.replace(/\/+$/, '');
 }
 
 /**
@@ -2725,22 +2779,64 @@ function joinedMessage(documents: string[]): Notice {
  * accompanies the copy is the caller's: hosting again and copying the link deliberately say
  * different things about the same copy.
  */
-async function copyInviteLink(): Promise<string | undefined> {
-  const invite = current?.invite();
-  if (invite === undefined) {
-    void vscode.window.showWarningMessage(
-      'Selvage: there is no invite link; host or join a room first.',
-    );
-    return undefined;
+/**
+ * What reaching for this window's invite did. A window with no session and a session whose
+ * connection holds no link are different moments: only the first is `host or join a room
+ * first`, and saying that from a room that is open reads as a contradiction.
+ */
+type InviteReach =
+  | { outcome: 'copied'; invite: string }
+  | { outcome: 'no-session' }
+  | { outcome: 'no-invite' }
+  | { outcome: 'refused'; why: string };
+
+/**
+ * Puts this window's invite on the clipboard, or says which way there was nothing to put
+ * there. What a host copies is the page link built from the wire invite it minted; what a
+ * guest copies is the link it joined by, as it stood. The sentence that accompanies each
+ * outcome is the caller's: opening a room, hosting again and copying the link deliberately
+ * say different things about the same copy.
+ */
+async function reachForInvite(): Promise<InviteReach> {
+  if (current === undefined) {
+    return { outcome: 'no-session' };
   }
-  await vscode.env.clipboard.writeText(invite);
-  return invite;
+  const invite = current.invite();
+  if (invite === undefined) {
+    return { outcome: 'no-invite' };
+  }
+  try {
+    await vscode.env.clipboard.writeText(invite);
+  } catch (error) {
+    // The clipboard is the editor's, not this extension's, and a write it refuses is reported
+    // rather than claimed — a Neovim with no clipboard provider makes the same report about
+    // its own registers. The link is not lost: it is still the room's to rebuild.
+    return { outcome: 'refused', why: message(error) };
+  }
+  return { outcome: 'copied', invite };
 }
 
 async function copyInvite(): Promise<void> {
-  if ((await copyInviteLink()) !== undefined) {
-    void vscode.window.showInformationMessage('Selvage: the invite link is on the clipboard.');
+  const reach = await reachForInvite();
+  if (reach.outcome === 'no-session') {
+    void vscode.window.showWarningMessage(
+      'Selvage: there is no invite link; host or join a room first.',
+    );
+    return;
   }
+  if (reach.outcome === 'no-invite') {
+    void vscode.window.showWarningMessage(
+      'Selvage: this session holds no invite link to copy.',
+    );
+    return;
+  }
+  if (reach.outcome === 'refused') {
+    void vscode.window.showWarningMessage(
+      `Selvage: the invite link could not be copied (${reach.why}).`,
+    );
+    return;
+  }
+  void vscode.window.showInformationMessage('Selvage: the invite link is on the clipboard.');
 }
 
 /**
@@ -3181,16 +3277,17 @@ function stopFollowing(): void {
  * the button.
  */
 async function resolveServerUrl(): Promise<{ url: string; fromMemory: boolean } | undefined> {
-  const configured = config().get<string>('serverUrl', '').trim();
+  const configured = normaliseServerUrl(config().get<string>('serverUrl', ''));
   if (configured !== '') {
     return { url: configured, fromMemory: false };
   }
-  if (lastServer !== undefined && lastServer.trim() !== '') {
-    return { url: lastServer, fromMemory: true };
+  const remembered = lastServer === undefined ? '' : normaliseServerUrl(lastServer);
+  if (remembered !== '') {
+    return { url: remembered, fromMemory: true };
   }
   const answer = await vscode.window.showInputBox(serverInput(DEFAULT_SERVER_URL));
-  const trimmed = answer?.trim();
-  return trimmed === undefined || trimmed === '' ? undefined : { url: trimmed, fromMemory: false };
+  const trimmed = answer === undefined ? '' : normaliseServerUrl(answer);
+  return trimmed === '' ? undefined : { url: trimmed, fromMemory: false };
 }
 
 /**
@@ -3220,11 +3317,11 @@ async function offerServerChange(
   current: string,
 ): Promise<void> {
   const answer = await vscode.window.showInputBox(serverInput(current));
-  const trimmed = answer?.trim();
-  if (trimmed === undefined || trimmed === '' || trimmed === current) {
+  const address = answer === undefined ? '' : normaliseServerUrl(answer);
+  if (address === '' || address === current) {
     return;
   }
-  await writeServer(context, trimmed);
+  await writeServer(context, address);
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.changeServer`. */
@@ -3244,19 +3341,22 @@ async function changeServer(
   args?: ChangeServerArgs,
   context?: vscode.ExtensionContext,
 ): Promise<void> {
-  const configured = config().get<string>('serverUrl', '').trim();
+  const configured = normaliseServerUrl(config().get<string>('serverUrl', ''));
   if (configured !== '') {
     void vscode.window.showInformationMessage(
       `Selvage: the "selvage.serverUrl" setting fixes the server at ${configured}; change it in Settings to use a different one.`,
     );
     return;
   }
-  const given = args?.serverUrl?.trim();
-  if (given !== undefined && given !== '') {
+  const given = args?.serverUrl === undefined ? '' : normaliseServerUrl(args.serverUrl);
+  if (given !== '') {
     await writeServer(context, given);
     return;
   }
-  const current = lastServer !== undefined && lastServer.trim() !== '' ? lastServer : undefined;
+  const current =
+    lastServer === undefined || normaliseServerUrl(lastServer) === ''
+      ? undefined
+      : normaliseServerUrl(lastServer);
   const reported =
     current === undefined
       ? 'Selvage: no server is remembered yet; the next host asks.'
@@ -3277,10 +3377,11 @@ async function writeServer(
   context: vscode.ExtensionContext | undefined,
   value: string,
 ): Promise<void> {
-  lastServer = value;
-  await rememberServer(context, value);
+  const address = normaliseServerUrl(value);
+  lastServer = address;
+  await rememberServer(context, address);
   void vscode.window.showInformationMessage(
-    `Selvage: will host on ${value} next. Leave this session and host again to move there.`,
+    `Selvage: will host on ${address} next. Leave this session and host again to move there.`,
   );
 }
 
