@@ -180,6 +180,23 @@ jobs:
           name: vsce-publish
           path: vsce-publish
 
+      # Node to run the `vsce` entry point downloaded above; nothing is installed with it.
+      # Moved ahead of tagging and the Marketplace login so the check below can use it.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # `actions/upload-artifact` excludes hidden files by default, and npm's `.bin`
+      # shims are themselves inside a hidden directory, so `node_modules/.bin/vsce` never
+      # survives the artifact round-trip even when the install prefix that holds it is not
+      # itself dotted. `vsce`'s own package.json points `bin` at `node_modules/@vscode/vsce/vsce`,
+      # an ordinary file one level up, so every step below runs that path through `node`
+      # directly and never touches `.bin`. Checking it here, before the tag, the Release or
+      # the Marketplace login exist, turns a missing publisher into a clear failure instead
+      # of "No such file or directory" three steps into the privileged half of this job.
+      - name: verify the extension publisher is present
+        run: node ./vsce-publish/node_modules/@vscode/vsce/vsce --version
+
       # Tags are resolved against `origin`, not local refs: the checkout may not have
       # fetched them. An existing tag must point at this run's commit; anything else is
       # someone else's release and stops the job. An annotated tag's own ref resolves to
@@ -230,11 +247,6 @@ jobs:
             gh release create "v${RELEASE_VERSION}" --title "v${RELEASE_VERSION}" --notes-file release-notes.md "$VSIX"
           fi
 
-      # Node to run the `vsce` binary downloaded above; nothing is installed with it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22.18.0"
-
       # Federated identity, not a stored secret: this exchanges the job's OIDC token (minted
       # because `publish` runs under the `marketplace` environment and holds `id-token:
       # write`) for a short-lived Microsoft Entra ID credential. The app registration has no
@@ -258,7 +270,7 @@ jobs:
       # Release above already exist independently of whether this step succeeds.
       - name: publish to the VS Code Marketplace
         run: |
-          if ! ./vsce-publish/node_modules/.bin/vsce publish --azure-credential --packagePath "$VSIX"; then
+          if ! node ./vsce-publish/node_modules/@vscode/vsce/vsce publish --azure-credential --packagePath "$VSIX"; then
             cat >&2 <<EOF
           Marketplace publish failed. If this is a new identity, confirm its Visual Studio
           profile id has been added to the selvage-protocol publisher's Members with a
