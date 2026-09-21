@@ -2824,7 +2824,7 @@ test('fetch without a path offers the listing to pick from', async (t) => {
     ) ?? false,
   );
   assert.deepEqual(asked.items, [
-    { label: 'Fetch the whole listing', description: '1 files' },
+    { label: 'Fetch the whole listing', description: '1 file' },
     'picked.md',
   ]);
   const done = await waitFor('the fetched report', () =>

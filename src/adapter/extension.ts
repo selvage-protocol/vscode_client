@@ -644,7 +644,7 @@ class Session {
       // the confirm below rather than the single-path flow.
       const whole: vscode.QuickPickItem = {
         label: 'Fetch the whole listing',
-        description: `${listed.length} files`,
+        description: listed.length === 1 ? '1 file' : `${listed.length} files`,
       };
       // Mixed rows: the whole-listing row is an object, paths are strings, told apart by
       // shape at runtime. The overloads take one or the other, never the union, so the
@@ -1145,7 +1145,7 @@ class Session {
       })),
       {
         title,
-        placeHolder: 'Whose document to open, and where they are',
+        placeHolder: 'Pick a participant',
         matchOnDescription: true,
         matchOnDetail: true,
       },
@@ -3115,7 +3115,7 @@ async function listPeers(): Promise<void> {
     })),
     {
       title: `Selvage: who is in the room`,
-      placeHolder: 'Who is here, and the colour their caret is drawn in',
+      placeHolder: 'Everyone in the room, and each one\'s caret colour',
       matchOnDescription: true,
       matchOnDetail: true,
     },
@@ -3202,8 +3202,7 @@ async function resolveServerUrl(): Promise<{ url: string; fromMemory: boolean } 
 function serverInput(value: string): vscode.InputBoxOptions {
   return {
     title: 'The Selvage server to host on',
-    prompt:
-      'The server you and your guest both connect to. If you started one yourself, it printed this address when it started.',
+    prompt: 'The server you and your guest both connect to.',
     placeHolder: 'The address the server prints when it starts',
     value,
     ignoreFocusOut: true,
