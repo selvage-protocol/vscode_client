@@ -153,12 +153,11 @@ const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
 /**
- * The page CopyInvite links to when nothing is configured: the Pi page served
- * next to the demo from `ai_notes/docs/runbook-pi-demo.md`. An overridable default,
- * never a commitment — the `selvage.webOrigin` setting always wins —
- * so moving the page is this one line.
+ * The page CopyInvite links to when nothing is configured: the published demo page.
+ * An overridable default, never a commitment — the `selvage.webOrigin` setting always
+ * wins — so moving the page is this one line.
  */
-const DEFAULT_WEB_ORIGIN = 'https://lumi-raspberrypi.muskellunge-yo.ts.net:8444';
+const DEFAULT_WEB_ORIGIN = 'https://selvage.dontblameme.dev';
 
 export function activate(context: vscode.ExtensionContext): void {
   deactivated = false;
@@ -2617,7 +2616,7 @@ export function parsePageLink(text: string): { room: string; token: string; serv
 
 /**
  * The page CopyInvite links to: the `selvage.webOrigin` setting when it names an
- * absolute `https:` origin, else the Pi page default (`DEFAULT_WEB_ORIGIN`). A
+ * absolute `https:` origin, else the demo page default (`DEFAULT_WEB_ORIGIN`). A
  * non-HTTPS or unparsable value falls back rather than minting a cleartext link
  * carrying the room's token. A trailing slash is not a second page, so it is
  * stripped before the link is built.
