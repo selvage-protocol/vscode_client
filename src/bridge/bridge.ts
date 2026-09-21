@@ -31,6 +31,30 @@ import type { LineEnding, TextChange } from './editing.ts';
 import { MAX_GRANT_FILE_BYTES, isGrantedPath, overFileBound } from './grant.ts';
 
 /**
+ * Why a path the room asked for has no text this window can put into a document.
+ *
+ * `not-granted` is the odd one out: it is a path the grant would never publish, which no
+ * message may name (see `refusalSentence`), and it is here so that an adapter answering
+ * about its own resolution does not have to lie about which of the others it is.
+ */
+export type GrantRefusal =
+  /** A path this session does not share: outside the folder, or one the grant excludes. */
+  | 'not-granted'
+  /** Nothing is there: never there, deleted since the listing, or unreadable. */
+  | 'missing'
+  /** Something is there, and it is not a plain file: a directory, a link, a device. */
+  | 'not-a-file'
+  /** A plain file over the bytes a session will carry. */
+  | 'too-large'
+  /** A plain file whose bytes are not text, which is all a room can carry. */
+  | 'binary';
+
+/** What reading a granted path produced: the file's text, or why there is none. */
+export type GrantedRead =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'refused'; readonly cause: GrantRefusal };
+
+/**
  * The slice of `SelvageEngine` the bridge talks to. `SelvageEngine` satisfies it as it
  * stands — a test assigns the real class to it, so a drift is a compile error rather than
  * a surprise at run time — and a test can satisfy it with a stub.
@@ -75,12 +99,14 @@ export interface EditorHost {
   /**
    * Reads a file from this window's working copy, for a path the room asked for.
    *
-   * The path came from a peer and is not trusted: `undefined` is the answer for anything that
-   * is not a readable text file inside the folder this window shares — one that escapes it,
-   * one the grant excludes (`.git/**`, `.env`), a directory, a symbolic link, a binary, one
-   * over the size a session will carry, or one that cannot be read at all.
+   * The path came from a peer and is not trusted, so the answer is the text or the reason
+   * there is none: a path that escapes the folder or that the grant excludes (`.git/**`,
+   * `.env`) is `not-granted`, and a directory, a symbolic link, a name that is not there, a
+   * file over the size a session will carry and a file whose bytes are not text are each
+   * named as they are. The distinction is the user's: one sentence for all of them sent a
+   * person looking for a file that had never been deleted, when what they had was a zip.
    */
-  readGrantedFile(path: string): Promise<string | undefined>;
+  readGrantedFile(path: string): Promise<GrantedRead>;
   /** Draws the remote cursors; `[]` clears them. */
   renderCursors(cursors: Cursor[]): void;
   /** Something the user can see. */
@@ -613,12 +639,17 @@ export class SessionBridge {
     for (const path of fresh) {
       void this.host
         .readGrantedFile(path)
-        .then((text) => {
-          if (text === undefined) {
-            refusals.push(
-              `could not share ${path}: it is not a readable file in the folder this window shares (it may have been deleted after the listing was published); nothing was shared for it`,
-            );
+        .then((read) => {
+          if (read.kind === 'refused') {
+            const said = refusalSentence(read.cause);
+            // A path the grant would never publish is dropped without a word, whichever
+            // layer found it out: the message would confirm that the name was worth asking
+            // about, which is what a guessed secret is looking for.
+            if (said !== undefined) {
+              refusals.push(`could not share ${path}: ${said}; nothing was shared for it`);
+            }
           } else {
+            const text = read.text;
             // The size was checked before the read, so a file that grew in between arrives
             // over the bound: the read is judged the way an opened buffer is, and an
             // oversized one is refused rather than published past the sharing bound.
@@ -1005,6 +1036,30 @@ export class SessionBridge {
         break;
       }
     }
+  }
+}
+
+/**
+ * What a refusal says, per cause, or `undefined` for a cause that must not be said at all.
+ *
+ * One sentence used to stand for every one of these, and it blamed a deletion: a person
+ * refused a `.zip` went looking for a file that had never gone anywhere, when the answer was
+ * that a room carries text and a zip is not text. `not-granted` is the exception, and it has
+ * no sentence on purpose: a peer that guessed at a name the grant excludes learns nothing
+ * from the answer — not even that the name failed a rule rather than being absent.
+ */
+function refusalSentence(cause: GrantRefusal): string | undefined {
+  switch (cause) {
+    case 'not-granted':
+      return undefined;
+    case 'missing':
+      return 'there is no readable file there any more (it may have been deleted after the listing was published)';
+    case 'not-a-file':
+      return 'it is not a plain file in the folder this session shares (a directory, a link, or something else that cannot be read as one)';
+    case 'too-large':
+      return `it is over the ${MAX_GRANT_FILE_BYTES} bytes a session will carry`;
+    case 'binary':
+      return 'it is a binary file, and a room carries text, so this is not a file that can be shared at all';
   }
 }
 

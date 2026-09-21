@@ -1272,11 +1272,13 @@ class Session {
       // does: inside the captured folders, of a publishable shape, through plain directories.
       // `openTextDocument` will not create a file, so this cannot plant one the way an
       // unconditional edit could.
-      const file = await grantedFile(this.folders, path);
-      if (file === undefined) {
+      const found = await grantedFile(this.folders, path);
+      if ('refusal' in found) {
         throw new Error('the path is not one this window shares');
       }
-      return await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
+      return await vscode.window.showTextDocument(
+        await vscode.workspace.openTextDocument(found.uri),
+      );
     } catch (error) {
       void vscode.window.showErrorMessage(
         `Selvage: could not open ${path} from the room: ${message(error)}`,

@@ -8,7 +8,7 @@
  * without an editor.
  */
 
-import type { EditorHost, Report, SessionBridge } from '../../src/bridge/bridge.ts';
+import type { EditorHost, GrantedRead, GrantRefusal, Report, SessionBridge } from '../../src/bridge/bridge.ts';
 import type { Cursor } from '../../src/bridge/cursors.ts';
 import { applyChange as applyToText } from '../../src/bridge/editing.ts';
 import type { LineEnding, TextChange } from '../../src/bridge/editing.ts';
@@ -42,10 +42,12 @@ export class FakeEditor implements EditorHost {
   readonly refused: string[] = [];
   /**
    * The working copy a host reads a granted path from, and the paths it was asked for. A path
-   * absent here is one this editor will not serve: a directory, a binary, one over the size a
-   * session will carry, or one outside the folder this window shares.
+   * absent here is one this editor will not serve: by default a name that is not there, and
+   * `refusals` stages the other reasons a real disk answers with.
    */
   readonly disk = new Map<string, string>();
+  /** How the disk answers for a path it does not hold, where a test needs a cause of its own. */
+  readonly refusals = new Map<string, GrantRefusal>();
   readonly reads: string[] = [];
 
   private bridge?: SessionBridge;
@@ -107,9 +109,13 @@ export class FakeEditor implements EditorHost {
     return Promise.resolve(!this.saveFails);
   }
 
-  readGrantedFile(path: string): Promise<string | undefined> {
+  readGrantedFile(path: string): Promise<GrantedRead> {
     this.reads.push(path);
-    return Promise.resolve(this.disk.get(path));
+    const text = this.disk.get(path);
+    if (text !== undefined) {
+      return Promise.resolve({ kind: 'text', text });
+    }
+    return Promise.resolve({ kind: 'refused', cause: this.refusals.get(path) ?? 'missing' });
   }
 
   renderCursors(cursors: Cursor[]): void {
@@ -165,6 +171,8 @@ export class QueuedEditor implements EditorHost {
   accepts = true;
   /** A working copy to read a requested path from, as `FakeEditor` has it. */
   readonly disk = new Map<string, string>();
+  /** How the disk answers for a path it does not hold, where a test needs a cause of its own. */
+  readonly refusals = new Map<string, GrantRefusal>();
   readonly reads: string[] = [];
 
   private queue: Array<() => void> = [];
@@ -231,9 +239,13 @@ export class QueuedEditor implements EditorHost {
     return Promise.resolve(true);
   }
 
-  readGrantedFile(path: string): Promise<string | undefined> {
+  readGrantedFile(path: string): Promise<GrantedRead> {
     this.reads.push(path);
-    return Promise.resolve(this.disk.get(path));
+    const text = this.disk.get(path);
+    if (text !== undefined) {
+      return Promise.resolve({ kind: 'text', text });
+    }
+    return Promise.resolve({ kind: 'refused', cause: this.refusals.get(path) ?? 'missing' });
   }
 
   renderCursors(cursors: Cursor[]): void {
