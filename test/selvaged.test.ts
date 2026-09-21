@@ -44,11 +44,17 @@ test('selvaged: /meta advertises the wire version and the session clock', async 
   assert.ok(meta.wire_versions?.includes('selvage/1'), JSON.stringify(meta));
   assert.equal(meta.capabilities?.includes('y-protocols/1'), true);
   assert.deepEqual(meta.roles, ['host', 'guest']);
-  assert.deepEqual(meta.keepalive, {
-    ping_interval_ms: 30_000,
-    awareness_renew_ms: 15_000,
-    awareness_expire_ms: 30_000,
-  });
+  // §2: the three clocks the handshake reply carries too (§8.2), and `room_grace_ms`, which
+  // `/meta` alone advertises — the number a host sizes its reconnect retry from before it has
+  // a session to be detached from (§9.1). Asserted member by member rather than as one object:
+  // the protocol says an unknown member is ignored (§2), so a `deepEqual` would fail on the
+  // next additive field the protocol permits instead of on a change to the clock the client
+  // reads. The byte-exact body is `specification/vectors/001-meta.json`.
+  const keepalive = meta.keepalive ?? {};
+  assert.equal(keepalive.ping_interval_ms, 30_000, JSON.stringify(keepalive));
+  assert.equal(keepalive.awareness_renew_ms, 15_000, JSON.stringify(keepalive));
+  assert.equal(keepalive.awareness_expire_ms, 30_000, JSON.stringify(keepalive));
+  assert.equal(keepalive.room_grace_ms, 30_000, JSON.stringify(keepalive));
 });
 
 test('selvaged: two engines converge on concurrent edits and see each other', async (t) => {

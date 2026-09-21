@@ -49,6 +49,47 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The invite has to name the server this window was told to host on, and carry the room and the
+ * token it minted. An invite is the room's own server address over the scheme a browser speaks
+ * (`ws://` as `http://`, `wss://` as `https://`), so a plain `ws://` server's link is `http://`;
+ * the retired `server=` parameter is neither read nor written. The same shape
+ * `test/https-invite.test.ts` pins without an editor (`buildPageLink`), checked here against the
+ * link a real clipboard actually holds.
+ */
+function assertInviteNamesServer(invite) {
+  let link;
+  let server;
+  try {
+    link = new URL(invite);
+    server = new URL(SERVER_URL);
+  } catch (error) {
+    throw new Error(
+      `host: the invite ${JSON.stringify(invite)} or the server address ${JSON.stringify(SERVER_URL)} is not a URL: ${error.message}`,
+    );
+  }
+  const pageScheme = server.protocol === 'wss:' ? 'https:' : 'http:';
+  if (link.protocol !== pageScheme) {
+    throw new Error(
+      `host: the invite of ${SERVER_URL} opens with ${link.protocol}, not the ${pageScheme} of its own server: ${invite}`,
+    );
+  }
+  if (link.host !== server.host) {
+    throw new Error(
+      `host: the invite names ${link.host}, not the ${server.host} it was hosted on: ${invite}`,
+    );
+  }
+  for (const part of ['room', 'token']) {
+    if ((link.searchParams.get(part) ?? '') === '') {
+      throw new Error(`host: the invite carries no ${part}: ${invite}`);
+    }
+  }
+  if (link.searchParams.has('server')) {
+    throw new Error(`host: the invite carries the retired server= parameter: ${invite}`);
+  }
+  return invite;
+}
+
 /** Bounded polling of a real predicate, per AGENTS.md §5: never sleep-and-hope. */
 async function waitFor(label, check, deadlineMs) {
   const deadline = Date.now() + deadlineMs;
@@ -79,14 +120,18 @@ async function run() {
     // off the real clipboard (rather than monkeypatching `writeText`) is what actually works
     // against the unstubbed API.
     await vscode.env.clipboard.writeText('');
-    const invite = await waitFor(
-      'the invite link',
-      async () => {
-        await vscode.commands.executeCommand('selvage.copyInvite');
-        const clipboard = await vscode.env.clipboard.readText();
-        return clipboard.startsWith('https://') ? clipboard : false;
-      },
-      DEADLINE_MS,
+    // What is polled is that the copy landed at all; what the link says is asserted once, so a
+    // wrong link fails with the link in the message instead of reading as "last observed false".
+    const invite = assertInviteNamesServer(
+      await waitFor(
+        'the invite link',
+        async () => {
+          await vscode.commands.executeCommand('selvage.copyInvite');
+          const clipboard = (await vscode.env.clipboard.readText()).trim();
+          return clipboard === '' ? false : clipboard;
+        },
+        DEADLINE_MS,
+      ),
     );
     fs.writeFileSync(INVITE_FILE, invite);
 

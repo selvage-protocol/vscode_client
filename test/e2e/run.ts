@@ -146,6 +146,11 @@ let lastLogged = '(nothing logged yet)';
 const inFlight = new Set<'host' | 'guest' | 'empty'>();
 /** The server this run started, if it has got that far; stopped on every way out. */
 let activeServer: RealServer | undefined;
+/**
+ * What the relay had accepted when the blip was cut. The reconnect is the connection accepted
+ * after it, so this is the number the phase is judged against; `-1` when there was no relay.
+ */
+let relayConnectionsBeforeCut = -1;
 
 function log(...parts: unknown[]): void {
   lastLogged = parts.map((part) => String(part)).join(' ');
@@ -292,6 +297,12 @@ class DropProxy {
   private readonly server: net.Server;
   private readonly sockets: Set<net.Socket>;
   readonly port: number;
+  /**
+   * Client connections the relay has accepted. This is how a reconnect is visible from the
+   * harness: the guest's socket closing and coming back is a new TCP connection here, where a
+   * guest dialling the server directly never shows up at all.
+   */
+  private accepted = 0;
 
   private constructor(server: net.Server, port: number, sockets: Set<net.Socket>) {
     this.server = server;
@@ -299,27 +310,41 @@ class DropProxy {
     this.sockets = sockets;
   }
 
+  /** Adopts one accepted connection and forwards it to the server. */
+  private relay(client: net.Socket, targetHost: string, targetPort: number): void {
+    this.accepted += 1;
+    const upstream = net.connect(targetPort, targetHost);
+    this.sockets.add(client);
+    this.sockets.add(upstream);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const forget = (): void => {
+      this.sockets.delete(client);
+      this.sockets.delete(upstream);
+    };
+    client.on('close', forget);
+    upstream.on('close', forget);
+    client.on('error', () => {
+      upstream.destroy();
+    });
+    upstream.on('error', () => {
+      client.destroy();
+    });
+  }
+
+  /** Connections accepted so far, the ones before a cut included. */
+  get connections(): number {
+    return this.accepted;
+  }
+
   static async start(targetHost: string, targetPort: number): Promise<DropProxy> {
     return new Promise((resolvePromise, reject) => {
       const sockets = new Set<net.Socket>();
+      // A connection cannot arrive before `listen` reports the port, which is before this is
+      // assigned, so nothing is ever adopted uncounted.
+      let relay: DropProxy | undefined;
       const server = net.createServer((client) => {
-        const upstream = net.connect(targetPort, targetHost);
-        sockets.add(client);
-        sockets.add(upstream);
-        client.pipe(upstream);
-        upstream.pipe(client);
-        const forget = (): void => {
-          sockets.delete(client);
-          sockets.delete(upstream);
-        };
-        client.on('close', forget);
-        upstream.on('close', forget);
-        client.on('error', () => {
-          upstream.destroy();
-        });
-        upstream.on('error', () => {
-          client.destroy();
-        });
+        relay?.relay(client, targetHost, targetPort);
       });
       server.on('error', reject);
       server.listen(0, '127.0.0.1', () => {
@@ -328,7 +353,8 @@ class DropProxy {
           reject(new Error('proxy has no port'));
           return;
         }
-        resolvePromise(new DropProxy(server, address.port, sockets));
+        relay = new DropProxy(server, address.port, sockets);
+        resolvePromise(relay);
       });
     });
   }
@@ -1050,6 +1076,7 @@ async function main(): Promise<void> {
 
   if (proxy !== undefined && controlFile !== undefined) {
     phase = 'cutting the relay and reconnecting';
+    relayConnectionsBeforeCut = proxy.connections;
     log('cutting the guest relay (a real TCP close)');
     proxy.dropAll();
     await delay(2000);
@@ -1202,6 +1229,21 @@ async function main(): Promise<void> {
     throw new Error(
       'the guest did not converge on a granted path the host supplied on request',
     );
+  }
+  if (RECONNECT && proxy !== undefined && summary.phase2?.converged === true) {
+    log(
+      `the relay accepted ${proxy.connections} client connection(s): ${relayConnectionsBeforeCut} before the blip, ${proxy.connections - relayConnectionsBeforeCut} after it`,
+    );
+    if (relayConnectionsBeforeCut < 1) {
+      throw new Error(
+        'the reconnect phase converged without the guest ever reaching the relay: the blip cut a socket the guest did not hold, so nothing in this run was reconnected',
+      );
+    }
+    if (proxy.connections <= relayConnectionsBeforeCut) {
+      throw new Error(
+        'the reconnect phase converged without the guest reconnecting through the relay: no connection was accepted after the blip, so the blip cut nothing the guest held',
+      );
+    }
   }
   if (RECONNECT && summary.phase2?.converged !== true) {
     throw new Error('the reconnect phase did not converge after the simulated network blip');
