@@ -14,8 +14,10 @@
 #
 # CI runs the server-free suite only: the four tests in `test/selvaged.test.ts` need a built
 # `selvaged` from the sibling `reference_server` checkout, which the workflow does not have.
-# `npm test` runs those too, with a server built. CI pins Node 22.18.0; this uses whatever
-# `node` is on PATH.
+# `test/interop.test.ts` needs that checkout too, and `interop_peer` built from it
+# (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one),
+# so it is not here either: `npm test` and `npm run test:interop` run both, with a server
+# built. CI pins Node 22.18.0; this uses whatever `node` is on PATH.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
