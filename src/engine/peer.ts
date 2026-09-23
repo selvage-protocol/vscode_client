@@ -39,8 +39,13 @@ import type { DropReason, SessionKeypair, Verdict } from './sealed.ts';
 import { applyFrame, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
 
-/** The transactions this engine's own document changes carry, so a listener can tell them apart. */
+/**
+ * The transaction origins this session's own changes and a peer's carry, so that a listener can
+ * tell them apart: the edits this connection makes are the ones it may publish, and content
+ * applied from another peer is not.
+ */
 const LOCAL_ORIGIN = Symbol('selvage/local');
+const APPLIED_ORIGIN = Symbol('selvage/applied');
 
 // --- the invite -----------------------------------------------------------------
 
@@ -652,19 +657,34 @@ export class PeerSession {
   }
 
   private async insertOne(path: string, index: number, text: string): Promise<boolean> {
-    const before = Y.encodeStateVector(this.doc);
     // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
     // at the end. A client any caller can silently mis-edit is not one a decision vector can
     // drive, so it is refused.
     if (index < 0 || index > this.length(path)) {
       throw new Error(`there is no offset ${index} in ${JSON.stringify(path)}`);
     }
+    // The update this edit's own transaction produced, and not a diff over the document: a
+    // state-vector diff carries the whole delete set — a peer's deletion of a peer's text
+    // included — and that is a change this connection did not make and must not publish under
+    // its own key. `LOCAL_ORIGIN` is what tells the two apart: peer content is applied under
+    // `APPLIED_ORIGIN`.
+    const captured: Uint8Array[] = [];
+    const capture = (update: Uint8Array, origin: unknown): void => {
+      if (origin === LOCAL_ORIGIN) {
+        captured.push(update);
+      }
+    };
     const handle = this.doc.getText(path);
-    this.doc.transact(() => handle.insert(index, text), LOCAL_ORIGIN);
-    const update = Y.encodeStateAsUpdate(this.doc, before);
-    if (update.length === 0) {
+    this.doc.on('update', capture);
+    try {
+      this.doc.transact(() => handle.insert(index, text), LOCAL_ORIGIN);
+    } finally {
+      this.doc.off('update', capture);
+    }
+    if (captured.length === 0) {
       return false;
     }
+    const update = Y.mergeUpdates(captured);
     if (!this.mayPublish() || this.role() === 'viewer') {
       // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
       // later. Anyone else's is held back by §13.1's step 4 and sent by
@@ -807,7 +827,7 @@ export class PeerSession {
     }
     let replies: Uint8Array[];
     try {
-      replies = applyFrame(plaintext, this.doc, this.awareness, LOCAL_ORIGIN).replies;
+      replies = applyFrame(plaintext, this.doc, this.awareness, APPLIED_ORIGIN).replies;
     } catch {
       // A stream no replica decodes is a sender's bug: dropped, and the session goes on.
       return;

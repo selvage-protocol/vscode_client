@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
 
 import { nodeCrypto } from '../src/node/crypto.ts';
@@ -424,6 +425,74 @@ test('the flush carries this connection\'s edits and not a peer\'s content', asy
     watching.destroy();
     replica.destroy();
   }
+});
+
+/** The update a published content frame carries, decoded out of its y-protocols message. */
+function updateOf(payload: number[]): Uint8Array {
+  const reader = decoding.createDecoder(Uint8Array.from(payload));
+  assert.equal(decoding.readVarUint(reader), 0, 'message type 0: sync');
+  decoding.readVarUint(reader);
+  return decoding.readVarUint8Array(reader);
+}
+
+/** The text a delta gives a fresh replica, which is what it carries. */
+function carriedText(update: Uint8Array): string {
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  try {
+    applyFrame(encodeUpdate(update), replica, watching, 'corpus');
+    return replica.getText('mine.md').toString();
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
+}
+
+test("a delta is this connection's change and not a peer's deletion", async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+
+  // The peer's own document, inserted and then deleted, so the deletion is a real one.
+  const theirs = new Y.Doc();
+  const handle = theirs.getText('theirs.md');
+  handle.insert(0, 'theirs');
+  const inserted = Y.encodeStateAsUpdate(theirs);
+  const before = Y.encodeStateVector(theirs);
+  handle.delete(0, 6);
+  const deleted = Y.encodeStateAsUpdate(theirs, before);
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeUpdate(inserted)));
+  assert.equal(peer.text('theirs.md'), 'theirs');
+  await peer.deliver(3, await frame(now.peer, 0, 2, encodeUpdate(deleted)));
+  assert.equal(peer.text('theirs.md'), '');
+
+  // A local edit while no state commits this key, and then the state that does.
+  assert.equal(await peer.insert('mine.md', 0, 'mine'), false);
+  peer.takeOutbound();
+  assert.deepEqual(
+    await peer.deliver(4, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 2, 'the handshake, then the held-back edit');
+  const heldBack = updateOf((await publishedFrame(out[1] as Uint8Array)).payload as number[]);
+  assert.equal(
+    Y.decodeUpdate(heldBack).ds.clients.size,
+    0,
+    "a peer's deletion does not ride along under this connection's key",
+  );
+  assert.equal(carriedText(heldBack), 'mine', 'and what it carries is the local edit');
+
+  // The immediate path publishes the same change, taken from the same transaction.
+  assert.equal(await peer.insert('mine.md', 4, '!'), true);
+  const immediate = updateOf(
+    (await publishedFrame(peer.takeOutbound()[0] as Uint8Array)).payload as number[],
+  );
+  // Its text is a delta against the items the first edit made, so a fresh replica alone cannot
+  // place it; what is asserted of it is the same thing: no peer's deletion in it.
+  assert.equal(Y.decodeUpdate(immediate).ds.clients.size, 0);
+  theirs.destroy();
 });
 
 test("a viewer's held-back edit is kept and never published", async () => {
