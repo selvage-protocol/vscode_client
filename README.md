@@ -291,12 +291,14 @@ Five things §7.1 and §13 leave open, each decided where it is read rather than
 
 - **The label a key gets when the roster names no free seat.** §7.1 obliges a host to commit every
   announcement it accepts and forbids withholding one for want of a label, and it also says at most
-  one key per seat. An announcement that outruns its `peer.joined` is where the two meet: the
-  roster names only the host's own seat, the commitment is what the peer cannot do without, so the
-  label is the half that gives way and two keys carry that seat. `label()` states it.
+  one key per seat. An announcement that outruns its `peer.joined` is where the two meet: the roster
+  names only the host's own seat, the commitment is what the peer cannot do without, so the label is
+  the half that gives way — two keys carry that seat, and the key already there keeps its
+  commitment. `label()` and `commit()` state it.
 - **What the host's own session does after it publishes a closing.** §13.10 says what a receiver
-  does with one; §7.1 says only that a host that has left publishes nothing. Here a closing ends
-  the host's publishing and touches nothing else about its session.
+  does with one; §7.1 says only that a host that has left publishes nothing. Here the session that
+  published it ends the way a receiver's does — `ending = 'closing'`, and nothing more published
+  from it — because a room declared over is not one to write content into.
 - **What a `peer.joined` obliges of a host.** §7.1 has a host publish a state on one, and the
   re-send of a state already held is stated as a *peer*'s rule. This host re-sends the state it
   holds when nothing in its listing or its `peers` has changed; a joiner that holds none applies
@@ -308,7 +310,9 @@ Five things §7.1 and §13 leave open, each decided where it is read rather than
   obligations does not include applying a state, and §9.1's resume is a state published above the
   room's. This host learns the room's edition from the state a peer re-sends it and writes above it
   at its next state — the next change to its listing or its `peers`, the next seat, or the next
-  announcement it accepts — not on the state it just applied.
+  announcement it accepts — not on the state it just applied. It never re-sends the state it holds
+  over an edition it has verified, because every peer refuses a frame at or below the edition it
+  already carries.
 
 ## Checks
 

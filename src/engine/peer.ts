@@ -436,6 +436,12 @@ export class PeerSession {
     this.host = host;
     if (host !== undefined) {
       host.seated(options.seat ?? '', session.public);
+      if (options.seat !== undefined) {
+        // §9: a host is seated in the room it minted, whether or not the roster it was handed
+        // names it. Without this its own state's `host` entry labels a seat the session believes
+        // is absent, and §13.8's clock then ends the host's own session.
+        this.roster.add(options.seat);
+      }
     }
     // §7's document: one `Y.Doc`, one `Y.Text` per path.
     this.doc = new Y.Doc();
@@ -477,6 +483,15 @@ export class PeerSession {
     // connection's key, which is why a host has nothing to announce.
     if (host !== undefined) {
       await peer.publishState(0, 'mint');
+      if (peer.fault !== undefined) {
+        // §7.1's first state is what brings the room's listing into existence and commits this
+        // connection's key. A host that could not seal one is a host no peer can see, and some
+        // other connection holding the host key has to be the one that publishes instead. The
+        // session that is not handed over is released here: it already holds a `Y.Doc` and the
+        // clock `Awareness` runs, and one of those left behind is a process that never exits.
+        peer.destroy();
+        return undefined;
+      }
     }
     return peer;
   }
@@ -747,6 +762,14 @@ export class PeerSession {
    * A host that publishes one stops publishing; every peer that already holds a verified state
    * below its `issued` applies it and ends, and §9's room dies when its last connection ends.
    */
+  /**
+   * §7.1's closing: the host's statement that the room is over, above every state it published.
+   *
+   * A host that publishes one stops publishing; every peer that already holds a verified state
+   * below its `issued` applies it and ends, and §9's room dies when its last connection ends. The
+   * session that published it ends with them, which is what §13.10 gives a receiver that applies
+   * one and what keeps a host from publishing content into a room it has just declared over.
+   */
   async closeRoom(): Promise<boolean> {
     if (this.host === undefined) {
       return false;
@@ -754,12 +777,13 @@ export class PeerSession {
     return await this.serial(async () => {
       const publication = await this.host?.closing();
       if (publication === undefined) {
-        this.fault ??= 'the closing could not be sealed';
+        this.fault ??= this.host?.failure ?? 'the closing could not be sealed';
         return false;
       }
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
+      this.ending = 'closing';
       return true;
     });
   }
@@ -1012,7 +1036,8 @@ export class PeerSession {
 
   /** Whether §13.1's step 4 lets this client publish anything but its announcement. */
   private mayPublish(): boolean {
-    return this.stateHeld() && this.commitsOurs();
+    // A session that has ended publishes nothing, whichever ending reached it (§13.10).
+    return this.ending === undefined && this.stateHeld() && this.commitsOurs();
   }
 
   /** §13.1's step 4: the session-key announcement, `kind = 4`, signed by the key it names. */
@@ -1121,6 +1146,7 @@ export class PeerSession {
       return;
     }
     const publication = await host.publish(clock, reason);
+    this.fault ??= host.failure;
     if (publication === undefined) {
       return;
     }
@@ -1141,6 +1167,9 @@ export class PeerSession {
    * re-send is for is the peer that holds none.
    */
   private republish(frame: Uint8Array): void {
+    if (this.ending !== undefined) {
+      return;
+    }
     this.outbound.push(frame);
     this.published += 1;
   }
@@ -1268,8 +1297,18 @@ export class PeerSession {
     }
   }
 
-  /** One frame sealed under the frame key and signed by this connection's session key. */
+  /**
+   * One frame sealed under the frame key and signed by this connection's session key.
+   *
+   * A session that has ended publishes nothing, whatever handed it something to answer: §13.6's
+   * reply to a content frame and §7.1's re-send below are both frames out of a room that is over.
+   * This is the one place every authored frame passes through; {@link mayPublish} is the caller's
+   * own check of the same rule.
+   */
   private async publish(what: Publication, plaintext: Uint8Array): Promise<void> {
+    if (this.ending !== undefined) {
+      return;
+    }
     this.counter += 1;
     const bytes = await this.sealedFrame(KIND_OF[what], plaintext);
     if (bytes === undefined) {
