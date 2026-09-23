@@ -32,6 +32,7 @@ import type { FrameCrypto } from './crypto.ts';
 import { webCrypto } from './crypto-web.ts';
 import { openSocket } from './transport.ts';
 import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts';
+import { ProtocolError } from './errors.ts';
 import { sessionBase, parseSessionUrl, sessionUrl } from './urls.ts';
 import type { SessionBase } from './urls.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from './presence.ts';
@@ -79,7 +80,8 @@ export type RelayEvent =
   /** A content frame was applied: the replica's text for some path is not what it was. */
   | { type: 'text' }
   | { type: 'ended'; ending: RelayEnding }
-  | { type: 'failed'; reason: string };
+  /** A fault the server reported: its code (§11) is the caller's to read, not only its words. */
+  | { type: 'failed'; code: string; reason: string };
 
 export type RelayEventListener = (event: RelayEvent) => void;
 
@@ -681,10 +683,25 @@ export class RelaySession {
       return;
     }
     if (message.event === eventName.sessionError && this.session === undefined) {
-      refusing(new Error(message.error?.message ?? 'the server refused the session'));
+      refusing(this.sessionFault(message.params));
       return;
     }
     this.enqueue({ text });
+  }
+
+  /**
+   * A `session.error` event as the refusal it is. `§6.3` carries the code and the sentence in
+   * the event's `params` — `src/engine/engine.ts` reads them from there for `selvage/1`, and the
+   * server's own frame is `{"event":"session.error","params":{"code":…,"message":…}}`.
+   * `ServerMessage.error` is the shape of a refused *request*, so reading it here turned every
+   * handshake refusal and every mid-session fault into one generic sentence with its code lost,
+   * which is what left `§11`'s terminal codes unreadable to a caller.
+   */
+  private sessionFault(params: unknown): ProtocolError {
+    return new ProtocolError(
+      textOf(params, 'code') ?? 'error',
+      textOf(params, 'message') ?? 'the server reported a fault',
+    );
   }
 
   /** The `room.created`/`room.joined` params, with the base the caller dialled. */
@@ -815,8 +832,9 @@ export class RelaySession {
         break;
       }
       case eventName.sessionError: {
-        this.fault = message.error?.message ?? 'the server reported a fault';
-        this.emit({ type: 'failed', reason: this.fault });
+        const fault = this.sessionFault(message.params);
+        this.fault = fault.message;
+        this.emit({ type: 'failed', code: fault.code, reason: fault.message });
         break;
       }
       default:
