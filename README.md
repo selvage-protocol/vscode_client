@@ -303,7 +303,7 @@ is what a caller drains after, because otherwise a caret goes out at the next re
 
 This window drives both versions. `src/adapter/extension.ts` picks one per session — the host's
 `selvage.wireVersion` setting, or the fragment of the link a join was handed — and what is left
-for the adapter is a listing, a store, and the role the room's state gives this connection. The
+for the adapter is a listing and the role the room's state gives this connection. The
 socket wiring is `src/engine/relay.ts` and the adapter's vocabulary is
 `src/bridge/peer-engine.ts`; the crypto seam is the engine's default, WebCrypto, which the
 extension host has globally.
@@ -332,19 +332,20 @@ This client declares `guest` and has no command to ask for the other role: what 
 the state is a later phase's, and a client that could ask to be a viewer would be inventing a
 request the protocol does not have.
 
-**What is written down, and what is not read back.** The host key and the `issued` series a
-`§7.1` host continues from are written to this window's own state under
-`selvage.hostKey.<the key's seed>` on every state published, which is what a returning host would
-continue the series from — and this client runs no resume, so nothing reads it back today. A host
-that mints again mints a new key, and a record left by another room's host is not this room's
-series. §13.11's per-receiver caps are unimplemented, as they are in the reference client.
+**The host key lives for the session.** A `§7.1` host signs its states with a key this window
+mints when it mints the room, and holds in memory: the key, and the `issued` series that goes
+with it, are gone when the session is. A returning host is what would keep them, and this client
+runs no resume (`§9.1`), so there is nothing to read back today — and a private signing seed is
+a secret, which is why the store that does land with a resume will be `context.secrets` and not
+the window's `globalState`. The engine's `HostStore` is the seam such a store is handed in
+through, and it stays open for a client that has a series to continue. §13.11's per-receiver caps
+are unimplemented, as they are in the reference client.
 
 What this slice does not do. Every published client still speaks `selvage/1` unless it is asked
 for the other version, and `selvaged --serve-version-2` is not the server's default, so a room is
 minted at `selvage/2` only where both ends were told to. The relay also runs no
 resume: a dropped socket ends its session rather than re-helloing, so `§9.1`'s host return is not
-wired either — `HostStore` is what a returning host continues its `issued` series from, and the
-adapter writes one, but nothing reads it back (see below).
+wired either.
 
 §7.1's **host-side corpus vectors** are not here — `test/host.test.ts` is what pins the producer,
 and the peer corpus still drives the receiver's half — and §13.11's per-receiver caps are not

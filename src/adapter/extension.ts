@@ -14,8 +14,6 @@ import type { Engine, FilePeer, FilePresence, ParticipantEntry, Report } from '.
 import {
   SelvageEngine,
   code as errCode,
-  decodeKey,
-  encodeKey,
   isProtocolError,
   parseSessionUrl,
   sessionBase,
@@ -23,10 +21,8 @@ import {
 } from '../engine/index.ts';
 import type {
   EngineEventListener,
-  HostStore,
   OffsetSelection,
   PeerInfo,
-  PersistedHost,
   Role,
   Selection,
   SessionInfo,
@@ -380,79 +376,14 @@ function roomEngine2(engine: PeerEngine): RoomEngine {
   };
 }
 
-/** The `globalState` key one host's key and its `issued` series live under. */
-const HOST_KEY_PREFIX = 'selvage.hostKey.';
-
-/** What one stored record carries, as `globalState` holds it. */
-interface StoredHost {
-  /** The host key's 32-byte seed, base64url, which is what `encodeKey` writes. */
-  seed: string;
-  /** The highest `issued` that seed's host has published. */
-  issued: number;
-}
-
-/**
- * `§7.1`'s store, over this extension's own state: the host key and the `issued` series a
- * returning host continues from.
- *
- * The record is keyed by the seed the host signs with, so a record left by another room's host
- * is never read: a seed that is not the one this session minted is not this room's series, and
- * `HostProducer` would start at `issued` 1 anyway. Stored as text rather than bytes because
- * `globalState` is JSON: a `Uint8Array` would round-trip as an object of indices.
- */
-export class HostKeyStore implements HostStore {
-  private readonly state: vscode.Memento;
-  private readonly seed: Uint8Array;
-
-  constructor(state: vscode.Memento, seed: Uint8Array) {
-    this.state = state;
-    this.seed = seed;
-  }
-
-  load(): PersistedHost | undefined {
-    let saved: unknown;
-    try {
-      saved = this.state.get<unknown>(this.key());
-    } catch {
-      // A window whose state cannot be read hosts without a store, which §7.1 permits.
-      return undefined;
-    }
-    if (typeof saved !== 'object' || saved === null) {
-      return undefined;
-    }
-    const record = saved as Partial<StoredHost>;
-    const seed = typeof record.seed === 'string' ? decodeKey(record.seed) : undefined;
-    if (seed === undefined || seed.length !== 32 || typeof record.issued !== 'number') {
-      return undefined;
-    }
-    return { hostSeed: seed, issued: record.issued };
-  }
-
-  save(persisted: PersistedHost): void {
-    const record: StoredHost = {
-      seed: encodeKey(persisted.hostSeed),
-      issued: persisted.issued,
-    };
-    try {
-      void Promise.resolve(this.state.update(this.key(), record)).then(undefined, () => undefined);
-    } catch {
-      // A window that cannot remember still hosts; the series is this process's.
-    }
-  }
-
-  private key(): string {
-    return `${HOST_KEY_PREFIX}${encodeKey(this.seed)}`;
-  }
-}
-
 /**
  * The 32-byte seed a version-2 host signs its states with (`§5.1`, `§7.1`), from the
  * platform's CSPRNG.
  *
- * Minted here rather than left to the engine because the store is keyed by it: `HostStore.load`
- * is asked before the room has a name, so the seed is the one value that can say whether a
- * stored series is this host's. A platform with no CSPRNG is a host with no key to sign with,
- * and §5.1 asks for a silent mint or none rather than a weak one.
+ * The seed is minted where the session is and lives no longer: a host key is this window's own
+ * private half, and `§7.1`'s store is what a *returning* host needs it from — which is a
+ * resume, and no adapter runs one yet (`§9.1`). A platform with no CSPRNG is a host with no key
+ * to sign with, and §5.1 asks for a silent mint or none rather than a weak one.
  */
 function mintHostSeed(): Uint8Array {
   const seed = new Uint8Array(32);
@@ -470,21 +401,18 @@ async function hostVersion2(options: {
   baseUrl: string;
   displayName: string;
   listing: ListingSource;
-  /** Where the host key and its `issued` series are kept; omitted is an in-memory host. */
-  state?: vscode.Memento;
   client?: string;
 }): Promise<RoomEngine> {
-  const hostSeed = mintHostSeed();
+  // No `store`: the key and its `issued` series are this session's, and a run that cannot be
+  // resumed has nothing to write them down for. The engine's `HostStore` is the seam a resume
+  // hands one to.
   return roomEngine2(
     await PeerEngine.host({
       baseUrl: options.baseUrl,
       displayName: options.displayName,
       listing: options.listing,
-      hostSeed,
+      hostSeed: mintHostSeed(),
       client: options.client ?? CLIENT,
-      ...(options.state === undefined
-        ? {}
-        : { store: new HostKeyStore(options.state, hostSeed) }),
     }),
   );
 }
@@ -2652,7 +2580,6 @@ async function host(
               displayName,
               listing,
               client: CLIENT,
-              ...(context === undefined ? {} : { state: context.globalState }),
             })
           : SelvageEngine.host(baseUrl, displayName, { client: CLIENT }),
     );

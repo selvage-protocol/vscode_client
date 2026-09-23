@@ -19,9 +19,6 @@ import type { TestContext } from 'node:test';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
-import { nodeCrypto } from '../src/node/crypto.ts';
-import { encodeKey, mintSessionKey } from '../src/engine/sealed.ts';
-import type { SessionKeypair } from '../src/engine/sealed.ts';
 import { RelaySession } from '../src/engine/relay.ts';
 import { baseOf } from './helpers/base.ts';
 import {
@@ -56,20 +53,10 @@ interface AdapterExports {
   parsePageLink(text: string):
     | { room: string; token: string; origin: string; fragment: string; roomKey?: string; hostKey?: string }
     | undefined;
-  HostKeyStore: new (state: Memento, seed: Uint8Array) => {
-    load(): { hostSeed: Uint8Array; issued: number } | undefined;
-    save(persisted: { hostSeed: Uint8Array; issued: number }): void;
-  };
   Session: new (engine: unknown, options?: { mirror?: unknown; invite?: string }) => {
     role(): string;
     dispose(options?: { keepMirror?: boolean }): void;
   };
-}
-
-/** The memento the store is handed, as `globalState` is: `get`, `update` and nothing else. */
-interface Memento {
-  get<T>(key: string): T | undefined;
-  update(key: string, value: unknown): Promise<void>;
 }
 
 /**
@@ -402,86 +389,6 @@ test('a version-2 host serves the path the room holds, as it does in a version-1
     { timeoutMs: 15_000, describe: () => guest.text(PATH) },
   );
   assert.equal(served, seed);
-});
-
-// --- §7.1's store ------------------------------------------------------------------
-
-test("a host's key and its issued series are kept where §7.1 asks for them", async (t) => {
-  const server = await FakeServer.start({ serveVersion2: true });
-  t.after(async () => {
-    await server.stop();
-  });
-  const bundle = loadBundle();
-  bundle.stub.reset();
-  const storage = testStoragePath(t);
-  // The store is read through the state this test owns: the extension host's own memory is what
-  // `globalState` is, and what was written to it is the evidence.
-  const written = new Map<string, unknown>();
-  const memento: Memento = {
-    get: <T>(key: string): T | undefined => (written.has(key) ? (written.get(key) as T) : undefined),
-    update: (key: string, value: unknown): Promise<void> => {
-      written.set(key, value);
-      return Promise.resolve();
-    },
-  };
-  bundle.stub.configure({ wireVersion: V2 });
-  bundle.activate({
-    subscriptions: [],
-    globalState: { ...memento, setKeysForSync: () => undefined },
-    globalStorageUri: bundle.stub.Uri.file(storage),
-  });
-  t.after(() => {
-    bundle.deactivate();
-  });
-  bundle.stub.put('README.md', 'the readme\n');
-  await bundle.stub.commands.executeCommand('selvage.host', {
-    serverUrl: server.wsBase,
-    displayName: 'Ada',
-  });
-  const invite = await copiedInvite(bundle);
-
-  const records = [...written.entries()].filter(([key]) => key.startsWith('selvage.hostKey.'));
-  assert.equal(records.length, 1, `the host kept ${records.length} records: ${[...written.keys()].join(', ')}`);
-  const [key, value] = records[0] as [string, { seed: string; issued: number }];
-  assert.equal(typeof value.seed, 'string');
-  assert.ok(Number.isInteger(value.issued) && value.issued >= 1, `issued is ${String(value.issued)}`);
-
-  // The stored seed is the key that signed the state the guest would verify: the `h` of the
-  // very invite this host handed on is that seed's public half, and the record is filed under
-  // it — so a record is this room's series and no other room's.
-  const seed = Buffer.from(value.seed.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-  assert.equal(seed.length, 32, 'the stored seed is not a 32-byte key');
-  const host = (await mintSessionKey(nodeCrypto, new Uint8Array(seed))) as SessionKeypair;
-  assert.equal(keysOf(invite).hostKey, encodeKey(host.public));
-  assert.equal(key, `selvage.hostKey.${encodeKey(new Uint8Array(seed))}`);
-});
-
-test('the store continues a series for the seed it holds and ignores another host’s', () => {
-  const { HostKeyStore } = adapterExports();
-  const written = new Map<string, unknown>();
-  const memento: Memento = {
-    get: <T>(key: string): T | undefined => (written.has(key) ? (written.get(key) as T) : undefined),
-    update: (key: string, value: unknown): Promise<void> => {
-      written.set(key, value);
-      return Promise.resolve();
-    },
-  };
-  const seed = new Uint8Array(32).fill(7);
-  const other = new Uint8Array(32).fill(9);
-
-  const store = new HostKeyStore(memento, seed);
-  assert.equal(store.load(), undefined, 'a store with nothing written read a host out of nothing');
-  const persisted = { hostSeed: seed, issued: 4 };
-  store.save(persisted);
-  const loaded = store.load();
-  assert.ok(loaded !== undefined, 'the series a host saved is not the one it reads back');
-  assert.deepEqual([...loaded.hostSeed], [...seed]);
-  assert.equal(loaded.issued, 4);
-  // Another host's record is not this host's series: the key is the seed `§7.1` signs with.
-  assert.equal(new HostKeyStore(memento, other).load(), undefined);
-  // And a record that is not a key at all is not a series, whatever put it there.
-  memento.update(`selvage.hostKey.${encodeKey(seed)}`, { seed: 'not a key', issued: 3 });
-  assert.equal(store.load(), undefined);
 });
 
 // --- §13.9: a viewer's documents are read-only --------------------------------------
