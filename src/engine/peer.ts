@@ -581,10 +581,17 @@ export class PeerSession {
     this.doc.destroy();
   }
 
-  /** A seat has joined, from `peer.joined`. */
+  /**
+   * A seat has joined, from `peer.joined`.
+   *
+   * §13.7 has a holder **re-announce when it sees a `peer.joined`**, so that a joiner learns the
+   * holds without asking: the whole set is due again from that moment, and the next tick is what
+   * sends it.
+   */
   seatJoined(seat: string): void {
     this.departed.delete(seat);
     this.roster.add(seat);
+    this.holdsAnnouncedAt = undefined;
   }
 
   /** A seat has left, from `peer.left`: §13.8's clock can arm on it and §13.7's holds go. */

@@ -445,6 +445,24 @@ test('a holds message from a key no state commits is refused, and the session go
   assert.equal(peer.end, undefined, 'a refused frame never ends a session');
 });
 
+test('a seat joining makes the held set due again, and one leaving loses its holds', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  peer.open('README.md');
+  await peer.tick(2);
+  peer.takeOutbound();
+
+  // §13.7: a holder MUST re-announce when it sees a `peer.joined`, so that a joiner learns the
+  // holds without asking — and not only when the renewal clock comes round.
+  peer.seatJoined('p-new');
+  await peer.tick(2 + 1);
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'the set is announced at once, not at the end of the window');
+  assert.deepEqual((await publishedFrame(out[0] as Uint8Array)).payload, { holds: ['README.md'] });
+});
+
 test('a peer that leaves loses its holds at once, and a seat the roster never knew does not', async () => {
   const now = await room();
   const peer = await session({ roster: ['p-other'] });
