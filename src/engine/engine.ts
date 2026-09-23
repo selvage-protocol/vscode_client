@@ -43,6 +43,8 @@ import { EngineClosedError, ProtocolError } from './errors.ts';
 import type { EngineEvent, EngineEventListener } from './events.ts';
 import { MAX_GRANT_PATHS, isGrantedPath } from '../bridge/grant.ts';
 import { fetchMeta, metaAccepts } from './meta.ts';
+import { DEFAULT_RECONNECT, attemptsForGrace } from './reconnect.ts';
+import type { ReconnectPolicy } from './reconnect.ts';
 import { buildPresence, sameAwareness, toAnchor, toRelativePosition } from './presence.ts';
 import type {
   Anchor,
@@ -107,46 +109,12 @@ export interface KeepaliveClock {
   expireMs: number;
 }
 
-/** Bounded reconnect (spec §9.1): a dropped socket is re-helloed, under a new peer id. */
-export interface ReconnectPolicy {
-  enabled: boolean;
-  initialDelayMs: number;
-  maxDelayMs: number;
-  maxAttempts: number;
-}
-
-const DEFAULT_RECONNECT: ReconnectPolicy = {
-  enabled: true,
-  initialDelayMs: 500,
-  maxDelayMs: 10_000,
-  maxAttempts: 5,
-};
-
 /**
- * The most attempts a grace-derived budget asks for: an hour of the default backoff. A retry
- * loop has to end, and a server that advertises a grace past this one is advertising a window
- * the client does not keep retrying through — the budget is capped rather than unbounded, which
- * is the shape §9.1 fixes for every policy.
+ * Bounded reconnect (spec §9.1): a dropped socket is re-helloed, under a new peer id. The
+ * policy and the grace-derived budget live in `reconnect.ts`, which the `selvage/2` relay reads
+ * too, so both versions answer §9.1 the same way.
  */
-const MAX_GRACE_ATTEMPTS = 360;
-
-/**
- * How many attempts a policy needs before the wait in front of them adds up to `graceMs`
- * (§9.1). The grace is the room's own deadline and the backoff is what the policy fixes, so
- * this is the count of delays whose sum first reaches it; the count is capped, so a policy
- * with a tiny delay cannot turn a large advertised grace into an unbounded loop.
- */
-function attemptsForGrace(graceMs: number, policy: ReconnectPolicy): number {
-  const initial = Math.max(policy.initialDelayMs, 1);
-  const ceiling = Math.max(policy.maxDelayMs, 1);
-  let waited = 0;
-  let attempts = 0;
-  while (waited < graceMs && attempts < MAX_GRACE_ATTEMPTS) {
-    waited += Math.min(initial * 2 ** attempts, ceiling);
-    attempts += 1;
-  }
-  return attempts;
-}
+export type { ReconnectPolicy };
 
 export interface ConnectOptions {
   /**
