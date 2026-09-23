@@ -454,6 +454,66 @@ test('the flush carries this connection\'s edits and not a peer\'s content', asy
   }
 });
 
+test('a dropped socket publishes nothing under the key it held, and the re-seat flushes what it wrote', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+
+  // A frame the live connection queued under the key it holds, which the dead socket takes with
+  // it: the reseat is a new key, and the room commits nothing under the old one.
+  peer.open('theirs.md');
+  await peer.tick(1);
+  peer.detach();
+
+  // An edit sealed under that key now is a frame every peer refuses `uncommitted_key`, so it is
+  // held back instead and published by the state that commits the new key (§13.1's step 4).
+  assert.equal(await peer.insert('README.md', 0, 'typed while away'), false);
+  assert.equal(peer.text('README.md'), 'typed while away', 'and the replica holds it');
+
+  const newSeat = 'p-new';
+  await peer.reseat(newSeat, ['p-host'], 0);
+  assert.equal(
+    peer.takeOutbound().length,
+    0,
+    'a frame sealed under the dropped key is not sent on the new socket',
+  );
+
+  const recommit = await frame(
+    now.host,
+    1,
+    2,
+    utf8({
+      issued: 2,
+      listing: ['README.md'],
+      peers: { [encodeKey(peer.sessionKey)]: { peer_id: newSeat, role: 'guest' } },
+    }),
+  );
+  assert.deepEqual(await peer.deliver(2, recommit), { status: 'applied', kind: 1 });
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 2, "the handshake, then the edit the drop held back");
+  const delta = await publishedFrame(out[1] as Uint8Array);
+  assert.equal(delta.kind, 0);
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  try {
+    applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
+    assert.equal(
+      replica.getText('README.md').toString(),
+      'typed while away',
+      'the room never hears the edit made while the socket was gone',
+    );
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
+});
+
 /** The update a published content frame carries, decoded out of its y-protocols message. */
 function updateOf(payload: number[]): Uint8Array {
   const reader = decoding.createDecoder(Uint8Array.from(payload));

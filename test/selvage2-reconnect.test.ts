@@ -17,6 +17,7 @@ import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { RelaySession } from '../src/engine/relay.ts';
 import type { RelayEvent } from '../src/engine/relay.ts';
 import { attemptsForGrace } from '../src/engine/reconnect.ts';
+import type { ReconnectPolicy } from '../src/engine/reconnect.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 
@@ -32,7 +33,7 @@ const KEEPALIVE = { awareness_renew_ms: 50, awareness_expire_ms: 5000 };
 /** A host and a guest seated in one room over `server`, the guest able to reconnect. */
 async function pair(
   server: FakeServer,
-  reconnect: false | typeof FAST = FAST,
+  reconnect: false | Partial<ReconnectPolicy> = FAST,
 ): Promise<{ host: RelaySession; guest: RelaySession }> {
   const host = await RelaySession.host({
     baseUrl: server.wsBase,
@@ -218,4 +219,142 @@ test('selvage/2: the retry reaches the bridge an adapter listens to', async (t) 
     seen.includes('reconnecting') ? true : false,
   );
   assert.equal(seen.includes('disconnected'), false, 'a retry was reported as a lost session');
+});
+
+test('selvage/2: the role a re-seat is given reaches the bridge after the state that gives it', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await RelaySession.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing: () => [PATH],
+    keepalive: KEEPALIVE,
+  });
+  t.after(() => {
+    host.disconnect();
+  });
+  const invite = host.invite();
+  assert.ok(invite !== undefined);
+  const engine = await PeerEngine.join({
+    invite,
+    displayName: 'Bob',
+    keepalive: KEEPALIVE,
+    reconnect: FAST,
+  });
+  t.after(() => {
+    void engine.disconnect();
+  });
+  await waitFor('the state that commits the guest to arrive', () => engine.appliedRole() ?? false);
+
+  // Recorded per event, with the role the applied state gives this connection at that moment: a
+  // re-seat commits no key at all, so `§13.4`'s role is `undefined` again until the room's own
+  // state lands, and the report the bar needs is one made after it.
+  const reported: Array<{ type: string; role: string | undefined }> = [];
+  const stop = engine.on((event) => {
+    reported.push({ type: event.type, role: engine.appliedRole() });
+  });
+  t.after(() => {
+    stop();
+  });
+  server.drop('Bob');
+
+  // A re-seat commits no key, so the role goes back to `undefined` with it and the room's own
+  // state is the next thing that assigns one. The status bar reads the role off the session and
+  // re-reads it on the reports it is given, so what it needs is the report after that state: an
+  // adapter left on "waiting for the host" after a reconnect is a role nothing said.
+  const said = await waitFor(
+    'a report made after the re-seat while the applied state gives this connection a role',
+    () => {
+      const away = reported.findIndex((entry) => entry.role === undefined);
+      if (away === -1) {
+        return false;
+      }
+      return reported.find((entry, at) => at > away && entry.role === 'guest') ?? false;
+    },
+    { timeoutMs: 15_000, describe: () => JSON.stringify(reported) },
+  );
+  assert.ok(
+    said.type === 'peersChanged' || said.type === 'documentsChanged',
+    `the report that carries the role is one the status bar re-reads: ${said.type}`,
+  );
+});
+
+test("selvage/2: an edit typed while the socket is down is published once the re-seat is committed", async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  // A backoff wide enough to type inside, so the edit lands after the drop and before the dial.
+  const SLOW = { initialDelayMs: 300, maxDelayMs: 300 } as const;
+  const host = await RelaySession.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing: () => [PATH],
+    keepalive: KEEPALIVE,
+  });
+  t.after(() => {
+    host.disconnect();
+  });
+  const invite = host.invite();
+  assert.ok(invite !== undefined);
+  const engine = await PeerEngine.join({
+    invite,
+    displayName: 'Bob',
+    keepalive: KEEPALIVE,
+    reconnect: SLOW,
+  });
+  t.after(() => {
+    void engine.disconnect();
+  });
+  await waitFor('the state that commits the guest to arrive', () => engine.appliedRole() ?? false);
+
+  const seen: string[] = [];
+  engine.on((event) => {
+    seen.push(event.type);
+  });
+  server.drop('Bob');
+  await waitFor('the retry to be reported', () =>
+    seen.includes('reconnecting') ? true : false,
+  );
+
+  // Typed with the socket gone. The key the dead connection held is one the room will not commit
+  // again, so the edit is held back rather than sealed under it, and the state that commits the
+  // re-seat's key is what carries it to the room.
+  engine.insert(PATH, 0, 'typed while away');
+  const atHost = await waitFor(
+    'the edit typed during the drop to reach the room',
+    () => (host.text(PATH).includes('typed while away') ? host.text(PATH) : false),
+    { timeoutMs: 15_000, describe: () => host.text(PATH) },
+  );
+  assert.ok(atHost.includes('typed while away'));
+});
+
+test('selvage/2: an attempt budget the caller named is not raised by the advertised grace', async (t) => {
+  // 600 ms at the fast backoff is 11 attempts, and the caller asked for 2: the grace raises a
+  // budget nobody named, exactly as it does in the version-1 engine.
+  const server = await FakeServer.start({ roomGraceMs: 600 });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { host, guest } = await pair(server, { ...FAST, maxAttempts: 2 });
+  t.after(() => {
+    host.disconnect();
+    guest.disconnect();
+  });
+  await waitFor("the guest to apply the host's state", () => guest.listing().length > 0);
+  const before = server.acceptedConnections;
+
+  server.helloRefusal = { code: 'bad_params', message: 'a refusal the next attempt could pass' };
+  server.drop('Bob');
+  await waitFor('the session to give up', () => guest.end !== undefined || false, {
+    timeoutMs: 15_000,
+  });
+  assert.equal(guest.end, 'room-gone');
+  assert.equal(
+    server.acceptedConnections - before,
+    2,
+    `an explicit budget was raised by the grace: ${server.acceptedConnections - before} attempts`,
+  );
 });

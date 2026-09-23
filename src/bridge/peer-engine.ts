@@ -101,6 +101,12 @@ export class PeerEngine implements Engine {
 
   /** The last thing this facade told its listeners, so a report is a change and not a repeat. */
   private peerList: PeerInfo[];
+  /**
+   * The role the applied state gave this connection at the last report, which is compared on
+   * every refresh: this connection is not in `peerInfos()`, so a state that gives it a role
+   * changes nothing else a report is compared by (`§13.4`).
+   */
+  private ownRole: Role | undefined;
   private listing: readonly string[];
   private openDocuments: string[];
   private presenceList: Presence[];
@@ -171,6 +177,7 @@ export class PeerEngine implements Engine {
   constructor(options: PeerEngineOptions) {
     this.relay = options.relay;
     this.peerList = this.relay.peerInfos();
+    this.ownRole = this.relay.appliedRole() as Role | undefined;
     this.listing = [...this.relay.listing()];
     this.openDocuments = this.roomDocuments();
     this.presenceList = this.relay.presence();
@@ -343,11 +350,19 @@ export class PeerEngine implements Engine {
         // The first seat happens before this facade exists, so a `seated` it sees is a re-seat
         // (§9.1). The reports are forced rather than compared: the adapter reads the document
         // set as the all-clear that ends its `reconnecting` state, and the set can be exactly
-        // what it was before the blip.
+        // what it was before the blip. The role is compared rather than forced, because a
+        // re-seat commits no key at all — the state the room answers with is what gives the
+        // connection a role, and the report for it is the `state` event below.
         this.peerList = this.relay.peerInfos();
+        this.ownRole = this.appliedRole();
         this.openDocuments = this.roomDocuments();
         this.emit({ type: 'documentsChanged', documents: [...this.openDocuments] });
         this.emit({ type: 'peersChanged', peers: this.relay.peerInfos() });
+        return;
+      }
+      case 'state': {
+        // §13.4: the roles are the applied state's word, this connection's own included.
+        this.refresh();
         return;
       }
       case 'failed': {
@@ -363,7 +378,9 @@ export class PeerEngine implements Engine {
   /** Reports whatever the relay's own event did not name, and the clocks this facade runs. */
   private refresh(): void {
     const peers = this.relay.peerInfos();
-    if (!samePeers(peers, this.peerList)) {
+    const role = this.appliedRole();
+    if (!samePeers(peers, this.peerList) || role !== this.ownRole) {
+      this.ownRole = role;
       this.peerList = peers;
       this.emit({ type: 'peersChanged', peers });
     }

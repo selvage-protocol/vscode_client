@@ -392,6 +392,15 @@ export class PeerSession {
   /** The clock of the most recent tick or delivery, which a queued frame is stamped with. */
   private clockOfLastMove = 0;
   private readonly outbound: Uint8Array[] = [];
+  /**
+   * Whether the socket under this session is gone and no new one has taken its place (§9.1).
+   *
+   * The session key a dropped connection held is not one the room will commit again, so an edit
+   * sealed under it now is a frame every peer refuses `uncommitted_key`. A detached session
+   * therefore publishes nothing: what it would have sent goes to {@link unsent} instead, and the
+   * state that commits the re-seat's key flushes it.
+   */
+  private detached = false;
   private readonly held = new Set<string>();
   private holdsSent: string[] = [];
   private holdsAnnouncedAt: number | undefined;
@@ -944,6 +953,10 @@ export class PeerSession {
         return;
       }
       this.session = session;
+      this.detached = false;
+      // Whatever the dead socket left queued was sealed under the old key, which the next state
+      // drops from the roster: sent on the new socket it is a frame every peer refuses.
+      this.outbound.splice(0, this.outbound.length);
       this.seat = seat;
       this.roster = new Set(roster);
       const previousAwareness = this.awareness.clientID;
@@ -1377,8 +1390,17 @@ export class PeerSession {
 
   /** Whether §13.1's step 4 lets this client publish anything but its announcement. */
   private mayPublish(): boolean {
-    // A session that has ended publishes nothing, whichever ending reached it (§13.10).
-    return this.ending === undefined && this.stateHeld() && this.commitsOurs();
+    // A session that has ended publishes nothing, whichever ending reached it (§13.10), and one
+    // whose socket is gone publishes nothing under the key that socket held (§9.1).
+    return !this.detached && this.ending === undefined && this.stateHeld() && this.commitsOurs();
+  }
+
+  /**
+   * The socket under this session is gone: it keeps its replica and its holds, and publishes
+   * nothing under the key the dead connection held until {@link reseat} seats a new one (§9.1).
+   */
+  detach(): void {
+    this.detached = true;
   }
 
   /** §13.1's step 4: the session-key announcement, `kind = 4`, signed by the key it names. */

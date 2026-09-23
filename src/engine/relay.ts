@@ -88,6 +88,12 @@ export type RelayEvent =
   | { type: 'content'; documents: string[] }
   /** A content frame was applied: the replica's text for some path is not what it was. */
   | { type: 'text' }
+  /**
+   * A room state was applied. §13.4's roles are the state's word and it can change this
+   * connection's own role — which no peer-set comparison sees, because this connection is not
+   * in the peer set — so the application is said rather than left for the next frame to imply.
+   */
+  | { type: 'state' }
   | { type: 'ended'; ending: RelayEnding }
   /** A fault the server reported: its code (§11) is the caller's to read, not only its words. */
   | { type: 'failed'; code: string; reason: string };
@@ -177,6 +183,8 @@ export class RelaySession {
   /** §9.1's bounded reconnect: the policy, its grace-sized budget, and the retry in flight. */
   private readonly reconnect: ReconnectPolicy;
   private retryBudget: number;
+  /** Whether the caller named the attempt budget: an explicit number is the caller's to choose. */
+  private readonly maxAttemptsGiven: boolean;
   private attempts = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -243,6 +251,8 @@ export class RelaySession {
         ? { ...DEFAULT_RECONNECT, enabled: false }
         : { ...DEFAULT_RECONNECT, ...options.reconnect };
     this.retryBudget = this.reconnect.maxAttempts;
+    this.maxAttemptsGiven =
+      options.reconnect !== false && options.reconnect?.maxAttempts !== undefined;
   }
 
   // --- opening a session -----------------------------------------------------
@@ -342,7 +352,8 @@ export class RelaySession {
    * room that was still joinable.
    */
   private async applyGrace(base: SessionBase, options: RelayOptions): Promise<void> {
-    if (!this.reconnect.enabled) {
+    // An explicit budget is the caller's, exactly as the version-1 engine reads it.
+    if (!this.reconnect.enabled || this.maxAttemptsGiven) {
       return;
     }
     let meta;
@@ -888,6 +899,11 @@ export class RelaySession {
       return;
     }
     this.fault ??= said;
+    // The drop is what makes the key this session holds unusable: the room will not commit it
+    // again, so an edit sealed under it now is a frame every peer refuses. Detaching sends
+    // those edits to the held-back set instead, which the state that commits the new key
+    // flushes (§13.1's step 4).
+    this.session.detach();
     this.scheduleReconnect();
   }
 
@@ -1037,6 +1053,8 @@ export class RelaySession {
       // §13.5's content, and only content: a state, a holds set and a closing change no text.
       if (outcome.status === 'applied' && outcome.kind === 0) {
         this.emit({ type: 'text' });
+      } else if (outcome.status === 'applied' && outcome.kind === 1) {
+        this.emit({ type: 'state' });
       }
       return;
     }
