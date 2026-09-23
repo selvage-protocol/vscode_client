@@ -164,6 +164,7 @@ export class RelaySession {
   private peerList: RelayPeer[] = [];
   private lastListing: readonly string[] = [];
   private lastDocuments: string[] = [];
+  private lastPeers: RelayPeer[] = [];
 
   private constructor(
     crypto: FrameCrypto,
@@ -373,13 +374,10 @@ export class RelaySession {
     return this.ending ?? this.session?.end;
   }
 
-  /** A sentence for the three endings `§13.10` has; `room-gone`'s is the adapter's. */
+  /** A sentence for the three endings `§13.10` has; `room-gone` is the relay's own and has none. */
   endingSentence(): string | undefined {
-    if (this.ending === 'room-gone') {
-      return 'the room is gone';
-    }
     const end = this.ending ?? this.session?.end;
-    return end === undefined ? undefined : endingReason(end);
+    return end === undefined || end === 'room-gone' ? undefined : endingReason(end);
   }
 
   get failure(): string | undefined {
@@ -553,6 +551,10 @@ export class RelaySession {
   }
 
   private onClose(code: number, reason: string): void {
+    // A disconnect this client asked for is not the room ending: the relay is already gone.
+    if (this.destroyed) {
+      return;
+    }
     if (this.ending === undefined) {
       this.ending = 'room-gone';
       this.emit({ type: 'ended', ending: 'room-gone' });
@@ -689,7 +691,11 @@ export class RelaySession {
       this.ending = end;
       this.emit({ type: 'ended', ending: end });
     }
-    this.emit({ type: 'peers', peers: this.peers() });
+    const peers = this.peers();
+    if (peers.length !== this.lastPeers.length || peers.some((peer, at) => peerLabel(peer) !== peerLabel(this.lastPeers[at]))) {
+      this.lastPeers = peers;
+      this.emit({ type: 'peers', peers });
+    }
   }
 
   private emit(event: RelayEvent): void {
@@ -828,6 +834,13 @@ function numberOr(value: unknown, fallback: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A peer's seat, name and awareness id as one string, so a change is one comparison. */
+function peerLabel(peer: RelayPeer | undefined): string {
+  return peer === undefined
+    ? ''
+    : `${peer.peer_id}\u0000${peer.display_name}\u0000${peer.awareness_client_id ?? ''}`;
 }
 
 function mergePeer(peers: RelayPeer[], peer: RelayPeer): RelayPeer[] {

@@ -78,3 +78,20 @@ test('joining without a room key is refused locally', async () => {
     /no room key/,
   );
 });
+
+test('a handover with the wrong key lengths is refused before any socket', async () => {
+  await assert.rejects(
+    RelaySession.join({
+      invite: '',
+      displayName: 'Bo',
+      handover: {
+        socketUrl: 'ws://127.0.0.1:9999/session',
+        room: 'r',
+        token: 't',
+        roomKey: new Uint8Array(4),
+        hostKey: new Uint8Array(32),
+      },
+    }),
+    /handover carries no 32-byte/,
+  );
+});
