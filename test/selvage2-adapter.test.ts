@@ -54,6 +54,7 @@ interface AdapterExports {
   pinnedVersion(configured: unknown): string | undefined;
   fragmentOf(invite: string): string;
   fragmentKeys(fragment: string): { roomKey?: string; hostKey?: string };
+  fragmentKeyRefusal(invite: string): string | undefined;
   wireInviteFor(invite: string): string;
   buildPageLink(
     serverBase: string,
@@ -145,17 +146,18 @@ function keysOf(link: string): { room: string; token: string; roomKey?: string; 
 // --- what a version is decided by ------------------------------------------------
 
 test('the version an invite asks for is the one its fragment names', () => {
-  const { wireVersionOf, fragmentOf, fragmentKeys } = adapterExports();
+  const { wireVersionOf, fragmentOf, fragmentKeys, fragmentKeyRefusal } = adapterExports();
 
-  // `§5.1`: a fragment with both keys is a version-2 invite, and everything else is version 1.
+  // `§5.1`: a fragment that names either key is a version-2 invite — the version-2 reader
+  // refuses an incomplete one — and a fragment that names neither, or none at all, is version 1.
   for (const [invite, wanted] of [
     [`ws://host/session?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
     [`https://host/?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
     ['https://host/?room=r&token=t', V1],
     ['ws://host/session?room=r&token=t', V1],
     ['https://host/?room=r&token=t#', V1],
-    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}`, V1],
-    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}`, V1],
+    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}`, V2],
+    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}`, V2],
     ['https://host/?room=r&token=t#debug=1', V1],
     // A fragment that names the two keys in the other order is still a version-2 invite: what
     // `§5.1` fixes is the names, and the order a host writes them in is its business.
@@ -164,6 +166,24 @@ test('the version an invite asks for is the one its fragment names', () => {
   ] as const) {
     assert.equal(wireVersionOf(invite), wanted, `${invite} was read as ${wireVersionOf(invite)}`);
   }
+
+  // A fragment that names one key and not the other is refused locally, naming the missing one,
+  // in the words the version-2 reader uses — before the join ever dials it as a version-1 link.
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#k=${'A'.repeat(43)}`),
+    'the invite carries no host key (`h`)',
+  );
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#h=${'B'.repeat(43)}`),
+    'the invite carries no room key (`k`)',
+  );
+  // An empty value is no key either: `§5.1` has a key be 32 bytes, so nothing encodes one.
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#k=&h=${'B'.repeat(43)}`),
+    'the invite carries no room key (`k`)',
+  );
+  assert.equal(fragmentKeyRefusal('https://host/?room=r&token=t#debug=1'), undefined);
+  assert.equal(fragmentKeyRefusal('https://host/?room=r&token=t'), undefined);
 
   assert.equal(fragmentOf('ws://host/session?room=r&token=t'), '');
   assert.equal(fragmentOf('https://host/?room=r&token=t#k=a&h=b'), '#k=a&h=b');
@@ -199,6 +219,26 @@ test('the setting pins a version, and anything else takes the server\u2019s word
       `${String(configured)} pinned ${String(pinnedVersion(configured))}`,
     );
   }
+});
+
+test('a fragment naming one key is refused locally, naming the missing key', async (t) => {
+  const dialled = armedSockets(t);
+  const { bundle } = activated(t);
+  // §5.1: an invite whose fragment names `k` and not `h` is a version-2 invite with a key lost.
+  // The refusal happens here — in the join command, before the name question, before the window
+  // reloads onto a room mirror and before any socket — with the version-2 reader's own words,
+  // rather than dialling it as a version-1 join and letting a server refuse the incomplete link.
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: `https://edit.example/?room=r-1&token=tok#k=${'A'.repeat(43)}`,
+    displayName: 'Bob',
+  });
+  assert.deepEqual(bundle.stub.registered.errors, ['Selvage: the invite carries no host key (`h`)']);
+  assert.deepEqual(dialled, [], 'the refusal dialled a server anyway');
+  assert.deepEqual(
+    bundle.stub.registered.clipboardWrites,
+    [],
+    'a refused join handed on an invite',
+  );
 });
 
 test('the wire URL an invite joins on never carries the fragment', () => {

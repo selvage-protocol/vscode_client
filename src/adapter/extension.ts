@@ -2976,6 +2976,15 @@ async function triageMirrors(
  */
 function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
+  // `§5.1`'s fragment is checked before either form is read, because it is what says which
+  // version the join speaks: a fragment that names one of the two keys and not the other is a
+  // version-2 invite with a key lost, and it is refused here — before the name question, before
+  // the window reloads onto a room mirror, and before any socket — in the version-2 reader's own
+  // words, rather than dialled as a version-1 join.
+  const fragment = fragmentKeyRefusal(invite);
+  if (fragment !== undefined) {
+    return fragment;
+  }
   const page = parsePageLink(invite);
   if (page !== undefined) {
     // A page link joins on the server its own origin names. Nothing else in it can name
@@ -3193,20 +3202,38 @@ function fragmentFor(keys: { roomKey?: string; hostKey?: string }): string {
  * The version an invite asks for, from the one thing that says it: `§5.1`'s fragment, which
  * carries the room key and the host key.
  *
- * A `selvage/1` invite has no fragment, and a server seats a version-2 room only for a
- * connection that can read one, so a link that names neither key is a version-1 join and stays
- * one. The names are what is read rather than the values: whether a value is a 32-byte key is
- * the engine's question, and it refuses a link whose key is not one in its own words rather
- * than dialling it and being refused by a server that cannot read it either.
+ * A `selvage/1` invite has no fragment of ours, and a server seats a version-2 room only for a
+ * connection that can read one, so a link whose fragment names neither key is a version-1 join
+ * and stays one. A fragment that names either key — even one that names only one, or names one
+ * with an empty value — is a version-2 invite: it is a version-2 host's fragment, and it is the
+ * version-2 reader (`parseInvite`) that refuses an incomplete one **locally, before a socket**,
+ * in its own words. Reading only the name here is what routes such a link to that refusal
+ * rather than dialling it as a version-1 join.
  */
 export function wireVersionOf(invite: string): WireVersion {
-  const names = new Set(
-    fragmentOf(invite)
-      .replace(/^#/, '')
-      .split('&')
-      .map((part) => part.split('=')[0] ?? ''),
-  );
-  return names.has('k') && names.has('h') ? WIRE_VERSION_2 : WIRE_VERSION_1;
+  const { roomKey, hostKey } = fragmentKeys(fragmentOf(invite));
+  return roomKey !== undefined || hostKey !== undefined ? WIRE_VERSION_2 : WIRE_VERSION_1;
+}
+
+/**
+ * The missing key a fragment that names one of `§5.1`'s two keys is refused with, or `undefined`
+ * when the fragment is absent or names neither. The words are the version-2 reader's own
+ * (``parseInvite` in `src/engine/peer.ts`), so a person told what is missing pastes the same fix
+ * the engine would have asked for. An empty value counts as missing: `§5.1` has a key be 32
+ * bytes, so nothing encodes an empty one.
+ */
+export function fragmentKeyRefusal(invite: string): string | undefined {
+  const { roomKey, hostKey } = fragmentKeys(fragmentOf(invite));
+  if (roomKey === undefined && hostKey === undefined) {
+    return undefined;
+  }
+  if (roomKey === undefined || roomKey === '') {
+    return 'the invite carries no room key (`k`)';
+  }
+  if (hostKey === undefined || hostKey === '') {
+    return 'the invite carries no host key (`h`)';
+  }
+  return undefined;
 }
 
 /**
