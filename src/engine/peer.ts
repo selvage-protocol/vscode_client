@@ -373,12 +373,14 @@ export class PeerSession {
 
   private readonly crypto: FrameCrypto;
   private readonly frameKey: Uint8Array;
-  private readonly session: SessionKeypair;
+  /** Mutable because §9.1 mints a new session keypair for every connection, a reconnect included. */
+  private session: SessionKeypair;
   private readonly declaredRole: 'guest' | 'viewer' | undefined;
   private readonly renew: number;
   private readonly expire: number;
-  private readonly seat: string | undefined;
-  private readonly roster: Set<string>;
+  /** Mutable because a reconnect is a new seat on a new connection (§9.1). */
+  private seat: string | undefined;
+  private roster: Set<string>;
   private readonly reader: Reader;
   private readonly host: HostProducer | undefined;
   private readonly doc: Y.Doc;
@@ -915,6 +917,53 @@ export class PeerSession {
       if (this.host !== undefined) {
         await this.publishState(clock, 'roster');
       }
+    });
+  }
+
+  /**
+   * §9.1: a dropped socket is recovered by a fresh `session.hello` on a new socket, and a
+   * reconnecting client is a new peer. What that changes here is the connection and nothing
+   * about the replica: a new session keypair for the new connection (§13.1's step 2), the new
+   * seat, the roster the handshake seated it among, and the clocks that belong to a connection.
+   *
+   * What survives is what §9.1 says survives — the `Y.Doc`, the receiver's marks (which are
+   * what refuses a replayed state or closing), the roles the last state assigned until the next
+   * state replaces them, and the paths this connection still holds open. `announcedAt`,
+   * `handshakenAt` and `resyncFrom` are cleared so the first tick after the re-seat re-announces
+   * the new key (§13.1's step 4) and re-runs the sync handshake (§13.1's step 6). The `ending` is
+   * cleared because a drop is recoverable and the session did not end; the `fault` is cleared
+   * because it belonged to the connection that died. The awareness id is rotated for the same
+   * reason §9.1 gives: a library may remember an id whose state was removed and drop its next
+   * publish, so the rejoined peer would look like one with no cursor at all (`§8.4`).
+   */
+  reseat(seat: string, roster: Iterable<string>, awarenessClientId: number): Promise<void> {
+    return this.serial(async () => {
+      const session = await mintSessionKey(this.crypto);
+      if (session === undefined) {
+        this.fault = 'a session key could not be minted for the reconnect';
+        return;
+      }
+      this.session = session;
+      this.seat = seat;
+      this.roster = new Set(roster);
+      const previousAwareness = this.awareness.clientID;
+      this.awareness.clientID = awarenessClientId >>> 0;
+      if (previousAwareness !== this.awareness.clientID) {
+        // The old id's entry is this connection's leftover, not a peer's; left behind it would
+        // answer `presence()` under a stranger's id and be tombstoned on the next rotation.
+        this.awareness.states.delete(previousAwareness);
+        this.awareness.meta.delete(previousAwareness);
+      }
+      this.awarenessRenewedAt = undefined;
+      // The counter is per key (§6.1): the new key starts at 0, and the marks the receiver
+      // keeps are keyed by the old and new keys alike, so nothing is lost by resetting it.
+      this.counter = 0;
+      this.announcedAt = undefined;
+      this.handshakenAt = undefined;
+      this.resyncFrom = undefined;
+      this.holdsAnnouncedAt = undefined;
+      this.ending = undefined;
+      this.fault = undefined;
     });
   }
 
