@@ -39,8 +39,13 @@ import type { DropReason, SessionKeypair, Verdict } from './sealed.ts';
 import { applyFrame, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
 
-/** The transactions this engine's own document changes carry, so a listener can tell them apart. */
+/**
+ * The transaction origins this session's own changes and a peer's carry, so that a listener can
+ * tell them apart: the edits this connection makes are the ones it may publish, and content
+ * applied from another peer is not.
+ */
 const LOCAL_ORIGIN = Symbol('selvage/local');
+const APPLIED_ORIGIN = Symbol('selvage/applied');
 
 // --- the invite -----------------------------------------------------------------
 
@@ -365,13 +370,14 @@ export class PeerSession {
   private ending: Ending | undefined;
   private mutation: PeerMutation | undefined;
   /**
-   * The state vector of the first local edit a state had not yet committed this key for.
+   * The local edits this client made while §13.1's step 4 held its content back.
    *
-   * §13.1's step 4 lets a client send nothing but its announcement until a state commits its
-   * key, so an edit made before that lives in the replica and nowhere else; this is what says
-   * which part of the replica that was, so the edit reaches the room once it may.
+   * The deltas themselves and not a state vector over the replica: a state that does not commit
+   * this key still lets its peers' content be applied (§13.2 refuses content only when no state
+   * is held at all), so a vector taken at the first held-back edit would carry their changes out
+   * again under this connection's key.
    */
-  private unsentSince: Uint8Array | undefined;
+  private readonly unsent: Uint8Array[] = [];
   /**
    * One decision at a time, in the order the calls came.
    *
@@ -651,25 +657,40 @@ export class PeerSession {
   }
 
   private async insertOne(path: string, index: number, text: string): Promise<boolean> {
-    const before = Y.encodeStateVector(this.doc);
     // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
     // at the end. A client any caller can silently mis-edit is not one a decision vector can
     // drive, so it is refused.
     if (index < 0 || index > this.length(path)) {
       throw new Error(`there is no offset ${index} in ${JSON.stringify(path)}`);
     }
+    // The update this edit's own transaction produced, and not a diff over the document: a
+    // state-vector diff carries the whole delete set — a peer's deletion of a peer's text
+    // included — and that is a change this connection did not make and must not publish under
+    // its own key. `LOCAL_ORIGIN` is what tells the two apart: peer content is applied under
+    // `APPLIED_ORIGIN`.
+    const captured: Uint8Array[] = [];
+    const capture = (update: Uint8Array, origin: unknown): void => {
+      if (origin === LOCAL_ORIGIN) {
+        captured.push(update);
+      }
+    };
     const handle = this.doc.getText(path);
-    this.doc.transact(() => handle.insert(index, text), LOCAL_ORIGIN);
-    const update = Y.encodeStateAsUpdate(this.doc, before);
-    if (update.length === 0) {
+    this.doc.on('update', capture);
+    try {
+      this.doc.transact(() => handle.insert(index, text), LOCAL_ORIGIN);
+    } finally {
+      this.doc.off('update', capture);
+    }
+    if (captured.length === 0) {
       return false;
     }
+    const update = Y.mergeUpdates(captured);
     if (!this.mayPublish() || this.role() === 'viewer') {
       // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
       // later. Anyone else's is held back by §13.1's step 4 and sent by
       // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
       if (this.role() !== 'viewer') {
-        this.unsentSince ??= before;
+        this.unsent.push(update);
       }
       return false;
     }
@@ -785,20 +806,18 @@ export class PeerSession {
    *
    * §13.1's step 4 held them in the replica, and a client that kept them there would leave the
    * room without them for good: §13.1's step 6 is a `SyncStep1`, which asks the room for what
-   * this replica lacks, and nothing asks the room for what it lacks. The delta is taken from
-   * the state vector of the first held-back edit, and before a committing state no content was
-   * applied (§13.2), so it is this client's own edits and nothing else.
+   * this replica lacks, and nothing asks the room for what it lacks. What is sent is the deltas
+   * this replica's own edits produced, merged, and never a diff over the document: another
+   * peer's content can have arrived in between (§13.2 refuses content only while no state is
+   * held), and a client that re-sent it would be publishing under its own key changes it did
+   * not make.
    */
   private async flushHeldBackEdits(): Promise<void> {
-    if (this.unsentSince === undefined || this.role() === 'viewer') {
+    const held = this.unsent.splice(0, this.unsent.length);
+    if (held.length === 0 || this.role() === 'viewer') {
       return;
     }
-    const update = Y.encodeStateAsUpdate(this.doc, this.unsentSince);
-    this.unsentSince = undefined;
-    if (update.length === 0) {
-      return;
-    }
-    await this.publish('content', encodeUpdate(update));
+    await this.publish('content', encodeUpdate(Y.mergeUpdates(held)));
   }
 
   /** §13.2 and §13.3: a `kind = 0` plaintext, applied to the session document and answered. */
@@ -808,7 +827,7 @@ export class PeerSession {
     }
     let replies: Uint8Array[];
     try {
-      replies = applyFrame(plaintext, this.doc, this.awareness, LOCAL_ORIGIN).replies;
+      replies = applyFrame(plaintext, this.doc, this.awareness, APPLIED_ORIGIN).replies;
     } catch {
       // A stream no replica decodes is a sender's bug: dropped, and the session goes on.
       return;
