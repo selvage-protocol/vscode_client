@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 
 import { nodeCrypto } from '../src/node/crypto.ts';
 import {
@@ -35,7 +36,7 @@ import {
   seal,
 } from '../src/engine/sealed.ts';
 import type { SessionKeypair } from '../src/engine/sealed.ts';
-import { encodeSyncStep1, encodeUpdate } from '../src/engine/sync.ts';
+import { applyFrame, encodeSyncStep1, encodeUpdate } from '../src/engine/sync.ts';
 
 const ROOM = 'R7f3a2c19';
 const RENEW_MS = 300;
@@ -339,6 +340,124 @@ test('a viewer keeps its own edit, sends nothing, and still publishes its holds'
   const out = peer.takeOutbound();
   assert.equal(out.length, 1, '§13.9: a viewer publishes its holds');
   assert.equal((await publishedFrame(out[0] as Uint8Array)).kind, 3);
+});
+
+test('an edit held back before a committing state is published once a state commits the key', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  assert.equal(await peer.insert('README.md', 0, 'hello'), false, "§13.1's step 4 holds it back");
+  assert.equal(peer.publishedCount, 1, 'nothing but the announcement went out');
+  assert.equal(peer.text('README.md'), 'hello', 'and the replica holds it');
+
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 2, 'the handshake, then the edit the room never had');
+  assert.equal(peer.handshakeCount, 1);
+  assert.equal(peer.publishedCount, 2);
+  const delta = await publishedFrame(out[1] as Uint8Array);
+  assert.equal(delta.kind, 0);
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
+  assert.equal(
+    replica.getText('README.md').toString(),
+    'hello',
+    'and the delta carries the edit the room never had',
+  );
+  // `y-protocols` runs a clock of its own, which is what `PeerSession.destroy` releases too.
+  watching.destroy();
+  replica.destroy();
+  await peer.tick(2 + RENEW_MS + 1);
+  assert.equal(peer.takeOutbound().length, 0, 'and it is not sent twice');
+});
+
+test("a viewer's held-back edit is kept and never published", async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  assert.equal(await peer.insert('README.md', 0, 'hello'), false);
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  await peer.tick(2);
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'only the handshake: §13.9 keeps a viewer edit local');
+  assert.equal(peer.handshakeCount, 1);
+  assert.equal(peer.publishedCount, 1);
+  assert.equal(peer.text('README.md'), 'hello');
+});
+
+/**
+ * A crypto seam that parks inside a verification until the test releases it, so that a delivery
+ * can be held half-way and a tick asked for while it is there.
+ */
+function gated(crypto: typeof nodeCrypto): {
+  crypto: typeof nodeCrypto;
+  release: () => void;
+} {
+  let open = (): void => {};
+  const gate = new Promise<void>((settle) => {
+    open = settle;
+  });
+  return {
+    release: open,
+    crypto: {
+      ...crypto,
+      async ed25519Verify(publicKey, message, signature) {
+        await gate;
+        return crypto.ed25519Verify(publicKey, message, signature);
+      },
+    },
+  };
+}
+
+test('a tick waits for the frame in flight, so a clock is judged on applied state', async () => {
+  const now = await room();
+  const seam = gated(nodeCrypto);
+  const peer = await session({ crypto: seam.crypto });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  // The frame is parked inside its verification, which is before anything it carries is
+  // applied. A tick that ran now would see a client seated with no state and end the session
+  // on §13.3's no-state window; it waits instead.
+  const delivering = peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  const ticking = peer.tick(EXPIRE_MS);
+  seam.release();
+  assert.deepEqual(await delivering, { status: 'applied', kind: 1 });
+  await ticking;
+  assert.equal(peer.end, undefined, 'the state was applied before the window was judged');
+  assert.equal(peer.stateHeld(), true);
+});
+
+test('two deliveries in flight decide in the order they were handed over', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+  const raw = await holds(now.peer, 1, ['README.md']);
+  const [first, second] = await Promise.all([peer.deliver(2, raw), peer.deliver(3, raw)]);
+  assert.deepEqual(
+    [first, second].filter((outcome) => outcome.status === 'applied').length,
+    1,
+    'one applies',
+  );
+  assert.deepEqual(
+    [first, second].filter(
+      (outcome) => outcome.status === 'dropped' && outcome.reason === 'replayed_counter',
+    ).length,
+    1,
+    'and the other is the replay it is',
+  );
 });
 
 test('a closing handed to a state-less client is ignored and the state below it still applies', async () => {

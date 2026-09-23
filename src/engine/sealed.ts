@@ -12,6 +12,8 @@
  * `PROTOCOL.md` §7.1 says what each carries.
  */
 
+import * as decoding from 'lib0/decoding';
+
 import type { FrameCrypto } from './crypto.ts';
 
 /** The five kinds this version defines, in the order §6.1 gives them. */
@@ -90,8 +92,18 @@ export function fromHex(digits: string): Uint8Array | undefined {
   return out;
 }
 
-/** `varUint` is LEB128 (`PROTOCOL.md` §7). */
+/**
+ * `varUint` is LEB128 (`PROTOCOL.md` §7).
+ *
+ * A value that is not a non-negative safe integer has no encoding here and is refused rather
+ * than truncated: a fractional value would silently become another number, and a negative one
+ * would leave the loop below with no terminating byte to write. `seal` validates a frame's
+ * fields before it reaches this, so a caller cannot hand it one across that boundary.
+ */
 export function varuint(value: number): Uint8Array {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`a varUint is a non-negative count, and this is ${value}`);
+  }
   const out: number[] = [];
   let rest = value;
   for (;;) {
@@ -376,12 +388,29 @@ export interface SealRecipe {
   signer: SessionKeypair;
 }
 
-/** Seal and sign one frame: the bytes a `selvage/2` client hands the relay. */
+/**
+ * Seal and sign one frame: the bytes a `selvage/2` client hands the relay.
+ *
+ * A recipe whose fields are not what §6.1's table writes is refused instead of sealed: a
+ * counter that is not a count, a nonce that is not twelve bytes, a key that is not thirty-two.
+ * `undefined` is what a caller reports, which is how a session says it could not publish rather
+ * than handing the relay bytes no peer would read.
+ */
 export async function seal(
   crypto: FrameCrypto,
   recipe: SealRecipe,
   plaintext: Uint8Array,
 ): Promise<Uint8Array | undefined> {
+  const counts = [recipe.kind, recipe.epoch, recipe.counter];
+  if (
+    counts.some((value) => !Number.isSafeInteger(value) || value < 0) ||
+    recipe.nonce.length !== 12 ||
+    recipe.frameKey.length !== 32 ||
+    recipe.signer.seed.length !== 32 ||
+    recipe.signer.public.length !== 32
+  ) {
+    return undefined;
+  }
   const id = await keyId(crypto, recipe.signer.public);
   const aad = associatedData(recipe.roomId, recipe.kind, recipe.epoch, id);
   const ciphertext = await crypto.aesGcmSeal(
@@ -633,15 +662,39 @@ export function payloadIssued(payload: Payload | undefined): number | undefined 
 }
 
 /**
- * Document content is a `kind = 0` plaintext carrying a `SyncStep2` or an `Update`
- * (`PROTOCOL.md` §13.5): message type 0, sync sub-type 1 or 2.
+ * Document content is a `kind = 0` plaintext **carrying** a `SyncStep2` or an `Update`
+ * (`PROTOCOL.md` §13.5): message type 0, sync sub-type 1 or 2, anywhere in the stream.
+ *
+ * The whole stream, and not its first message, because the check is what refuses a `viewer`'s
+ * edits and the receiver that applies them reads every message a frame holds (`sync.ts`): a
+ * frame whose first message is a `SyncStep1` and whose second is an `Update` would otherwise
+ * pass the check and have its content applied. The walk here is that reader's, message for
+ * message, so the two cannot disagree about where one message ends and the next begins.
  */
 export function isContent(plaintext: Uint8Array): boolean {
-  if (plaintext[0] !== 0) {
-    return false;
+  const decoder = decoding.createDecoder(plaintext);
+  let content = false;
+  try {
+    while (decoding.hasContent(decoder)) {
+      const type = decoding.readVarUint(decoder);
+      if (type === 0) {
+        const subtype = decoding.readVarUint(decoder);
+        content ||= subtype === 1 || subtype === 2;
+        decoding.readVarUint8Array(decoder);
+      } else if (type === 1 || type === 2) {
+        decoding.readVarUint8Array(decoder);
+      } else if (type !== 3) {
+        // A message type this version does not read: the walk stops where the stream stops
+        // making sense, and what it has already seen is what the frame carries.
+        break;
+      }
+    }
+  } catch {
+    // The bytes ran out inside a message. The receiver that would apply this frame refuses it
+    // for the same reason, and a frame that carries content before that point still carries it.
+    return content;
   }
-  const subtype = readVaruint(plaintext, 1);
-  return subtype !== undefined && (subtype[0] === 1 || subtype[0] === 2);
+  return content;
 }
 
 // --- the reader -----------------------------------------------------------------
@@ -684,6 +737,15 @@ export class Reader {
 
   private readonly crypto: FrameCrypto;
   private readonly hostId: Uint8Array;
+  /**
+   * The frame being read, so that a second call waits for the first.
+   *
+   * A read is several awaits long and moves a mark when it accepts, so two of them in flight
+   * together would decide about the same counter twice and could apply a frame below a mark
+   * another had already moved. Every call queues behind the one before it and the verdicts come
+   * back in arrival order.
+   */
+  private pending: Promise<unknown> = Promise.resolve();
 
   private constructor(options: ReaderOptions, frameKeyBytes: Uint8Array, hostId: Uint8Array) {
     this.roomId = options.roomId;
@@ -732,8 +794,22 @@ export class Reader {
 
   /**
    * §6.1's table, in its order, with the first step that refuses the frame reported.
+   *
+   * One frame at a time, in the order the frames were handed over; see {@link Reader.pending}.
    */
-  async read(frame: Uint8Array): Promise<Verdict> {
+  read(frame: Uint8Array): Promise<Verdict> {
+    const verdict = this.pending.then(
+      () => this.readOne(frame),
+      () => this.readOne(frame),
+    );
+    this.pending = verdict.then(
+      () => undefined,
+      () => undefined,
+    );
+    return verdict;
+  }
+
+  private async readOne(frame: Uint8Array): Promise<Verdict> {
     const envelope = parseEnvelope(frame);
     if (envelope === undefined) {
       return refused('bad_envelope');

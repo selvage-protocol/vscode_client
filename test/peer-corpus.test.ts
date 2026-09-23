@@ -106,105 +106,111 @@ async function replayFrameVector(
     return raw;
   };
 
-  for (const [index, step] of steps.entries()) {
-    const where = `${String(vector['_file'])} step ${index} (\`${String(step['op'])}\`)`;
-    switch (step['op']) {
-      case 'seal': {
-        const raw = await sealRecipe(
-          fixture,
-          nodeCrypto,
-          step['recipe'] as Record<string, unknown>,
-        );
-        assert.equal(
-          spaced(raw),
-          String(step['hex']).trim().toLowerCase(),
-          `${where}: this engine's seal does not produce the vector's bytes`,
-        );
-        frames.set(String(step['frame']), raw);
-        break;
-      }
-      case 'corrupt': {
-        const raw = corrupt(frame(step), step);
-        assert.equal(
-          spaced(raw),
-          String(step['hex']).trim().toLowerCase(),
-          `${where}: this driver's corruption is not the vector's`,
-        );
-        frames.set(String(step['as']), raw);
-        break;
-      }
-      case 'expectVerify': {
-        assertions += 1;
-        const raw = frame(step);
-        const verdict = await reader.read(raw);
-        assert.ok(
-          verdict.ok,
-          `${where}: the reader refused \`${String(step['frame'])}\` with \`${String(verdict.reason)}\``,
-        );
-        if (verdict.kind === 0) {
-          applyFrame(verdict.plaintext, doc, awareness, 'corpus');
-        }
-        break;
-      }
-      case 'expectReject': {
-        assertions += 1;
-        const verdict = await reader.read(frame(step));
-        assert.equal(
-          verdict.ok,
-          false,
-          `${where}: the reader applied \`${String(step['frame'])}\``,
-        );
-        assert.equal(
-          verdict.reason,
-          step['reason'],
-          `${where}: \`${String(step['frame'])}\` was refused with the wrong reason`,
-        );
-        break;
-      }
-      case 'expectPlaintext': {
-        assertions += 1;
-        const envelope = parseEnvelope(frame(step));
-        assert.ok(envelope !== undefined, `${where}: not an envelope`);
-        const plaintext = await opens(nodeCrypto, fixture.frameKey, fixture.roomId, envelope);
-        assert.ok(plaintext !== undefined, `${where}: the frame does not open`);
-        if (step['signed_by'] !== undefined) {
-          assert.ok(
-            await authentic(
-              nodeCrypto,
-              fixture.roomId,
-              envelope,
-              fixtureKey(fixture, step['signed_by']).public,
-            ),
-            `${where}: the signature does not verify against \`${String(step['signed_by'])}\``,
+  try {
+    for (const [index, step] of steps.entries()) {
+      const where = `${String(vector['_file'])} step ${index} (\`${String(step['op'])}\`)`;
+      switch (step['op']) {
+        case 'seal': {
+          const raw = await sealRecipe(
+            fixture,
+            nodeCrypto,
+            step['recipe'] as Record<string, unknown>,
           );
+          assert.equal(
+            spaced(raw),
+            String(step['hex']).trim().toLowerCase(),
+            `${where}: this engine's seal does not produce the vector's bytes`,
+          );
+          frames.set(String(step['frame']), raw);
+          break;
         }
-        if (step['plaintext'] !== undefined) {
-          assert.equal(spaced(plaintext), spaced(bytesOf(step['plaintext'])), where);
+        case 'corrupt': {
+          const raw = corrupt(frame(step), step);
+          assert.equal(
+            spaced(raw),
+            String(step['hex']).trim().toLowerCase(),
+            `${where}: this driver's corruption is not the vector's`,
+          );
+          frames.set(String(step['as']), raw);
+          break;
         }
-        if (step['payload'] !== undefined) {
-          assert.deepEqual(JSON.parse(new TextDecoder().decode(plaintext)), step['payload']);
+        case 'expectVerify': {
+          assertions += 1;
+          const raw = frame(step);
+          const verdict = await reader.read(raw);
+          assert.ok(
+            verdict.ok,
+            `${where}: the reader refused \`${String(step['frame'])}\` with \`${String(verdict.reason)}\``,
+          );
+          if (verdict.kind === 0) {
+            applyFrame(verdict.plaintext, doc, awareness, 'corpus');
+          }
+          break;
         }
-        break;
+        case 'expectReject': {
+          assertions += 1;
+          const verdict = await reader.read(frame(step));
+          assert.equal(
+            verdict.ok,
+            false,
+            `${where}: the reader applied \`${String(step['frame'])}\``,
+          );
+          assert.equal(
+            verdict.reason,
+            step['reason'],
+            `${where}: \`${String(step['frame'])}\` was refused with the wrong reason`,
+          );
+          break;
+        }
+        case 'expectPlaintext': {
+          assertions += 1;
+          const envelope = parseEnvelope(frame(step));
+          assert.ok(envelope !== undefined, `${where}: not an envelope`);
+          const plaintext = await opens(nodeCrypto, fixture.frameKey, fixture.roomId, envelope);
+          assert.ok(plaintext !== undefined, `${where}: the frame does not open`);
+          if (step['signed_by'] !== undefined) {
+            assert.ok(
+              await authentic(
+                nodeCrypto,
+                fixture.roomId,
+                envelope,
+                fixtureKey(fixture, step['signed_by']).public,
+              ),
+              `${where}: the signature does not verify against \`${String(step['signed_by'])}\``,
+            );
+          }
+          if (step['plaintext'] !== undefined) {
+            assert.equal(spaced(plaintext), spaced(bytesOf(step['plaintext'])), where);
+          }
+          if (step['payload'] !== undefined) {
+            assert.deepEqual(JSON.parse(new TextDecoder().decode(plaintext)), step['payload']);
+          }
+          break;
+        }
+        case 'expectListing': {
+          assertions += 1;
+          assert.deepEqual(reader.listing, step['listing'], where);
+          break;
+        }
+        case 'expectHolds': {
+          assertions += 1;
+          const id = fixtureKey(fixture, step['sign']).hexId;
+          assert.deepEqual(reader.holds.get(id) ?? [], step['holds'], where);
+          break;
+        }
+        case 'expectDoc': {
+          assertions += 1;
+          assert.equal(doc.getText(String(step['path'])).toString(), step['text'], where);
+          break;
+        }
+        default:
+          throw new Error(`${where}: \`${String(step['op'])}\` is not a step of a frame vector`);
       }
-      case 'expectListing': {
-        assertions += 1;
-        assert.deepEqual(reader.listing, step['listing'], where);
-        break;
-      }
-      case 'expectHolds': {
-        assertions += 1;
-        const id = fixtureKey(fixture, step['sign']).hexId;
-        assert.deepEqual(reader.holds.get(id) ?? [], step['holds'], where);
-        break;
-      }
-      case 'expectDoc': {
-        assertions += 1;
-        assert.equal(doc.getText(String(step['path'])).toString(), step['text'], where);
-        break;
-      }
-      default:
-        throw new Error(`${where}: \`${String(step['op'])}\` is not a step of a frame vector`);
     }
+  } finally {
+    // `y-protocols` runs a clock of its own, so the replica is released where the replay ends.
+    awareness.destroy();
+    doc.destroy();
   }
   return assertions;
 }
