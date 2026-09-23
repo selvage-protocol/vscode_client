@@ -216,7 +216,7 @@ one event loop. There is no worker, no native module and no second process.
 
 | Layer | What it is | What it needs to be tested |
 |---|---|---|
-| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame and peer session | a socket |
+| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame, peer session and host | a socket |
 | `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution | a replica and an editor interface |
 | `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
 | `src/node/` | the Node half of the crypto seam the engine asks a caller for: HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto` | nothing |
@@ -243,16 +243,18 @@ protocol's bound on a name and the question that asks for one.
 ### `selvage/2` in the engine
 
 `selvage/1` is what every published client and every room in service speaks, and the engine still
-speaks it end to end. `selvage/2`'s peer side sits beside that version rather than instead of it:
+speaks it end to end. `selvage/2`'s session layer sits beside that version rather than instead of
+it, with the peer's half in `peer.ts` and the host's in `host.ts`:
 
 | Module | What it is |
 |---|---|
 | `src/engine/crypto.ts` | the crypto seam a `selvage/2` frame needs — HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 — as an interface the caller supplies |
 | `src/engine/sealed.ts` | `CANONICAL.md` §6.1's bytes: the envelope's layout, the key schedule, the canonical key encoding, the four sealed payloads, and the ten-step read with the reason each step reports |
 | `src/engine/peer.ts` | `PROTOCOL.md` §13: the invite's fragment and its local refusal, the session keypair and its announcement, the order of operations at a join, verify-before-apply, attribution by the key that verified and the role the applied state gives it, a `viewer`'s content refused, the holds and their lease, the two windows that end a session, and §13.10's lifecycle |
+| `src/engine/host.ts` | `PROTOCOL.md` §7.1's producer half: the host key, the room state it seals and signs, the rule for each state that goes out — at mint, on a change to the listing or to `peers`, on every `peer.joined` and `peer.left`, on every announcement accepted — the publish-rate window, the seat label a newly committed key is given, and the `issued` series kept with the key |
 | `src/node/crypto.ts` | that seam over Node's `crypto`, which is what this client and the corpus subject use |
 
-Every rule in those two modules is `PROTOCOL.md` §13's or `CANONICAL.md` §6.1's, and each is
+Every rule in those three modules is `PROTOCOL.md` §13's, §7.1's or `CANONICAL.md` §6.1's, and each is
 pinned twice: `test/sealed.test.ts` and `test/peer.test.ts` build their own frames from constants
 and run without a sibling checkout, and `test/peer-corpus.test.ts` replays the peer corpus — it
 seals each frame vector's recipe with this engine's `seal` and checks the bytes against the
@@ -272,11 +274,41 @@ client drives, and a page has no `node:crypto` — nor a synchronous one, since 
 asynchronous. `src/node/` is outside the two directories the other clients copy for the same
 reason: it is the Node half.
 
+`test/host.test.ts` is §7.1's producer half on its own: every clock it passes in is a number and
+every frame it builds comes from constants, so it is about the rules rather than about how long a
+machine took. Each host guard is pinned twice over, by the rule's own test and by that test going
+red under the mutation that removes the guard (`HOST_MUTATIONS`), which is what `mutate` is for.
+
 What this slice does not do. Nothing wires `PeerSession` to a socket, so no client here joins or
-hosts a `selvage/2` room yet, and the host's own half of §7.1 — publishing a state at mint, on
-every `peer.joined` and on every announcement it accepts — is not implemented; a session reads
-and applies the host's state. §13.11's per-receiver caps are not implemented either (how many keys
-and marks §13.3 allows a client to keep, and how many paths and bytes of paths it will hold).
+hosts a `selvage/2` room yet, and every published client still speaks `selvage/1`. No adapter
+calls the host half either: a listing wants a watcher on a working tree, a `HostStore` wants a
+filesystem, and `closeRoom` a reason to end one. §7.1's **host-side corpus vectors** are not here
+— `test/host.test.ts` is what pins the producer, and the peer corpus still drives the receiver's
+half — and §13.11's per-receiver caps are not implemented (how many keys and marks §13.3 allows a
+client to keep, and how many paths and bytes of paths it will hold).
+
+Five things §7.1 and §13 leave open, each decided where it is read rather than filled in silently:
+
+- **The label a key gets when the roster names no free seat.** §7.1 obliges a host to commit every
+  announcement it accepts and forbids withholding one for want of a label, and it also says at most
+  one key per seat. An announcement that outruns its `peer.joined` is where the two meet: the
+  roster names only the host's own seat, the commitment is what the peer cannot do without, so the
+  label is the half that gives way and two keys carry that seat. `label()` states it.
+- **What the host's own session does after it publishes a closing.** §13.10 says what a receiver
+  does with one; §7.1 says only that a host that has left publishes nothing. Here a closing ends
+  the host's publishing and touches nothing else about its session.
+- **What a `peer.joined` obliges of a host.** §7.1 has a host publish a state on one, and the
+  re-send of a state already held is stated as a *peer*'s rule. This host re-sends the state it
+  holds when nothing in its listing or its `peers` has changed; a joiner that holds none applies
+  it exactly as it applies a new edition, and every peer at that edition refuses it `stale_issued`.
+- **§7.1's *MUST NOT hold two host sessions for one room at a time*.** Nothing here enforces it
+  across processes: two connections that share a host key and a counter series publish one edition
+  twice, and §13.3's rule for two publications at one edition is what a receiver does with that.
+- **When a returning host writes above an edition it learned from a re-sent state.** §7.1's list of
+  obligations does not include applying a state, and §9.1's resume is a state published above the
+  room's. This host learns the room's edition from the state a peer re-sends it and writes above it
+  at its next state — the next change to its listing or its `peers`, the next seat, or the next
+  announcement it accepts — not on the state it just applied.
 
 ## Checks
 
