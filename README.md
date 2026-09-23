@@ -219,7 +219,7 @@ one event loop. There is no worker, no native module and no second process.
 | `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame, peer session and host | a socket |
 | `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution | a replica and an editor interface |
 | `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
-| `src/node/` | the Node half of the crypto seam the engine asks a caller for: HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto` | nothing |
+| `src/node/` | the Node half of the crypto seam the engine asks a caller for (HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto`) and the `selvage/2` relay over `ws` | a socket |
 
 The first two layers never import `vscode`, and they are the copy the other two clients carry:
 `nvim_client/vendor/{engine,bridge}` and `web_client/src/{engine,bridge}` are taken from here and
@@ -253,6 +253,7 @@ it, with the peer's half in `peer.ts` and the host's in `host.ts`:
 | `src/engine/peer.ts` | `PROTOCOL.md` §13: the invite's fragment and its local refusal, the session keypair and its announcement, the order of operations at a join, verify-before-apply, attribution by the key that verified and the role the applied state gives it, a `viewer`'s content refused, the holds and their lease, the two windows that end a session, and §13.10's lifecycle |
 | `src/engine/host.ts` | `PROTOCOL.md` §7.1's producer half: the host key, the room state it seals and signs, the rule for each state that goes out — at mint, on a change to the listing or to `peers`, on every `peer.joined` and `peer.left`, on every announcement accepted — the publish-rate window, the seat label a newly committed key is given, and the `issued` series kept with the key |
 | `src/node/crypto.ts` | that seam over Node's `crypto`, which is what this client and the corpus subject use |
+| `src/node/relay.ts` | the socket wiring those three were written to be handed: `session.hello` at `selvage/2`, the seat from `room.created`/`room.joined`, the invite minted with its fragment, the session's clock on a timer of its own, and every frame the session produced written to the socket. It is the Node half, so it is not one of the two directories the other clients copy |
 
 Every rule in those three modules is `PROTOCOL.md` §13's, §7.1's or `CANONICAL.md` §6.1's, and each is
 pinned twice: `test/sealed.test.ts` and `test/peer.test.ts` build their own frames from constants
@@ -279,13 +280,28 @@ every frame it builds comes from constants, so it is about the rules rather than
 machine took. Each host guard is pinned twice over, by the rule's own test and by that test going
 red under the mutation that removes the guard (`HOST_MUTATIONS`), which is what `mutate` is for.
 
-What this slice does not do. Nothing wires `PeerSession` to a socket, so no client here joins or
-hosts a `selvage/2` room yet, and every published client still speaks `selvage/1`. No adapter
-calls the host half either: a listing wants a watcher on a working tree, a `HostStore` wants a
-filesystem, and `closeRoom` a reason to end one. §7.1's **host-side corpus vectors** are not here
-— `test/host.test.ts` is what pins the producer, and the peer corpus still drives the receiver's
-half — and §13.11's per-receiver caps are not implemented (how many keys and marks §13.3 allows a
-client to keep, and how many paths and bytes of paths it will hold).
+What this slice does not do. Every published client still speaks `selvage/1`, and no VS Code
+adapter calls the relay: `src/node/relay.ts` hosts and joins a `selvage/2` room over a real socket
+and proves it against a real `selvaged --serve-version-2`, but `PeerSession` exposes the receiver's
+observables and the producer's frame and no editor surface, so the bridge cannot be pointed at one.
+Four methods are what it would take, and each is a rule the version already states rather than a
+new decision: a public **`delete`**, without which the bridge's own `publish` (which diffs the
+buffer against the replica and calls `insert`/`delete`) silently drops every deletion; a public
+**`setAwareness`/`setSelection`** to publish a local awareness frame (`§13.9` refuses one from a
+`viewer`); a public **`presence()`** to read a peer's anchors back against this replica (`§8.1`);
+and a public **role of this connection's own key** (`§13.4`), which is what tells a `viewer` its
+editor is read-only. Until those four exist the adapter has no `SelvageEngine` to hand the bridge,
+and nothing here invents one.
+
+The relay also runs no resume: a dropped socket ends its session rather than re-helloing, so
+`§9.1`'s host return is not wired either — `HostStore` is what a returning host continues its
+`issued` series from, and the seam is tested with a store that records the writes, but no relay
+reconnects to a room it already held.
+
+§7.1's **host-side corpus vectors** are not here — `test/host.test.ts` is what pins the producer,
+and the peer corpus still drives the receiver's half — and §13.11's per-receiver caps are not
+implemented (how many keys and marks §13.3 allows a client to keep, and how many paths and bytes
+of paths it will hold).
 
 Five things §7.1 and §13 leave open, each decided where it is read rather than filled in silently:
 
@@ -321,6 +337,7 @@ $ npm run build                        # → dist/extension.js
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then the server-free suite
 $ npm test                             # builds, then the same plus four against a real selvaged
+$ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged --serve-version-2
 $ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
 $ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
 ```
