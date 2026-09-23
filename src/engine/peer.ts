@@ -1167,6 +1167,9 @@ export class PeerSession {
    * re-send is for is the peer that holds none.
    */
   private republish(frame: Uint8Array): void {
+    if (this.ending !== undefined) {
+      return;
+    }
     this.outbound.push(frame);
     this.published += 1;
   }
@@ -1294,8 +1297,18 @@ export class PeerSession {
     }
   }
 
-  /** One frame sealed under the frame key and signed by this connection's session key. */
+  /**
+   * One frame sealed under the frame key and signed by this connection's session key.
+   *
+   * A session that has ended publishes nothing, whatever handed it something to answer: §13.6's
+   * reply to a content frame and §7.1's re-send below are both frames out of a room that is over.
+   * This is the one place every authored frame passes through; {@link mayPublish} is the caller's
+   * own check of the same rule.
+   */
   private async publish(what: Publication, plaintext: Uint8Array): Promise<void> {
+    if (this.ending !== undefined) {
+      return;
+    }
     this.counter += 1;
     const bytes = await this.sealedFrame(KIND_OF[what], plaintext);
     if (bytes === undefined) {

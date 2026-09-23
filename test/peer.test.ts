@@ -605,6 +605,36 @@ test('a closing handed to a state-less client is ignored and the state below it 
   assert.equal(endingReason('closing'), 'the room closed');
 });
 
+test('a session that has ended answers nothing', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  const held = await state(now.host, 1, [[now.ours, 'guest', 'p-self']]);
+  await peer.deliver(1, held);
+  await peer.tick(2);
+  peer.takeOutbound();
+  assert.deepEqual(await peer.deliver(3, await closing(now.host, 2)), {
+    status: 'applied',
+    kind: 2,
+  });
+
+  // §7.1: the state this session holds is what a `peer.joined` is normally answered with, and a
+  // room the closing ended is not one to hand a state back into.
+  await peer.seatJoined(4, 'p-new');
+  assert.equal(peer.takeOutbound().length, 0, 'no state goes back');
+
+  // §13.6: a content frame's reply is a frame this client would otherwise still send.
+  await peer.deliver(5, await content(now.ours, 2, 'README.md', 'after the closing'));
+  await peer.tick(6);
+  assert.equal(peer.takeOutbound().length, 0, 'and no sync reply either');
+
+  // §13.1's step 6 answer is the other one: a `SyncStep1` from a committed key still reaches the
+  // replica, and the `SyncStep2` it asks for does not go back.
+  await peer.deliver(7, await frame(now.ours, 0, 3, encodeSyncStep1(new Y.Doc())));
+  await peer.tick(8);
+  assert.equal(peer.takeOutbound().length, 0, 'and no handshake answer');
+});
+
 // --- §13.7, the holds and their lease -------------------------------------------
 
 test('a lease lapses a window after the last message and drops no frame', async () => {
