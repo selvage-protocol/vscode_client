@@ -136,6 +136,9 @@ const SENTENCES = [
   "'Selvage: this session holds no invite link to copy.'",
   "'Selvage: join a session first.'",
   "'Selvage: you are the host — the files you open are the ones your guests see.'",
+  // `§13.4`'s third role (`§13.9`): the room's own word on this connection, said once, in the
+  // words the Neovim client says it in.
+  "'Selvage: you are a viewer in this room, so its documents are read-only.'",
   "'Selvage: the room has no open documents yet.'",
   '`Selvage: no shared document matches "${}".`',
   // The display name, and the room's participants.

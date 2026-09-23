@@ -86,6 +86,8 @@ export class WorkspaceEditor implements EditorHost {
    * than on every open event and every save.
    */
   private readonly unshareable = new Set<string>();
+  /** How many applies this window has in flight; see {@link applying}. */
+  private offers = 0;
 
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
@@ -177,6 +179,15 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined) {
       return false;
     }
+    this.offers += 1;
+    try {
+      return await this.offer(document, change);
+    } finally {
+      this.offers -= 1;
+    }
+  }
+
+  private async offer(document: vscode.TextDocument, change: TextChange): Promise<boolean> {
     // `false` means the editor refused the change and the buffer is unchanged: the editor
     // stamps a workspace edit with the version its document mirror holds and refuses one whose
     // version has moved, so a `false` says the range — not the change — no longer fits. The
@@ -221,6 +232,32 @@ export class WorkspaceEditor implements EditorHost {
       offered = moved;
       before = current;
     }
+  }
+
+  /**
+   * The room's text back into a document the buffer had moved away from: how a viewer's edit is
+   * discarded (`§13.9`), as the inverse of the change the buffer took. Applied through
+   * {@link applyChange}, so an edit that landed while this one was being put back is rebased
+   * through rather than lost.
+   *
+   * The caller passes the document rather than a path because the change event that asked for
+   * this is the one holding it, and a document the room has since stopped sharing has nothing
+   * to put back.
+   */
+  async putBack(path: string, document: vscode.TextDocument, text: string): Promise<boolean> {
+    const held = document.getText();
+    if (held === text) {
+      return true;
+    }
+    return this.applyChange(path, diff(held, text));
+  }
+
+  /**
+   * Whether an apply of this window's own is in flight. A change event seen while one is has
+   * the buffer behind the replica on purpose, and is not a keystroke to refuse.
+   */
+  applying(): boolean {
+    return this.offers > 0;
   }
 
   async save(path: string): Promise<boolean> {
@@ -282,7 +319,10 @@ export class WorkspaceEditor implements EditorHost {
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {
-    if (this.role === 'guest') {
+    if (this.role !== 'host') {
+      // A viewer's documents live where a guest's do (`§13.9`): under the mirror, which is the
+      // only working copy this window has of the room.
+      //
       // The mirror's own marker is the client's bookkeeping, not a document: it must
       // never publish, or a join's invite would reach the room it names.
       if (uri.scheme !== 'file' || this.mirrorRoot === undefined) {

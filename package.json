@@ -210,6 +210,16 @@
           "type": "string",
           "description": "The WebSocket address to host on. Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
         },
+        "selvage.wireVersion": {
+          "type": "string",
+          "enum": ["selvage/1", "selvage/2"],
+          "enumDescriptions": [
+            "The version every released server seats. Document text, cursors and the folder listing are read by the server.",
+            "The version where the server relays bytes it cannot read: the room's listing, its roles and its content are sealed under keys that travel in the invite link's fragment. It needs a server started with --serve-version-2."
+          ],
+          "default": "selvage/1",
+          "description": "The version a hosted room is minted at. A join speaks the version the invite link names, whatever this says, so this applies only to rooms this window hosts. Leave it at selvage/1 unless the server was started with --serve-version-2."
+        },
         "selvage.displayName": {
           "type": "string",
           "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused. A change while a session is live renames this connection at once, and applies to the next host or join."

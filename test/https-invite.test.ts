@@ -133,13 +133,32 @@ test('a copied link is the room\'s own server, over the scheme a browser speaks'
 test('a pasted page link reads back into the same join, and nothing else does', () => {
   const { buildPageLink, parsePageLink } = inviteHelpers();
   const link = buildPageLink('wss://edit.example', 'r-1', 'tok');
-  assert.deepEqual(parsePageLink(link), { room: 'r-1', token: 'tok', origin: 'https://edit.example' });
+  assert.deepEqual(parsePageLink(link), {
+    room: 'r-1',
+    token: 'tok',
+    origin: 'https://edit.example',
+    fragment: '',
+  });
   // A link written before the format changed carries `server`. Nothing reads it: the format
   // defines `room` and `token` alone, so it is an unknown query parameter and the link's own
   // origin is the server a guest reaches.
   assert.deepEqual(
     parsePageLink('https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080'),
-    { room: 'r-1', token: 'tok', origin: 'https://edit.example' },
+    { room: 'r-1', token: 'tok', origin: 'https://edit.example', fragment: '' },
+  );
+  // `§5.1`'s fragment is read as the two keys it names as well as kept whole: a `selvage/2`
+  // room has no token-only way in, so a link that arrives with one and lost it on the way
+  // through a parse would be a link nobody could hand on.
+  assert.deepEqual(
+    parsePageLink('https://edit.example/?room=r-1&token=tok#k=room-key&h=host-key'),
+    {
+      room: 'r-1',
+      token: 'tok',
+      origin: 'https://edit.example',
+      fragment: '#k=room-key&h=host-key',
+      roomKey: 'room-key',
+      hostKey: 'host-key',
+    },
   );
   assert.equal(parsePageLink('ws://host:8080/session?room=r-1&token=tok'), undefined);
   assert.equal(parsePageLink('https://host/?room=r-1'), undefined);

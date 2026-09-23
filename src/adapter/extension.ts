@@ -9,17 +9,28 @@
 
 import * as vscode from 'vscode';
 
-import { MAX_GRANT_PATH_BYTES, SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
-import type { FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
+import { MAX_GRANT_PATH_BYTES, PeerEngine, SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
+import type { Engine, FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
 import {
   SelvageEngine,
   code as errCode,
+  decodeKey,
+  encodeKey,
   isProtocolError,
   parseSessionUrl,
   sessionBase,
   sessionUrl,
 } from '../engine/index.ts';
-import type { PeerInfo, Role } from '../engine/index.ts';
+import type {
+  EngineEventListener,
+  HostStore,
+  OffsetSelection,
+  PeerInfo,
+  PersistedHost,
+  Role,
+  Selection,
+  SessionInfo,
+} from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
@@ -280,14 +291,233 @@ interface Participant {
   /** The document the peer says it is in, when this client knows of one. */
   path?: string;
 }
+/** The wire version this adapter speaks when a room is minted at `selvage/2`. */
+const WIRE_VERSION_2 = 'selvage/2';
+
+/**
+ * What a session drives, whichever version is seated: the bridge's own slice, plus the room
+ * facts an adapter reads and the four things it hands in. `SelvageEngine` is the version-1
+ * one and {@link roomEngine2} wraps the version-2 `PeerEngine` into the same shape, which is
+ * what lets {@link Session} hold either without asking which room it is in.
+ */
+export interface RoomEngine extends Engine {
+  session(): SessionInfo;
+  /** The seats the relay showed, with the roles the applied state assigns (`§8.4`). */
+  peers(): PeerInfo[];
+  /** The room's open-document set: the paths somebody holds (`§13.7`). */
+  documents(): string[];
+  /** The room's listing as this replica holds it (`§7.1`). */
+  grantedPaths(): string[];
+  /** The invite this connection can hand on, or `undefined` when it holds no token. */
+  inviteUrl(): string | undefined;
+  rename(displayName: string): Promise<void>;
+  /** Publishes the whole listing this host shares (`§7.1`). */
+  grant(paths: readonly string[]): Promise<void>;
+  disconnect(): Promise<void>;
+}
+
+/**
+ * The listing a version-2 host shares (`§7.1`), as the folder walk sees it.
+ *
+ * A state is sealed from this rather than the server holding one, so a host has one place to
+ * read its working tree and one to say it changed — the same shape the Neovim companion's
+ * folder watcher has.
+ */
+interface ListingSource {
+  current(): readonly string[];
+  replace(paths: readonly string[]): void;
+}
+
+/** A listing source over paths already walked, so a mint seals the tree the walk found. */
+function listingSource(paths: readonly string[] = []): ListingSource {
+  let listing = [...paths];
+  return {
+    current: () => listing,
+    replace: (next) => {
+      listing = [...next];
+    },
+  };
+}
+
+/**
+ * The version-2 engine in the shape {@link Session} drives.
+ *
+ * Three of the facts are the relay's own reading rather than the session's, and are read here
+ * the way the page's own wrapper reads them: the seats come from the handshake with the roles
+ * the applied state gives them, the room's documents are the paths somebody holds (`§13.7`),
+ * and the connection's invite is the wire URL with `§5.1`'s fragment on it.
+ */
+function roomEngine2(engine: PeerEngine): RoomEngine {
+  return {
+    session: () => engine.session(),
+    text: (path: string) => engine.text(path),
+    has: (path: string) => engine.has(path),
+    open: (path: string) => engine.open(path),
+    close: (path: string) => engine.close(path),
+    insert: (path: string, index: number, text: string) => {
+      engine.insert(path, index, text);
+    },
+    delete: (path: string, index: number, length: number) => {
+      engine.delete(path, index, length);
+    },
+    setSelection: (path: string, selection: OffsetSelection) => {
+      engine.setSelection(path, selection);
+    },
+    setAwareness: (state: Parameters<Engine['setAwareness']>[0]) => {
+      engine.setAwareness(state);
+    },
+    presence: () => engine.presence(),
+    resolveSelection: (path: string, selection: Selection) =>
+      engine.resolveSelection(path, selection),
+    on: (listener: EngineEventListener) => engine.on(listener),
+    peers: () => engine.session().peers,
+    documents: () => engine.session().documents,
+    grantedPaths: () => engine.grantedPaths(),
+    grant: (paths: readonly string[]) => engine.grant(paths),
+    rename: (displayName: string) => engine.rename(displayName),
+    disconnect: () => engine.disconnect(),
+    inviteUrl: () => engine.inviteUrl(),
+  };
+}
+
+/** The `globalState` key one host's key and its `issued` series live under. */
+const HOST_KEY_PREFIX = 'selvage.hostKey.';
+
+/** What one stored record carries, as `globalState` holds it. */
+interface StoredHost {
+  /** The host key's 32-byte seed, base64url, which is what `encodeKey` writes. */
+  seed: string;
+  /** The highest `issued` that seed's host has published. */
+  issued: number;
+}
+
+/**
+ * `§7.1`'s store, over this extension's own state: the host key and the `issued` series a
+ * returning host continues from.
+ *
+ * The record is keyed by the seed the host signs with, so a record left by another room's host
+ * is never read: a seed that is not the one this session minted is not this room's series, and
+ * `HostProducer` would start at `issued` 1 anyway. Stored as text rather than bytes because
+ * `globalState` is JSON: a `Uint8Array` would round-trip as an object of indices.
+ */
+export class HostKeyStore implements HostStore {
+  private readonly state: vscode.Memento;
+  private readonly seed: Uint8Array;
+
+  constructor(state: vscode.Memento, seed: Uint8Array) {
+    this.state = state;
+    this.seed = seed;
+  }
+
+  load(): PersistedHost | undefined {
+    let saved: unknown;
+    try {
+      saved = this.state.get<unknown>(this.key());
+    } catch {
+      // A window whose state cannot be read hosts without a store, which §7.1 permits.
+      return undefined;
+    }
+    if (typeof saved !== 'object' || saved === null) {
+      return undefined;
+    }
+    const record = saved as Partial<StoredHost>;
+    const seed = typeof record.seed === 'string' ? decodeKey(record.seed) : undefined;
+    if (seed === undefined || seed.length !== 32 || typeof record.issued !== 'number') {
+      return undefined;
+    }
+    return { hostSeed: seed, issued: record.issued };
+  }
+
+  save(persisted: PersistedHost): void {
+    const record: StoredHost = {
+      seed: encodeKey(persisted.hostSeed),
+      issued: persisted.issued,
+    };
+    try {
+      void Promise.resolve(this.state.update(this.key(), record)).then(undefined, () => undefined);
+    } catch {
+      // A window that cannot remember still hosts; the series is this process's.
+    }
+  }
+
+  private key(): string {
+    return `${HOST_KEY_PREFIX}${encodeKey(this.seed)}`;
+  }
+}
+
+/**
+ * The 32-byte seed a version-2 host signs its states with (`§5.1`, `§7.1`), from the
+ * platform's CSPRNG.
+ *
+ * Minted here rather than left to the engine because the store is keyed by it: `HostStore.load`
+ * is asked before the room has a name, so the seed is the one value that can say whether a
+ * stored series is this host's. A platform with no CSPRNG is a host with no key to sign with,
+ * and §5.1 asks for a silent mint or none rather than a weak one.
+ */
+function mintHostSeed(): Uint8Array {
+  const seed = new Uint8Array(32);
+  crypto.getRandomValues(seed);
+  return seed;
+}
+
+/**
+ * Mints a `selvage/2` room as its host, with the listing the folder walk found.
+ *
+ * The listing is sealed into the room's first state, so it is read before the mint rather than
+ * after: a host that minted first would put an empty tree in front of its first guest.
+ */
+async function hostVersion2(options: {
+  baseUrl: string;
+  displayName: string;
+  listing: ListingSource;
+  /** Where the host key and its `issued` series are kept; omitted is an in-memory host. */
+  state?: vscode.Memento;
+  client?: string;
+}): Promise<RoomEngine> {
+  const hostSeed = mintHostSeed();
+  return roomEngine2(
+    await PeerEngine.host({
+      baseUrl: options.baseUrl,
+      displayName: options.displayName,
+      listing: options.listing,
+      hostSeed,
+      client: options.client ?? CLIENT,
+      ...(options.state === undefined
+        ? {}
+        : { store: new HostKeyStore(options.state, hostSeed) }),
+    }),
+  );
+}
+
+/**
+ * Joins the `selvage/2` room an invite names, from either form of the link.
+ *
+ * The whole link is handed over, fragment and all: `§5.1`'s two keys travel there and nowhere
+ * else, and the engine strips the fragment before it builds the socket URL, so nothing this
+ * adapter passes on the wire carries a `#`.
+ */
+async function joinVersion2(options: {
+  invite: string;
+  displayName: string;
+  client?: string;
+}): Promise<RoomEngine> {
+  return roomEngine2(
+    await PeerEngine.join({
+      invite: options.invite,
+      displayName: options.displayName,
+      ...(options.client === undefined ? {} : { client: options.client }),
+    }),
+  );
+}
+
 /**
  * One session in one window: the engine, the bridge, this window's editor, and the status
  * the user watches.
  */
-class Session {
+export class Session {
   /** A guest's mirror: the directory the room's listing fills, gone at leave. */
   readonly mirror: Mirror | undefined;
-  private readonly engine: SelvageEngine;
+  private readonly engine: RoomEngine;
   private readonly editor: WorkspaceEditor;
   private readonly bridge: SessionBridge;
   private readonly status: vscode.StatusBarItem;
@@ -367,6 +597,11 @@ class Session {
   private readonly unlistedSaved = new Set<string>();
   /** A caret event that has not reached the room yet. */
   private selectionDirty = false;
+  /**
+   * Whether this window has been told it is a viewer (`§13.4`, `§13.9`). The role arrives with
+   * an applied state, so the sentence is said once rather than on every state that carries it.
+   */
+  private viewerSaid = false;
   /** The one flush the interval allows, while one is armed. */
   private selectionTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -407,9 +642,16 @@ class Session {
   /** The room events the follow and the pending go-to re-resolve on. */
   private readonly stopEngine: () => void;
 
-  constructor(engine: SelvageEngine, options: { mirror?: Mirror; invite?: string } = {}) {
-    this.mirror = engine.session().role === 'guest' ? options.mirror : undefined;
-    this.joinedWith = engine.session().role === 'guest' ? options.invite : undefined;
+  constructor(
+    engine: RoomEngine,
+    options: { mirror?: Mirror; invite?: string; listing?: readonly string[] } = {},
+  ) {
+    // A viewer is a peer: `§13.9` puts its documents where a guest's are — under the mirror —
+    // and the role is the room state's to give, so this is read as "not the host" rather than
+    // as "a guest".
+    const peer = engine.session().role !== 'host';
+    this.mirror = peer ? options.mirror : undefined;
+    this.joinedWith = peer ? options.invite : undefined;
     this.engine = engine;
     this.folders = [...(vscode.workspace.workspaceFolders ?? [])];
     this.peers = engine.peers();
@@ -417,7 +659,12 @@ class Session {
     this.documents = engine.documents();
     this.granted = engine.grantedPaths();
     this.listedNow = new Set(this.granted);
-    this.autoOpen = engine.session().role === 'guest';
+    this.autoOpen = peer;
+    // A `selvage/2` host minted with the folder already read, so the room's first state seals
+    // that listing and the tree is in front of the first guest. Publishing the same one again
+    // would move the room's edition for nothing, so it counts as the listing this session has
+    // already established and the first walk finds nothing new to say.
+    this.published = options.listing === undefined ? undefined : [...options.listing];
     this.editor = new WorkspaceEditor({
       role: engine.session().role,
       mirrorRoot: this.mirror?.root,
@@ -509,6 +756,10 @@ class Session {
         case 'documentChanged':
         case 'peersChanged':
         case 'documentsChanged':
+          // The role arrives with an applied state and can arrive on any of these, so the two
+          // things a viewer's window owes — the refusal in the buffer and the sentence once —
+          // are read here rather than at the join alone.
+          this.sayViewerOnce();
           void this.followTick();
           void this.retryGoTo();
           refreshParticipants();
@@ -517,6 +768,10 @@ class Session {
           break;
       }
     });
+    // A `selvage/2` guest's role is the room state's word and usually arrives after the join, on
+    // the `peersChanged` an applied state produces; this covers the case where it was already
+    // applied by the time the window is seated.
+    this.sayViewerOnce();
   }
 
   /**
@@ -1294,9 +1549,10 @@ class Session {
       return active;
     }
     try {
-      if (this.role() === 'guest') {
-        // The path may have come from a peer's presence, so a refusal here reads as the
-        // grant's answer rather than a missing mirror: `mirrorUri` already applied it.
+      if (this.role() !== 'host') {
+        // A viewer opens the room's documents where a guest does, out of the mirror
+        // (`§13.9`). The path may have come from a peer's presence, so a refusal here reads as
+        // the grant's answer rather than a missing mirror: `mirrorUri` already applied it.
         if (this.mirror === undefined) {
           throw new Error('this window has no mirror for the room');
         }
@@ -1696,7 +1952,7 @@ class Session {
     // dropped again — otherwise its edits would publish — and the sentence says so,
     // once per path. (`roomPath` already refuses the mirror's own marker, so an
     // unlisted path here is always a real file worth naming.)
-    if (this.role() === 'guest' && this.mirror !== undefined && !this.offered().includes(path)) {
+    if (this.role() !== 'host' && this.mirror !== undefined && !this.offered().includes(path)) {
       this.editor.forget(document.uri);
       if (this.noteUnlisted(this.unlistedOpened, path)) {
         void vscode.window.showWarningMessage(
@@ -1716,7 +1972,7 @@ class Session {
    * per path, with what to do instead.
    */
   private saved(document: vscode.TextDocument): void {
-    if (this.role() !== 'guest' || this.mirror === undefined) {
+    if (this.role() === 'host' || this.mirror === undefined) {
       return;
     }
     const rel =
@@ -1743,10 +1999,64 @@ class Session {
 
   private changed(document: vscode.TextDocument): void {
     const path = this.editor.pathOf(document);
-    if (path !== undefined) {
-      this.localEditEndsFollow(document, path);
-      this.bridge.documentChanged(path);
+    if (path === undefined) {
+      return;
     }
+    // A refused edit is not a local edit at all: nothing is published and nothing else this
+    // window does on a keystroke — the follow ending, the caret being published — belongs to it.
+    if (this.refuseViewerEdit(document, path)) {
+      return;
+    }
+    this.localEditEndsFollow(document, path);
+    this.bridge.documentChanged(path);
+  }
+
+  /**
+   * `§13.9`: a viewer keeps its own edit and publishes none of it, so the buffer that took a
+   * keystroke is put back to the room's text and the person is told why.
+   *
+   * `§13.9` leaves it to the client whether a viewer's keystroke is refused, kept locally or
+   * discarded, and requires only that it is never sent as content and never presented as the
+   * room's. An editor with a per-buffer modifiable flag refuses it — that is the Neovim
+   * client's `modifiable = false` — and VS Code has none an extension can set on a `file:`
+   * document, so the edit is discarded here instead: the room's text goes back and one sentence
+   * says the documents are read-only. What the buffer must not do is sit holding text the room
+   * never received, which is the state `§13.9` calls worse than a refusal.
+   *
+   * An edit the bridge itself applied is not a keystroke: the buffer then holds the replica's
+   * text, and the comparison below is what tells the two apart. The `applying` guard covers the
+   * window where an apply is in flight, where the buffer may be behind the replica.
+   *
+   * Returns whether this call was a viewer's edit, which is the whole of what a caller owes it.
+   */
+  private refuseViewerEdit(document: vscode.TextDocument, path: string): boolean {
+    if (this.role() !== 'viewer' || this.editor.applying()) {
+      return false;
+    }
+    const room = this.engine.text(path);
+    if (matchesReplica(document.getText(), room)) {
+      return false;
+    }
+    void this.editor.putBack(path, document, room);
+    this.sayViewerOnce();
+    return true;
+  }
+
+  /**
+   * Says once that this connection is a viewer (`§13.4`, `§13.9`).
+   *
+   * The sentence is the two other clients' own — a viewer's documents are read-only — because a
+   * person who uses both should not have to learn it twice, and the role is read from the
+   * session rather than remembered, because it is the applied state's to change.
+   */
+  private sayViewerOnce(): void {
+    if (this.viewerSaid || this.role() !== 'viewer') {
+      return;
+    }
+    this.viewerSaid = true;
+    void vscode.window.showWarningMessage(
+      'Selvage: you are a viewer in this room, so its documents are read-only.',
+    );
   }
 
   /**
@@ -2012,10 +2322,13 @@ class Session {
     }
     // The bar is the one Selvage surface a window always has, so it says the two things a
     // person asks of it: which side of the room they are on, and whether anyone else is here.
-    const who = this.role() === 'host' ? 'hosting' : 'guest';
+    // A viewer is a third side and not a guest: `§13.9` has it read the room and publish no
+    // content, and a bar reading `guest` would say it may edit.
+    const who =
+      this.role() === 'host' ? 'hosting' : this.role() === 'viewer' ? 'view-only' : 'guest';
     this.status.text = `$(radio-tower) Selvage: ${who} — ${peopleInRoom(this.peers.length + 1)}`;
     const lines = [
-      `${this.role() === 'host' ? 'Hosting' : 'Guest in'} this session`,
+      `${this.role() === 'host' ? 'Hosting' : this.role() === 'viewer' ? 'Viewer in' : 'Guest in'} this session`,
       `In the room: ${summarise([this.names(), 'you'].flat())}`,
       `Documents the room offers: ${summarise(this.documents)}`,
       `Shared from this window: ${summarise(shared)}`,
@@ -2155,6 +2468,22 @@ function sessionErrorSentence(message: string, code: string): string {
 }
 
 /**
+ * The listing of the folders this window shares, for a mint that has to carry it (`§7.1`).
+ *
+ * A folder this process cannot read is not a reason to refuse the room: the session's own
+ * watcher says what it could not watch, and a room whose listing is smaller than the folder is
+ * still a room. The walk is the same one the grant publishes, so what is sealed at the mint is
+ * what the first republish would have said.
+ */
+async function walkSharedFolders(): Promise<string[]> {
+  try {
+    return await enumerateGrant(vscode.workspace.workspaceFolders ?? []);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Arguments a caller of `vscode.commands.executeCommand` can pass to `selvage.host` instead
  * of the interactive prompts — the same commands, driven programmatically. Used by
  * `test/e2e/`, which cannot click through a `showInputBox`; there is no other consumer today.
@@ -2227,17 +2556,43 @@ async function host(
   if (displayName === undefined) {
     return;
   }
-  let engine: SelvageEngine;
+  // Which version a new room is minted at is the host's own choice, and it is the only one it
+  // could make: a version-2 room's listing is sealed by this connection's host key, and a
+  // version-1 room's grant is the server's. Unset is `selvage/1`, which is what every published
+  // client speaks, because `selvaged --serve-version-2` is not the server's default yet.
+  const version2 = hostsVersion2(config().get<unknown>('wireVersion'));
+  let engine: RoomEngine;
+  let minted: readonly string[] | undefined;
   try {
     // The handshake is the one wait before a session exists — there is no status bar to spin
     // yet — so it is said while it happens, the way the reconnect path says its own. The
     // argument is read before this, so the progress wrapper cannot capture it.
+    //
+    // `§7.1` seals a version-2 room's first state from the listing, so the folder is walked
+    // before the mint rather than after: a host that minted first would put an empty tree in
+    // front of its first guest, and a room that grants nothing is a different room from one
+    // whose listing is late. A walk that fails is not a reason to refuse the room — the
+    // session's own watcher reports the folder it cannot read — and the room simply starts
+    // with the empty listing it would have had.
+    if (version2) {
+      minted = await walkSharedFolders();
+    }
+    const listing = version2 ? listingSource(minted ?? []) : undefined;
     engine = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${baseUrl}…`,
       },
-      () => SelvageEngine.host(baseUrl, displayName, { client: CLIENT }),
+      () =>
+        version2 && listing !== undefined
+          ? hostVersion2({
+              baseUrl,
+              displayName,
+              listing,
+              client: CLIENT,
+              ...(context === undefined ? {} : { state: context.globalState }),
+            })
+          : SelvageEngine.host(baseUrl, displayName, { client: CLIENT }),
     );
   } catch (error) {
     const why = connectRefusal(
@@ -2257,7 +2612,7 @@ async function host(
     }
     return;
   }
-  current = new Session(engine);
+  current = new Session(engine, minted === undefined ? {} : { listing: minted });
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();
@@ -2417,7 +2772,16 @@ async function joinGuestRoom(options: {
   if (deactivated) {
     return;
   }
-  const wire = resolveInviteToWire(options.invite);
+  // The fragment is read off the link before anything else is, because it is what says which
+  // version this join speaks: `§5.1`'s room key and host key travel there and nowhere else, and
+  // a client that cannot read them cannot join a version-2 room at all. The wire URL the
+  // version-1 engine is handed has none — a fragment left on it would glue into the token — and
+  // the version-2 one is handed the whole link, which reads its keys and never puts them in a
+  // request.
+  const fragment = fragmentOf(options.invite);
+  const wire = wireInviteFor(options.invite);
+  const invite = `${wire}${fragment}`;
+  const version2 = wireVersionOf(invite) === WIRE_VERSION_2;
   const base = sessionAddress(wire);
   const room = parseSessionUrl(wire)?.join.room ?? 'room';
   let mirror = options.resume;
@@ -2487,7 +2851,7 @@ async function joinGuestRoom(options: {
     mirror.clearInvite();
   }
   const live: Mirror = mirror;
-  let engine: SelvageEngine;
+  let engine: RoomEngine;
   try {
     // The same wait a host has, said the same way: the room's own address rather than the
     // wire URL, which carries the token that joined it.
@@ -2496,7 +2860,10 @@ async function joinGuestRoom(options: {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${base}…`,
       },
-      () => SelvageEngine.join(wire, options.displayName, { client: CLIENT }),
+      () =>
+        version2
+          ? joinVersion2({ invite, displayName: options.displayName, client: CLIENT })
+          : SelvageEngine.join(wire, options.displayName, { client: CLIENT }),
     );
   } catch (error) {
     // A failed join leaves no room-shaped window behind: the folder goes, and the
@@ -2617,13 +2984,17 @@ function inviteLinkRefusal(value: string): string | undefined {
     // parameter is ignored the way an unknown query parameter is.
     return undefined;
   }
+  // `§5.1`'s fragment is not part of what a socket is handed, and the engine reads the rest of
+  // the link as a query: a fragment left on would glue into the token, so the wire URL is taken
+  // apart the one way every other reader takes it apart.
+  const wire = wireInviteFor(invite);
   // An absolute WebSocket URL first: `parseSessionUrl` only checks the `/session` suffix
   // and the query fields, so a relative `not-a-url/session?room=…&token=…` would otherwise
   // pass this box and fail later inside the engine.
-  if (!isSessionBase(invite)) {
+  if (!isSessionBase(wire)) {
     return inviteLinkHint();
   }
-  const parsed = parseSessionUrl(invite);
+  const parsed = parseSessionUrl(wire);
   if (
     parsed === undefined ||
     parsed.join.room === undefined ||
@@ -2646,7 +3017,7 @@ function inviteLinkRefusal(value: string): string | undefined {
   // whose authority the parser swallowed into the path — is what makes that case a refusal
   // above, without a comparison of the paste's own bytes.
   const dialled = new URL(sessionUrl(parsed.base, parsed.join.room, parsed.join.token));
-  const pasted = new URL(invite);
+  const pasted = new URL(wire);
   if (pasted.pathname !== dialled.pathname || pasted.search !== dialled.search) {
     return inviteLinkHint();
   }
@@ -2703,22 +3074,42 @@ export function serverBaseOf(page: string): string {
 }
 
 /**
- * The guest link for a room: the page the room's own server serves, carrying room and token.
- * The link *is* the server — its origin is the address the guest dials — so it carries nothing
- * else, and a room cannot be linked at a page that dials another server. The shape is the page's
- * own (`web_client/BROWSER_NOTES.md`, `src/browser/share.ts`). Pure so tests pin it without an
- * editor: `serverBase` is the room's server, and the page is derived from it.
+ * The guest link for a room: the page the room's own server serves, carrying room and token,
+ * with `§5.1`'s fragment on it when the room has one. The link *is* the server — its origin is
+ * the address the guest dials — so it carries nothing else, and a room cannot be linked at a
+ * page that dials another server. The shape is the page's own (`web_client/BROWSER_NOTES.md`,
+ * `src/browser/share.ts`). Pure so tests pin it without an editor: `serverBase` is the room's
+ * server, and the page is derived from it.
+ *
+ * The fragment is the whole of what a `selvage/2` guest needs beyond the query: the room key
+ * and the host's public key travel there and nowhere else, so a host that dropped it would be
+ * handing out a link to a room nobody could join. It is written last, and only when the host
+ * has one to write.
  */
-export function buildPageLink(serverBase: string, room: string, token: string): string {
-  return `${pageOriginOf(serverBase)}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
+export function buildPageLink(
+  serverBase: string,
+  room: string,
+  token: string,
+  keys: { roomKey?: string; hostKey?: string } = {},
+): string {
+  const query = `?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
+  return `${pageOriginOf(serverBase)}/${query}${fragmentFor(keys)}`;
 }
 
 /**
- * Reads a pasted page link back into the room, its token, and any server — the
- * page's own parsing, mirrored so a copied link joins the same way it loads.
- * Pure so tests pin it without an editor.
+ * Reads a pasted page link back into the room, its token, its server, and the two keys `§5.1`
+ * puts in its fragment — the page's own parsing, mirrored so a copied link joins the same way it
+ * loads. Pure so tests pin it without an editor.
+ *
+ * The fragment is read as it arrived as well as split into its two values, because handing the
+ * link on has to hand it on whole: a fragment carrying a parameter this client does not know is
+ * still part of what the host sent.
  */
-export function parsePageLink(text: string): { room: string; token: string; origin: string } | undefined {
+export function parsePageLink(
+  text: string,
+):
+  | { room: string; token: string; origin: string; fragment: string; roomKey?: string; hostKey?: string }
+  | undefined {
   let url: URL;
   try {
     url = new URL(text.trim());
@@ -2733,9 +3124,104 @@ export function parsePageLink(text: string): { room: string; token: string; orig
   if (room === null || room === '' || token === null || token === '') {
     return undefined;
   }
+  const keys = fragmentKeys(url.hash);
   // The origin is the server, so nothing in the query names one. `server` is ignored like any
   // other unknown parameter.
-  return { room, token, origin: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}` };
+  return {
+    room,
+    token,
+    origin: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`,
+    fragment: url.hash,
+    ...(keys.roomKey === undefined ? {} : { roomKey: keys.roomKey }),
+    ...(keys.hostKey === undefined ? {} : { hostKey: keys.hostKey }),
+  };
+}
+
+/**
+ * `§5.1`'s fragment of an invite, `#` included, or `''` when it carries none.
+ *
+ * A fragment is the one part of a URL a user agent dereferences itself and never sends in a
+ * request, which is what makes it the one place the room key and the host key can travel; it is
+ * never a query parameter and never part of what a socket is handed.
+ */
+export function fragmentOf(invite: string): string {
+  const hash = invite.indexOf('#');
+  return hash === -1 ? '' : invite.slice(hash);
+}
+
+/**
+ * The two keys a fragment names, or neither: `§5.1`'s `k` and `h`, values as written.
+ *
+ * What is read here is presence and spelling, not validity — an invite's keys are checked where
+ * they are used, by the engine that has to open a frame with them. A name the reader does not
+ * know is ignored, as an unknown query parameter is, and a repeated one is taken once: `§5.1`
+ * has each name appear at most once, and an invite that repeats one is refused by the engine
+ * rather than here.
+ */
+export function fragmentKeys(fragment: string): { roomKey?: string; hostKey?: string } {
+  const text = fragment.startsWith('#') ? fragment.slice(1) : fragment;
+  let roomKey: string | undefined;
+  let hostKey: string | undefined;
+  for (const part of text.split('&')) {
+    const at = part.indexOf('=');
+    const name = at === -1 ? part : part.slice(0, at);
+    const value = at === -1 ? '' : part.slice(at + 1);
+    if (name === 'k' && roomKey === undefined) {
+      roomKey = value;
+    } else if (name === 'h' && hostKey === undefined) {
+      hostKey = value;
+    }
+  }
+  return {
+    ...(roomKey === undefined ? {} : { roomKey }),
+    ...(hostKey === undefined ? {} : { hostKey }),
+  };
+}
+
+/** `§5.1`'s fragment, `#`-included, from the two values a host holds; `''` when it holds none. */
+function fragmentFor(keys: { roomKey?: string; hostKey?: string }): string {
+  const parts: string[] = [];
+  if (keys.roomKey !== undefined && keys.roomKey !== '') {
+    parts.push(`k=${keys.roomKey}`);
+  }
+  if (keys.hostKey !== undefined && keys.hostKey !== '') {
+    parts.push(`h=${keys.hostKey}`);
+  }
+  return parts.length === 0 ? '' : `#${parts.join('&')}`;
+}
+
+/**
+ * The version an invite asks for, from the one thing that says it: `§5.1`'s fragment, which
+ * carries the room key and the host key.
+ *
+ * A `selvage/1` invite has no fragment, and a server seats a version-2 room only for a
+ * connection that can read one, so a link that names neither key is a version-1 join and stays
+ * one. The names are what is read rather than the values: whether a value is a 32-byte key is
+ * the engine's question, and it refuses a link whose key is not one in its own words rather
+ * than dialling it and being refused by a server that cannot read it either.
+ */
+export function wireVersionOf(invite: string): 'selvage/1' | 'selvage/2' {
+  const names = new Set(
+    fragmentOf(invite)
+      .replace(/^#/, '')
+      .split('&')
+      .map((part) => part.split('=')[0] ?? ''),
+  );
+  return names.has('k') && names.has('h') ? WIRE_VERSION_2 : 'selvage/1';
+}
+
+/**
+ * Whether a host mints its room at `selvage/2`, from the one setting that says so
+ * (`selvage.wireVersion`).
+ *
+ * It is a host's own choice and not a guest's: a join speaks the version the *link* names. Unset
+ * — and anything that is not version 2 — is `selvage/1`, because `selvaged --serve-version-2` is
+ * not the server's default yet and a client that minted version 2 by default would fail against
+ * every released server. The two spellings a person types are accepted, as the Neovim client's
+ * `g:selvage_wire_version` accepts them.
+ */
+export function hostsVersion2(configured: unknown): boolean {
+  return configured === 2 || configured === '2' || configured === WIRE_VERSION_2;
 }
 
 /** True for a value that opens with a scheme, `ws://` or `https://`, rather than a bare host. */
@@ -2762,29 +3248,45 @@ export function normaliseServerUrl(text: string): string {
   return addressed.replace(/\/+$/, '').replace(/\/session$/, '');
 }
 
-/** The page link for an engine's session, or `undefined` when it holds no token. */
-function pageInviteFor(engine: SelvageEngine): string | undefined {
+/**
+ * The page link for an engine's session, or `undefined` when it holds no token.
+ *
+ * `§5.1`'s fragment rides along: the connection's own invite is the wire URL with the room key
+ * and the host key on it, and a page link is the same invite over the scheme a browser speaks,
+ * so a host that handed on the query alone would hand on a link to a room nobody could join. The
+ * fragment is read off the wire invite rather than rebuilt from the engine's keys, so what a
+ * guest of a copy receives is byte for byte what the host's own invite carries.
+ */
+function pageInviteFor(engine: RoomEngine): string | undefined {
   const wire = engine.inviteUrl();
   if (wire === undefined) {
     return undefined;
   }
-  const parsed = parseSessionUrl(wire);
+  const parsed = parseSessionUrl(wireInviteFor(wire));
   const room = parsed?.join.room;
   const token = parsed?.join.token;
   if (parsed === undefined || room === undefined || room === '' || token === undefined || token === '') {
     return undefined;
   }
-  return buildPageLink(parsed.base, room, token);
+  return buildPageLink(parsed.base, room, token, fragmentKeys(fragmentOf(wire)));
 }
 
 /**
- * The wire URL an invite joins on: a page link resolves to the server its own origin names,
- * while a `ws://` invite — a room whose server serves no page — joins as it stands.
+ * The wire URL an invite joins on, without `§5.1`'s fragment: a page link resolves to the server
+ * its own origin names, while a `ws://` invite — a room whose server serves no page — joins as it
+ * stands.
+ *
+ * The fragment is stripped here, and this is the one place it is: a version-1 engine reads the
+ * whole of what it is handed as a query, so a fragment left on would glue into the token. A
+ * version-2 join is handed the fragment separately, by {@link joinVersion2}, which reads it and
+ * never puts it in a request.
  */
-function resolveInviteToWire(invite: string): string {
-  const page = parsePageLink(invite);
+export function wireInviteFor(invite: string): string {
+  const hash = invite.indexOf('#');
+  const address = hash === -1 ? invite : invite.slice(0, hash);
+  const page = parsePageLink(address);
   if (page === undefined) {
-    return invite;
+    return address;
   }
   // A page link's origin is the server, read back as the scheme a socket speaks, and the
   // base is the engine's: it goes through the one reading of one (`sessionBase`). A page
@@ -2792,7 +3294,7 @@ function resolveInviteToWire(invite: string): string {
   // refuses where it reads it.
   const server = sessionBase(serverBaseOf(page.origin));
   if (server === undefined) {
-    return invite;
+    return address;
   }
   return sessionUrl(server, page.room, page.token);
 }
