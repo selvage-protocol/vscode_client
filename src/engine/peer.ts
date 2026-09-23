@@ -36,6 +36,8 @@ import {
   seal,
 } from './sealed.ts';
 import type { DropReason, SessionKeypair, Verdict } from './sealed.ts';
+import { HOST_MUTATIONS, HostProducer } from './host.ts';
+import type { HostMutation, HostOptions, HostPublication, HostReason } from './host.ts';
 import { applyFrame, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
 
@@ -324,6 +326,12 @@ export interface PeerOptions {
   sessionSeed?: Uint8Array;
   /** The role this client believes it has been given — `guest` or `viewer`, never `host`. */
   declaredRole?: 'guest' | 'viewer';
+  /**
+   * The host's producer half (§7.1), which makes this session the room's authority rather than
+   * one of its peers. The host key's private half lives here, so a session given this can sign
+   * a state and a session without it cannot; a session with neither cannot be the host.
+   */
+  host?: HostOptions;
 }
 
 /**
@@ -344,6 +352,7 @@ export class PeerSession {
   private readonly seat: string | undefined;
   private readonly roster: Set<string>;
   private readonly reader: Reader;
+  private readonly host: HostProducer | undefined;
   private readonly doc: Y.Doc;
   private readonly awareness: Awareness;
   private readonly outbound: Uint8Array[] = [];
@@ -368,7 +377,7 @@ export class PeerSession {
   private readonly dropped: DroppedFrame[] = [];
   private readonly ignored: number[] = [];
   private ending: Ending | undefined;
-  private mutation: PeerMutation | undefined;
+  private mutation: PeerMutation | HostMutation | undefined;
   /**
    * The local edits this client made while §13.1's step 4 held its content back.
    *
@@ -378,6 +387,19 @@ export class PeerSession {
    * again under this connection's key.
    */
   private readonly unsent: Uint8Array[] = [];
+  /**
+   * The bytes of the last room state this connection **applied** (§7.1).
+   *
+   * §7.1 has a peer that holds a verified state re-send it, unchanged, when it sees a
+   * `peer.joined`, so that a joiner's state arrives while the host is away. The bytes are the
+   * ones it received: only the host key signs a state, and a peer that re-sealed or re-signed
+   * one would hand the room a frame every other peer refuses `uncommitted_key`.
+   */
+  private heldStateFrame: Uint8Array | undefined;
+  /** Every state this connection published, in the order it published it (§7.1). */
+  private readonly publishedStates: HostPublication[] = [];
+  /** The `issued` of every closing this connection published, in order (§7.1). */
+  private readonly publishedClosings: number[] = [];
   /**
    * One decision at a time, in the order the calls came.
    *
@@ -399,6 +421,7 @@ export class PeerSession {
     frameKeyBytes: Uint8Array,
     session: SessionKeypair,
     reader: Reader,
+    host: HostProducer | undefined,
   ) {
     this.roomId = options.roomId;
     this.crypto = options.crypto;
@@ -410,6 +433,10 @@ export class PeerSession {
     this.seat = options.seat;
     this.roster = new Set(options.roster ?? []);
     this.reader = reader;
+    this.host = host;
+    if (host !== undefined) {
+      host.seated(options.seat ?? '', session.public);
+    }
     // §7's document: one `Y.Doc`, one `Y.Text` per path.
     this.doc = new Y.Doc();
     this.awareness = new Awareness(this.doc);
@@ -427,7 +454,31 @@ export class PeerSession {
     if (reader === undefined || session === undefined) {
       return undefined;
     }
-    return new PeerSession(options, reader.frameKey, session, reader);
+    const host =
+      options.host === undefined
+        ? undefined
+        : await HostProducer.create(
+            options.crypto,
+            options.roomId,
+            reader.frameKey,
+            options.keepalive.awareness_renew_ms,
+            options.host,
+          );
+    if (options.host !== undefined && (host === undefined || options.seat === undefined)) {
+      // A host publishes a `peers` entry for its own connection, and the entry carries the
+      // seat `room.created` seated it under. Without one there is nothing to write, and a
+      // state whose `host` entry is missing leaves every peer with no identified host
+      // connection at all (§13.4), so this is refused where it is built.
+      return undefined;
+    }
+    const peer = new PeerSession(options, reader.frameKey, session, reader, host);
+    // §13.1: a host's order is a peer's with one difference — it publishes a state at mint,
+    // so its own state may precede any it verifies. That state is also what commits its own
+    // connection's key, which is why a host has nothing to announce.
+    if (host !== undefined) {
+      await peer.publishState(0, 'mint');
+    }
+    return peer;
   }
 
   // --- what a caller reads ------------------------------------------------------
@@ -489,7 +540,7 @@ export class PeerSession {
     return this.ending;
   }
 
-  get mutationName(): PeerMutation | undefined {
+  get mutationName(): PeerMutation | HostMutation | undefined {
     return this.mutation;
   }
 
@@ -501,6 +552,27 @@ export class PeerSession {
   /** The paths this client has open: what its own holds message carries. */
   heldPaths(): string[] {
     return [...this.held].sort();
+  }
+
+  /** Whether this connection holds the host key, which is the whole of what being the host is. */
+  get isHost(): boolean {
+    return this.host !== undefined;
+  }
+
+  /**
+   * Every room state this connection published, in the order it published them (§7.1).
+   *
+   * A state that re-sends the one this host holds is in the list with `fresh: false`: §7.1
+   * makes that the answer an announcement whose key the state already commits is owed, and the
+   * difference between a new edition and a re-send is the whole of what the rule says.
+   */
+  hostStates(): readonly HostPublication[] {
+    return this.publishedStates;
+  }
+
+  /** The `issued` of every closing this connection published, in order (§7.1). */
+  hostClosings(): readonly number[] {
+    return this.publishedClosings;
   }
 
   /**
@@ -560,6 +632,11 @@ export class PeerSession {
       return this.refuse(index, verdict.reason);
     }
     const kind = verdict.kind ?? 0;
+    if (verdict.payload?.kind === 'state') {
+      // §7.1: what a peer re-sends when it sees a `peer.joined` is the bytes it received, and
+      // those are the ones that verified.
+      this.heldStateFrame = frame;
+    }
     if (this.ignores(verdict)) {
       this.reader.issued = issued;
       this.reader.ended = ended;
@@ -592,6 +669,7 @@ export class PeerSession {
     if (this.windowPassed(clock)) {
       return;
     }
+    await this.publishState(clock, 'announcement');
     await this.reannounce(clock);
     await this.resync(clock);
     await this.announceHolds(clock);
@@ -615,22 +693,75 @@ export class PeerSession {
   /**
    * A seat has joined, from `peer.joined`.
    *
-   * §13.7 has a holder **re-announce when it sees a `peer.joined`**, so that a joiner learns the
-   * holds without asking: the whole set is due again from that moment, and the next tick is what
-   * sends it.
+   * §7.1 obliges a host to publish a state on it — which is how the joiner learns the listing
+   * and the roles without asking — and asks any peer that holds a verified state to re-send
+   * that state unchanged, so a joiner's state arrives while the host is away. §13.7 has a
+   * holder re-announce its holds on the same event.
    */
-  seatJoined(seat: string): void {
-    this.departed.delete(seat);
-    this.roster.add(seat);
-    this.holdsAnnouncedAt = undefined;
+  seatJoined(clock: number, seat: string): Promise<void> {
+    return this.serial(async () => {
+      this.host?.seatJoined(seat);
+      this.departed.delete(seat);
+      this.roster.add(seat);
+      this.holdsAnnouncedAt = undefined;
+      if (this.host !== undefined) {
+        await this.publishState(clock, 'roster');
+        return;
+      }
+      if (this.heldStateFrame !== undefined) {
+        this.republish(this.heldStateFrame);
+      }
+    });
   }
 
   /** A seat has left, from `peer.left`: §13.8's clock can arm on it and §13.7's holds go. */
-  seatLeft(clock: number, seat: string): void {
-    this.roster.delete(seat);
-    this.departed.add(seat);
-    this.dropDepartedHolds();
-    this.refreshHostAway(clock, false);
+  seatLeft(clock: number, seat: string): Promise<void> {
+    return this.serial(async () => {
+      this.host?.seatLeft(seat);
+      this.roster.delete(seat);
+      this.departed.add(seat);
+      this.dropDepartedHolds();
+      this.refreshHostAway(clock, false);
+      if (this.host !== undefined) {
+        await this.publishState(clock, 'roster');
+      }
+    });
+  }
+
+  /**
+   * The host's listing changed, from whatever watches its working tree (§7.1).
+   *
+   * A listing is replaced wholesale by every state, so this is the one thing a host's adapter
+   * has to say about it: the state that follows names the whole tree as it now is, and a
+   * shorter listing is a smaller working tree rather than a partial update (§13.3).
+   */
+  listingChanged(clock: number): Promise<void> {
+    return this.serial(async () => {
+      await this.publishState(clock, 'listing');
+    });
+  }
+
+  /**
+   * §7.1's closing: the host's statement that the room is over, above every state it published.
+   *
+   * A host that publishes one stops publishing; every peer that already holds a verified state
+   * below its `issued` applies it and ends, and §9's room dies when its last connection ends.
+   */
+  async closeRoom(): Promise<boolean> {
+    if (this.host === undefined) {
+      return false;
+    }
+    return await this.serial(async () => {
+      const publication = await this.host?.closing();
+      if (publication === undefined) {
+        this.fault ??= 'the closing could not be sealed';
+        return false;
+      }
+      this.outbound.push(publication.frame);
+      this.published += 1;
+      this.publishedClosings.push(publication.issued);
+      return true;
+    });
   }
 
   /** Opens a path: this client offers it, and its whole held set changes (§13.7). */
@@ -717,10 +848,15 @@ export class PeerSession {
   mutate(name: string): void {
     if (name === 'ignore-roles' || name === 'ignore-issued') {
       this.reader.guards.add(name);
+    } else if ((HOST_MUTATIONS as readonly string[]).includes(name)) {
+      if (this.host === undefined) {
+        throw new Error(`no host publishes here, so ${JSON.stringify(name)} removes nothing`);
+      }
+      this.host.mutate(name);
     } else if (!(PEER_MUTATIONS as readonly string[]).includes(name)) {
       throw new Error(`no mutation is named ${JSON.stringify(name)}`);
     }
-    this.mutation = name as PeerMutation;
+    this.mutation = name as PeerMutation | HostMutation;
   }
 
   // --- the rules, in the order §13 states them ----------------------------------
@@ -777,6 +913,9 @@ export class PeerSession {
       case 'holds':
         this.renewLease(clock, verdict.sender);
         break;
+      case 'announcement':
+        await this.hearAnnouncement(clock, payload.key, payload.role);
+        break;
       case 'content':
         await this.applyContent(verdict.plaintext);
         break;
@@ -788,6 +927,7 @@ export class PeerSession {
   /** What §13.3, §13.1's step 6 and §13.7 owe an applied room state. */
   private async afterState(clock: number, issued: number): Promise<void> {
     this.stateIssued = issued;
+    this.host?.verifiedState(issued);
     this.refreshHostAway(clock, true);
     this.dropDepartedHolds();
     // §13.1's steps 6 and 4: a state that commits this key is where the handshake belongs, and
@@ -877,6 +1017,11 @@ export class PeerSession {
 
   /** §13.1's step 4: the session-key announcement, `kind = 4`, signed by the key it names. */
   private async announce(clock: number): Promise<void> {
+    // A host has nothing to announce: the state it published at mint commits its own
+    // connection's key, which is what §13.1's step 4 exists to make possible.
+    if (this.host !== undefined) {
+      return;
+    }
     // §2.1's order is ascending by member name, and `key` sorts before `role`.
     const members: Record<string, string> = { key: encodeKey(this.session.public) };
     if (this.declaredRole !== undefined) {
@@ -936,6 +1081,69 @@ export class PeerSession {
   }
 
   // --- the clocks, the seats and what leaves the session -------------------------
+
+  /**
+   * §7.1: a session-key announcement the receiver accepted.
+   *
+   * A peer that is not the host owes it nothing at all — the state is the only source of the
+   * keys a receiver keeps, and an announcement is read for the host's sake (§13.3) — so the
+   * host's answer is the whole of what this decision is.
+   */
+  private async hearAnnouncement(
+    clock: number,
+    key: string,
+    role: string | undefined,
+  ): Promise<void> {
+    const host = this.host;
+    if (host === undefined) {
+      return;
+    }
+    const named = decodeKey(key);
+    if (named === undefined) {
+      return;
+    }
+    host.announcement(named, role === 'guest' || role === 'viewer' ? role : undefined);
+    await this.publishState(clock, 'announcement');
+  }
+
+  /**
+   * The state §7.1 has this host publish now, if it is due: sealed by the host key, counted as
+   * a publication, and folded into this session's own receiver.
+   *
+   * A host never receives the state it writes — the relay sends a frame to the room's *other*
+   * connections — so the receiver is folded from the value rather than from the bytes, and
+   * before anything that follows the frame (`afterState`) so that a `SyncStep1` goes out only
+   * once a state commits this connection's key (§13.1's steps 4 and 6).
+   */
+  private async publishState(clock: number, reason: HostReason): Promise<void> {
+    const host = this.host;
+    if (host === undefined) {
+      return;
+    }
+    const publication = await host.publish(clock, reason);
+    if (publication === undefined) {
+      return;
+    }
+    this.outbound.push(publication.frame);
+    this.published += 1;
+    this.publishedStates.push(publication);
+    if (!publication.fresh || publication.state === undefined) {
+      return;
+    }
+    await this.reader.applyOwn(publication.state);
+    await this.afterState(clock, publication.issued);
+  }
+
+  /**
+   * One frame this connection did not author, put on the wire as the bytes it arrived as:
+   * §7.1's re-send of a state the room holds, when a peer is seated. A frame at the edition
+   * every peer already holds is refused `stale_issued` and changes nothing; the one this
+   * re-send is for is the peer that holds none.
+   */
+  private republish(frame: Uint8Array): void {
+    this.outbound.push(frame);
+    this.published += 1;
+  }
 
   /**
    * §13.7's expiry: a peer's whole held set is forgotten once its lease has lapsed.

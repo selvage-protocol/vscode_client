@@ -13,6 +13,21 @@ export type {
 } from './engine.ts';
 export type { FrameCrypto } from './crypto.ts';
 export {
+  HOST_MUTATIONS,
+  HostProducer,
+  MAX_LISTING_BYTES,
+  MAX_LISTING_PATHS,
+} from './host.ts';
+export type {
+  HostMutation,
+  HostOptions,
+  HostPublication,
+  HostReason,
+  HostRole,
+  HostStore,
+  PersistedHost,
+} from './host.ts';
+export {
   MISSING_FRAGMENT,
   PEER_MUTATIONS,
   PeerSession,
@@ -34,6 +49,7 @@ export {
   DROP_REASONS,
   MAX_PATH_BYTES,
   Reader,
+  canonicalJson,
   decodeKey,
   encodeKey,
   hex,
