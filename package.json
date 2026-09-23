@@ -266,7 +266,7 @@
     "test:relay": "node --test test/relay.test.ts",
     "test:relay-selvaged": "node --test test/relay-selvaged.test.ts",
     "test:selvage2": "node --test test/selvage2-selvaged.test.ts",
-    "test:interop": "node --test test/interop.test.ts",
+    "test:interop": "node --test test/interop.test.ts test/interop-v2.test.ts",
     "test:peer-corpus": "node --test test/peer-corpus.test.ts",
     "subject": "node test/helpers/selvage-subject.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",

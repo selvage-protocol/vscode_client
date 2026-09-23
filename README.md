@@ -388,6 +388,7 @@ $ npm run test:fast                    # builds, then the server-free suite
 $ npm test                             # builds, then the same plus four against a real selvaged
 $ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged --serve-version-2
 $ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
+$ npm run test:interop                 # interop with a real Rust client, over both wire versions
 $ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
 ```
 
@@ -397,8 +398,9 @@ $ scripts/ci-local.sh all              # actionlint over the workflows, then the
 four tests in `test/selvaged.test.ts` need a built `selvaged` from the sibling `reference_server`
 checkout, which the workflow does not have. `test:peer-corpus` needs the sibling `specification`
 checkout for the same reason, and `SELVAGE_SPECIFICATION` names another one; `npm test` runs it
-along with `test:interop.test.ts`, which needs the sibling `reference_server` and a built
-`interop_peer`.
+along with `test/interop.test.ts` and `test/interop-v2.test.ts`, which need the sibling
+`reference_server` and an `interop_peer` built from it — the version-2 file needs one that
+speaks `selvage/2`, which is `SELVAGE_INTEROP_PEER`'s other use.
 
 ```console
 $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
