@@ -11,6 +11,48 @@ export type {
   ReconnectPolicy,
   SessionInfo,
 } from './engine.ts';
+export type { FrameCrypto } from './crypto.ts';
+export {
+  MISSING_FRAGMENT,
+  PEER_MUTATIONS,
+  PeerSession,
+  endingReason,
+  parseInvite,
+} from './peer.ts';
+export type {
+  AppliedFrame,
+  DroppedFrame,
+  Ending,
+  InviteRead,
+  Outcome,
+  PeerInvite,
+  PeerMutation,
+  PeerOptions,
+  Publication,
+} from './peer.ts';
+export {
+  DROP_REASONS,
+  MAX_PATH_BYTES,
+  Reader,
+  decodeKey,
+  encodeKey,
+  hex,
+  mintSessionKey,
+  parseEnvelope,
+  seal,
+  usablePath,
+} from './sealed.ts';
+export type {
+  Committed,
+  DropReason,
+  Envelope,
+  Payload,
+  PeerEntry,
+  RoomState,
+  SealRecipe,
+  SessionKeypair,
+  Verdict,
+} from './sealed.ts';
 export type { EngineEvent, EngineEventListener } from './events.ts';
 export type {
   Anchor,
