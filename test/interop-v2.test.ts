@@ -36,6 +36,7 @@ import assert from 'node:assert/strict';
 
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { SelvageEngine } from '../src/engine/engine.ts';
+import { isProtocolError } from '../src/engine/errors.ts';
 import { RustPeer, waitForReport } from './helpers/interop_peer.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -70,15 +71,17 @@ async function waitForPeerOn(engine: PeerEngine, displayName: string) {
 }
 
 /**
- * Runs `work` and answers why it was refused. A call that succeeds is the failure: this is the
+ * Runs `work` and answers the refusal it raised. A call that succeeds is the failure: this is the
  * shape every anti-downgrade assertion below takes, because the defect it guards against is a
- * connection that comes up rather than one that raises.
+ * connection that comes up rather than one that raises. The refusal itself and not only its
+ * sentence, because `ProtocolError.code` is the half a caller branches on and the half a refusal
+ * has to carry to be told apart from any other fault.
  */
-async function refusalOf(work: () => Promise<unknown>): Promise<string> {
+async function refusalOf(work: () => Promise<unknown>): Promise<Error> {
   try {
     await work();
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return error instanceof Error ? error : new Error(String(error));
   }
   throw new Error('the call was expected to be refused, and it succeeded');
 }
@@ -391,34 +394,60 @@ test('interop over selvage/2: a sealed invite is refused by a server that does n
   const rustRefusal = await refusalOf(() =>
     RustPeer.start({ invite: misplaced, path: PATH, name: 'Bob', version: 2 }),
   );
-  assert.match(rustRefusal, /unsupported_version/, rustRefusal);
-  assert.match(rustRefusal, /unsupported wire version selvage\/2/, rustRefusal);
+  assert.match(rustRefusal.message, /unsupported_version/, rustRefusal.message);
+  assert.match(
+    rustRefusal.message,
+    /unsupported wire version selvage\/2/,
+    rustRefusal.message,
+  );
 
   // The engine must not come up as version 1 either. It raises, and resolving is the silent
-  // downgrade this whole test exists to catch. Its own words for why are not asserted: the
-  // relay reads the server's `session.error` params nowhere, so the code it was refused with
-  // does not reach the caller (see the findings); the Rust client is what names it here.
+  // downgrade this whole test exists to catch. What it was refused with is asserted, not only
+  // that it refused: the relay reads the code and the sentence from the `session.error` event's
+  // `params`, exactly as `src/engine/engine.ts` reads them for `selvage/1`, so the same refusal
+  // the Rust client names arrives at this caller with the same code beneath it. A relay that read
+  // the wrong field refused with one generic sentence and no code at all, which left a caller
+  // unable to tell `§11`'s terminal codes apart from an ordinary fault.
   const engineRefusal = await refusalOf(() =>
     PeerEngine.join({ invite: misplaced, displayName: 'Bob' }),
   );
-  assert.ok(engineRefusal.length > 0, engineRefusal);
+  assert.ok(
+    isProtocolError(engineRefusal, 'unsupported_version'),
+    `the engine refused with ${engineRefusal.name}: ${engineRefusal.message}`,
+  );
+  assert.match(
+    engineRefusal.message,
+    /unsupported wire version selvage\/2/,
+    engineRefusal.message,
+  );
 
   // The choice is exact in both directions, and a mismatch is an error before a socket opens.
   const fragmentless = `ws://${plainServer.address}/session?room=r-1&token=t-1`;
   const toldTwo = await refusalOf(() =>
     RustPeer.start({ invite: fragmentless, path: PATH, name: 'Bob', version: 2 }),
   );
-  assert.match(toldTwo, /carries no fragment/, toldTwo);
+  assert.match(toldTwo.message, /carries no fragment/, toldTwo.message);
   const toldOne = await refusalOf(() =>
     RustPeer.start({ invite: sealed, path: PATH, name: 'Bob', version: 1 }),
   );
-  assert.match(toldOne, /two keys/, toldOne);
-  // And the engine refuses a link that names no key rather than joining it as version 1.
-  assert.ok(
-    (await refusalOf(() =>
-      PeerEngine.join({ invite: fragmentless, displayName: 'Bob' }),
-    )).length > 0,
+  assert.match(toldOne.message, /two keys/, toldOne.message);
+  // And the engine refuses a link that names no key rather than joining it as version 1. Its own
+  // sentence says so, and it is read from the link before a socket is opened: §5.1 puts the key
+  // material in the fragment, so a link without one leaves this engine nothing to dial for. The
+  // factory is armed to hold that: a refusal that dialled anyway fails here rather than passing.
+  let dialled = false;
+  const keyless = await refusalOf(() =>
+    PeerEngine.join({
+      invite: fragmentless,
+      displayName: 'Bob',
+      webSocketFactory: () => {
+        dialled = true;
+        throw new Error('the engine dialled a link whose fragment names no key');
+      },
+    }),
   );
+  assert.match(keyless.message, /carries no fragment/, keyless.message);
+  assert.ok(!dialled, 'the fragment is read before a connection is opened');
 
   // The positive control, so the refusals above are the fragment's doing and not a server that
   // seats nobody: the same `selvage/1`-only server mints a version-1 room and seats the same
