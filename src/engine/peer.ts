@@ -365,6 +365,23 @@ export class PeerSession {
   private ending: Ending | undefined;
   private mutation: PeerMutation | undefined;
   /**
+   * The state vector of the first local edit a state had not yet committed this key for.
+   *
+   * §13.1's step 4 lets a client send nothing but its announcement until a state commits its
+   * key, so an edit made before that lives in the replica and nowhere else; this is what says
+   * which part of the replica that was, so the edit reaches the room once it may.
+   */
+  private unsentSince: Uint8Array | undefined;
+  /**
+   * One decision at a time, in the order the calls came.
+   *
+   * A read, a tick and a local edit are each several awaits long and each moves this session's
+   * marks, clocks and tallies, so two of them in flight together would decide about one room
+   * from two half-applied states — and a timer's tick and a socket's frame are exactly two
+   * concurrent callers. The ordering is the session's to keep rather than the caller's.
+   */
+  private pending: Promise<unknown> = Promise.resolve();
+  /**
    * The first thing that went wrong on the way *out* — a CSPRNG that would not read, an AEAD
    * that refused its own inputs. A session cannot refuse to publish without somewhere to say
    * so, and a driver that never looks is a driver publishing nothing.
@@ -517,7 +534,11 @@ export class PeerSession {
   // --- what the caller hands in -------------------------------------------------
 
   /** One sealed frame, as the relay delivered it. */
-  async deliver(clock: number, frame: Uint8Array): Promise<Outcome> {
+  deliver(clock: number, frame: Uint8Array): Promise<Outcome> {
+    return this.serial(() => this.deliverOne(clock, frame));
+  }
+
+  private async deliverOne(clock: number, frame: Uint8Array): Promise<Outcome> {
     this.frames += 1;
     const index = this.frames - 1;
     // A closing folds into the receiver the moment it verifies, and §13.10 ignores one handed
@@ -552,7 +573,11 @@ export class PeerSession {
    * state has not committed this key since — so a driver has one path to publish it and nothing
    * has to remember to call it at the join.
    */
-  async tick(clock: number): Promise<void> {
+  tick(clock: number): Promise<void> {
+    return this.serial(() => this.tickOne(clock));
+  }
+
+  private async tickOne(clock: number): Promise<void> {
     this.expireLeases(clock);
     this.refreshHostAway(clock, false);
     if (this.ending !== undefined) {
@@ -621,7 +646,11 @@ export class PeerSession {
    * Returns whether anything went out: §13.5 and §13.9 have a `viewer` keep its edit and not
    * send it, and §13.1's step 4 has any peer keep it until a state commits its key.
    */
-  async insert(path: string, index: number, text: string): Promise<boolean> {
+  insert(path: string, index: number, text: string): Promise<boolean> {
+    return this.serial(() => this.insertOne(path, index, text));
+  }
+
+  private async insertOne(path: string, index: number, text: string): Promise<boolean> {
     const before = Y.encodeStateVector(this.doc);
     // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
     // at the end. A client any caller can silently mis-edit is not one a decision vector can
@@ -636,10 +665,26 @@ export class PeerSession {
       return false;
     }
     if (!this.mayPublish() || this.role() === 'viewer') {
+      // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
+      // later. Anyone else's is held back by §13.1's step 4 and sent by
+      // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
+      if (this.role() !== 'viewer') {
+        this.unsentSince ??= before;
+      }
       return false;
     }
     await this.publish('content', encodeUpdate(update));
     return true;
+  }
+
+  /** One task at a time, in the order the calls came; see {@link PeerSession.pending}. */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.pending.then(work, work);
+    this.pending = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -729,9 +774,31 @@ export class PeerSession {
     // whole window for it.
     if (this.commitsOurs()) {
       await this.handshakeOnce(clock);
+      await this.flushHeldBackEdits();
     } else {
       await this.announce(clock);
     }
+  }
+
+  /**
+   * Publishes the edits this connection made before a state committed its key.
+   *
+   * §13.1's step 4 held them in the replica, and a client that kept them there would leave the
+   * room without them for good: §13.1's step 6 is a `SyncStep1`, which asks the room for what
+   * this replica lacks, and nothing asks the room for what it lacks. The delta is taken from
+   * the state vector of the first held-back edit, and before a committing state no content was
+   * applied (§13.2), so it is this client's own edits and nothing else.
+   */
+  private async flushHeldBackEdits(): Promise<void> {
+    if (this.unsentSince === undefined || this.role() === 'viewer') {
+      return;
+    }
+    const update = Y.encodeStateAsUpdate(this.doc, this.unsentSince);
+    this.unsentSince = undefined;
+    if (update.length === 0) {
+      return;
+    }
+    await this.publish('content', encodeUpdate(update));
   }
 
   /** §13.2 and §13.3: a `kind = 0` plaintext, applied to the session document and answered. */

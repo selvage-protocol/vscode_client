@@ -218,6 +218,42 @@ test('a corrupted tag is a signature failure and not an AEAD one', async () => {
   );
 });
 
+test('a varUint refuses a value it cannot encode, rather than looping or truncating', () => {
+  assert.throws(() => varuint(-1), RangeError, 'a negative count has no terminator to write');
+  assert.throws(() => varuint(Number.NaN), RangeError);
+  assert.throws(() => varuint(1.5), RangeError);
+  assert.throws(() => varuint(Number.MAX_SAFE_INTEGER + 2), RangeError);
+});
+
+test('a frame whose fields are not the ones §6.1 writes is not sealed', async () => {
+  const now = await room();
+  const base = {
+    roomId: ROOM,
+    frameKey: now.frameKey,
+    kind: 3,
+    epoch: 0,
+    counter: 1,
+    nonce: new Uint8Array(12).fill(9),
+    signer: now.peer,
+  };
+  assert.ok((await seal(nodeCrypto, base, text({ holds: [] }))) !== undefined);
+  for (const broken of [
+    { ...base, counter: -1 },
+    { ...base, counter: 1.5 },
+    { ...base, kind: Number.NaN },
+    { ...base, epoch: -0.5 },
+    { ...base, nonce: new Uint8Array(11) },
+    { ...base, frameKey: new Uint8Array(31) },
+    { ...base, signer: { seed: now.peer.seed.slice(0, 31), public: now.peer.public } },
+  ]) {
+    assert.equal(
+      await seal(nodeCrypto, broken, text({ holds: [] })),
+      undefined,
+      JSON.stringify(broken).slice(0, 80),
+    );
+  }
+});
+
 test('left-over bytes and a truncated frame are not envelopes', async () => {
   const now = await room();
   const raw = await frame(now.peer, 3, 1, text({ holds: [] }));
@@ -542,6 +578,45 @@ test('step 10 refuses only content, and only from a key the state gives role vie
   assert.ok((await read.read(await holds(now.peer, 3, ['README.md']))).ok);
   // message type 1 (awareness), then a length of zero.
   assert.ok((await read.read(await frame(now.peer, 0, 4, Uint8Array.from([1, 0])))).ok);
+});
+
+test('content is read from the whole stream, not from its first message', async () => {
+  const now = await room();
+  const read = await reader(false);
+  assert.ok(
+    (
+      await read.read(
+        await state(now.host, 1, ['README.md'], [[now.host, 'host', 'p-host'], [now.peer, 'viewer', 'p-viewer']]),
+      )
+    ).ok,
+  );
+  // A SyncStep1, then an Update: the receiver that applies a frame reads both messages, so a
+  // check that read only the first would let a `viewer`'s edit through.
+  const step = Uint8Array.from([0, 0, 0]);
+  const update = Uint8Array.from([0, 2, 0]);
+  const both = Uint8Array.from([...step, ...update]);
+  assert.equal((await read.read(await frame(now.peer, 0, 1, both))).reason, 'unauthorised_content');
+  // A padded spelling of the message type — `80 00` is 0 — is the same message type.
+  const padded = Uint8Array.from([0x80, 0x00, 0, 0]);
+  assert.equal((await read.read(await frame(now.peer, 0, 2, padded))).reason, undefined);
+  // The frame above is a request; the update after it in the next frame is content again.
+  assert.equal(
+    (await read.read(await frame(now.peer, 0, 3, Uint8Array.from([1, 0, ...update])))).reason,
+    'unauthorised_content',
+    'awareness first does not make the update after it any less content',
+  );
+});
+
+test('two reads in flight decide in the order they were handed over', async () => {
+  const now = await room();
+  const read = await reader(true);
+  const raw = await holds(now.peer, 1, ['src/main.rs']);
+  const [first, second] = await Promise.all([read.read(raw), read.read(raw)]);
+  assert.ok(first.ok, 'the first read applies the frame');
+  assert.equal(second.reason, 'replayed_counter', 'and the second is the replay it is');
+  assert.deepEqual(read.holds.get(hex((await nodeCrypto.sha256(now.peer.public)).slice(0, 8))), [
+    'src/main.rs',
+  ]);
 });
 
 test('the guards a census removes are the two client rules in the byte layer', async () => {
