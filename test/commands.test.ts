@@ -69,6 +69,19 @@ function overBound(units: number): string {
 }
 
 /**
+ * What the mirror holds on disk for a room path: the text the bridge wrote back, or why it
+ * could not be read. A wait that ran out reports it, so a failure says whether the room's
+ * text reached the window at all or only the buffer did not take it.
+ */
+function mirrorDiskText(storage: string, room: string, path: string): string {
+  try {
+    return readFileSync(join(mirrorWindowDir(storage, room), ...path.split('/')), 'utf8');
+  } catch (error) {
+    return `not readable: ${String(error)}`;
+  }
+}
+
+/**
  * What the status bar says the room offers. The bar is the only place this client publishes the
  * room's own document set, so it is what a test reads to know a `documents` report has landed.
  * Found by name: the session's item is not the only one the window can hold while a follow
@@ -2806,8 +2819,17 @@ test('fetch of a path the window already holds resolves without asking again', a
     offsetAt: (position: number) => position,
     save: () => Promise.resolve(true),
   });
-  await waitFor('the opened path to hold the room text', () =>
-    holder.text === 'already here\n' ? true : false,
+  await waitFor(
+    'the opened path to hold the room text',
+    () => (holder.text === 'already here\n' ? true : false),
+    {
+      describe: () => ({
+        buffer: holder.text,
+        mirror: mirrorDiskText(storage, roomId, 'notes/a.md'),
+        room: roomOffer(bundle),
+        errors: bundle.stub.registered.errors,
+      }),
+    },
   );
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
   const done = await waitFor('the fetched report', () =>
@@ -2822,6 +2844,75 @@ test('fetch of a path the window already holds resolves without asking again', a
     'a fetch that asked for nothing announced a hold',
   );
   assert.equal(fetchNotices(bundle).length, 0, 'a fetch that asked for nothing waited');
+});
+
+test('a room text that lands while the hold on its path is unanswered still renders', async (t) => {
+  // The window a loaded runner opens on its own, made the test's own ordering: the room's
+  // text lands while the `doc.open` behind the open document is still in flight. The server
+  // records that hold at once and withholds its answer until the test releases it, so the
+  // text is published into the flight rather than the test hoping to land inside it.
+  const { host, server, invite, roomId } = await room(t, []);
+  await host.grant(['notes/a.md']);
+  // The host's own open is answered: the guest's hold is the one this test holds back.
+  await host.open('notes/a.md');
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
+  await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
+
+  let answerOpen!: () => void;
+  server.openAnswerHold = new Promise<void>((resolve) => {
+    answerOpen = resolve;
+  });
+  const holder = { text: '' };
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      holder.text += change.text;
+    }
+    return true;
+  };
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'notes/a.md' });
+  const uri = mirrorFileUri(storage, roomId, 'notes/a.md');
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes(uri) ? true : false,
+  );
+  bundle.stub.fire('openTextDocument', {
+    uri: bundle.stub.Uri.parse(uri),
+    eol: 1,
+    isDirty: false,
+    getText: () => holder.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    save: () => Promise.resolve(true),
+  });
+  await waitFor('the room to be asked to open the path', () =>
+    server.requests.some(
+      (call) =>
+        call.client === 'Bob' && call.method === 'doc.open' && call.path === 'notes/a.md',
+    )
+      ? true
+      : false,
+  );
+  // The room's text lands inside that flight. The engine attaches its observer silently on
+  // the answer, so an update that carried the text before the answer and reported nothing
+  // leaves this buffer empty over the room's text — and a window that keeps it would write
+  // that emptiness back over the room on the next keystroke.
+  host.insert('notes/a.md', 0, 'already here\n');
+  await waitFor(
+    'the opened path to hold the room text',
+    () => (holder.text === 'already here\n' ? true : false),
+    {
+      describe: () => ({
+        buffer: holder.text,
+        mirror: mirrorDiskText(storage, roomId, 'notes/a.md'),
+        room: roomOffer(bundle),
+        errors: bundle.stub.registered.errors,
+      }),
+    },
+  );
+  // The answer the room owes for a hold it recorded: released last, so the answer is never
+  // what brings the text in. The buffer already holds the room's text at this point.
+  answerOpen();
 });
 
 test('fetch of a directory holds every listed path under it', async (t) => {

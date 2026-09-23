@@ -146,6 +146,14 @@ export class FakeServer {
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
   readonly unansweredOpens = new Set<string>();
   /**
+   * When set, the answer to a `doc.open` waits for it first, so a hold can be left in flight
+   * for exactly as long as a test says: the window a loaded runner opens on its own, made the
+   * test's own ordering. The hold itself is recorded on the server at once — the room's set
+   * moves as the real server's would — and only the answer, and the `doc.opened` that follows
+   * it, wait.
+   */
+  openAnswerHold: Promise<void> | undefined = undefined;
+  /**
    * The wire version each connection claimed in its `session.hello`, in arrival order. What a
    * client speaks is otherwise invisible to a test without a real server: the version is not in
    * any reply, and a v2 hello against a server that seats only v1 is refused rather than
@@ -598,16 +606,24 @@ export class FakeServer {
           client.holds.delete(path);
           this.release(room, path);
         }
-        this.respond(client, id, { documents: room.documents });
-        this.broadcast(
-          room,
-          {
-            peer_id: client.id,
-            path,
-            documents: room.documents,
-          },
-          message.method === method.docOpen ? event.docOpened : event.docClosed,
-        );
+        const answer = (): void => {
+          this.respond(client, id, { documents: room.documents });
+          this.broadcast(
+            room,
+            {
+              peer_id: client.id,
+              path,
+              documents: room.documents,
+            },
+            message.method === method.docOpen ? event.docOpened : event.docClosed,
+          );
+        };
+        if (message.method === method.docOpen && this.openAnswerHold !== undefined) {
+          const held = this.openAnswerHold;
+          void held.then(answer);
+          return;
+        }
+        answer();
         return;
       }
       case method.sessionHello: {
