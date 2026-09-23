@@ -45,15 +45,15 @@ import type { Anchor, AwarenessState, OffsetSelection, Presence, Selection } fro
 import type { PeerInfo } from './envelope.ts';
 
 /**
- * Whether a session's clocks may hold a process open.
+ * Whether the engine's clocks may hold a process open.
  *
- * A timer that is not `unref`ed keeps a Node process alive until it is cleared, and a session
- * that is never destroyed therefore never lets its process end. Nothing a session does is work
- * the machine has to wait for — §13.8's clocks are the caller's own elapsed time — so every
- * timer this module starts is unreferenced, and the browser, where there is no such thing, is
- * left alone by the optional call.
+ * A timer that is not `unref`ed keeps a Node process alive until it is cleared, and a session or
+ * a relay that is never destroyed therefore never lets its process end. Nothing either of them
+ * does is work the machine has to wait for — §13.8's clocks are the caller's own elapsed time —
+ * so every timer the engine starts is unreferenced, and the browser, where there is no such
+ * thing, is left alone by the optional call.
  */
-function unrefTimer(timer: unknown): void {
+export function unrefTimer(timer: unknown): void {
   const handle = timer as { unref?: () => void } | undefined;
   handle?.unref?.();
 }
