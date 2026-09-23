@@ -2024,17 +2024,20 @@ export class Session {
    * never received, which is the state `§13.9` calls worse than a refusal.
    *
    * An edit the bridge itself applied is not a keystroke: the buffer then holds the replica's
-   * text, and the comparison below is what tells the two apart. The `applying` guard covers the
-   * window where an apply is in flight, where the buffer may be behind the replica.
+   * text, and the comparison below is what tells the two apart. The `applyingTo` guard covers
+   * the window where an apply of this window's own is in flight and the replica has moved on
+   * since it was issued, where the buffer holds the text that apply asked for rather than the
+   * replica's — per path, so an apply for another document never excuses an edit in this one.
    *
    * Returns whether this call was a viewer's edit, which is the whole of what a caller owes it.
    */
   private refuseViewerEdit(document: vscode.TextDocument, path: string): boolean {
-    if (this.role() !== 'viewer' || this.editor.applying()) {
+    if (this.role() !== 'viewer') {
       return false;
     }
     const room = this.engine.text(path);
-    if (matchesReplica(document.getText(), room)) {
+    const held = document.getText();
+    if (matchesReplica(held, room) || this.editor.applyingTo(path, held)) {
       return false;
     }
     void this.editor.putBack(path, document, room);

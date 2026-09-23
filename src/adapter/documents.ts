@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { diff } from '../bridge/index.ts';
+import { applyChange, diff } from '../bridge/index.ts';
 import type {
   Cursor,
   EditorHost,
@@ -86,8 +86,13 @@ export class WorkspaceEditor implements EditorHost {
    * than on every open event and every save.
    */
   private readonly unshareable = new Set<string>();
-  /** How many applies this window has in flight; see {@link applying}. */
-  private offers = 0;
+  /**
+   * The text each in-flight apply of this window's asked its document to hold, by room path:
+   * what tells a change event whether it is this window's own edit or a keystroke
+   * (`{@link applyingTo}`). One entry per apply, because an apply issued while another is still
+   * in flight — a put-back over a put-back, which a fast typist produces — is its own answer.
+   */
+  private readonly askedFor = new Map<string, string[]>();
 
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
@@ -179,15 +184,14 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined) {
       return false;
     }
-    this.offers += 1;
-    try {
-      return await this.offer(document, change);
-    } finally {
-      this.offers -= 1;
-    }
+    return this.offer(path, document, change);
   }
 
-  private async offer(document: vscode.TextDocument, change: TextChange): Promise<boolean> {
+  private async offer(
+    path: string,
+    document: vscode.TextDocument,
+    change: TextChange,
+  ): Promise<boolean> {
     // `false` means the editor refused the change and the buffer is unchanged: the editor
     // stamps a workspace edit with the version its document mirror holds and refuses one whose
     // version has moved, so a `false` says the range — not the change — no longer fits. The
@@ -218,8 +222,17 @@ export class WorkspaceEditor implements EditorHost {
         ),
         offered.text,
       );
-      if (await vscode.workspace.applyEdit(edit)) {
-        return true;
+      // What the buffer holds if this edit lands, recorded for as long as the apply is in
+      // flight: the change event the editor fires for it arrives inside that window, and it is
+      // this — not a count of everything in flight — that says whose edit the buffer holds.
+      const expected = applyChange(before, offered);
+      this.noteAsked(path, expected);
+      try {
+        if (await vscode.workspace.applyEdit(edit)) {
+          return true;
+        }
+      } finally {
+        this.forgetAsked(path, expected);
       }
       const current = document.getText();
       if (current === before) {
@@ -242,7 +255,8 @@ export class WorkspaceEditor implements EditorHost {
    *
    * The caller passes the document rather than a path because the change event that asked for
    * this is the one holding it, and a document the room has since stopped sharing has nothing
-   * to put back.
+   * to put back. `false` is the editor refusing every offer: the buffer then still holds the
+   * edit, and the caller is what says so.
    */
   async putBack(path: string, document: vscode.TextDocument, text: string): Promise<boolean> {
     const held = document.getText();
@@ -253,11 +267,38 @@ export class WorkspaceEditor implements EditorHost {
   }
 
   /**
-   * Whether an apply of this window's own is in flight. A change event seen while one is has
-   * the buffer behind the replica on purpose, and is not a keystroke to refuse.
+   * Whether an apply of this window's own has asked this document to hold `text` and has not
+   * settled. A change event carrying it is this window's own edit landing, not a keystroke.
+   *
+   * Per path and by text, because neither a count of the applies in flight nor the path alone
+   * can tell the two apart: an apply for another path says nothing about this one, and an apply
+   * for this path that has not landed has not moved this buffer either (`§13.9`).
    */
-  applying(): boolean {
-    return this.offers > 0;
+  applyingTo(path: string, text: string): boolean {
+    return this.askedFor.get(path)?.includes(text) ?? false;
+  }
+
+  private noteAsked(path: string, text: string): void {
+    const texts = this.askedFor.get(path);
+    if (texts === undefined) {
+      this.askedFor.set(path, [text]);
+      return;
+    }
+    texts.push(text);
+  }
+
+  private forgetAsked(path: string, text: string): void {
+    const texts = this.askedFor.get(path);
+    if (texts === undefined) {
+      return;
+    }
+    const at = texts.lastIndexOf(text);
+    if (at >= 0) {
+      texts.splice(at, 1);
+    }
+    if (texts.length === 0) {
+      this.askedFor.delete(path);
+    }
   }
 
   async save(path: string): Promise<boolean> {
@@ -316,6 +357,7 @@ export class WorkspaceEditor implements EditorHost {
     this.documents.clear();
     this.paths.clear();
     this.unshareable.clear();
+    this.askedFor.clear();
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {

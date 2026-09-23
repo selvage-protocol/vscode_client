@@ -537,8 +537,17 @@ interface StandInDocument {
  * makes this a test of the adapter rather than of a join: what the extension does when the role
  * it reads becomes `viewer` is the whole of what is under test, and the room behind it is the
  * stub's.
+ *
+ * `room` is the replica's text, which is LF-only; `eol` is the document's own, so a CRLF
+ * document is one holding the same text rendered. The door a test can hold shut is `hold`: an
+ * apply the adapter issues is left unanswered until `release`, which is the window a second
+ * keystroke or a change of the room's own text can land in.
  */
-function viewerSession(t: TestContext): {
+function viewerSession(
+  t: TestContext,
+  room = "the room's own text",
+  eol = 1,
+): {
   bundle: LoadedExtension;
   session: { role(): string; dispose(): void };
   text(): string;
@@ -546,17 +555,26 @@ function viewerSession(t: TestContext): {
   type(next: string): void;
   inserts: Array<{ path: string; text: string }>;
   setRole(role: string): void;
+  /** The room's text moving without a keystroke: what the bridge is told to reconcile. */
+  roomMoved(next: string): void;
+  /** Leaves every apply the adapter issues unanswered until {@link release}. */
+  hold(): void;
+  release(): void;
+  /** Whether the adapter is waiting on an apply it issued. */
+  waiting(): boolean;
+  /** How many applies the adapter has asked the editor for. */
+  applyCount(): number;
 } {
   const bundle = loadBundle();
   bundle.stub.reset();
   bundle.stub.configure({ openOnJoin: false });
   const adapter = adapterExports();
 
-  let held = 'the room\'s own text';
+  let held = eol === 1 ? room : room.replaceAll('\n', '\r\n');
   // The room's replica, which is not the buffer: a keystroke moves the buffer first and the
   // replica only when the bridge publishes it, which is the whole of what a refused edit turns
   // on.
-  let replica = held;
+  let replica = room;
   const document: StandInDocument = {
     uri: {
       scheme: 'file',
@@ -565,7 +583,7 @@ function viewerSession(t: TestContext): {
       query: '',
       toString: () => `file://${MIRROR_ROOT}/${PATH}`,
     },
-    eol: 1,
+    eol,
     isDirty: false,
     getText: () => held,
     positionAt: (offset: number) => positionIn(held, offset),
@@ -573,8 +591,13 @@ function viewerSession(t: TestContext): {
     save: () => Promise.resolve(true),
   };
   // Every change the adapter offers the editor is applied to the stand-in, as the editor's own
-  // model would; a change the editor refuses is `applyEdit` answering `false`.
-  bundle.stub.registered.applyEditImpl = (edit: unknown) => {
+  // model would; a change the editor refuses is `applyEdit` answering `false`. An apply the test
+  // is holding is answered only when it says so, so a change event can arrive while the apply
+  // that caused it is still in flight — which is when an editor delivers it.
+  let releaseApply: (() => void) | undefined;
+  let holding = false;
+  let asks = 0;
+  const apply = (edit: unknown): void => {
     const edits =
       (edit as { edits: Array<{ range: { start: StubPosition; end: StubPosition }; text: string }> })
         .edits;
@@ -583,12 +606,26 @@ function viewerSession(t: TestContext): {
       const end = offsetIn(held, change.range.end);
       held = `${held.slice(0, start)}${change.text}${held.slice(end)}`;
     }
+  };
+  bundle.stub.registered.applyEditImpl = (edit: unknown) => {
+    asks += 1;
+    if (holding) {
+      return new Promise<boolean>((settle) => {
+        releaseApply = () => {
+          apply(edit);
+          settle(true);
+        };
+      });
+    }
+    apply(edit);
     return Promise.resolve(true);
   };
   bundle.stub.registered.textDocuments.push(document);
 
   const inserts: Array<{ path: string; text: string }> = [];
-  const listeners = new Set<(event: { type: string; peers: unknown[] }) => void>();
+  const listeners = new Set<
+    (event: { type: string; peers: unknown[]; path?: string }) => void
+  >();
   let role = 'guest';
   const engine = {
     session: () => ({
@@ -662,6 +699,23 @@ function viewerSession(t: TestContext): {
         listener({ type: 'peersChanged', peers: [] });
       }
     },
+    roomMoved: (next: string) => {
+      replica = next;
+      for (const listener of listeners) {
+        listener({ type: 'documentChanged', path: PATH, peers: [] });
+      }
+    },
+    hold: () => {
+      holding = true;
+    },
+    release: () => {
+      holding = false;
+      const go = releaseApply;
+      releaseApply = undefined;
+      go?.();
+    },
+    waiting: () => releaseApply !== undefined,
+    applyCount: () => asks,
   };
 }
 
@@ -699,4 +753,54 @@ test("a viewer's document refuses a local edit, and the room says so once", (t) 
     1,
     'the room was told twice',
   );
+});
+
+test("a viewer's keystroke lands while its own put-back is still in flight", async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+
+  // The first keystroke is refused and the room's text is put back, with that apply held open.
+  window.hold();
+  window.type(`${room} and mine`);
+  assert.equal(window.waiting(), true, 'the adapter never asked the editor to put the text back');
+
+  // A second keystroke arrives in that window. The apply in flight is for this path, but it
+  // asked for the room's text, which is not what the buffer holds now: this is still a
+  // keystroke, and it is the bridge that must not hear it.
+  window.type(`${room} and mine more`);
+  assert.deepEqual(window.inserts, [], "a viewer's keystroke reached the bridge");
+  assert.equal(window.room(), room, "the room's replica took a viewer's edit");
+
+  window.release();
+  await waitFor('the put-back to land', () => window.text() === room);
+  assert.equal(window.text(), room, 'the buffer kept text the room never received');
+});
+
+test("a change the bridge applied is not a viewer's keystroke", async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+  const landed = `${room}, from the room`;
+  const moved = `${landed} and on`;
+
+  // The room's text arrives and the bridge asks the editor for it; the apply is left in flight,
+  // so the change event below is one an editor delivers inside that window.
+  window.hold();
+  window.roomMoved(landed);
+  // The room moves on again before the editor reports the change the first apply asked for, so
+  // the buffer holds what that apply asked for and not what the replica holds now.
+  window.roomMoved(moved);
+  window.type(landed);
+  assert.equal(
+    window.applyCount(),
+    1,
+    "the bridge's own apply was taken for a keystroke and put back",
+  );
+  assert.deepEqual(window.inserts, [], "a viewer's document published content");
+
+  // And the room's own text is what the buffer ends on, not the text of the apply the adapter
+  // would have mistaken for an edit.
+  window.release();
+  await waitFor('the room\'s own text to land', () => window.text() === moved);
 });
