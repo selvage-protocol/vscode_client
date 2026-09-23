@@ -124,6 +124,19 @@ jobs:
           path: ${{ steps.package.outputs.vsix }}
           if-no-files-found: error
 
+      # The commit this `.vsix` was packaged from, read from the checkout that built it rather
+      # than from `$GITHUB_SHA`, so `publish` can compare the two. The pair is what makes "the
+      # tag and the package name the same commit" a check instead of an argument: adding a
+      # `ref:` to the checkout above would be caught there rather than publish silently.
+      - name: record the commit the package was built from
+        run: git rev-parse HEAD > packaged-commit.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaged-commit
+          path: packaged-commit.txt
+          if-no-files-found: error
+
       # Installed here, in the job that already runs `npm ci` and holds no write
       # permission, rather than in `publish`: `@vscode/vsce` is third-party code with its own
       # install scripts, and `publish` should run only the resulting binary, never `npm
@@ -182,6 +195,10 @@ jobs:
           name: vsce-publish
           path: vsce-publish
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packaged-commit
+
       # Node to run the `vsce` entry point downloaded above; nothing is installed with it.
       # Moved ahead of tagging and the Marketplace login so the check below can use it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -198,6 +215,23 @@ jobs:
       # of "No such file or directory" three steps into the privileged half of this job.
       - name: verify the extension publisher is present
         run: node ./vsce-publish/node_modules/@vscode/vsce/vsce --version
+
+      # The `.vsix` this job is about to publish came from `build` in this run, and the tag is
+      # about to be created or moved to `$GITHUB_SHA`. Both facts are asserted rather than
+      # assumed: the commit `build` packaged from is read out of its artifact and compared with
+      # this job's checkout and with the run's own sha. A mismatch stops the job before the tag
+      # is touched and before anything is published, so a package built from a different commit
+      # than the tag names is a red run and not a silent release.
+      - name: verify the package came from this run's commit
+        run: |
+          packaged=$(cat packaged-commit.txt)
+          checked_out=$(git rev-parse HEAD)
+          if [ "$packaged" != "$checked_out" ] || [ "$checked_out" != "$GITHUB_SHA" ]; then
+            printf 'refusing: the .vsix was packaged from %s, this job checked out %s, this run is %s\n' \
+              "$packaged" "$checked_out" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+          echo "the .vsix was packaged from ${packaged}, which is this run's commit"
 
       # Tags are resolved against `origin`, not local refs: the checkout may not have
       # fetched them. An existing tag must point at this run's commit; anything else is
