@@ -124,6 +124,36 @@ export function varuint8Array(raw: Uint8Array): Uint8Array {
 }
 
 /**
+ * The canonical form of a JSON value (`CANONICAL.md` §2): members ascending by name, no
+ * whitespace, an absent member omitted rather than written as `null`, and strings as
+ * `JSON.stringify` already writes them (§2.3).
+ *
+ * The sort is not decoration. §2.1 orders members by name, and JavaScript does not leave an
+ * object's own order alone: a name that spells an integer is enumerated first, ascending, so
+ * an object built in canonical order can still serialise out of it — and a `peers` member
+ * whose name is a 43-character key is a string a hostile key could make all digits. The four
+ * sealed payloads are written here for that reason, and a `kind = 1` state's `peers` is the
+ * one §2.7 does not order by anything else.
+ */
+export function canonicalJson(value: unknown): Uint8Array {
+  return utf8.encode(canonicalText(value));
+}
+
+function canonicalText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalText).join(',')}]`;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const members = Object.entries(value as Record<string, unknown>)
+      .filter(([, member]) => member !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([name, member]) => `${JSON.stringify(name)}:${canonicalText(member)}`);
+    return `{${members.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
  * One `varUint`, and the offset after it; `undefined` when the bytes run out inside it.
  *
  * A value this reader cannot hold — the encoding runs past 2^53−1 — is refused here rather
@@ -878,6 +908,20 @@ export class Reader {
       plaintext,
       payload,
     };
+  }
+
+  /**
+   * Folds a room state this connection authored into the receiver, exactly as §13.3 folds one
+   * it applied: the keys, the roles, the listing and the `issued` mark.
+   *
+   * A host never receives its own state back — the relay sends a frame to the room's *other*
+   * connections (`PROTOCOL.md` §7.1) — so the state it publishes is the state it holds, and
+   * this is the step that makes that true. Without it a host would hold no listing, no
+   * committed key and no `issued`, and would refuse the content its peers send under the state
+   * it just wrote.
+   */
+  async applyOwn(state: RoomState): Promise<void> {
+    await this.applyState(state);
   }
 
   private async applyState(state: RoomState): Promise<void> {

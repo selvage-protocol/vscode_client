@@ -686,18 +686,26 @@ test('a seat joining makes the held set due again, and one leaving loses its hol
   const now = await room();
   const peer = await session();
   await peer.tick(0);
-  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  const held = await state(now.host, 1, [[now.ours, 'guest', 'p-self']]);
+  await peer.deliver(1, held);
   peer.open('README.md');
   await peer.tick(2);
   peer.takeOutbound();
 
-  // §13.7: a holder MUST re-announce when it sees a `peer.joined`, so that a joiner learns the
-  // holds without asking — and not only when the renewal clock comes round.
-  peer.seatJoined('p-new');
+  // §7.1: a peer that holds a verified state re-sends it, unchanged, when it sees a
+  // `peer.joined`, so that a joiner's state arrives while the host is away; §13.7: a holder MUST
+  // re-announce its held set on the same event, so that a joiner learns the holds without
+  // asking — and neither waits for the renewal clock.
+  await peer.seatJoined(2, 'p-new');
   await peer.tick(2 + 1);
   const out = peer.takeOutbound();
-  assert.equal(out.length, 1, 'the set is announced at once, not at the end of the window');
-  assert.deepEqual((await publishedFrame(out[0] as Uint8Array)).payload, { holds: ['README.md'] });
+  assert.equal(out.length, 2, 'the state goes back, then the held set');
+  assert.deepEqual(
+    [...(out[0] as Uint8Array)],
+    [...held],
+    'the re-sent state is the bytes that verified, unchanged',
+  );
+  assert.deepEqual((await publishedFrame(out[1] as Uint8Array)).payload, { holds: ['README.md'] });
 });
 
 test('a peer that leaves loses its holds at once, and a seat the roster never knew does not', async () => {
@@ -708,9 +716,9 @@ test('a peer that leaves loses its holds at once, and a seat the roster never kn
   await peer.deliver(2, await holds(now.peer, 1, ['README.md']));
   assert.equal(peer.peerHolds().size, 1);
 
-  peer.seatLeft(3, 'p-nobody');
+  await peer.seatLeft(3, 'p-nobody');
   assert.equal(peer.peerHolds().size, 1, 'a seat the roster never knew is left to its lease');
-  peer.seatLeft(4, 'p-other');
+  await peer.seatLeft(4, 'p-other');
   assert.equal(peer.peerHolds().size, 0, 'the roster is the authority on who is present');
 });
 
@@ -748,7 +756,7 @@ test('a peer.left for the seat the host entry labels arms the clock', async () =
   await peer.tick(500);
   assert.equal(peer.end, undefined, 'the host is seated');
 
-  peer.seatLeft(600, 'p-host');
+  await peer.seatLeft(600, 'p-host');
   await peer.tick(600 + EXPIRE_MS - 1);
   assert.equal(peer.end, undefined);
   await peer.tick(600 + EXPIRE_MS);

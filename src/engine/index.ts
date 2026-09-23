@@ -3,8 +3,7 @@
  * an editor. Import from here rather than from the individual modules.
  */
 
-export { SelvageEngine } from './engine.ts';
-export type {
+export { SelvageEngine } from './engine.ts';export type {
   ConnectOptions,
   JoinOptions,
   KeepaliveClock,
@@ -13,13 +12,27 @@ export type {
 } from './engine.ts';
 export type { FrameCrypto } from './crypto.ts';
 export {
+  HOST_MUTATIONS,
+  HostProducer,
+  MAX_LISTING_BYTES,
+  MAX_LISTING_PATHS,
+} from './host.ts';
+export type {
+  HostMutation,
+  HostOptions,
+  HostPublication,
+  HostReason,
+  HostRole,
+  HostStore,
+  PersistedHost,
+} from './host.ts';
+export {
   MISSING_FRAGMENT,
   PEER_MUTATIONS,
   PeerSession,
   endingReason,
   parseInvite,
-} from './peer.ts';
-export type {
+} from './peer.ts';export type {
   AppliedFrame,
   DroppedFrame,
   Ending,
@@ -34,6 +47,7 @@ export {
   DROP_REASONS,
   MAX_PATH_BYTES,
   Reader,
+  canonicalJson,
   decodeKey,
   encodeKey,
   hex,
