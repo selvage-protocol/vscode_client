@@ -20,6 +20,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 import { RelaySession } from '../src/engine/relay.ts';
+import { isProtocolError } from '../src/engine/errors.ts';
+import { SelvageEngine } from '../src/engine/engine.ts';
 import { baseOf } from './helpers/base.ts';
 import {
   BUNDLE,
@@ -310,12 +312,6 @@ test('the page link says the version the fragment names, for the guest as well a
   const { server, invite } = await hosted(t, { wireVersion: V2 });
   const room = keysOf(invite).room;
 
-  // A link without the fragment is a `selvage/1` invite: it joins no version-2 room, and it is
-  // not refused either — it is a join that speaks the version every released server seats.
-  const token = keysOf(invite).token ?? '';
-  const legacy = `http://${new URL(invite).host}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
-  assert.equal(keysOf(legacy).roomKey, undefined);
-
   // The guest, in its own window. The join reloads onto the room's mirror, and the listing it
   // lands on there is the property that matters: a version-2 room's tree is sealed under the
   // key the fragment carries, so a mirror holding it is a fragment that reached the engine.
@@ -330,6 +326,24 @@ test('the page link says the version the fragment names, for the guest as well a
     server.hellos,
     [V2, V2],
     `the guest did not speak the version the link named: ${JSON.stringify(server.hellos)}`,
+  );
+
+  // The same room reached without the fragment is a `selvage/1` invite, and a room is pinned
+  // to the version that minted it: that hello is refused rather than seated, so nothing about
+  // a version-2 room is reachable without the fragment that names it.
+  const token = keysOf(invite).token ?? '';
+  const legacy = `http://${new URL(invite).host}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
+  assert.equal(keysOf(legacy).roomKey, undefined);
+  const { wireInviteFor } = adapterExports();
+  await assert.rejects(
+    SelvageEngine.join(wireInviteFor(legacy), 'Bob'),
+    (error: unknown) => isProtocolError(error, 'unsupported_version'),
+    'a fragment-less link to this room was seated',
+  );
+  assert.deepEqual(
+    server.hellos,
+    [V2, V2, V1],
+    `the fragment-less link did not reach the room as a version-1 hello: ${JSON.stringify(server.hellos)}`,
   );
 });
 

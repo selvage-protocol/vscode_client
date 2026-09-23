@@ -61,9 +61,9 @@ export interface FakeServerOptions {
    *
    * The version's server is a room registry, a relay and a timer, which is what this already
    * is for the frames that version uses — `session.hello`, `session.rename`, the opaque binary
-   * relay and the room's membership — so a room pinned to it behaves here exactly as it does
-   * against the reference server. `test/selvaged.test.ts` and `test/relay-selvaged.test.ts` are
-   * what run the real one.
+   * relay and the room's membership — and a room minted here is pinned to the version that
+   * minted it, as the reference server pins one. `test/selvaged.test.ts` and
+   * `test/relay-selvaged.test.ts` are what run the real one.
    */
   serveVersion2?: boolean;
   /**
@@ -89,6 +89,8 @@ interface Room {
   token: string;
   hostId: string | null;
   peers: Set<string>;
+  /** The wire version the minting connection spoke: a room serves that one and no other. */
+  version: string;
   documents: string[];
   /** The host's listing, in the order it was published: the server never normalises it. */
   grant: string[];
@@ -397,6 +399,7 @@ export class FakeServer {
         token: hex(16),
         hostId: client.id,
         peers: new Set([client.id]),
+        version,
         documents: [],
         grant: [],
       };
@@ -422,6 +425,13 @@ export class FakeServer {
     const existing = this.rooms.get(room);
     if (existing === undefined) {
       this.refuse(client, code.roomUnknown, `no such room: ${room}`);
+      return;
+    }
+    // A room is pinned to the version its minting connection spoke, so a connection speaking
+    // the other one is refused rather than seated — judged before the token, as `§11` orders
+    // the checks on a frame and as the reference server judges them.
+    if (version !== existing.version) {
+      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
       return;
     }
     if (token === undefined || token !== existing.token) {
