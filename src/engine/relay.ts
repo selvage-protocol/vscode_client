@@ -537,6 +537,14 @@ export class RelaySession {
     return this.clock();
   }
 
+  /**
+   * The awareness client id this connection announced (`§8.4`): the id the room records for this
+   * seat, and the one the states it publishes carry, so a peer can attribute a caret to a seat.
+   */
+  awarenessClientId(): number | undefined {
+    return this.awarenessId;
+  }
+
   /** Resolves a peer's selection to offsets in this replica (`§8.1`). */
   resolveSelection(path: string, selection: Selection): OffsetSelection | undefined {
     return this.session?.resolveSelection(path, selection);
@@ -969,16 +977,25 @@ function defaultFactory(url: string): WebSocketLike {
   return new WebSocket(url) as unknown as WebSocketLike;
 }
 
+/**
+ * One `PeerInfo` from an event's params, in either shape the version's events use: a
+ * `peer.joined` wraps its record under `peer`, and a handshake reply names its own seat and the
+ * seats already in the room inline. `role` is not read here: `selvage/2`'s server seats nobody
+ * as anything, so the role comes from the room state (§13.4).
+ */
 function peerOf(value: unknown): RelayPeer | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  const peerId = typeof value['peer_id'] === 'string' ? value['peer_id'] : undefined;
-  const displayName = typeof value['display_name'] === 'string' ? value['display_name'] : undefined;
+  const record = isRecord(value['peer']) ? value['peer'] : value;
+  const peerId = typeof record['peer_id'] === 'string' ? record['peer_id'] : undefined;
+  const displayName =
+    typeof record['display_name'] === 'string' ? record['display_name'] : undefined;
   if (peerId === undefined || displayName === undefined) {
     return undefined;
   }
-  const awareness = typeof value['awareness_client_id'] === 'number' ? value['awareness_client_id'] : undefined;
+  const awareness =
+    typeof record['awareness_client_id'] === 'number' ? record['awareness_client_id'] : undefined;
   return {
     peer_id: peerId,
     display_name: displayName,

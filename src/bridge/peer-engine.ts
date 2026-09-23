@@ -26,7 +26,12 @@ import type { SessionInfo } from '../engine/engine.ts';
 import type { EngineEvent, EngineEventListener } from '../engine/events.ts';
 import { endingReason } from '../engine/peer.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from '../engine/presence.ts';
-import type { RelayEvent, RelaySession } from '../engine/relay.ts';
+import { RelaySession } from '../engine/relay.ts';
+import type { RelayEvent, RelayHostOptions, RelayJoinOptions } from '../engine/relay.ts';
+import type { HostStore } from '../engine/host.ts';
+import type { FrameCrypto } from '../engine/crypto.ts';
+import type { Keepalive } from '../engine/envelope.ts';
+import type { WebSocketFactory } from '../engine/transport.ts';
 
 import type { Engine } from './bridge.ts';
 
@@ -35,6 +40,49 @@ export interface PeerEngineOptions {
   relay: RelaySession;
   /** The display name this connection seated with, which the relay labels its own record with. */
   displayName: string;
+}
+
+/**
+ * The working tree a host shares (`§7.1`), as the adapter that watches it sees it.
+ *
+ * A listing is read when a state is published and replaced wholesale by the state that follows,
+ * so the adapter hands in one place to read it and one to say it changed — the same shape the
+ * companion's own folder watcher has.
+ */
+export interface PeerListing {
+  current(): readonly string[];
+  replace(paths: readonly string[]): void;
+}
+
+/** What opening a room needs, beyond what the relay is handed. */
+export interface PeerTransportOptions {
+  crypto?: FrameCrypto;
+  webSocketFactory?: WebSocketFactory;
+  /** Free-form client identifier, for diagnostics (`PROTOCOL.md` §5). */
+  client?: string;
+  /** Overrides the clocks the server advertises (`§8.2`). The server's numbers are the room's. */
+  keepalive?: Partial<Keepalive>;
+  /** How long the upgrade and the handshake may take together. */
+  handshakeTimeoutMs?: number;
+}
+
+export interface PeerHostOptions extends PeerTransportOptions {
+  baseUrl: string;
+  displayName: string;
+  listing: PeerListing;
+  /** The room key and the host key's seed, for a host that holds them from an earlier session. */
+  roomKey?: Uint8Array;
+  hostSeed?: Uint8Array;
+  /** Where the host key and its `issued` are kept (`§7.1`); omitted is an in-memory host. */
+  store?: HostStore;
+}
+
+export interface PeerJoinOptions extends PeerTransportOptions {
+  /** The invite link, either form, with its fragment: the wire URL or the page link. */
+  invite: string;
+  displayName: string;
+  /** The role this connection declares in its announcement; the state is what assigns it. */
+  declaredRole?: 'guest' | 'viewer';
 }
 
 export class PeerEngine implements Engine {
@@ -50,6 +98,62 @@ export class PeerEngine implements Engine {
   private hostGrace: number | undefined;
   /** The replica's text per path, which is how a content frame becomes a `documentChanged`. */
   private readonly texts = new Map<string, string>();
+
+  /**
+   * Mints a room and hands back the engine an adapter drives.
+   *
+   * The listing lives here rather than at the call site because §7.1's state is sealed from it:
+   * `grant` replaces it and publishes the state that follows in one step, so an adapter cannot
+   * say the tree changed and have the room hear the previous one.
+   */
+  static async host(options: PeerHostOptions): Promise<PeerEngine> {
+    const listing = options.listing;
+    const relayOptions: RelayHostOptions = {
+      baseUrl: options.baseUrl,
+      displayName: options.displayName,
+      listing: () => listing.current(),
+      ...(options.crypto === undefined ? {} : { crypto: options.crypto }),
+      ...(options.webSocketFactory === undefined
+        ? {}
+        : { webSocketFactory: options.webSocketFactory }),
+      ...(options.client === undefined ? {} : { client: options.client }),
+      ...(options.roomKey === undefined ? {} : { roomKey: options.roomKey }),
+      ...(options.hostSeed === undefined ? {} : { hostSeed: options.hostSeed }),
+      ...(options.store === undefined ? {} : { store: options.store }),
+      ...(options.keepalive === undefined ? {} : { keepalive: options.keepalive }),
+      ...(options.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
+    };
+    const engine = new PeerEngine({
+      relay: await RelaySession.host(relayOptions),
+      displayName: options.displayName,
+    });
+    engine.listingSource = listing;
+    return engine;
+  }
+
+  /** Joins the room an invite names, from either form of the link. */
+  static async join(options: PeerJoinOptions): Promise<PeerEngine> {
+    const relayOptions: RelayJoinOptions = {
+      invite: options.invite,
+      displayName: options.displayName,
+      ...(options.crypto === undefined ? {} : { crypto: options.crypto }),
+      ...(options.webSocketFactory === undefined
+        ? {}
+        : { webSocketFactory: options.webSocketFactory }),
+      ...(options.client === undefined ? {} : { client: options.client }),
+      ...(options.declaredRole === undefined ? {} : { declaredRole: options.declaredRole }),
+      ...(options.keepalive === undefined ? {} : { keepalive: options.keepalive }),
+      ...(options.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
+    };
+    return new PeerEngine({
+      relay: await RelaySession.join(relayOptions),
+      displayName: options.displayName,
+    });
+  }
 
   constructor(options: PeerEngineOptions) {
     this.relay = options.relay;
@@ -174,14 +278,13 @@ export class PeerEngine implements Engine {
 
   /** Publishes the working tree this host shares: the room's whole listing (`§7.1`). */
   async grant(paths: readonly string[]): Promise<void> {
-    this.granted = [...paths];
+    this.listingSource?.replace(paths);
     await this.relay.listingChanged();
   }
 
   /** The room's listing as this replica holds it, which is what the room shares. */
   grantedPaths(): string[] {
-    const listing = this.relay.listing();
-    return listing.length > 0 ? [...listing] : this.granted;
+    return [...this.relay.listing()];
   }
 
   /** Ends the connection. The socket closes, the clock stops and the session is released. */
@@ -190,7 +293,8 @@ export class PeerEngine implements Engine {
     this.relay.disconnect();
   }
 
-  private granted: string[] = [];
+  /** Where a host's listing is read and written; a joiner has none and grants nothing. */
+  private listingSource: PeerListing | undefined;
 
   // --- the events -------------------------------------------------------------
 
