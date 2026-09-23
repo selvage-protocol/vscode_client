@@ -35,11 +35,14 @@ import {
   Reader,
   seal,
 } from './sealed.ts';
-import type { DropReason, SessionKeypair, Verdict } from './sealed.ts';
+import type { DropReason, Committed, SessionKeypair, Verdict } from './sealed.ts';
 import { HOST_MUTATIONS, HostProducer } from './host.ts';
 import type { HostMutation, HostOptions, HostPublication, HostReason } from './host.ts';
-import { applyFrame, encodeSyncStep1, encodeUpdate } from './sync.ts';
+import { applyFrame, encodeAwareness, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
+import { buildPresence, sameAwareness, toAnchor, toRelativePosition } from './presence.ts';
+import type { Anchor, AwarenessState, OffsetSelection, Presence, Selection } from './presence.ts';
+import type { PeerInfo } from './envelope.ts';
 
 /**
  * Whether a session's clocks may hold a process open.
@@ -341,6 +344,17 @@ export interface PeerOptions {
   /** The role this client believes it has been given — `guest` or `viewer`, never `host`. */
   declaredRole?: 'guest' | 'viewer';
   /**
+   * The awareness client id this connection is known by, which is the id its
+   * `session.hello` announces (`PROTOCOL.md` §5, §8.4).
+   *
+   * y-protocols seeds one from the document's own id, and a peer's cursor is attributed by
+   * joining the id the server records for the connection to the awareness state that arrives
+   * under it — so a session minted its own and one announced by the caller would be two
+   * numbers for one connection, and every peer would draw this client's caret as a stranger's.
+   * Left out, this session mints one, which is what a caller with no handshake does.
+   */
+  awarenessClientId?: number;
+  /**
    * The host's producer half (§7.1), which makes this session the room's authority rather than
    * one of its peers. The host key's private half lives here, so a session given this can sign
    * a state and a session without it cannot; a session with neither cannot be the host.
@@ -369,6 +383,12 @@ export class PeerSession {
   private readonly host: HostProducer | undefined;
   private readonly doc: Y.Doc;
   private readonly awareness: Awareness;
+  /** The local awareness state this connection published, so a renewal republishes it (§8.2). */
+  private localState: AwarenessState | null = null;
+  /** The clock of the renewal that last published the local state (§8.2). */
+  private awarenessRenewedAt: number | undefined;
+  /** The clock of the most recent tick or delivery, which a queued frame is stamped with. */
+  private clockOfLastMove = 0;
   private readonly outbound: Uint8Array[] = [];
   private readonly held = new Set<string>();
   private holdsSent: string[] = [];
@@ -464,6 +484,56 @@ export class PeerSession {
     // read on that same clock. `destroy()` clears it, and a caller that forgets would otherwise
     // hold its process open for ever: `unref` is what makes forgetting cost nothing.
     unrefTimer(this.awareness._checkInterval);
+    const minted = this.awareness.clientID;
+    if (options.awarenessClientId !== undefined) {
+      // The id the handshake announced, so the states this connection publishes and the peer
+      // records that attribute them agree (§8.4).
+      this.awareness.clientID = options.awarenessClientId >>> 0;
+    }
+    if (minted !== this.awareness.clientID) {
+      // y-protocols seeds a local `{}` under the id it minted with the document, and moving to
+      // the handshake's id would leave that state behind as a record of a peer that does not
+      // exist — it would answer `presence()` under a stranger's id for the whole session.
+      this.awareness.states.delete(minted);
+      this.awareness.meta.delete(minted);
+    }
+    // A session that holds no cursor publishes none: the seed above is a state a peer would
+    // read as a participant with no caret.
+    this.awareness.setLocalState(null);
+    this.wireAwareness();
+  }
+
+  /**
+   * §8: the awareness states this client publishes, and the local state's renewal.
+   *
+   * A state applied from a peer's frame is not re-broadcast — awareness converges peer to peer
+   * and the relay only carries it — while every local change is one frame carrying the clients
+   * it touched, which is what §8.2's renewal is too: the same state on a newer clock.
+   */
+  private wireAwareness(): void {
+    this.awareness.on(
+      'update',
+      (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+        if (origin !== 'local') {
+          return;
+        }
+        const clients = [...changes.added, ...changes.updated, ...changes.removed];
+        if (clients.length === 0) {
+          return;
+        }
+        void this.serial(async () => {
+          // §13.1's step 4 holds every frame but the announcement back until a state commits
+          // this key; §13.9 lets a `viewer` publish its awareness, so role decides nothing here.
+          if (!this.mayPublish()) {
+            return;
+          }
+          await this.publish('content', encodeAwareness(this.awareness, clients));
+          // §8.2's renewal clock is measured from the state that last went out, whichever
+          // caller published it: a caret moved by hand is a renewal of the same state.
+          this.awarenessRenewedAt = this.clockOfLastMove;
+        });
+      },
+    );
   }
 
   /** A connection's session: §13.1's steps 1 and 2, and nothing sent yet. */
@@ -642,6 +712,65 @@ export class PeerSession {
     return paths.sort();
   }
 
+  /** Whether this replica holds text for a path. */
+  has(path: string): boolean {
+    return this.doc.share.has(path);
+  }
+
+  /**
+   * The role the applied state gives this connection's own key (§13.4), and `undefined` while
+   * no state commits that key.
+   *
+   * It is what tells an adapter that its editor is read-only: §13.9 lets a `viewer` edit its own
+   * screen and publishes none of it, and the role is the state's word rather than the
+   * connection's claim, which is why the declared one is not the answer.
+   */
+  ownRole(): string | undefined {
+    return this.role();
+  }
+
+  /**
+   * The roles the applied state assigns, by the seat each committed key is labelled (§7.1).
+   *
+   * A seat may hold one key (§7.1), so this is a map and not a list; a key the state names
+   * without a seat label is left out rather than labelled with nothing.
+   */
+  rolesBySeat(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const entry of this.committedEntries()) {
+      out.set(entry.peerId, entry.role);
+    }
+    return out;
+  }
+
+  /**
+   * Every awareness state this client holds, attributed to the seats the caller knows (§8.4).
+   *
+   * The session knows the ids and the roles; the names and the seats are the relay's, so a
+   * caller that holds them hands them in — `buildPresence` is the one place the two meet.
+   */
+  presence(peers: Iterable<PeerInfo>, local: PeerInfo): Presence[] {
+    return buildPresence(this.awareness, peers, local);
+  }
+
+  /**
+   * Resolves a peer's selection to offsets in this replica, or `undefined` when either endpoint
+   * does not resolve — a document that has not arrived resolves later, which is why a caller
+   * resolves on demand rather than once (§8.1).
+   */
+  resolveSelection(path: string, selection: Selection): OffsetSelection | undefined {
+    const text = this.textIfPresent(path);
+    if (text === undefined) {
+      return undefined;
+    }
+    const anchor = this.resolveAnchor(path, text, selection.anchor);
+    const head = this.resolveAnchor(path, text, selection.head);
+    if (anchor === undefined || head === undefined) {
+      return undefined;
+    }
+    return { anchor, head };
+  }
+
   // --- what the caller hands in -------------------------------------------------
 
   /** One sealed frame, as the relay delivered it. */
@@ -650,6 +779,7 @@ export class PeerSession {
   }
 
   private async deliverOne(clock: number, frame: Uint8Array): Promise<Outcome> {
+    this.clockOfLastMove = clock;
     this.frames += 1;
     const index = this.frames - 1;
     // A closing folds into the receiver the moment it verifies, and §13.10 ignores one handed
@@ -694,6 +824,7 @@ export class PeerSession {
   }
 
   private async tickOne(clock: number): Promise<void> {
+    this.clockOfLastMove = clock;
     this.expireLeases(clock);
     this.refreshHostAway(clock, false);
     if (this.ending !== undefined) {
@@ -706,6 +837,26 @@ export class PeerSession {
     await this.reannounce(clock);
     await this.resync(clock);
     await this.announceHolds(clock);
+    this.renewAwareness(clock);
+  }
+
+  /**
+   * §8.2's renewal: the same local state on a newer awareness clock, which is what a peer's
+   * expiry window measures. It runs on the renewal clock and not on every tick — a caller that
+   * moves the session more often than `awareness_renew_ms` republishes nothing early, because a
+   * state that goes out on every tick is a state another client applies on every one. A cleared
+   * state stays cleared: publishing `{}` would put a live presence with a cursor at nowhere back
+   * on the wire.
+   */
+  private renewAwareness(clock: number): void {
+    if (this.localState === null) {
+      return;
+    }
+    if (this.awarenessRenewedAt !== undefined && clock - this.awarenessRenewedAt < this.renew) {
+      return;
+    }
+    this.awarenessRenewedAt = clock;
+    this.awareness.setLocalState(this.localState);
   }
 
   /** Takes what this session has published, in the order it published it. */
@@ -812,35 +963,65 @@ export class PeerSession {
   }
 
   /**
-   * Releases every path. §13.7 asks for the empty set rather than for silence, so the room
-   * learns in one hop instead of waiting out a lease.
+   * Releases a path, or every path when given none. §13.7 asks for the empty set rather than
+   * for silence, so the room learns in one hop instead of waiting out a lease.
    */
-  release(): void {
-    this.held.clear();
+  release(path?: string): void {
+    if (path === undefined) {
+      this.held.clear();
+      return;
+    }
+    this.held.delete(path);
   }
 
   /**
    * A local edit, published as the delta it produced and never as the whole document.
    *
+   * The edit lands in the replica **before this call returns a promise**: an adapter reads the
+   * replica back synchronously after a keystroke — the bridge diffs the buffer against it — and
+   * one that had to wait for a seal would compute the same keystroke a second time. What is
+   * serialized is the publication, in the order the calls came.
+   *
    * Returns whether anything went out: §13.5 and §13.9 have a `viewer` keep its edit and not
    * send it, and §13.1's step 4 has any peer keep it until a state commits its key.
    */
   insert(path: string, index: number, text: string): Promise<boolean> {
-    return this.serial(() => this.insertOne(path, index, text));
+    const update = this.editLocally(path, (handle) => {
+      // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
+      // at the end. A client any caller can silently mis-edit is not one a decision vector can
+      // drive, so it is refused.
+      if (index < 0 || index > handle.length) {
+        throw new Error(`there is no offset ${index} in ${JSON.stringify(path)}`);
+      }
+      handle.insert(index, text);
+    });
+    return this.publishEdit(update);
   }
 
-  private async insertOne(path: string, index: number, text: string): Promise<boolean> {
-    // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
-    // at the end. A client any caller can silently mis-edit is not one a decision vector can
-    // drive, so it is refused.
-    if (index < 0 || index > this.length(path)) {
-      throw new Error(`there is no offset ${index} in ${JSON.stringify(path)}`);
-    }
-    // The update this edit's own transaction produced, and not a diff over the document: a
-    // state-vector diff carries the whole delete set — a peer's deletion of a peer's text
-    // included — and that is a change this connection did not make and must not publish under
-    // its own key. `LOCAL_ORIGIN` is what tells the two apart: peer content is applied under
-    // `APPLIED_ORIGIN`.
+  /** A local deletion, published exactly as {@link PeerSession.insert} publishes an insertion. */
+  remove(path: string, index: number, length: number): Promise<boolean> {
+    const update = this.editLocally(path, (handle) => {
+      if (index < 0 || length < 0 || index + length > handle.length) {
+        throw new Error(
+          `there is no range ${index}..${index + length} in ${JSON.stringify(path)}`,
+        );
+      }
+      handle.delete(index, length);
+    });
+    return this.publishEdit(update);
+  }
+
+  /**
+   * Applies one local change to the replica and returns the update it produced, or `undefined`
+   * for a change that produced none.
+   *
+   * The update is the one this edit's own transaction produced, and not a diff over the
+   * document: a state-vector diff carries the whole delete set — a peer's deletion of a peer's
+   * text included — and that is a change this connection did not make and must not publish
+   * under its own key. `LOCAL_ORIGIN` is what tells the two apart: peer content is applied
+   * under `APPLIED_ORIGIN`.
+   */
+  private editLocally(path: string, edit: (handle: Y.Text) => void): Uint8Array | undefined {
     const captured: Uint8Array[] = [];
     const capture = (update: Uint8Array, origin: unknown): void => {
       if (origin === LOCAL_ORIGIN) {
@@ -850,25 +1031,112 @@ export class PeerSession {
     const handle = this.doc.getText(path);
     this.doc.on('update', capture);
     try {
-      this.doc.transact(() => handle.insert(index, text), LOCAL_ORIGIN);
+      this.doc.transact(() => {
+        edit(handle);
+      }, LOCAL_ORIGIN);
     } finally {
       this.doc.off('update', capture);
     }
-    if (captured.length === 0) {
-      return false;
-    }
-    const update = Y.mergeUpdates(captured);
-    if (!this.mayPublish() || this.role() === 'viewer') {
-      // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
-      // later. Anyone else's is held back by §13.1's step 4 and sent by
-      // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
-      if (this.role() !== 'viewer') {
-        this.unsent.push(update);
+    return captured.length === 0 ? undefined : Y.mergeUpdates(captured);
+  }
+
+  /** Puts one local edit's update on the wire, or holds it back, in call order. */
+  private publishEdit(update: Uint8Array | undefined): Promise<boolean> {
+    return this.serial(async () => {
+      if (update === undefined) {
+        return false;
       }
-      return false;
+      if (!this.mayPublish() || this.role() === 'viewer') {
+        // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
+        // later. Anyone else's is held back by §13.1's step 4 and sent by
+        // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
+        if (this.role() !== 'viewer') {
+          this.unsent.push(update);
+        }
+        return false;
+      }
+      await this.publish('content', encodeUpdate(update));
+      return true;
+    });
+  }
+
+  // --- presence -----------------------------------------------------------------
+
+  /**
+   * Publishes this client's presence: document path plus selection. `null` clears it.
+   *
+   * A state that says what the last one said is not published: y-protocols emits an `update`
+   * for every `setLocalState`, changed or not, and §8.2's renewal is deliberately the same state
+   * on a newer clock — which the library's own renewal clock runs, not this.
+   */
+  setAwareness(state: AwarenessState | null): void {
+    if (sameAwareness(this.localState, state)) {
+      return;
     }
-    await this.publish('content', encodeUpdate(update));
-    return true;
+    this.localState = state;
+    this.awareness.setLocalState(state);
+  }
+
+  /**
+   * Publishes a selection given as editor offsets (UTF-16 code units), converting each endpoint
+   * to the anchor the wire carries (§8.1). Offsets stop at this seam.
+   *
+   * A selection this replica cannot anchor is not published: when the text is not here yet, or
+   * an endpoint is past its end, the state carries the path and no selection (§8.1).
+   */
+  setSelection(path: string, selection: OffsetSelection): void {
+    const text = this.textIfPresent(path);
+    if (text === undefined || selection.anchor > text.length || selection.head > text.length) {
+      this.setAwareness({ path });
+      return;
+    }
+    this.setAwareness({
+      path,
+      selection: {
+        anchor: toAnchor(Y.createRelativePositionFromTypeIndex(text, selection.anchor)),
+        head: toAnchor(Y.createRelativePositionFromTypeIndex(text, selection.head)),
+      },
+    });
+  }
+
+  /** The `Y.Text` a path already names, without creating one (§8.1's sender rule). */
+  private textIfPresent(path: string): Y.Text | undefined {
+    return this.doc.share.has(path) ? this.doc.getText(path) : undefined;
+  }
+
+  /** One endpoint, against the `Y.Text` named by `path` and no other type (§8.1). */
+  private resolveAnchor(path: string, text: Y.Text, anchor: Anchor): number | undefined {
+    if (anchor.tname !== undefined && anchor.tname !== path) {
+      return undefined;
+    }
+    const absolute = Y.createAbsolutePositionFromRelativePosition(
+      toRelativePosition(anchor),
+      this.doc,
+    );
+    if (absolute === null || absolute.type !== text) {
+      return undefined;
+    }
+    return absolute.index;
+  }
+
+  /** The committed entries of the applied state, sorted by key spelling (§6.1's order). */
+  private committedEntries(): Committed[] {
+    return this.reader.entries();
+  }
+
+  /**
+   * Resolves when every decision this session has in flight has settled.
+   *
+   * A caller that changed something publishes nothing synchronously — the crypto seam is
+   * asynchronous — so a socket reader that drains what the session produced has to know when
+   * there is nothing left to drain. Without this, a caret is published at the next renewal
+   * window, which is a whole `awareness_renew_ms` of a stale cursor.
+   */
+  whenIdle(): Promise<void> {
+    return this.pending.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   /** One task at a time, in the order the calls came; see {@link PeerSession.pending}. */
@@ -1242,6 +1510,27 @@ export class PeerSession {
       }
     }
     return undefined;
+  }
+
+  /**
+   * The seat the applied state names as the room's host connection, or `undefined` while no
+   * state does (§13.4: a client with none MUST NOT guess one).
+   */
+  namedHostSeat(): string | undefined {
+    return this.hostSeat();
+  }
+
+  /**
+   * §13.8's host-away clock: how long the room may still hold together with the host's own
+   * connection gone, or `undefined` while that connection is present (or while no state names
+   * one, in which case nothing is owed). A caller shows this and does not end anything with it;
+   * the window's expiry ends the session, and that is this session's own decision.
+   */
+  hostAwayGraceMs(clock: number): number | undefined {
+    if (this.hostAwaySince === undefined) {
+      return undefined;
+    }
+    return Math.max(0, this.expire - (clock - this.hostAwaySince));
   }
 
   /**

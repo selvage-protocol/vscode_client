@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseInvite } from '../src/engine/peer.ts';
-import { RelaySession } from '../src/node/relay.ts';
+import { RelaySession } from '../src/engine/relay.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
 

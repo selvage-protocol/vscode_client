@@ -59,3 +59,5 @@ export {
   isGrantedPath,
   sortGrant,
 } from './grant.ts';
+export { PeerEngine } from './peer-engine.ts';
+export type { PeerEngineOptions } from './peer-engine.ts';

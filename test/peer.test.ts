@@ -280,7 +280,10 @@ test('an edit past the end of the text is refused, and a guest publishes its del
   assert.equal(peer.publishedCount, 2);
   assert.equal((await publishedFrame(out[0] as Uint8Array)).kind, 0);
 
-  await assert.rejects(peer.insert('README.md', 7, '!'), /no offset 7/);
+  // Thrown rather than rejected: an edit past the end is the caller's bug, and the session
+  // applies the edit before it returns — a promise that could only settle later would leave the
+  // replica a caller reads back out of step with the call it just made.
+  assert.throws(() => peer.insert('README.md', 7, '!'), /no offset 7/);
   assert.equal(peer.length('README.md'), 5, 'and nothing was applied');
 });
 
