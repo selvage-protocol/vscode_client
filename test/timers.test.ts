@@ -51,7 +51,9 @@ function runFixture(): Promise<Outcome> {
       clearTimeout(deadline);
       reject(error);
     });
-    child.on('exit', (code, signal) => {
+    // `close` and not `exit`: the child's pipes are drained by then, and a `ready` still in
+    // the pipe when `exit` fires would read as a fixture that never opened its sessions.
+    child.on('close', (code, signal) => {
       clearTimeout(deadline);
       resolve_({ code, signal, stdout, stderr, timedOut });
     });
