@@ -162,8 +162,10 @@ test('the invite URL is the connection URL, and is taken apart again', () => {
   assert.deepEqual(parseJoinQuery('extra=1&room=r'), { room: 'r' });
   assert.deepEqual(parseJoinQuery(''), {});
 
-  // Percent decoding is byte-wise and '+' is a space, as the reference implementation has it.
-  assert.equal(percentDecode('a+b'), 'a b');
+  // Percent decoding is byte-wise and RFC 3986's: `%XX` is the only escape, and a literal
+  // '+' is '+', never a space (PROTOCOL.md §5.1), as the reference decoder has it.
+  assert.equal(percentDecode('a+b'), 'a+b');
+  assert.equal(percentDecode('a%2Bb'), 'a+b');
   assert.equal(percentDecode('%E2%9C%93'), '✓');
   assert.equal(percentDecode('100%'), '100%');
   assert.equal(percentDecode('%2'), '%2');
