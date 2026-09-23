@@ -913,3 +913,26 @@ test("a viewer's undo is refused once the room has moved past its put-back", asy
   window.releaseLast();
   await waitFor("the room's newest text to land", () => window.text() === moved);
 });
+
+test('a put-back refused after another converged the buffer is not reported', async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+
+  // Two fast keystrokes, each refusing and issuing its own put-back. The editor refuses a range
+  // whose document moved under it, as a version stamp does.
+  window.refuseMoved();
+  window.hold();
+  window.type(`${room} and mine`);
+  window.type(`${room} and mine more`);
+  assert.equal(window.pending(), 2, 'the two put-backs were not both issued');
+
+  // The second put-back lands and converges the buffer; the first is then refused under the
+  // stamp it moved under, and the rebase has no position for its change. The refusal no longer
+  // describes the buffer — that is the room's text — so nothing is reported.
+  window.releaseLast();
+  window.release();
+  await settled();
+  assert.equal(window.text(), room, 'the buffer did not end on the room text');
+  assert.deepEqual(window.errors(), [], 'a refusal the buffer had already answered was reported');
+});

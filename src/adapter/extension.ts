@@ -2046,18 +2046,36 @@ export class Session {
     // received, with no apply of the bridge's behind it to converge it: the report is the
     // bridge's own for two texts that are apart and stay apart, and it is the only thing that
     // says so. The keystroke is still not the room's, whatever the editor did with it.
+    //
+    // The answer is not read as the state, though: a put-back that answers `false` can have
+    // been converged by the keystroke's own successor, and then the buffer already holds the
+    // room's text (`{@link reportRefusedPutBack}` reads it back).
     void this.editor.putBack(path, document, room).then(
       (back) => {
-        if (!back) {
-          this.onReport({ kind: 'applyRefused', path });
+        if (back) {
+          return;
         }
+        this.reportRefusedPutBack(document, path);
       },
       () => {
-        this.onReport({ kind: 'applyRefused', path });
+        this.reportRefusedPutBack(document, path);
       },
     );
     this.sayViewerOnce();
     return true;
+  }
+
+  /**
+   * Says that a put-back the editor refused left the buffer holding text the room does not.
+   *
+   * The buffer is re-read against the replica as it stands now rather than trusted to the
+   * answer the put-back gave, because a refusal describes the state it met and the buffer may
+   * have moved since.
+   */
+  private reportRefusedPutBack(document: vscode.TextDocument, path: string): void {
+    if (!matchesReplica(document.getText(), this.engine.text(path))) {
+      this.onReport({ kind: 'applyRefused', path });
+    }
   }
 
   /**
