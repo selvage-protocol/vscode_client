@@ -466,10 +466,15 @@ test('a dropped socket publishes nothing under the key it held, and the re-seat 
   peer.takeOutbound();
 
   // A frame the live connection queued under the key it holds, which the dead socket takes with
-  // it: the reseat is a new key, and the room commits nothing under the old one.
+  // it: the re-seat is a new key, and the room commits nothing under the old one.
   peer.open('theirs.md');
   await peer.tick(1);
   peer.detach();
+  assert.equal(
+    peer.takeOutbound().length,
+    0,
+    'the dead socket takes the frame it never sent, rather than it going out on the new one',
+  );
 
   // An edit sealed under that key now is a frame every peer refuses `uncommitted_key`, so it is
   // held back instead and published by the state that commits the new key (§13.1's step 4).
@@ -478,11 +483,6 @@ test('a dropped socket publishes nothing under the key it held, and the re-seat 
 
   const newSeat = 'p-new';
   await peer.reseat(newSeat, ['p-host'], 0);
-  assert.equal(
-    peer.takeOutbound().length,
-    0,
-    'a frame sealed under the dropped key is not sent on the new socket',
-  );
 
   const recommit = await frame(
     now.host,

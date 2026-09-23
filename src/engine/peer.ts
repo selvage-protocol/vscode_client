@@ -397,8 +397,9 @@ export class PeerSession {
    *
    * The session key a dropped connection held is not one the room will commit again, so an edit
    * sealed under it now is a frame every peer refuses `uncommitted_key`. A detached session
-   * therefore publishes nothing: what it would have sent goes to {@link unsent} instead, and the
-   * state that commits the re-seat's key flushes it.
+   * therefore publishes nothing — what it would have sent goes to {@link unsent} instead, and the
+   * state that commits the re-seat's key flushes it — and keeps nothing queued for the socket
+   * that went (see {@link detach}).
    */
   private detached = false;
   private readonly held = new Set<string>();
@@ -954,9 +955,6 @@ export class PeerSession {
       }
       this.session = session;
       this.detached = false;
-      // Whatever the dead socket left queued was sealed under the old key, which the next state
-      // drops from the roster: sent on the new socket it is a frame every peer refuses.
-      this.outbound.splice(0, this.outbound.length);
       this.seat = seat;
       this.roster = new Set(roster);
       const previousAwareness = this.awareness.clientID;
@@ -1398,9 +1396,15 @@ export class PeerSession {
   /**
    * The socket under this session is gone: it keeps its replica and its holds, and publishes
    * nothing under the key the dead connection held until {@link reseat} seats a new one (§9.1).
+   *
+   * What that socket left queued goes with it, and here rather than at the re-seat: those frames
+   * are sealed under the key being left, and a re-dial that has the new socket before the re-seat
+   * has run would put them on it — where every peer refuses them, and where the edit they carry
+   * is not in {@link unsent} to be published later.
    */
   detach(): void {
     this.detached = true;
+    this.outbound.splice(0, this.outbound.length);
   }
 
   /** §13.1's step 4: the session-key announcement, `kind = 4`, signed by the key it names. */

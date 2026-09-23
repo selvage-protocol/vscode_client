@@ -902,7 +902,9 @@ export class RelaySession {
     // The drop is what makes the key this session holds unusable: the room will not commit it
     // again, so an edit sealed under it now is a frame every peer refuses. Detaching sends
     // those edits to the held-back set instead, which the state that commits the new key
-    // flushes (§13.1's step 4).
+    // flushes (§13.1's step 4), and drops what the dead socket never sent — here, and not when
+    // the re-dial has its socket, because that socket would be handed frames sealed under the
+    // key the room is about to drop.
     this.session.detach();
     this.scheduleReconnect();
   }
