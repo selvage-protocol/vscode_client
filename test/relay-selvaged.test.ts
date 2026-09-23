@@ -22,14 +22,18 @@ const SEED = 'a room two relays share\n';
 
 /** A host and a guest, and the invite between them, seated over the real server. */
 async function pair(server: RealServer): Promise<{ host: RelaySession; guest: RelaySession }> {
+  // A shorter renewal interval than the server advertises, so the session's own clocks run
+  // during a test: §13.7's holds are published on the tick that changes them.
+  const keepalive = { awareness_renew_ms: 50, awareness_expire_ms: 5000 };
   const host = await RelaySession.host({
     baseUrl: server.wsBase,
     displayName: 'Ada',
     listing: () => [PATH],
+    keepalive,
   });
   const invite = host.invite();
   assert.ok(invite !== undefined, 'the host is handed a link to send');
-  const guest = await RelaySession.join({ invite, displayName: 'Bob' });
+  const guest = await RelaySession.join({ invite, displayName: 'Bob', keepalive });
   return { host, guest };
 }
 
@@ -84,6 +88,17 @@ test('selvage/2: an edit crosses a real server in both directions', async (t) =>
   });
   host.open(PATH);
   guest.open(PATH);
+
+  // §13.7: the hold a joiner takes is the room's, and the host sees the guest held to the path.
+  const holds = await waitFor('the guest\'s hold to reach the host', () => {
+    for (const paths of host.peerHolds().values()) {
+      if (paths.includes(PATH)) {
+        return paths;
+      }
+    }
+    return false;
+  });
+  assert.ok(holds.includes(PATH));
 
   const seeded = await host.insert(PATH, 0, SEED);
   assert.equal(seeded, true, 'the host publishes its own edit');

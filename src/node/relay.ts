@@ -314,10 +314,11 @@ export class RelaySession {
   }
 
   private async seat(options: RelayOptions, peer: Omit<PeerOptions, 'keepalive' | 'crypto'>): Promise<void> {
+    const keepalive = keepaliveOf(this.info?.keepalive, options.keepalive);
     const session = await PeerSession.create({
       ...peer,
       crypto: this.crypto,
-      keepalive: keepaliveOf(this.info?.keepalive, options.keepalive),
+      keepalive,
     });
     if (session === undefined) {
       throw new Error('the session could not be built from the invite');
@@ -326,7 +327,7 @@ export class RelaySession {
     this.fault ??= session.failure;
     this.timer = setInterval(() => {
       void this.pump();
-    }, this.info?.keepalive.awareness_renew_ms ?? DEFAULT_KEEPALIVE.awareness_renew_ms);
+    }, keepalive.awareness_renew_ms);
     this.emit({ type: 'seated' });
     // §13.1's step 4: a guest's announcement belongs at the join, and a host's first state is
     // already in the outbound queue, so both go out on this tick rather than on a timer the
@@ -405,6 +406,11 @@ export class RelaySession {
     return this.session?.heldPaths() ?? [];
   }
 
+  /** What each peer is held to, by key or seat (`§13.7`, `§13.4`). */
+  peerHolds(): Map<string, string[]> {
+    return this.session?.peerHolds() ?? new Map();
+  }
+
   /** Subscribes to relay events. Returns the unsubscribe function. */
   on(listener: RelayEventListener): () => void {
     this.listeners.add(listener);
@@ -418,11 +424,15 @@ export class RelaySession {
   /** §13.1's join order: a hold is taken once the state is held, not before. */
   open(path: string): void {
     this.session?.open(path);
+    // §13.7 asks for the whole held set when it changes rather than at the next renewal, so the
+    // hold goes out on the session's own clocks now instead of waiting a whole window.
+    void this.pump();
   }
 
   /** Releases every path this connection held (`§13.7`). */
   release(): void {
     this.session?.release();
+    void this.pump();
   }
 
   /** One local insert. Returns whether it was published — a `viewer`'s is not (`§13.9`). */
