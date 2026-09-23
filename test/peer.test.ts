@@ -364,17 +364,66 @@ test('an edit held back before a committing state is published once a state comm
   assert.equal(delta.kind, 0);
   const replica = new Y.Doc();
   const watching = new Awareness(replica);
-  applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
-  assert.equal(
-    replica.getText('README.md').toString(),
-    'hello',
-    'and the delta carries the edit the room never had',
-  );
-  // `y-protocols` runs a clock of its own, which is what `PeerSession.destroy` releases too.
-  watching.destroy();
-  replica.destroy();
+  // `y-protocols` runs a clock of its own, which is what `PeerSession.destroy` releases too —
+  // and a replica that leaks one is a test process that never exits.
+  try {
+    applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
+    assert.equal(
+      replica.getText('README.md').toString(),
+      'hello',
+      'and the delta carries the edit the room never had',
+    );
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
   await peer.tick(2 + RENEW_MS + 1);
   assert.equal(peer.takeOutbound().length, 0, 'and it is not sent twice');
+});
+
+test('the flush carries this connection\'s edits and not a peer\'s content', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  assert.equal(await peer.insert('README.md', 0, 'mine'), false);
+  assert.equal(peer.text('README.md'), 'mine');
+
+  // A state that does not commit this key: its peers' content is applied under it (§13.2
+  // refuses content only while no state is held at all), so the flush must not re-send it.
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']], ['README.md', 'theirs.md'])),
+    { status: 'applied', kind: 1 },
+  );
+  assert.deepEqual(await peer.deliver(2, await content(now.peer, 1, 'theirs.md', 'theirs')), {
+    status: 'applied',
+    kind: 0,
+  });
+  assert.equal(peer.text('theirs.md'), 'theirs');
+  peer.takeOutbound();
+
+  assert.deepEqual(
+    await peer.deliver(3, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 2, 'the handshake, then the held-back edit');
+  const delta = await publishedFrame(out[1] as Uint8Array);
+  assert.equal(delta.kind, 0);
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  try {
+    applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
+    assert.equal(replica.getText('README.md').toString(), 'mine', 'the edit this client made');
+    assert.equal(
+      replica.getText('theirs.md').toString(),
+      '',
+      "and not the peer's content, which the room already had",
+    );
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
 });
 
 test("a viewer's held-back edit is kept and never published", async () => {

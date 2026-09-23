@@ -365,13 +365,14 @@ export class PeerSession {
   private ending: Ending | undefined;
   private mutation: PeerMutation | undefined;
   /**
-   * The state vector of the first local edit a state had not yet committed this key for.
+   * The local edits this client made while §13.1's step 4 held its content back.
    *
-   * §13.1's step 4 lets a client send nothing but its announcement until a state commits its
-   * key, so an edit made before that lives in the replica and nowhere else; this is what says
-   * which part of the replica that was, so the edit reaches the room once it may.
+   * The deltas themselves and not a state vector over the replica: a state that does not commit
+   * this key still lets its peers' content be applied (§13.2 refuses content only when no state
+   * is held at all), so a vector taken at the first held-back edit would carry their changes out
+   * again under this connection's key.
    */
-  private unsentSince: Uint8Array | undefined;
+  private readonly unsent: Uint8Array[] = [];
   /**
    * One decision at a time, in the order the calls came.
    *
@@ -669,7 +670,7 @@ export class PeerSession {
       // later. Anyone else's is held back by §13.1's step 4 and sent by
       // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
       if (this.role() !== 'viewer') {
-        this.unsentSince ??= before;
+        this.unsent.push(update);
       }
       return false;
     }
@@ -785,20 +786,18 @@ export class PeerSession {
    *
    * §13.1's step 4 held them in the replica, and a client that kept them there would leave the
    * room without them for good: §13.1's step 6 is a `SyncStep1`, which asks the room for what
-   * this replica lacks, and nothing asks the room for what it lacks. The delta is taken from
-   * the state vector of the first held-back edit, and before a committing state no content was
-   * applied (§13.2), so it is this client's own edits and nothing else.
+   * this replica lacks, and nothing asks the room for what it lacks. What is sent is the deltas
+   * this replica's own edits produced, merged, and never a diff over the document: another
+   * peer's content can have arrived in between (§13.2 refuses content only while no state is
+   * held), and a client that re-sent it would be publishing under its own key changes it did
+   * not make.
    */
   private async flushHeldBackEdits(): Promise<void> {
-    if (this.unsentSince === undefined || this.role() === 'viewer') {
+    const held = this.unsent.splice(0, this.unsent.length);
+    if (held.length === 0 || this.role() === 'viewer') {
       return;
     }
-    const update = Y.encodeStateAsUpdate(this.doc, this.unsentSince);
-    this.unsentSince = undefined;
-    if (update.length === 0) {
-      return;
-    }
-    await this.publish('content', encodeUpdate(update));
+    await this.publish('content', encodeUpdate(Y.mergeUpdates(held)));
   }
 
   /** §13.2 and §13.3: a `kind = 0` plaintext, applied to the session document and answered. */
