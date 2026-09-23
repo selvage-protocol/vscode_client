@@ -170,10 +170,15 @@ export class RelaySession {
   private dialled: SessionBase | undefined;
   /** The role this connection declared, which the applied state is what assigns. */
   private readonly ownRole: 'guest' | 'viewer' | undefined;
-  /** The peers the relay showed, and the last listing and document set that were reported. */
+  /**
+   * The peers the relay showed, and the last listing, room open set and peer list that were
+   * reported, with the replica's own text paths — {@link documents}'s answer once no session
+   * is left to read.
+   */
   private peerList: RelayPeer[] = [];
   private lastListing: readonly string[] = [];
   private lastDocuments: string[] = [];
+  private lastOpen: string[] = [];
   private lastPeers: RelayPeer[] = [];
 
   private constructor(
@@ -412,6 +417,7 @@ export class RelaySession {
     return this.session?.listing ?? this.lastListing;
   }
 
+  /** The paths this replica holds text for, which is what a content frame's scan reads. */
   documents(): string[] {
     return this.session?.documents() ?? this.lastDocuments;
   }
@@ -853,9 +859,12 @@ export class RelaySession {
       this.lastListing = [...listing];
       this.emit({ type: 'listing', listing: this.lastListing });
     }
-    const documents = session.documents();
-    if (!sameStrings(documents, this.lastDocuments)) {
-      this.lastDocuments = documents;
+    // The replica's own documents are what {@link documents} falls back to once the session is
+    // gone; what is compared below is the room's open set (see {@link openSet}).
+    this.lastDocuments = session.documents();
+    const documents = this.openSet();
+    if (!sameStrings(documents, this.lastOpen)) {
+      this.lastOpen = documents;
       this.emit({ type: 'content', documents });
     }
     const end = session.end;
@@ -868,6 +877,25 @@ export class RelaySession {
       this.lastPeers = peers;
       this.emit({ type: 'peers', peers });
     }
+  }
+
+  /**
+   * The room's open set: the paths this connection holds together with every path a peer is
+   * held to (`§13.7`).
+   *
+   * `selvage/2`'s server keeps membership only, so no `doc.opened` names the room's documents:
+   * a hold does, and a hold arrives in a frame that changes nothing of this replica's text. A
+   * report comparing the replica alone stays silent for a path this connection holds no text
+   * for, and a host never hears that a peer asked for a file it has not opened.
+   */
+  private openSet(): string[] {
+    const paths = new Set(this.heldPaths());
+    for (const holds of this.peerHolds().values()) {
+      for (const path of holds) {
+        paths.add(path);
+      }
+    }
+    return [...paths].sort();
   }
 
   private emit(event: RelayEvent): void {
