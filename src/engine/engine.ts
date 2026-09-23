@@ -1161,23 +1161,39 @@ export class SelvageEngine {
   }
 
   /**
-   * Attaches the observer to any held document that has now arrived, and reports the
+   * Attaches the observer to any wanted document that has now arrived, and reports the
    * arrival. A document this client created with its own edit reports nothing: the adapter
    * already has that change.
+   *
+   * A path whose open is still in flight is wanted too. The answer is what records the hold,
+   * and `observe` attaches the observer from there, silently — so a text that arrived while
+   * the request was unanswered would be reported by nothing at all, and an adapter that
+   * renders on the report would hold an empty buffer over the room's text, which the next
+   * keystroke in it then publishes over the room's.
    */
   private observeArrived(origin: unknown): void {
     for (const path of this.heldDocuments) {
-      if (this.texts.has(path)) {
-        continue;
+      this.observeArrival(path, origin);
+    }
+    for (const pending of this.pending.values()) {
+      if (pending.kind === 'open') {
+        this.observeArrival(pending.path, origin);
       }
-      const text = this.textIfPresent(path);
-      if (text === undefined) {
-        continue;
-      }
-      this.attach(path, text);
-      if (origin !== LOCAL_ORIGIN) {
-        this.emit({ type: 'documentChanged', path });
-      }
+    }
+  }
+
+  /** Attaches to `path` when it has arrived and nothing observes it yet, and reports it. */
+  private observeArrival(path: string, origin: unknown): void {
+    if (this.texts.has(path)) {
+      return;
+    }
+    const text = this.textIfPresent(path);
+    if (text === undefined) {
+      return;
+    }
+    this.attach(path, text);
+    if (origin !== LOCAL_ORIGIN) {
+      this.emit({ type: 'documentChanged', path });
     }
   }
 
