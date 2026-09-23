@@ -163,6 +163,10 @@ test('hosting while hosting copies the invite rather than minting a room', async
   const { bundle } = activated(t);
 
   const hostArgs = { serverUrl: server.wsBase, displayName: 'Ada' };
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', hostArgs);
   const invite = await waitFor('the first session to be ready', () => {
     void bundle.stub.commands.executeCommand('selvage.copyInvite');
@@ -174,6 +178,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
   // The second `Host` is the user reaching for the invite; it must copy the same room's
   // link, not open a second connection and not tell them to run `Copy invite link`.
   bundle.stub.reset();
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { ...hostArgs, displayName: 'Ada again' });
   const copied = await waitFor('the invite to be copied again', () => {
     const text = bundle.stub.registered.clipboard;
@@ -200,6 +205,7 @@ test('hosting with no folder open is refused: a room from it would share nothing
   // No folder open, as an untitled window has none: the room would grant no folder and
   // share no document under one, so a guest would reload their own window onto nothing.
   bundle.stub.setWorkspaceFolders([]);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -244,6 +250,7 @@ test('the copy command says where the invite went, and a window with none is tol
   assert.equal(bundle.stub.registered.clipboard, '', 'something reached the clipboard');
 
   bundle.stub.reset();
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -332,6 +339,7 @@ test('hosting puts the invite link on the clipboard without being asked', async 
 
   // No reply to any button: the notice confirms a copy that already happened, rather
   // than asking for one. Nothing is read back either: the link goes out, not in.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -364,6 +372,7 @@ test('a clipboard that will not take the invite is said out loud, and the room s
   const { bundle } = activated(t);
   bundle.stub.registered.clipboardWriteThrows = 'the clipboard is busy';
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -390,6 +399,7 @@ test('a host never sees the room id: notices, tooltip and warnings say the room'
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -405,6 +415,7 @@ test('a host never sees the room id: notices, tooltip and warnings say the room'
   // Hosting again, and the warning a second command stages: every surface the host
   // reads. The clipboard's own link is the one deliberate exception — the link is
   // machine-readable data, and joining needs the room it names.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -541,6 +552,7 @@ test('a host with a file open is not handed a second, virtual copy of it', async
   // a workspace folder for the seeded file, which is what makes the adapter share it at all.
   bundle.stub.openWorkspaceDocument('file:///workspace/README.md');
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -608,6 +620,7 @@ test('open while hosting says the host\'s own files are the room\'s', async (t) 
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -629,6 +642,7 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
   const { bundle, server } = await guest(t, ['workspace/README.md']);
   const before = server.acceptedConnections;
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada again',
@@ -643,6 +657,7 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
   // the host would now be seated in has nothing to share, and says so instead of minting a
   // room that grants nothing.
   bundle.stub.registered.warningReply = 'Leave and host';
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada again',
@@ -662,6 +677,7 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
 
   // A folder of the user's own, and the same command hosts from it.
   bundle.stub.setWorkspaceFolders(['/workspace']);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada again',
@@ -677,6 +693,7 @@ test('joining while hosting asks before ending the room', async (t) => {
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -877,6 +894,7 @@ test('an over-long name never reaches the server', async (t) => {
   });
   const { bundle } = activated(t);
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: `${'a'.repeat(31)}\u{1f600}`
@@ -903,6 +921,7 @@ test('the setting is checked before it is sent, and the question asks for a shor
   bundle.stub.configure({ displayName: 'a'.repeat(33) });
   bundle.stub.registered.inputReply = 'Ada';
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   const refusal = await waitFor('the setting to be refused', () =>
     bundle.stub.registered.errors.find((message) => message.includes('UTF-16')) ?? false,
@@ -936,6 +955,7 @@ test('the peers command refuses outside a session and in a room with no one else
   );
   assert.equal(outside, 'Selvage: join a session first.');
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1224,6 +1244,7 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
   bundle.stub.putLink('src/latest.rs', 'file');
   bundle.stub.put('assets/big.bin', 'x', { size: 4 * 1024 * 1024 });
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1258,6 +1279,7 @@ test('a symbolic link to a directory is not listed, and nothing behind it is ser
   bundle.stub.put('/outside/secret.txt', 'OUTSIDE THE ROOT\n');
   bundle.stub.putLink('linkd', 'directory', '/outside');
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1356,6 +1378,7 @@ test('the folder a session shares is the one it was invited on, not the window i
   bundle.stub.put('inside.md', 'still shared\n');
   bundle.stub.openWorkspaceDocument('file:///workspace/README.md');
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1397,6 +1420,7 @@ test('a host serves the path the room asks for, and refuses what the grant leave
   bundle.stub.put('assets/big.bin', 'x', { size: 4 * 1024 * 1024 });
   bundle.stub.put('blob.bin', new Uint8Array([0x89, 0x50, 0x00, 0x0a]));
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1480,6 +1504,7 @@ test('a host names deletion when the room asks for a file it removed', async (t)
   });
   const { bundle } = activated(t);
   bundle.stub.put('doomed.txt', 'was here\n');
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1522,6 +1547,7 @@ test('a host refuses a zip the room asks for as a binary file, never as a deleti
     'logs_96234608913.zip',
     new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00]),
   );
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1663,6 +1689,7 @@ test('the status tooltip names the session but never the room id or the invite t
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1716,6 +1743,7 @@ test('hosting asks for the server in plain words, prefilled with the default', a
   });
 
   // No arguments and no reply: the box itself is under test, not the session after it.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const asked = await waitFor('the server question', () =>
     bundle.stub.registered.inputs[0] ?? false,
@@ -1743,6 +1771,7 @@ test('the typed server is remembered across windows, and hosting reuses it witho
   // Typed through the box at an address with nothing on it, so hosting fails — but the
   // prompt already kept what was typed.
   first.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  first.stub.configure({ wireVersion: 'selvage/1' });
   await first.stub.commands.executeCommand('selvage.host');
   const kept = await waitFor('the server to be remembered', () =>
     first.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
@@ -1775,6 +1804,7 @@ test('the typed server is remembered across windows, and hosting reuses it witho
   t.after(() => {
     second.deactivate();
   });
+  second.stub.configure({ wireVersion: 'selvage/1' });
   await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
   const said = await waitFor('the failure', () =>
     second.stub.registered.errors.find((message) =>
@@ -1797,6 +1827,7 @@ test('the typed server is remembered across windows, and hosting reuses it witho
   // next host reuses.
   second.stub.registered.errorReply = 'Change the server';
   second.stub.registered.inputReply = 'ws://127.0.0.1:2';
+  second.stub.configure({ wireVersion: 'selvage/1' });
   await second.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
   await waitFor('the dead host to fail again', () =>
     second.stub.registered.errors.filter((message) =>
@@ -1830,6 +1861,7 @@ test('an explicit server address beats the remembered server', async (t) => {
 
   // Seed memory: a typed address on a dead server fails to host, but is still kept.
   bundle.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const kept = await waitFor('the server to be remembered', () =>
     bundle.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
@@ -1840,6 +1872,7 @@ test('an explicit server address beats the remembered server', async (t) => {
   // and what was explicit is what is remembered next.
   bundle.stub.registered.inputs.length = 0;
   bundle.stub.registered.inputReply = undefined;
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: 'ws://127.0.0.1:2',
     displayName: 'Ada',
@@ -1865,6 +1898,7 @@ test('the server address a command is given is trimmed, and that is what is reme
   // A pasted-with-padding address is the address: the setting and the box answer are
   // trimmed, and an address given to the command has to be too, or the first host is the
   // only one that ever sees the whitespace — every later host reuses it.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: '  ws://127.0.0.1:1  ',
     displayName: 'Ada',
@@ -1885,6 +1919,7 @@ test('a configured server address answers without asking', async (t) => {
   bundle.stub.configure({ serverUrl: 'ws://127.0.0.1:9', displayName: 'Ada' });
 
   // The setting answers: no box opens, and the failure names the configured address.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const said = await waitFor('the failure', () =>
     bundle.stub.registered.errors.find((message) =>
@@ -1905,6 +1940,7 @@ test('a configured server address beats the remembered server', async (t) => {
 
   // Seed memory, then configure: the setting answers, not the memory.
   bundle.stub.registered.inputReply = 'ws://127.0.0.1:1';
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const kept = await waitFor('the server to be remembered', () =>
     bundle.stub.globalState.get('selvage.lastServer') === 'ws://127.0.0.1:1' ? true : false,
@@ -1914,6 +1950,7 @@ test('a configured server address beats the remembered server', async (t) => {
   bundle.stub.registered.inputs.length = 0;
   bundle.stub.registered.inputReply = undefined;
   bundle.stub.configure({ serverUrl: 'ws://127.0.0.1:9', displayName: 'Ada' });
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const said = await waitFor('the failure', () =>
     bundle.stub.registered.errors.find((message) =>
@@ -1944,6 +1981,7 @@ test('the host notice names a reused server and offers to change it', async (t) 
   // The first host types nothing: the box answers with the first server, and hosting
   // remembers it. The notice on a typed address offers no change — nothing was reused.
   bundle.stub.registered.inputReply = first.wsBase;
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host');
   const seated = await waitFor('the first host to be seated', () =>
     bundle.stub.registered.information.find((message) => message.includes('the room is open')) ??
@@ -1977,6 +2015,7 @@ test('the host notice names a reused server and offers to change it', async (t) 
   // what the next host reuses.
   next.stub.registered.informationReply = 'Change the server';
   next.stub.registered.inputReply = second.wsBase;
+  next.stub.configure({ wireVersion: 'selvage/1' });
   await next.stub.commands.executeCommand('selvage.host');
   const reused = await waitFor('the reused host to be seated', () =>
     next.stub.registered.information.find((message) => message.includes('the room is open on')) ??
@@ -2016,6 +2055,7 @@ test('the host notice names a reused server and offers to change it', async (t) 
   next.stub.registered.inputs.length = 0;
   next.stub.configure({ serverUrl: first.wsBase });
   next.stub.registered.informationReply = undefined;
+  next.stub.configure({ wireVersion: 'selvage/1' });
   await next.stub.commands.executeCommand('selvage.host');
   const configuredNotice = await waitFor('the configured host to be seated', () =>
     next.stub.registered.information.find((message) => message.includes('the room is open')) ??
@@ -2148,6 +2188,7 @@ test('the typed name is remembered across windows, and hosting skips the questio
 
   // The server is dead so hosting fails — but the name box already kept its answer.
   first.stub.registered.inputReply = 'Ada';
+  first.stub.configure({ wireVersion: 'selvage/1' });
   await first.stub.commands.executeCommand('selvage.host');
   const kept = await waitFor('the name to be remembered', () =>
     first.stub.globalState.get('selvage.lastDisplayName') === 'Ada' ? true : false,
@@ -2165,6 +2206,7 @@ test('the typed name is remembered across windows, and hosting skips the questio
   t.after(() => {
     second.deactivate();
   });
+  second.stub.configure({ wireVersion: 'selvage/1' });
   await second.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   await waitFor('the remembered host to be seated', () =>
     second.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
@@ -2191,6 +2233,7 @@ test('the first run asks for the name once, then never again', async (t) => {
   // Nothing remembered and nothing configured: the question is asked, and its answer is
   // what the memento keeps.
   bundle.stub.registered.inputReply = 'Ada';
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   const asked = await waitFor('the name question', () =>
     bundle.stub.registered.inputs[0] ?? false,
@@ -2211,6 +2254,7 @@ test('the first run asks for the name once, then never again', async (t) => {
   );
   bundle.stub.registered.inputs.length = 0;
   bundle.stub.registered.information.length = 0;
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   await waitFor('the second host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
@@ -2233,6 +2277,7 @@ test('an explicit name beats the remembered name, and is what is remembered next
 
   // The explicit name wins over the remembered one, with no question asked — and what
   // was explicit is what is remembered next.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -2261,6 +2306,7 @@ test('a configured name beats the remembered name', async (t) => {
 
   // The setting answers, not the memory: no box opens, and the room seats the
   // configured name.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   await waitFor('the host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
@@ -2570,6 +2616,7 @@ test('a host to a dead server says what to check, not just the engine error', as
   const { bundle } = activated(t);
   bundle.stub.registered.inputReply = 'Ada';
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: 'ws://127.0.0.1:1',
   });
@@ -2641,6 +2688,7 @@ test('fetch while hosting says the disk already holds what a mirror would', asyn
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -2950,6 +2998,7 @@ test('a dropped connection shows reconnecting in the status bar', async (t) => {
     }
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -3061,6 +3110,7 @@ test('host, leave, join: the first join lands', async (t) => {
     await server.stop();
   });
   const { bundle, storage } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -3778,6 +3828,7 @@ test('a host says it is connecting while the handshake happens', async (t) => {
   const { server } = await room(t, []);
   const { bundle } = activated(t);
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -3852,6 +3903,7 @@ test('a host that changes its mind about the window keeps the room it was hostin
     await server.stop();
   });
   const { bundle } = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -4162,6 +4214,7 @@ test('the host notice can put the invite on the clipboard again', async (t) => {
   const { bundle } = activated(t);
   bundle.stub.registered.informationReply = 'Copy again';
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

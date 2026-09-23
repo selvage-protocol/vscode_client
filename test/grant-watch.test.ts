@@ -115,6 +115,10 @@ async function hosted(t: TestContext, contents: Record<string, string>): Promise
   for (const [path, content] of Object.entries(contents)) {
     bundle.stub.put(path, content);
   }
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -395,6 +399,7 @@ test('a folder that cannot be watched is reported once, and the session goes on'
   bundle.stub.put('/two/notes.md', 'notes\n');
   bundle.stub.refuseWatchers('this window has no watcher for that folder');
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -433,6 +438,7 @@ test('a watcher that fails after the first folder stops the watch rather than ha
   // The first folder is watched and the second is not: a half-watch is what this rules out.
   bundle.stub.refuseWatchers('this window has no watcher for that folder', 1);
 
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -466,6 +472,7 @@ test('a server with no grant is not a failure, and the watch goes on', async (t)
   });
   const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -516,6 +523,7 @@ test('a refused listing is reported, and the session goes on', async (t) => {
   });
   const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -560,6 +568,7 @@ test('a refused listing is offered and reported once while it says the same thin
   });
   const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -606,6 +615,7 @@ test('a walk overtaken by a later one reports no refusal of its own', async (t) 
   });
   const { bundle } = activated(t);
   bundle.stub.put('README.md', 'the readme\n');
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

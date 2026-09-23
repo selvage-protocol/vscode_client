@@ -21,7 +21,8 @@ import {
   parseVersion,
   renameParams,
 } from '../src/engine/envelope.ts';
-import { fetchMeta, metaAccepts } from '../src/engine/meta.ts';
+import { fetchMeta, hostVersion, metaAccepts } from '../src/engine/meta.ts';
+import type { Meta } from '../src/engine/envelope.ts';
 import { baseOf } from './helpers/base.ts';
 import {
   inviteUrl,
@@ -292,6 +293,74 @@ test('/meta decides compatibility, and saying nothing about versions decides not
   assert.equal(DEFAULT_KEEPALIVE.awareness_renew_ms, 15_000);
   assert.equal(DEFAULT_KEEPALIVE.awareness_expire_ms, 30_000);
   assert.equal(DEFAULT_KEEPALIVE.ping_interval_ms, 30_000);
+});
+
+/** The `MINT`/`refused` pairs of `/meta` against a hosting client, for the table below. */
+const mint = (version: string) => ({ outcome: 'mint', version });
+const refused = (reason: string, offered: string[], pin?: string) => ({
+  outcome: 'refuse',
+  reason,
+  offered,
+  ...(pin === undefined ? {} : { pin }),
+});
+
+test('which version a hosting client mints at is /meta\u2019s answer, or its setting\u2019s pin', () => {
+  const both = { wire_versions: ['selvage/1', 'selvage/2'] };
+  const version1Only = { wire_versions: ['selvage/1'] };
+
+  // §2: a client that can speak `selvage/2` mints it wherever the list holds it, and the list is
+  // the server's word about what it seats — the case a version is not written down for.
+  assert.deepEqual(hostVersion(both), mint('selvage/2'));
+  assert.deepEqual(hostVersion({ wire_versions: ['selvage/2'] }), mint('selvage/2'));
+  // §10's compatibility rule is the major's alone above 0.x, so a server that seats `selvage/2.1`
+  // seats this client, which speaks `selvage/2`.
+  assert.deepEqual(hostVersion({ wire_versions: ['selvage/2.1'] }), mint('selvage/2'));
+  assert.deepEqual(
+    hostVersion({ wire_versions: ['selvage/1', 'selvage/2.7'] }),
+    mint('selvage/2'),
+  );
+  // A `/meta` that could not be read is not an answer that the server refuses this version: the
+  // attempt is made and the handshake decides (§2, §10).
+  assert.deepEqual(hostVersion(undefined), mint('selvage/2'));
+  // A body that says nothing about versions is the same non-answer `metaAccepts` reads it as.
+  assert.deepEqual(hostVersion({}), mint('selvage/2'));
+  assert.deepEqual(hostVersion({ wire_versions: [] }), mint('selvage/2'));
+  // A membership that is not a version is not an answer either: the body is JSON this client does
+  // not control, and what it can read of the list is still read.
+  assert.deepEqual(
+    hostVersion({ wire_versions: [7] } as unknown as Meta),
+    mint('selvage/2'),
+  );
+  assert.deepEqual(
+    hostVersion({ wire_versions: [7, 'selvage/2'] } as unknown as Meta),
+    mint('selvage/2'),
+  );
+
+  // An answer without it is a refusal: the encrypted wire is what this client hosts at, and a
+  // fall back to `selvage/1` would mint exactly the room the version exists to prevent.
+  assert.deepEqual(hostVersion(version1Only), refused('not-seated', ['selvage/1']));
+  // A version outside the grammar is not one the server has said it seats (§10).
+  assert.deepEqual(
+    hostVersion({ wire_versions: ['selvage/01', 'selvage/1.2.3'] }),
+    refused('not-seated', ['selvage/01', 'selvage/1.2.3']),
+  );
+  assert.deepEqual(hostVersion({ wire_versions: ['selvage/1.4'] }), refused('not-seated', ['selvage/1.4']));
+
+  // A pin is the host's own deliberate choice, and it outranks what the server advertises.
+  assert.deepEqual(hostVersion(both, 'selvage/1'), mint('selvage/1'));
+  assert.deepEqual(hostVersion(both, 'selvage/2'), mint('selvage/2'));
+  assert.deepEqual(hostVersion(undefined, 'selvage/2'), mint('selvage/2'));
+  assert.deepEqual(hostVersion(undefined, 'selvage/1'), mint('selvage/1'));
+  assert.deepEqual(
+    hostVersion(version1Only, 'selvage/2'),
+    refused('pin-not-seated', ['selvage/1'], 'selvage/2'),
+  );
+  // A server that seats only the encrypted wire cannot seat the readable one, and a pin there is
+  // a refusal rather than a connection that would be refused at the handshake anyway.
+  assert.deepEqual(
+    hostVersion({ wire_versions: ['selvage/2'] }, 'selvage/1'),
+    refused('pin-not-seated', ['selvage/2'], 'selvage/1'),
+  );
 });
 
 test('an unreachable /meta is reported as an error the caller can ignore', async () => {

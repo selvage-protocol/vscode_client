@@ -932,6 +932,10 @@ test('a host jumps to a peer through its own working copy', async (t) => {
   });
   const FILE_TEXT = 'hello room\n';
   bundle.stub.put('notes.txt', FILE_TEXT);
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1269,6 +1273,7 @@ test('a host jump to a path it does not share is refused without opening', async
   t.after(() => {
     bundle.deactivate();
   });
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

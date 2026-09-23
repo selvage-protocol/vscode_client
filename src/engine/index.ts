@@ -102,7 +102,8 @@ export type {
   PeerInfo,
   Role,
 } from './envelope.ts';
-export { fetchMeta, metaAccepts } from './meta.ts';
+export { fetchMeta, hostVersion, metaAccepts } from './meta.ts';
+export type { HostDecision, WireVersion } from './meta.ts';
 export {
   inviteUrl,
   metaUrl,

@@ -73,6 +73,10 @@ test('a host that reclaims its room publishes its current listing, not the dead 
   });
   const { bundle } = activated(t);
   bundle.stub.put('old.txt', 'the old listing\n');
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
