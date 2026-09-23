@@ -1,6 +1,6 @@
 /**
  * A `selvage/2` session over a socket: the wiring `PeerSession` (`PROTOCOL.md` §13) and the
- * host's producer half (`§7.1`) were written to be handed, and that nothing here handed them.
+ * host's producer half (`§7.1`) were written to be handed.
  *
  * {@link PeerSession} decides; this module moves the bytes. It opens the WebSocket, sends
  * `session.hello` at `selvage/2`, seats the connection from `room.created`/`room.joined`, then
@@ -8,32 +8,34 @@
  * It runs the session's clocks on a timer of its own (`§13.8`), because a session renews nothing
  * if only the caller moves it.
  *
- * It lives outside `src/engine/` on purpose. The engine is the copy `nvim_client` and
- * `web_client` carry, and the socket half is a Node concern: it takes Node's `WebSocket`, the
- * Node crypto seam and the wall clock, and a page supplies its own. A browser or a companion
- * writes the same wiring over its own transport rather than importing this one.
+ * It lives in the engine because the three clients drive the same wiring: the socket is a seam
+ * ({@link WebSocketFactory}, whose default is the `ws` package the page's build stubs out), the
+ * crypto is a seam ({@link FrameCrypto}, whose default is WebCrypto), and what is left is
+ * `PROTOCOL.md` §5's handshake, which is the same for a page, a companion and an extension host.
+ * A client that carries this copy supplies its own transport and seam where it differs from the
+ * defaults, rather than writing the wiring again.
  *
- * **What it is not.** It is the relay and nothing above it. `PeerSession` exposes the receiver's
- * observables and the producer's frame, but no editor surface: there is no way to publish a local
- * awareness state, no way to read a peer's awareness, no local delete, and no way for a client to
- * read the role the applied state gives its own key. A VS Code adapter needs all four, so nothing
- * here is called by one yet — see `README.md` and `ai_notes/docs/studies/e2ee-plan.md` §11.
+ * **What it is not.** It is the relay and nothing above it: it says nothing to an editor. What
+ * an editor-facing engine has to add is `src/bridge/peer-engine.ts`, which reads this and the
+ * session's observables into the bridge's own vocabulary.
  */
 
 import WebSocket from 'ws';
 
-import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, parseServerMessage } from '../engine/envelope.ts';
-import type { Keepalive } from '../engine/envelope.ts';
-import { endingReason, parseInvite, PeerSession } from '../engine/peer.ts';
-import type { Ending, PeerInvite, PeerOptions } from '../engine/peer.ts';
-import type { HostStore } from '../engine/host.ts';
-import { encodeKey, mintSessionKey } from '../engine/sealed.ts';
-import type { FrameCrypto } from '../engine/crypto.ts';
-import { openSocket } from '../engine/transport.ts';
-import type { OpenSocket, WebSocketFactory, WebSocketLike } from '../engine/transport.ts';
-import { sessionBase, parseSessionUrl, sessionUrl } from '../engine/urls.ts';
-import type { SessionBase } from '../engine/urls.ts';
-import { nodeCrypto } from './crypto.ts';
+import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, parseServerMessage } from './envelope.ts';
+import type { Keepalive } from './envelope.ts';
+import { endingReason, parseInvite, PeerSession } from './peer.ts';
+import type { Ending, PeerInvite, PeerOptions } from './peer.ts';
+import type { HostStore } from './host.ts';
+import { encodeKey, mintSessionKey } from './sealed.ts';
+import type { FrameCrypto } from './crypto.ts';
+import { webCrypto } from './crypto-web.ts';
+import { openSocket } from './transport.ts';
+import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts';
+import { sessionBase, parseSessionUrl, sessionUrl } from './urls.ts';
+import type { SessionBase } from './urls.ts';
+import type { AwarenessState, OffsetSelection, Presence, Selection } from './presence.ts';
+import type { PeerInfo, Role } from './envelope.ts';
 
 /** The version this module speaks. `selvage/1` is the engine's, and stays where it is. */
 export const WIRE_VERSION_V2 = 'selvage/2';
@@ -74,6 +76,8 @@ export type RelayEvent =
   | { type: 'peers'; peers: RelayPeer[] }
   | { type: 'listing'; listing: readonly string[] }
   | { type: 'content'; documents: string[] }
+  /** A content frame was applied: the replica's text for some path is not what it was. */
+  | { type: 'text' }
   | { type: 'ended'; ending: RelayEnding }
   | { type: 'failed'; reason: string };
 
@@ -155,11 +159,17 @@ export class RelaySession {
   private readonly inbox: QueuedFrame[] = [];
   private draining = false;
 
+  /** The awareness client id this connection announced, which its session publishes under. */
+  private awarenessId: number | undefined;
+  /** The display name this connection seated with, which the room's own reply never names. */
+  private ownName = '';
+  /** The next `id` a text request carries: the hello is 1, and a rename follows it. */
+  private requestId = 1;
+
   /** The server base this connection dialled, which a reply cannot name itself. */
   private dialled: SessionBase | undefined;
   /** The role this connection declared, which the applied state is what assigns. */
   private readonly ownRole: 'guest' | 'viewer' | undefined;
-
   /** The peers the relay showed, and the last listing and document set that were reported. */
   private peerList: RelayPeer[] = [];
   private lastListing: readonly string[] = [];
@@ -181,7 +191,7 @@ export class RelaySession {
   /** Mints a room; this connection is its host by holding the host key's private half. */
   static async host(options: RelayHostOptions): Promise<RelaySession> {
     const relay = new RelaySession(
-      options.crypto ?? nodeCrypto,
+      options.crypto ?? webCrypto,
       options.webSocketFactory ?? defaultFactory,
       undefined,
     );
@@ -196,7 +206,7 @@ export class RelaySession {
       throw new Error(read.reason);
     }
     const relay = new RelaySession(
-      options.crypto ?? nodeCrypto,
+      options.crypto ?? webCrypto,
       options.webSocketFactory ?? defaultFactory,
       options.declaredRole,
     );
@@ -265,6 +275,7 @@ export class RelaySession {
     displayName: string,
   ): Promise<RelaySessionInfo> {
     this.dialled = base;
+    this.ownName = displayName;
     const timeout = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
     const attempt = new AbortController();
     let seating: (answer: RelaySessionInfo) => void = () => undefined;
@@ -300,7 +311,12 @@ export class RelaySession {
         this.factory,
         attempt.signal,
       );
-      this.socket.sendText(JSON.stringify(helloEnvelope(displayName, options, this.crypto)));
+      // §8.4: the id the server records for this connection is the id this session's
+      // awareness states carry, so a peer's caret is attributed to the seat that published it.
+      this.awarenessId = awarenessClientId(this.crypto);
+      this.socket.sendText(
+        JSON.stringify(helloEnvelope(displayName, options, this.awarenessId)),
+      );
       const info = await seated;
       this.start = performance.now();
       this.peerList = [...info.peers];
@@ -320,6 +336,7 @@ export class RelaySession {
       ...peer,
       crypto: this.crypto,
       keepalive,
+      ...(this.awarenessId === undefined ? {} : { awarenessClientId: this.awarenessId }),
     });
     if (session === undefined) {
       throw new Error('the session could not be built from the invite');
@@ -427,9 +444,9 @@ export class RelaySession {
     void this.pump();
   }
 
-  /** Releases every path this connection held (`§13.7`). */
-  release(): void {
-    this.session?.release();
+  /** Releases a path, or every path when given none (`§13.7`). */
+  release(path?: string): void {
+    this.session?.release(path);
     void this.pump();
   }
 
@@ -442,6 +459,154 @@ export class RelaySession {
     const published = await session.insert(path, index, text);
     this.drainOutbound();
     return published;
+  }
+
+  /** One local deletion. Returns whether it was published, by the same rule as `insert`. */
+  async remove(path: string, index: number, length: number): Promise<boolean> {
+    const session = this.session;
+    if (session === undefined) {
+      return false;
+    }
+    const published = await session.remove(path, index, length);
+    this.drainOutbound();
+    return published;
+  }
+
+  /** Publishes this connection's presence: a path and a selection in offsets (`§8.1`). */
+  setSelection(path: string, selection: OffsetSelection): void {
+    this.session?.setSelection(path, selection);
+    this.whenPublished();
+  }
+
+  /** Publishes this connection's awareness state (`§8.1`), or `null` to clear it. */
+  setAwareness(state: AwarenessState | null): void {
+    this.session?.setAwareness(state);
+    this.whenPublished();
+  }
+
+  /**
+   * Writes what the session published once the decision behind it has settled: an awareness
+   * state is sealed asynchronously, so a caret that was handed in now is a frame a moment
+   * later, and the socket is what has to wait for it rather than the renewal clock.
+   */
+  private whenPublished(): void {
+    const session = this.session;
+    if (session === undefined) {
+      return;
+    }
+    void session.whenIdle().then(() => {
+      this.drainOutbound();
+    });
+  }
+
+  /**
+   * Every awareness state this connection holds, attributed to the seats the relay knows
+   * (`§8.4`). The names come from the handshake and the seam; the anchors come from the session.
+   */
+  presence(): Presence[] {
+    const session = this.session;
+    if (session === undefined) {
+      return [];
+    }
+    const local = this.selfInfo();
+    return session.presence(this.peerInfos(), local);
+  }
+
+  /** The role the applied state gives this connection's own key (`§13.4`). */
+  appliedRole(): string | undefined {
+    return this.session?.ownRole();
+  }
+
+  /** The roles the applied state assigns, by the seat each committed key is labelled (`§7.1`). */
+  rolesBySeat(): Map<string, string> {
+    return this.session?.rolesBySeat() ?? new Map();
+  }
+
+  /** §13.8's host-away clock: what is left of the window, or `undefined` while none is running. */
+  hostAwayGraceMs(): number | undefined {
+    return this.session?.hostAwayGraceMs(this.clock());
+  }
+
+  /** The seat the applied state names as the host connection, if any (`§13.4`). */
+  namedHostSeat(): string | undefined {
+    return this.session?.namedHostSeat();
+  }
+
+  /** The monotone elapsed time from this connection's seat, in milliseconds (`§13.8`). */
+  elapsedMs(): number {
+    return this.clock();
+  }
+
+  /**
+   * The awareness client id this connection announced (`§8.4`): the id the room records for this
+   * seat, and the one the states it publishes carry, so a peer can attribute a caret to a seat.
+   */
+  awarenessClientId(): number | undefined {
+    return this.awarenessId;
+  }
+
+  /** Resolves a peer's selection to offsets in this replica (`§8.1`). */
+  resolveSelection(path: string, selection: Selection): OffsetSelection | undefined {
+    return this.session?.resolveSelection(path, selection);
+  }
+
+  /** Whether this replica holds text for a path. */
+  has(path: string): boolean {
+    return this.session?.has(path) ?? false;
+  }
+
+  /** The length of a document's text in UTF-16 code units, the unit every editor counts in. */
+  length(path: string): number {
+    return this.session?.length(path) ?? 0;
+  }
+
+  /** The seats and names the relay knows, with the roles the applied state assigns (`§8.4`). */
+  peerInfos(): PeerInfo[] {
+    const roles = this.rolesBySeat();
+    const infos: PeerInfo[] = [];
+    for (const peer of this.peerList) {
+      const role = roles.get(peer.peer_id);
+      infos.push({
+        peer_id: peer.peer_id,
+        display_name: peer.display_name,
+        role: (role ?? 'guest') as Role,
+        ...(peer.awareness_client_id === undefined
+          ? {}
+          : { awareness_client_id: peer.awareness_client_id }),
+      });
+    }
+    return infos;
+  }
+
+  /** This connection's own record, as the handshake seated it. */
+  selfInfo(): PeerInfo {
+    return {
+      peer_id: this.info?.seat ?? '',
+      display_name: this.ownName,
+      role: (this.appliedRole() ?? 'guest') as Role,
+      ...(this.awarenessId === undefined ? {} : { awareness_client_id: this.awarenessId }),
+    };
+  }
+
+  /**
+   * Changes this connection's display name (`PROTOCOL.md` §5). The server answers the mover and
+   * the rest of the room with `peer.renamed`; every other client's roster follows that event,
+   * and a seat the room does not list — this connection's own — has nothing to re-label.
+   */
+  async rename(displayName: string): Promise<void> {
+    const socket = this.socket;
+    if (socket === undefined || !socket.isOpen) {
+      throw new Error('the session is not connected');
+    }
+    this.requestId += 1;
+    socket.sendText(
+      JSON.stringify({
+        v: WIRE_VERSION_V2,
+        id: this.requestId,
+        method: 'session.rename',
+        params: { display_name: displayName },
+      }),
+    );
   }
 
   /** The host's listing changed: the whole tree as it now is (`§7.1`). */
@@ -594,7 +759,11 @@ export class RelaySession {
       return;
     }
     if (frame.binary !== undefined) {
-      await session.deliver(this.clock(), frame.binary);
+      const outcome = await session.deliver(this.clock(), frame.binary);
+      // §13.5's content, and only content: a state, a holds set and a closing change no text.
+      if (outcome.status === 'applied' && outcome.kind === 0) {
+        this.emit({ type: 'text' });
+      }
       return;
     }
     if (frame.text === undefined) {
@@ -775,21 +944,25 @@ function keepaliveOf(advertised: Keepalive | undefined, given: Partial<Keepalive
 }
 
 /** `session.hello` at `selvage/2`: no `role`, because the version seats nobody as anything. */
-function helloEnvelope(displayName: string, options: RelayOptions, crypto: FrameCrypto): Record<string, unknown> {
+function helloEnvelope(
+  displayName: string,
+  options: RelayOptions,
+  awarenessId: number,
+): Record<string, unknown> {
   return {
     v: WIRE_VERSION_V2,
     id: 1,
     method: 'session.hello',
     params: {
       display_name: displayName,
-      awareness_client_id: awarenessClientId(crypto),
+      awareness_client_id: awarenessId,
       capabilities: [...CLIENT_CAPABILITIES],
       ...(options.client === undefined ? {} : { client: options.client }),
     },
   };
 }
 
-/** A seat's awareness client id, which the relay records and nothing here publishes under. */
+/** The awareness client id this connection announces, which is the one its session publishes under. */
 function awarenessClientId(crypto: FrameCrypto): number {
   let bytes: Uint8Array;
   try {
@@ -804,16 +977,25 @@ function defaultFactory(url: string): WebSocketLike {
   return new WebSocket(url) as unknown as WebSocketLike;
 }
 
+/**
+ * One `PeerInfo` from an event's params, in either shape the version's events use: a
+ * `peer.joined` wraps its record under `peer`, and a handshake reply names its own seat and the
+ * seats already in the room inline. `role` is not read here: `selvage/2`'s server seats nobody
+ * as anything, so the role comes from the room state (§13.4).
+ */
 function peerOf(value: unknown): RelayPeer | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  const peerId = typeof value['peer_id'] === 'string' ? value['peer_id'] : undefined;
-  const displayName = typeof value['display_name'] === 'string' ? value['display_name'] : undefined;
+  const record = isRecord(value['peer']) ? value['peer'] : value;
+  const peerId = typeof record['peer_id'] === 'string' ? record['peer_id'] : undefined;
+  const displayName =
+    typeof record['display_name'] === 'string' ? record['display_name'] : undefined;
   if (peerId === undefined || displayName === undefined) {
     return undefined;
   }
-  const awareness = typeof value['awareness_client_id'] === 'number' ? value['awareness_client_id'] : undefined;
+  const awareness =
+    typeof record['awareness_client_id'] === 'number' ? record['awareness_client_id'] : undefined;
   return {
     peer_id: peerId,
     display_name: displayName,

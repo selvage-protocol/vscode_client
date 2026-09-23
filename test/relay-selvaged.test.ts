@@ -12,12 +12,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { parseInvite } from '../src/engine/peer.ts';
-import { RelaySession } from '../src/node/relay.ts';
+import { RelaySession } from '../src/engine/relay.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
 
 const PATH = 'notes.txt';
+const OTHER = 'src/main.rs';
 const SEED = 'a room two relays share\n';
 
 /** A host and a guest, and the invite between them, seated over the real server. */
@@ -71,6 +73,14 @@ test('selvage/2: a host mints, a guest joins, and the listing arrives', async (t
     return listing.length > 0 ? listing : false;
   });
   assert.deepEqual(listed, [PATH, 'src/main.rs']);
+  // §13.4: the guest's seat reaches the host as a `peer.joined`, and the role it is drawn with
+  // is the one the applied state gives that seat rather than anything the event claimed.
+  const seen = await waitFor('the host to see the guest in the room', () => {
+    const peer = host.peerInfos().find((entry) => entry.peer_id === guest.sessionInfo().seat);
+    return peer === undefined ? false : peer;
+  });
+  assert.equal(seen.display_name, 'Bob');
+  assert.equal(seen.awareness_client_id, guest.awarenessClientId());
   assert.equal(guest.isHost, false);
   assert.equal(host.isHost, true);
   assert.equal(host.sessionInfo().roomId, guest.sessionInfo().roomId);
@@ -202,3 +212,77 @@ test('selvage/2: the page-link form joins the same room', async (t) => {
   assert.deepEqual(listed, [PATH]);
 });
 
+
+test('selvage/2: the engine facade hosts, joins, grants and exchanges an edit', async (t) => {
+  const server = await RealServer.start({ serveVersion2: true });
+  t.after(async () => {
+    await server.stop();
+  });
+  // The listing an adapter owns: a state is sealed from it, so replacing it and publishing are
+  // one step and the room cannot hear the tree it used to be.
+  const tree = [PATH];
+  const listing = {
+    current: () => tree,
+    replace: (paths: readonly string[]) => {
+      tree.length = 0;
+      tree.push(...paths);
+    },
+  };
+  const keepalive = { awareness_renew_ms: 50, awareness_expire_ms: 5000 };
+  const host = await PeerEngine.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing,
+    keepalive,
+  });
+  t.after(() => {
+    host.disconnect();
+  });
+  assert.deepEqual(host.session().documents.sort(), [], 'nothing is open yet');
+  assert.equal(host.session().role, 'host');
+
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined && invite.includes('#k='));
+  const guest = await PeerEngine.join({ invite, displayName: 'Bob', keepalive });
+  t.after(() => {
+    guest.disconnect();
+  });
+  const listed = await waitFor('the guest to apply the host\'s listing', () => {
+    const paths = [...guest.grantedPaths()];
+    return paths.length > 0 ? paths : false;
+  });
+  assert.deepEqual(listed, [PATH]);
+  assert.equal(guest.session().role, 'guest');
+
+  // The open set is §13.7's: a path someone holds, which is what the adapter's words are about.
+  await guest.open(PATH);
+  const open = await waitFor('the guest\'s hold to reach the room', () => {
+    const documents = host.session().documents;
+    return documents.includes(PATH) ? documents : false;
+  });
+  assert.ok(open.includes(PATH));
+
+  const seeded = host.insert(PATH, 0, SEED);
+  assert.equal(seeded, undefined, 'a local edit is applied and published without being awaited');
+  const arrived = await waitFor('the seeded text to reach the guest', () => {
+    const text = guest.text(PATH);
+    return text === SEED ? text : false;
+  });
+  assert.equal(arrived, SEED);
+
+  // A new edition of the listing: the facade's grant is the room's whole tree.
+  await host.grant([PATH, OTHER]);
+  const regranted = await waitFor('the guest to hold the new listing', () => {
+    const paths = [...guest.grantedPaths()];
+    return paths.length === 2 ? paths : false;
+  });
+  assert.deepEqual(regranted, [PATH, OTHER].sort());
+
+  // §8: a caret is published and read back, and the two ids agree because the handshake said so.
+  guest.setSelection(PATH, { anchor: 0, head: 3 });
+  const seen = await waitFor('the host to see the guest\'s caret', () => {
+    const record = host.presence().find((entry) => entry.peer?.peer_id === guest.session().peer.peer_id);
+    return record?.state?.selection !== undefined ? record : false;
+  });
+  assert.equal(seen.clientId, seen.peer?.awareness_client_id);
+});

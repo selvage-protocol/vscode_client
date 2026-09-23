@@ -85,7 +85,12 @@ export const TERMINAL_CODES: readonly string[] = [
   code.roomGone,
 ];
 
-export type Role = 'host' | 'guest';
+/**
+ * A participant's role. `selvage/1` has the first two — the server seats a connection as one of
+ * them — and `selvage/2` adds `viewer`, which the room's state assigns and §13.9 reads: a viewer
+ * edits its own screen and publishes none of it.
+ */
+export type Role = 'host' | 'guest' | 'viewer';
 
 /**
  * The protocol's bound on a display name: at most this many UTF-16 code units (§5). A name

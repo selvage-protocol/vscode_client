@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import { MISSING_FRAGMENT, parseInvite } from '../src/engine/peer.ts';
 import { encodeKey } from '../src/engine/sealed.ts';
-import { RelaySession, wireInvite } from '../src/node/relay.ts';
+import { RelaySession, wireInvite } from '../src/engine/relay.ts';
 
 const ROOM_KEY = encodeKey(new Uint8Array(32).fill(7));
 const HOST_KEY = encodeKey(new Uint8Array(32).fill(9));
