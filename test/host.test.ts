@@ -353,6 +353,30 @@ test('a commitment is never withheld for want of a label', async () => {
   });
 });
 
+test('two keys that both arrive before any seat does are both committed', async () => {
+  const now = await room();
+  const { peer } = await hostHosting(['README.md']);
+  peer.takeOutbound();
+
+  // The roster names no seat for either key, so §7.1's label falls back to the host's own for
+  // both. The commitment is what a peer cannot do without, so neither one may evict the other:
+  // the label gives way and the two keys share a seat, which is the conflict `label()` records.
+  const second = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(23))) as SessionKeypair;
+  await peer.deliver(10, await announce(now.peer, 1, 'guest'));
+  await peer.tick(10);
+  await peer.deliver(400, await announce(second, 1, 'guest'));
+  await peer.tick(400);
+  const last = published(peer).at(-1);
+  assert.deepEqual(last?.peers[encodeKey(now.peer.public)], {
+    peer_id: 'p-host',
+    role: 'guest',
+  });
+  assert.deepEqual(last?.peers[encodeKey(second.public)], {
+    peer_id: 'p-host',
+    role: 'guest',
+  });
+});
+
 test('a declaration changes nothing for a key the state already commits', async () => {
   const now = await room();
   const { peer } = await hostHosting(['README.md']);
@@ -541,17 +565,20 @@ test('a host that verifies a state above its own writes above that one instead',
   await peer.deliver(10, await state(now.host, 5, [[now.peer, 'guest', 'p-alice']]));
   await peer.tick(10);
   assert.equal(peer.issued, 5, 'the re-sent state is what the host now holds');
-  assert.equal(
-    published(peer).at(-1)?.issued,
-    1,
-    'and a state that says nothing new is re-sent rather than re-editioned',
-  );
+  assert.equal(published(peer).at(-1)?.issued, 1, 'and nothing goes out until something changes');
+
+  // §7.1: what it writes next is above the edition it verified. The state it published itself is
+  // not re-sent over that edition — a frame at 1 is one every peer refuses `stale_issued`, and
+  // the fresh state above it is what a joiner needs from a host.
   await peer.seatJoined(20, 'p-bob');
+  assert.equal(published(peer).at(-1)?.issued, 6, 'above the edition it verified');
+  assert.ok(published(peer).at(-1)?.fresh, 'and a new edition rather than a re-send');
+
   await peer.deliver(20, await announce(now.peer, 1, 'guest'));
   assert.equal(
     published(peer).at(-1)?.issued,
-    6,
-    '§7.1: once it has verified a state at or above its edition, above that one',
+    7,
+    '§7.1: and every state after it is above that one again',
   );
 });
 
@@ -568,12 +595,19 @@ test('a closing is above every state, and the host publishes nothing after it', 
   assert.equal(frame.kind, 2);
   assert.deepEqual(frame.payload, { closing: true, issued: 2 });
   assert.deepEqual([...peer.hostClosings()], [2]);
+  assert.equal(peer.end, 'closing', '§13.10: the room is over for the session that ended it');
 
-  // §7.1: a host that has left publishes nothing.
+  // §7.1: a host that has left publishes nothing, and one that has closed a room stays closed
+  // through a rejoin of its own seat — the state that follows would be an edition above the
+  // closing, and §13.10's ordering has nothing to put it back in front of.
+  await peer.seatJoined(15, 'p-host');
+  assert.equal(peer.takeOutbound().length, 0, 'not even for its own seat');
   await peer.seatJoined(20, 'p-bob');
   assert.equal(peer.takeOutbound().length, 0);
   await peer.listingChanged(30);
   assert.equal(peer.takeOutbound().length, 0);
+  await peer.insert('README.md', 0, 'text after the closing');
+  assert.equal(peer.takeOutbound().length, 0, 'and no content either');
 });
 
 // --- the host as a peer -----------------------------------------------------------
@@ -613,6 +647,43 @@ test('a host with no seat is refused where it is built, because its own entry ne
     host: { hostSeed: now.host.seed, listing: () => ['README.md'] },
   });
   assert.equal(made, undefined);
+});
+test('a host whose mint state cannot be sealed is not handed back', async () => {
+  const now = await room();
+  const blind = {
+    ...nodeCrypto,
+    randomBytes: (): Uint8Array => {
+      throw new Error('no entropy');
+    },
+  };
+  const made = await PeerSession.create({
+    roomId: ROOM,
+    roomKey: now.roomKey,
+    hostKey: now.host.public,
+    keepalive: {
+      ping_interval_ms: 30_000,
+      awareness_renew_ms: RENEW_MS,
+      awareness_expire_ms: EXPIRE_MS,
+    },
+    crypto: blind,
+    seat: 'p-host',
+    sessionSeed: now.ours.seed,
+    host: { hostSeed: now.host.seed, listing: () => ['README.md'] },
+  });
+  // §7.1's first state is what brings the room's listing into existence and commits this
+  // connection's key. A host that could not seal one has nothing a peer can verify against,
+  // and a session nobody can see is not a session to hand back.
+  assert.equal(made, undefined);
+});
+
+test('a host is seated in the roster it was handed, so its own state does not end it', async () => {
+  // The roster `room.joined` carries need not name the host itself, and the state this host
+  // publishes names its own seat either way: §13.8's clock must not arm on it for that reason.
+  const { peer } = await hostHosting(['README.md'], { roster: ['p-guest'] });
+  peer.takeOutbound();
+  await peer.tick(EXPIRE_MS);
+  assert.equal(peer.end, undefined, 'the host’s own `host` entry labels a seat the room has');
+  assert.equal(peer.failure, undefined);
 });
 
 test('a listing change publishes the whole tree, and a shorter one is a smaller room', async () => {

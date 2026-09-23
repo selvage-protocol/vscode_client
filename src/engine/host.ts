@@ -162,6 +162,10 @@ export class HostProducer {
   private lastFrame: Uint8Array | undefined;
   /** §13.8's clock read as §7.1 writes it: a host that has left publishes nothing. */
   private gone = false;
+  /** §7.1's closing has gone out: the room is over and this host publishes nothing more. */
+  private closed = false;
+  /** The first state this host could not seal, which its session reports as a fault. */
+  private faulted: string | undefined;
   private mutation: HostMutation | undefined;
 
   private constructor(
@@ -213,7 +217,12 @@ export class HostProducer {
 
   /** Whether this host has a seat and a connection key to publish an entry for. */
   ready(): boolean {
-    return !this.gone && this.ownSeat !== undefined && this.ownKey !== undefined;
+    return !this.gone && !this.closed && this.ownSeat !== undefined && this.ownKey !== undefined;
+  }
+
+  /** The first state this host could not seal, if any. */
+  get failure(): string | undefined {
+    return this.faulted;
   }
 
   /** The highest `issued` this host has published. */
@@ -339,6 +348,10 @@ export class HostProducer {
     if (
       held !== undefined &&
       this.lastFrame !== undefined &&
+      // §7.1: a state this host verified above its own is one its peers hold, so re-sending the
+      // edition it published itself would be a frame they all refuse `stale_issued` — and the
+      // fresh state it would otherwise publish above that edition is what a joiner needs.
+      held.issued >= this.verified &&
       !this.mutating('frozen-issued') &&
       samePaths(held.listing, listing) &&
       samePeers(held.peers, peers)
@@ -386,7 +399,7 @@ export class HostProducer {
       return undefined;
     }
     this.commitSeries(issued);
-    this.gone = true;
+    this.closed = true;
     return { frame, issued, fresh: true };
   }
 
@@ -427,7 +440,10 @@ export class HostProducer {
     if (seat === undefined) {
       return;
     }
-    if (!this.mutating('duplicate-seat')) {
+    // §7.1's *at most one key per seat* is about the seats the roster has. The host's own seat
+    // is the last resort of the label above, not one a second key can take over: evicting the
+    // key already there would drop a commitment §7.1 obliges, in exchange for nothing.
+    if (!this.mutating('duplicate-seat') && seat !== this.ownSeat) {
       for (const [other, entry] of this.seats) {
         if (entry.seat === seat) {
           this.seats.delete(other);
@@ -461,7 +477,8 @@ export class HostProducer {
    * included*) and which it obliges over withholding the commitment. That is the one case where
    * two keys carry one seat, and §7.1's *at most one key per seat*, with §13.3's derivation from
    * it, does not allow for it: the commitment is what a peer cannot do without, so the label is
-   * the half that gives way.
+   * the half that gives way — and with the label gone as a rule, `commit` evicts nothing, so no
+   * commitment is dropped either.
    */
   private label(): string | undefined {
     if (this.ownSeat === undefined) {
@@ -539,12 +556,19 @@ export class HostProducer {
     return paths.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   }
 
-  /** One frame, signed by the host key, at this host's own counter under it. */
+  /**
+   * One frame, signed by the host key, at this host's own counter under it.
+   *
+   * `undefined` here is a fault and not a decision — a CSPRNG that will not read, or an AEAD
+   * that refuses its own inputs — so it is kept where the session can report it: a host that
+   * said nothing would look like one with nothing to publish.
+   */
   private async seal(kind: number, plaintext: Uint8Array): Promise<Uint8Array | undefined> {
     let nonce: Uint8Array;
     try {
       nonce = this.crypto.randomBytes(12);
     } catch {
+      this.faulted ??= `a ${kind === 2 ? 'closing' : 'state'} frame could not be sealed`;
       return undefined;
     }
     this.hostCounter += 1;
@@ -563,6 +587,7 @@ export class HostProducer {
     );
     if (bytes === undefined) {
       this.hostCounter -= 1;
+      this.faulted ??= `a ${kind === 2 ? 'closing' : 'state'} frame could not be sealed`;
     }
     return bytes;
   }
