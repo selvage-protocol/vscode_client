@@ -24,8 +24,14 @@ const REFERENCE_SERVER = resolve(REPO_ROOT, '..', 'reference_server');
 export const BUILD_HINT =
   "nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvage-harness --example interop_peer'";
 
-/** Joining two processes is slower than one round trip; only the first report gets this. */
-const START_MS = 30_000;
+/**
+ * Joining two processes is slower than one round trip; only the first report gets this.
+ *
+ * Exported because it is a bound a caller may reason from rather than a number to keep a copy
+ * of: a window that must outlast the peer's startup is that window plus this budget, and a
+ * startup that crosses it fails here instead of reaching a caller's assertion.
+ */
+export const START_MS = 30_000;
 
 export function interopPeerBinary(): string {
   const fromEnv = process.env.SELVAGE_INTEROP_PEER;
@@ -92,6 +98,12 @@ export interface PeerOptions {
   invite: string;
   path: string;
   name: string;
+  /**
+   * Makes the wire version explicit. The link is still what decides it: `--version 2` on a
+   * link with no fragment, and `--version 1` on a link that carries one, are refused before a
+   * socket is opened rather than overriding the reading.
+   */
+  version?: 1 | 2;
 }
 
 interface Waiter {
@@ -130,18 +142,20 @@ export class RustPeer {
   }
 
   static async start(options: PeerOptions): Promise<RustPeer> {
-    const child = spawn(
-      interopPeerBinary(),
-      [
-        '--invite',
-        options.invite,
-        '--path',
-        options.path,
-        '--name',
-        options.name,
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const args = [
+      '--invite',
+      options.invite,
+      '--path',
+      options.path,
+      '--name',
+      options.name,
+    ];
+    if (options.version !== undefined) {
+      args.push('--version', String(options.version));
+    }
+    const child = spawn(interopPeerBinary(), args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     const peer = new RustPeer(child);
     // It answers its first command only once it has joined, so this is the readiness gate —
     // and a peer that never got there is killed here rather than left behind.
@@ -168,6 +182,19 @@ export class RustPeer {
 
   /** Applies an insert and answers with the peer's own text afterwards. */
   async insert(index: number, text: string): Promise<string> {
+    return (await this.insertReply(index, text)).text;
+  }
+
+  /**
+   * Applies an insert and answers with the whole reply, because `selvage/2` says whether the
+   * frame went out. `published: false` is §13.1's step 4 holding an edit until a state commits
+   * this connection's key, which is not a refusal; `selvage/1` has no such member, so a driver
+   * that wants it is a driver that knows which link it handed in.
+   */
+  async insertReply(
+    index: number,
+    text: string,
+  ): Promise<{ text: string; published: boolean | undefined }> {
     const value = await this.request(
       { op: 'insert', index, text },
       'the peer to insert',
@@ -176,7 +203,11 @@ export class RustPeer {
     if (value.event !== 'text') {
       throw new Error(`the peer answered ${JSON.stringify(value)} to an insert`);
     }
-    return String(value.text);
+    return {
+      text: String(value.text),
+      published:
+        typeof value.published === 'boolean' ? value.published : undefined,
+    };
   }
 
   async select(selection: { anchor: number; head: number }): Promise<void> {
