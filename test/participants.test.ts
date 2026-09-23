@@ -782,6 +782,10 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
   t.after(() => {
     bundle.deactivate();
   });
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -845,6 +849,7 @@ test('hosting an empty room retires the welcome row at once', async (t) => {
     [],
     'the session-less view has rows of its own',
   );
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

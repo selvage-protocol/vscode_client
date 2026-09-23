@@ -1,5 +1,5 @@
 /**
- * A minimal server speaking `selvage/1`, for tests that must not depend on a Rust build.
+ * A minimal server speaking both wire versions, for tests that must not depend on a Rust build.
  *
  * It implements the parts of `PROTOCOL.md`
  * (https://github.com/selvage-protocol/specification) the engine talks to: the handshake and
@@ -26,7 +26,6 @@ import {
   close,
   code,
   event,
-  isCompatible,
   method,
 } from '../../src/engine/envelope.ts';
 import { WIRE_VERSION_V2 } from '../../src/engine/relay.ts';
@@ -34,7 +33,11 @@ import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts
 import { baseOf } from './base.ts';
 
 export interface FakeServerOptions {
-  /** What `/meta` advertises as its wire versions. */
+  /**
+   * What `/meta` advertises as its wire versions. Omitted, it advertises what the server seats,
+   * which is both versions unless `serveVersion1Only` narrows it: a body that disagreed with the
+   * handshake would model a server no client should trust.
+   */
   metaWireVersions?: string[];
   /** The keepalive the server advertises in the handshake and in `/meta`. */
   keepalive?: Partial<MetaKeepalive>;
@@ -57,15 +60,12 @@ export interface FakeServerOptions {
    */
   refuseGrant?: boolean;
   /**
-   * Models `selvaged --serve-version-2`: a hello at `selvage/2` is seated rather than refused.
-   *
-   * The version's server is a room registry, a relay and a timer, which is what this already
-   * is for the frames that version uses — `session.hello`, `session.rename`, the opaque binary
-   * relay and the room's membership — and a room minted here is pinned to the version that
-   * minted it, as the reference server pins one. `test/selvaged.test.ts` and
-   * `test/relay-selvaged.test.ts` are what run the real one.
+   * Models `selvaged --serve-version-1-only`: `selvage/1` alone is seated, and `/meta`
+   * advertises that alone, so a `selvage/2` hello is refused `unsupported_version` — the shape of
+   * a server that predates `selvage/2`, or one narrowed deliberately. The default is the
+   * reference server's: both versions are seated and both are advertised.
    */
-  serveVersion2?: boolean;
+  serveVersion1Only?: boolean;
   /**
    * Models a server that seats a host without handing it the room's token: `room.created` names
    * the room and carries no token. That is the one way a live room reaches a client with no
@@ -104,6 +104,20 @@ const SERVER_CAPABILITIES = [
   'open-document-set',
   'host-reclaim',
 ];
+
+/**
+ * The wire versions a fake server seats, in the order `/meta` writes them: the reference server's
+ * default is both, and `serveVersion1Only` is the one option that narrows it.
+ *
+ * A `selvage/2` server is a room registry, a relay and a timer, which is what this already is for
+ * the frames that version uses — `session.hello`, `session.rename`, the opaque binary relay and
+ * the room's membership — and a room minted here is pinned to the version that minted it, as the
+ * reference server pins one. `test/selvaged.test.ts` and `test/relay-selvaged.test.ts` are what
+ * run the real one.
+ */
+function seatedVersions(options: FakeServerOptions): string[] {
+  return options.serveVersion1Only === true ? [WIRE_VERSION] : [WIRE_VERSION, WIRE_VERSION_V2];
+}
 
 function hex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
@@ -166,7 +180,7 @@ export class FakeServer {
     this.http = http;
     this.wss = wss;
     this.options = {
-      metaWireVersions: [WIRE_VERSION],
+      metaWireVersions: seatedVersions(options),
       ...options,
     };
     this.wsBase = baseOf(`ws://127.0.0.1:${port}`);
@@ -187,7 +201,7 @@ export class FakeServer {
       response.end(
         JSON.stringify({
           server: 'fake-selvaged/0.0.0',
-          wire_versions: options.metaWireVersions ?? [WIRE_VERSION],
+          wire_versions: options.metaWireVersions ?? seatedVersions(options),
           capabilities: [...SERVER_CAPABILITIES],
           keepalive: {
             ...DEFAULT_KEEPALIVE,
@@ -497,18 +511,15 @@ export class FakeServer {
   }
 
   /**
-   * Whether this server seats a connection that speaks `version` (`§10`): the major this
-   * client speaks itself, or `selvage/2` when the option models `--serve-version-2`.
+   * Whether this server seats a connection that speaks `version` (`§10`): whichever versions
+   * {@link seatedVersions} names.
    *
    * One reading, asked by the handshake and by every text request after it: the reference
    * server judges the version on each frame, so a seated connection that sends a request at
    * another version is refused rather than answered.
    */
   private seats(version: string): boolean {
-    return (
-      isCompatible(version) ||
-      (this.options.serveVersion2 === true && version === WIRE_VERSION_V2)
-    );
+    return seatedVersions(this.options).includes(version);
   }
 
   private handleText(client: Client, text: string): void {

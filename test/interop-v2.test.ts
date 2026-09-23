@@ -1,7 +1,7 @@
 /**
  * Interop over the new wire: the real TypeScript engine hosts a `selvage/2` room and the real
  * Rust client joins it through the host's own invite — fragment and all — over one real
- * `selvaged --serve-version-2`.
+ * `selvaged` on its defaults, which seat both versions and advertise both.
  *
  * `interop.test.ts` beside this one drives `selvage/1` and keeps every claim it made there: one
  * room, the same text, the same state vectors, and presence and selections in both directions.
@@ -92,7 +92,7 @@ async function refusalOf(work: () => Promise<unknown>): Promise<Error> {
 }
 
 test('interop over selvage/2: the engine hosts, the Rust client joins with the sealed invite, and the two converge', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -252,7 +252,7 @@ test('interop over selvage/2: the engine hosts, the Rust client joins with the s
 });
 
 test('interop over selvage/2: an edit made before a committing state is held, then published', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -413,8 +413,10 @@ test('interop over selvage/2: a sealed invite is refused by a server that does n
   // negative control is the point of this file's third test: the whole link is used against a
   // server that seats `selvage/1` only, and every path that could drop the fragment and come up
   // as version 1 has to refuse instead.
-  const sealedServer = await RealServer.start({ serveVersion2: true });
-  const plainServer = await RealServer.start();
+  const sealedServer = await RealServer.start();
+  // `selvage/1` alone, which is a server this client refuses to host on and one it cannot
+  // silently fall back to.
+  const plainServer = await RealServer.start({ serveVersion1Only: true });
   t.after(async () => {
     await plainServer.stop();
     await sealedServer.stop();

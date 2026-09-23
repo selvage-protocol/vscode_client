@@ -137,6 +137,10 @@ test('hosting on a bare host dials the completed address', async (t) => {
   // A port nothing listens on: the address is completed and dialled, and the failure names
   // what was dialled. No server is contacted, so this says only what the client did with the
   // address it was typed.
+  // A room in this suite is a version-1 one: a hosting client takes its version from what the
+  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
+  // `selvage/1` says so.
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: '127.0.0.1:1',
     displayName: 'Ada',
@@ -156,6 +160,7 @@ test('a clipboard the editor refuses is reported rather than claimed', async (t)
   t.after(() => server.stop());
   const bundle = activated(t);
   bundle.stub.registered.clipboardWriteThrows = 'the clipboard is not available';
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -189,6 +194,7 @@ test('a room this connection was given no link for is not "host or join a room f
   const server = await FakeServer.start({ omitHostToken: true });
   t.after(() => server.stop());
   const bundle = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -219,6 +225,7 @@ test('hosting again on a room with nothing to hand on says so', async (t) => {
   const server = await FakeServer.start({ omitHostToken: true });
   t.after(() => server.stop());
   const bundle = activated(t);
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -230,6 +237,7 @@ test('hosting again on a room with nothing to hand on says so', async (t) => {
         line.includes('the room is open, but this connection holds no invite link to send.'),
       ) ?? false,
   );
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { serverUrl: server.wsBase });
   assert.ok(
     bundle.stub.registered.warnings.some((line: string) =>

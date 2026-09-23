@@ -212,13 +212,14 @@
         },
         "selvage.wireVersion": {
           "type": "string",
-          "enum": ["selvage/1", "selvage/2"],
+          "enum": ["auto", "selvage/1", "selvage/2"],
           "enumDescriptions": [
-            "The version every released server seats. Document text, cursors and the folder listing are read by the server.",
-            "The version where the server relays bytes it cannot read: the room's listing, its roles and its content are sealed under keys that travel in the invite link's fragment. It needs a server started with --serve-version-2."
+            "Take the server's word: mint the encrypted version wherever the server seats it, and refuse rather than fall back to a version the server can read. This is the default.",
+            "Pin the readable version, where the server reads the room's text, its cursors and the folder listing. This is the deliberate way to host a room the server can read.",
+            "Pin the encrypted version, where the server relays bytes it cannot read: the room's listing, its roles and its content are sealed under keys that travel in the invite link's fragment."
           ],
-          "default": "selvage/1",
-          "description": "The version a hosted room is minted at. A join speaks the version the invite link names, whatever this says, so this applies only to rooms this window hosts. Leave it at selvage/1 unless the server was started with --serve-version-2."
+          "default": "auto",
+          "description": "The wire version this window is pinned to when it hosts. At auto, the server's /meta decides: a server that seats the encrypted version gets an encrypted room, and one that does not is refused rather than given a room it could read. Pinning overrides that either way, and a pinned version the server does not seat is refused too. A join is unaffected: it speaks the version the invite link names."
         },
         "selvage.displayName": {
           "type": "string",

@@ -1,8 +1,8 @@
 /**
- * The `selvage/2` relay against the real `selvaged`, run with `--serve-version-2`: two relays,
- * one room, a host and a guest, exchanging an edit through a server that never sees a file name
- * or a byte of either replica. This is the proof the version's two halves (`§7.1` and `§13`) can
- * be handed a socket and a room and come out the other side agreeing, which is the wiring the
+ * The `selvage/2` relay against a real `selvaged` on its defaults, which seat both versions: two
+ * relays, one room, a host and a guest, exchanging an edit through a server that never sees a file
+ * name or a byte of either replica. This is the proof the version's two halves (`§7.1` and `§13`)
+ * can be handed a socket and a room and come out the other side agreeing, which is the wiring the
  * engine was written without.
  *
  * It needs a built sibling `selvaged` (see `test/helpers/selvaged.ts`), so it is not part of the
@@ -41,7 +41,7 @@ async function pair(server: RealServer): Promise<{ host: RelaySession; guest: Re
 }
 
 test('selvage/2: a host mints, a guest joins, and the listing arrives', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -88,7 +88,7 @@ test('selvage/2: a host mints, a guest joins, and the listing arrives', async (t
 });
 
 test("selvage/2: a peer's hold is reported as the room's open set", async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -129,7 +129,7 @@ test("selvage/2: a peer's hold is reported as the room's open set", async (t) =>
 });
 
 test('selvage/2: an edit crosses a real server in both directions', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -175,7 +175,7 @@ test('selvage/2: an edit crosses a real server in both directions', async (t) =>
 });
 
 test('selvage/2: the host\'s closing ends the guest, in §13.10\'s words', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -193,7 +193,7 @@ test('selvage/2: the host\'s closing ends the guest, in §13.10\'s words', async
 });
 
 test('selvage/2: the host key and its issued series are saved on every state', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -226,7 +226,7 @@ test('selvage/2: the host key and its issued series are saved on every state', a
 });
 
 test('selvage/2: the page-link form joins the same room', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -256,7 +256,7 @@ test('selvage/2: the page-link form joins the same room', async (t) => {
 
 
 test('selvage/2: the engine facade hosts, joins, grants and exchanges an edit', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });

@@ -722,6 +722,25 @@ async function runInstance(
   }
 }
 
+/**
+ * Pins a window in this proof to `selvage/1`, by seeding the setting the way the editor reads it
+ * from the user's own `settings.json`.
+ *
+ * The proof is about two windows converging over one room, not about a wire version, and it was
+ * written over `selvage/1`. A hosting client takes its version from what the server's `/meta`
+ * says it seats unless `selvage.wireVersion` pins it — and a current `selvaged` advertises both,
+ * so an unpinned host here would mint an encrypted room instead. Nothing but a host is affected:
+ * a join speaks the version its invite names.
+ */
+function pinVersion1(userDataDir: string): void {
+  const user = join(userDataDir, 'User');
+  mkdirSync(user, { recursive: true });
+  writeFileSync(
+    join(user, 'settings.json'),
+    `${JSON.stringify({ 'selvage.wireVersion': 'selvage/1' }, null, 2)}\n`,
+  );
+}
+
 async function main(): Promise<void> {
   rmSync(RUN_DIR, { recursive: true, force: true });
   mkdirSync(RUN_DIR, { recursive: true });
@@ -774,6 +793,8 @@ async function main(): Promise<void> {
   const hostExtensions = resolve(RUN_DIR, 'host-extensions');
   const guestUserData = resolve(RUN_DIR, 'guest-user-data');
   const guestExtensions = resolve(RUN_DIR, 'guest-extensions');
+  // The hosting window is the only one this decides for.
+  pinVersion1(hostUserData);
 
   const inviteFile = resolve(RUN_DIR, 'invite.txt');
   const roomPathFile = resolve(RUN_DIR, 'room-path.txt');

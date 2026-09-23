@@ -1,7 +1,8 @@
 /**
- * The extension as the third adapter of a `selvage/2` room, against the real `selvaged` run with
- * `--serve-version-2`: the window hosts a version-2 room and a second peer verifies its state,
- * and the window joins a version-2 room through a page link and lands on the room's mirror.
+ * The extension as the third adapter of a `selvage/2` room, against a real `selvaged` on its
+ * defaults, which seat both versions: the window hosts a version-2 room and a second peer verifies
+ * its state, and the window joins a version-2 room through a page link and lands on the room's
+ * mirror.
  *
  * What it adds over `test/selvage2-adapter.test.ts` — which drives the same paths over the fake
  * server — is the server: the handshake the real one answers, the frames it relays byte for byte
@@ -127,7 +128,7 @@ function parts(link: string): {
 }
 
 test('the extension hosts a version-2 room a second peer can verify and edit in', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -201,7 +202,7 @@ test('the extension hosts a version-2 room a second peer can verify and edit in'
 });
 
 test('the extension joins a version-2 room its page link names, and its mirror fills', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });
@@ -247,7 +248,7 @@ test('the extension joins a version-2 room its page link names, and its mirror f
 });
 
 test('a fragment-less link to a version-2 room is refused by the server', async (t) => {
-  const server = await RealServer.start({ serveVersion2: true });
+  const server = await RealServer.start();
   t.after(async () => {
     await server.stop();
   });

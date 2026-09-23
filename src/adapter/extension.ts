@@ -14,6 +14,8 @@ import type { Engine, FilePeer, FilePresence, ParticipantEntry, Report } from '.
 import {
   SelvageEngine,
   code as errCode,
+  fetchMeta,
+  hostVersion,
   isProtocolError,
   parseSessionUrl,
   sessionBase,
@@ -21,11 +23,14 @@ import {
 } from '../engine/index.ts';
 import type {
   EngineEventListener,
+  HostDecision,
+  Meta,
   OffsetSelection,
   PeerInfo,
   Role,
   Selection,
   SessionInfo,
+  WireVersion,
 } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -287,7 +292,8 @@ interface Participant {
   /** The document the peer says it is in, when this client knows of one. */
   path?: string;
 }
-/** The wire version this adapter speaks when a room is minted at `selvage/2`. */
+/** The two versions this adapter can host a room at, spelled as the wire spells them. */
+const WIRE_VERSION_1 = 'selvage/1';
 const WIRE_VERSION_2 = 'selvage/2';
 
 /**
@@ -2546,11 +2552,15 @@ async function host(
   if (displayName === undefined) {
     return;
   }
-  // Which version a new room is minted at is the host's own choice, and it is the only one it
-  // could make: a version-2 room's listing is sealed by this connection's host key, and a
-  // version-1 room's grant is the server's. Unset is `selvage/1`, which is what every published
-  // client speaks, because `selvaged --serve-version-2` is not the server's default yet.
-  const version2 = hostsVersion2(config().get<unknown>('wireVersion'));
+  // A room is minted at the version the server seats (`PROTOCOL.md` §2): an unpinned window mints
+  // `selvage/2` wherever the server offers it, refuses locally rather than falling back where it
+  // does not, and mints `selvage/1` only when `selvage.wireVersion` pins it there. A join is not
+  // this choice — it speaks the version its invite names, whatever this says.
+  const version = await hostingVersion(baseUrl);
+  if (version === undefined) {
+    return;
+  }
+  const version2 = version === WIRE_VERSION_2;
   let engine: RoomEngine;
   let minted: readonly string[] | undefined;
   try {
@@ -3189,28 +3199,76 @@ function fragmentFor(keys: { roomKey?: string; hostKey?: string }): string {
  * the engine's question, and it refuses a link whose key is not one in its own words rather
  * than dialling it and being refused by a server that cannot read it either.
  */
-export function wireVersionOf(invite: string): 'selvage/1' | 'selvage/2' {
+export function wireVersionOf(invite: string): WireVersion {
   const names = new Set(
     fragmentOf(invite)
       .replace(/^#/, '')
       .split('&')
       .map((part) => part.split('=')[0] ?? ''),
   );
-  return names.has('k') && names.has('h') ? WIRE_VERSION_2 : 'selvage/1';
+  return names.has('k') && names.has('h') ? WIRE_VERSION_2 : WIRE_VERSION_1;
 }
 
 /**
- * Whether a host mints its room at `selvage/2`, from the one setting that says so
- * (`selvage.wireVersion`).
+ * The version the setting pins this window to, from `selvage.wireVersion`, or `undefined` when it
+ * pins nothing.
  *
- * It is a host's own choice and not a guest's: a join speaks the version the *link* names. Unset
- * — and anything that is not version 2 — is `selvage/1`, because `selvaged --serve-version-2` is
- * not the server's default yet and a client that minted version 2 by default would fail against
- * every released server. The two spellings a person types are accepted, as the Neovim client's
- * `g:selvage_wire_version` accepts them.
+ * A pin is deliberate, and it is a host's own choice: `selvage/1` hosts a room the server can
+ * read, `selvage/2` hosts the encrypted one whatever `/meta` says. Unset — the declared default —
+ * is not a pin: the window takes the server's word. Neither is anything no version grammar
+ * accepts: only the two spellings pin it, and the numbers a person types by habit are read as
+ * them. A guest is unaffected either way — a join speaks the version its invite names.
  */
-export function hostsVersion2(configured: unknown): boolean {
-  return configured === 2 || configured === '2' || configured === WIRE_VERSION_2;
+export function pinnedVersion(configured: unknown): WireVersion | undefined {
+  if (configured === 2 || configured === '2' || configured === WIRE_VERSION_2) {
+    return WIRE_VERSION_2;
+  }
+  if (configured === 1 || configured === '1' || configured === WIRE_VERSION_1) {
+    return WIRE_VERSION_1;
+  }
+  return undefined;
+}
+
+/**
+ * The wire version this window hosts a room at, from the server's `/meta` and the setting's pin.
+ *
+ * `/meta` is read best effort: a body that could not be read decides nothing, and the handshake
+ * reports the truth. The choice is the engine's (`hostVersion`), so every client answers this the
+ * same way. `undefined` is a refusal — the sentence for it is shown here, and no socket is opened
+ * for one.
+ */
+async function hostingVersion(baseUrl: string): Promise<WireVersion | undefined> {
+  const pin = pinnedVersion(config().get<unknown>('wireVersion'));
+  let meta: Meta | undefined;
+  try {
+    meta = await fetchMeta(baseUrl);
+  } catch {
+    // Unreachable, not JSON, or no fetch at all: not an answer about versions.
+    meta = undefined;
+  }
+  const decided = hostVersion(meta, pin);
+  if (decided.outcome === 'mint') {
+    return decided.version;
+  }
+  void vscode.window.showWarningMessage(hostVersionRefusal(baseUrl, decided));
+  return undefined;
+}
+
+/**
+ * What a local refusal says: the server it names, the version it does not seat, and what that
+ * server seats instead. The versions are `/meta`'s own words, so the sentence reports what the
+ * server said rather than a reading of it, and nothing here names a setting: the words are the
+ * ones both clients say (`test/vocabulary.test.ts`).
+ */
+function hostVersionRefusal(
+  baseUrl: string,
+  refusal: Extract<HostDecision, { outcome: 'refuse' }>,
+): string {
+  const offered = refusal.offered.length === 0 ? 'nothing' : refusal.offered.join(', ');
+  if (refusal.reason === 'pin-not-seated') {
+    return `Selvage: the wire version is pinned to ${refusal.pin}, and ${baseUrl} does not seat it — its /meta offers ${offered} — so hosting there is refused rather than fallen back from.`;
+  }
+  return `Selvage: ${baseUrl} does not seat selvage/2, the encrypted wire — its /meta offers ${offered} — so a room hosted there would be one the server can read.`;
 }
 
 /** True for a value that opens with a scheme, `ws://` or `https://`, rather than a bare host. */
