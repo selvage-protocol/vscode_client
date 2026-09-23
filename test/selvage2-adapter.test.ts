@@ -294,6 +294,18 @@ test('a host at selvage/2 mints a version-2 room and hands on the keys in its fr
   assert.equal(new URL(invite).origin, server.httpBase);
 });
 
+test('a name set during a version-2 session is a live rename, told to the room', async (t) => {
+  const { bundle, server } = await hosted(t, { wireVersion: V2 });
+  await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Robert' });
+  // A version is judged on each frame and not only on the handshake, so `session.rename` is
+  // where a connection seated at `selvage/2` finds out: a server that seats only the hello
+  // answers this one `unsupported_version` and closes the socket under the session.
+  const rename = await waitFor('the rename to reach the room', () => server.renames[0] ?? false);
+  assert.equal(rename.displayName, 'Robert');
+  assert.equal(server.renames.length, 1, 'the rename was sent more than once');
+  assert.deepEqual(server.displayNames(), ['Robert'], 'the room did not take the new name');
+});
+
 test('the page link says the version the fragment names, for the guest as well as the host', async (t) => {
   const { server, invite } = await hosted(t, { wireVersion: V2 });
   const room = keysOf(invite).room;

@@ -368,12 +368,7 @@ export class FakeServer {
     }
     const version = String(message.v);
     this.hellos.push(version);
-    // A version-2 hello is seated only by a server that serves it: `selvaged` needs
-    // `--serve-version-2`, and a room is pinned to the version that minted it.
-    const seated =
-      isCompatible(version) ||
-      (this.options.serveVersion2 === true && version === WIRE_VERSION_V2);
-    if (!seated) {
+    if (!this.seats(version)) {
       this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
       return;
     }
@@ -491,6 +486,21 @@ export class FakeServer {
     };
   }
 
+  /**
+   * Whether this server seats a connection that speaks `version` (`§10`): the major this
+   * client speaks itself, or `selvage/2` when the option models `--serve-version-2`.
+   *
+   * One reading, asked by the handshake and by every text request after it: the reference
+   * server judges the version on each frame, so a seated connection that sends a request at
+   * another version is refused rather than answered.
+   */
+  private seats(version: string): boolean {
+    return (
+      isCompatible(version) ||
+      (this.options.serveVersion2 === true && version === WIRE_VERSION_V2)
+    );
+  }
+
   private handleText(client: Client, text: string): void {
     let message: Record<string, unknown>;
     try {
@@ -504,7 +514,7 @@ export class FakeServer {
       this.alert(client, code.badMessage, 'a request needs an id');
       return;
     }
-    if (!isCompatible(String(message.v))) {
+    if (!this.seats(String(message.v))) {
       this.respond(client, id, undefined, {
         code: code.unsupportedVersion,
         message: `unsupported ${String(message.v)}`,
