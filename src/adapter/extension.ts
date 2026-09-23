@@ -2025,9 +2025,11 @@ export class Session {
    *
    * An edit the bridge itself applied is not a keystroke: the buffer then holds the replica's
    * text, and the comparison below is what tells the two apart. The `applyingTo` guard covers
-   * the window where an apply of this window's own is in flight and the replica has moved on
-   * since it was issued, where the buffer holds the text that apply asked for rather than the
-   * replica's — per path, so an apply for another document never excuses an edit in this one.
+   * the window where a *bridge* apply is in flight and the replica has moved on since it was
+   * issued, where the buffer holds the text that apply asked for rather than the replica's —
+   * per path, so an apply for another document never excuses an edit in this one. A put-back's
+   * ask is not recorded there: a put-back is this adapter's own correction, so a change event
+   * carrying its target is the replica's text already or a keystroke.
    *
    * Returns whether this call was a viewer's edit, which is the whole of what a caller owes it.
    */

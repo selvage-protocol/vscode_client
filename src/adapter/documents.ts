@@ -87,10 +87,15 @@ export class WorkspaceEditor implements EditorHost {
    */
   private readonly unshareable = new Set<string>();
   /**
-   * The text each in-flight apply of this window's asked its document to hold, by room path:
-   * what tells a change event whether it is this window's own edit or a keystroke
+   * The text each in-flight *bridge* apply of this window's asked its document to hold, by room
+   * path: what tells a change event whether it is the room's own edit landing or a keystroke
    * (`{@link applyingTo}`). One entry per apply, because an apply issued while another is still
    * in flight — a put-back over a put-back, which a fast typist produces — is its own answer.
+   *
+   * A put-back's ask is deliberately not recorded: a put-back is this adapter correcting the
+   * buffer, not the bridge applying the room's text, so a change event carrying it is judged
+   * against the replica like any keystroke. Otherwise it would excuse the buffer holding text
+   * the room has moved past, and `bridge.documentChanged` would publish it into the replica.
    */
   private readonly askedFor = new Map<string, string[]>();
 
@@ -184,13 +189,14 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined) {
       return false;
     }
-    return this.offer(path, document, change);
+    return this.offer(path, document, change, true);
   }
 
   private async offer(
     path: string,
     document: vscode.TextDocument,
     change: TextChange,
+    bridgeApply: boolean,
   ): Promise<boolean> {
     // `false` means the editor refused the change and the buffer is unchanged: the editor
     // stamps a workspace edit with the version its document mirror holds and refuses one whose
@@ -225,14 +231,20 @@ export class WorkspaceEditor implements EditorHost {
       // What the buffer holds if this edit lands, recorded for as long as the apply is in
       // flight: the change event the editor fires for it arrives inside that window, and it is
       // this — not a count of everything in flight — that says whose edit the buffer holds.
+      // Only a bridge apply is recorded: a put-back is this adapter's own correction, and a
+      // change event carrying its target is either the replica's text already or a keystroke.
       const expected = applyChange(before, offered);
-      this.noteAsked(path, expected);
+      if (bridgeApply) {
+        this.noteAsked(path, expected);
+      }
       try {
         if (await vscode.workspace.applyEdit(edit)) {
           return true;
         }
       } finally {
-        this.forgetAsked(path, expected);
+        if (bridgeApply) {
+          this.forgetAsked(path, expected);
+        }
       }
       const current = document.getText();
       if (current === before) {
@@ -249,9 +261,10 @@ export class WorkspaceEditor implements EditorHost {
 
   /**
    * The room's text back into a document the buffer had moved away from: how a viewer's edit is
-   * discarded (`§13.9`), as the inverse of the change the buffer took. Applied through
-   * {@link applyChange}, so an edit that landed while this one was being put back is rebased
-   * through rather than lost.
+   * discarded (`§13.9`), as the inverse of the change the buffer took. Offered the way
+   * {@link applyChange} offers one — through the same rebase — but without recording the ask,
+   * because a put-back is this adapter's own correction and never the bridge applying the
+   * room's text.
    *
    * `text` is the replica's, which is LF-only, and the buffer may hold `\r\n`: it is rendered
    * into the document's own endings first, the way every other writer in the policy does, so a
@@ -268,16 +281,17 @@ export class WorkspaceEditor implements EditorHost {
     if (held === room) {
       return true;
     }
-    return this.applyChange(path, diff(held, room));
+    return this.offer(path, document, diff(held, room), false);
   }
 
   /**
-   * Whether an apply of this window's own has asked this document to hold `text` and has not
-   * settled. A change event carrying it is this window's own edit landing, not a keystroke.
+   * Whether a *bridge* apply of this window's has asked this document to hold `text` and has
+   * not settled. A change event carrying it is the room's own edit landing, not a keystroke.
    *
    * Per path and by text, because neither a count of the applies in flight nor the path alone
    * can tell the two apart: an apply for another path says nothing about this one, and an apply
-   * for this path that has not landed has not moved this buffer either (`§13.9`).
+   * for this path that has not landed has not moved this buffer either (`§13.9`). A put-back's
+   * ask is not recorded here, so a change event carrying one is a keystroke to refuse.
    */
   applyingTo(path: string, text: string): boolean {
     return this.askedFor.get(path)?.includes(text) ?? false;

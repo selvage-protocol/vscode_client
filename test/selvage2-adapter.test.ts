@@ -540,8 +540,10 @@ interface StandInDocument {
  *
  * `room` is the replica's text, which is LF-only; `eol` is the document's own, so a CRLF
  * document is one holding the same text rendered. The door a test can hold shut is `hold`: an
- * apply the adapter issues is left unanswered until `release`, which is the window a second
- * keystroke or a change of the room's own text can land in.
+ * apply the adapter issues is left unanswered until `release`, which drains every held apply in
+ * the order it was asked for; `releaseLast` settles only the newest, which is what an editor
+ * that resolves two `applyEdit` promises out of order does. `refuseMoved` makes the editor
+ * refuse a range whose document moved under it, as a version stamp does.
  */
 function viewerSession(
   t: TestContext,
@@ -554,16 +556,27 @@ function viewerSession(
   room(): string;
   type(next: string): void;
   inserts: Array<{ path: string; text: string }>;
+  /** Every delete that reached the bridge, which is how a viewer's edit would mutate the replica. */
+  deletes: Array<{ path: string; index: number; length: number }>;
   setRole(role: string): void;
   /** The room's text moving without a keystroke: what the bridge is told to reconcile. */
   roomMoved(next: string): void;
   /** Leaves every apply the adapter issues unanswered until {@link release}. */
   hold(): void;
+  /** Settles every held apply, in the order the adapter asked for them. */
   release(): void;
+  /** Settles the newest held apply, leaving the older ones in flight. */
+  releaseLast(): void;
+  /** Makes the editor refuse a range whose document moved under it, as a version stamp does. */
+  refuseMoved(): void;
   /** Whether the adapter is waiting on an apply it issued. */
   waiting(): boolean;
+  /** How many applies the adapter is waiting on. */
+  pending(): number;
   /** How many applies the adapter has asked the editor for. */
   applyCount(): number;
+  /** Everything the window was shown as an error. */
+  errors(): string[];
 } {
   const bundle = loadBundle();
   bundle.stub.reset();
@@ -594,8 +607,9 @@ function viewerSession(
   // model would; a change the editor refuses is `applyEdit` answering `false`. An apply the test
   // is holding is answered only when it says so, so a change event can arrive while the apply
   // that caused it is still in flight — which is when an editor delivers it.
-  let releaseApply: (() => void) | undefined;
+  const queued: Array<{ edit: unknown; at: string; settle: () => void }> = [];
   let holding = false;
+  let refuseIfMoved = false;
   let asks = 0;
   const apply = (edit: unknown): void => {
     const edits =
@@ -610,11 +624,22 @@ function viewerSession(
   bundle.stub.registered.applyEditImpl = (edit: unknown) => {
     asks += 1;
     if (holding) {
+      const at = held;
       return new Promise<boolean>((settle) => {
-        releaseApply = () => {
-          apply(edit);
-          settle(true);
-        };
+        queued.push({
+          edit,
+          at,
+          settle: () => {
+            // A real editor stamps a workspace edit with the version its ranges were computed
+            // against and refuses one whose document has moved since.
+            if (refuseIfMoved && held !== at) {
+              settle(false);
+              return;
+            }
+            apply(edit);
+            settle(true);
+          },
+        });
       });
     }
     apply(edit);
@@ -623,6 +648,7 @@ function viewerSession(
   bundle.stub.registered.textDocuments.push(document);
 
   const inserts: Array<{ path: string; text: string }> = [];
+  const deletes: Array<{ path: string; index: number; length: number }> = [];
   const listeners = new Set<
     (event: { type: string; peers: unknown[]; path?: string }) => void
   >();
@@ -646,7 +672,8 @@ function viewerSession(
       inserts.push({ path, text });
       replica = `${replica.slice(0, index)}${text}${replica.slice(index)}`;
     },
-    delete: (_path: string, index: number, length: number) => {
+    delete: (path: string, index: number, length: number) => {
+      deletes.push({ path, index, length });
       replica = `${replica.slice(0, index)}${replica.slice(index + length)}`;
     },
     setSelection: (_path: string, _selection: unknown) => undefined,
@@ -691,6 +718,7 @@ function viewerSession(
       bundle.stub.fire('changeTextDocument', { document });
     },
     inserts,
+    deletes,
     setRole: (next: string) => {
       role = next;
       // The engine's own event for a state that relabels this connection: `§13.4`'s role is
@@ -710,12 +738,20 @@ function viewerSession(
     },
     release: () => {
       holding = false;
-      const go = releaseApply;
-      releaseApply = undefined;
-      go?.();
+      while (queued.length > 0) {
+        queued.shift()?.settle();
+      }
     },
-    waiting: () => releaseApply !== undefined,
+    releaseLast: () => {
+      queued.pop()?.settle();
+    },
+    refuseMoved: () => {
+      refuseIfMoved = true;
+    },
+    waiting: () => queued.length > 0,
+    pending: () => queued.length,
     applyCount: () => asks,
+    errors: () => bundle.stub.registered.errors,
   };
 }
 
@@ -832,4 +868,48 @@ test('a put-back the editor refuses is reported', async (t) => {
     { describe: () => window.bundle.stub.registered.errors },
   );
   assert.deepEqual(window.inserts, [], 'a viewer published content');
+});
+
+/**
+ * Lets the promise chain the editor's settle began run to its end. The `applyEdit` reactions are
+ * microtasks, and a timer callback cannot run before every microtask queued ahead of it, so one
+ * macrotask boundary is enough to observe a settle that has no visible effect of its own.
+ */
+function settled(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(() => resolve(), 0);
+  });
+}
+
+test("a viewer's undo is refused once the room has moved past its put-back", async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+  const moved = `${room}, from the room`;
+
+  // The refused keystroke's put-back is left in flight.
+  window.hold();
+  window.type(`${room} and mine`);
+  assert.equal(window.waiting(), true, 'the put-back was not issued');
+
+  // The room moves on: the bridge reconciles it as its own apply, behind the put-back.
+  window.roomMoved(moved);
+
+  // The editor settles the bridge's newer apply first, leaving the put-back in flight. The
+  // bridge then has no flight of its own for this path, while the put-back's target — the room's
+  // *old* text — is still what an arriving change event can carry.
+  window.releaseLast();
+  await settled();
+
+  // The viewer undoes the keystroke: the buffer returns to exactly what the put-back asked for.
+  // It is a keystroke, not the room's edit, so it must not reach the bridge, where it would be
+  // diffed against the room's newest text and delete the room's own change from the replica.
+  window.type(room);
+  assert.deepEqual(window.inserts, [], "a viewer's undo reached the bridge as an insert");
+  assert.deepEqual(window.deletes, [], "a viewer's undo reached the bridge as a delete");
+  assert.equal(window.room(), moved, "the replica took a viewer's undo");
+
+  // And the put-back the undo itself provoked converges the buffer on the room's newest text.
+  window.releaseLast();
+  await waitFor("the room's newest text to land", () => window.text() === moved);
 });
