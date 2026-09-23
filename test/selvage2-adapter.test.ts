@@ -804,3 +804,32 @@ test("a change the bridge applied is not a viewer's keystroke", async (t) => {
   window.release();
   await waitFor('the room\'s own text to land', () => window.text() === moved);
 });
+
+test("a viewer's keystroke in a CRLF document keeps the document's line endings", (t) => {
+  const window = viewerSession(t, 'one\ntwo\n', 2);
+  window.setRole('viewer');
+  assert.equal(window.text(), 'one\r\ntwo\r\n', 'the stand-in did not hold the rendered room text');
+
+  window.type('one\r\ntwo\r\nmine');
+  assert.equal(
+    window.text(),
+    'one\r\ntwo\r\n',
+    "the put-back rewrote the document's line endings",
+  );
+  assert.deepEqual(window.inserts, [], 'a viewer published content');
+});
+
+test('a put-back the editor refuses is reported', async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+  window.bundle.stub.registered.applyEditImpl = () => Promise.resolve(false);
+
+  window.type(`${room} and mine`);
+  await waitFor(
+    'the refused put-back to be reported',
+    () => window.bundle.stub.registered.errors.some((message) => message.includes(PATH)),
+    { describe: () => window.bundle.stub.registered.errors },
+  );
+  assert.deepEqual(window.inserts, [], 'a viewer published content');
+});

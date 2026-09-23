@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { applyChange, diff } from '../bridge/index.ts';
+import { applyChange, diff, render } from '../bridge/index.ts';
 import type {
   Cursor,
   EditorHost,
@@ -253,6 +253,10 @@ export class WorkspaceEditor implements EditorHost {
    * {@link applyChange}, so an edit that landed while this one was being put back is rebased
    * through rather than lost.
    *
+   * `text` is the replica's, which is LF-only, and the buffer may hold `\r\n`: it is rendered
+   * into the document's own endings first, the way every other writer in the policy does, so a
+   * refused keystroke in a CRLF document does not rewrite the whole document's endings.
+   *
    * The caller passes the document rather than a path because the change event that asked for
    * this is the one holding it, and a document the room has since stopped sharing has nothing
    * to put back. `false` is the editor refusing every offer: the buffer then still holds the
@@ -260,10 +264,11 @@ export class WorkspaceEditor implements EditorHost {
    */
   async putBack(path: string, document: vscode.TextDocument, text: string): Promise<boolean> {
     const held = document.getText();
-    if (held === text) {
+    const room = render(text, this.lineEnding(path));
+    if (held === room) {
       return true;
     }
-    return this.applyChange(path, diff(held, text));
+    return this.applyChange(path, diff(held, room));
   }
 
   /**

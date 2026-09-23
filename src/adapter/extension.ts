@@ -2040,7 +2040,20 @@ export class Session {
     if (matchesReplica(held, room) || this.editor.applyingTo(path, held)) {
       return false;
     }
-    void this.editor.putBack(path, document, room);
+    // A put-back the editor refuses leaves the buffer holding the edit the room never
+    // received, with no apply of the bridge's behind it to converge it: the report is the
+    // bridge's own for two texts that are apart and stay apart, and it is the only thing that
+    // says so. The keystroke is still not the room's, whatever the editor did with it.
+    void this.editor.putBack(path, document, room).then(
+      (back) => {
+        if (!back) {
+          this.onReport({ kind: 'applyRefused', path });
+        }
+      },
+      () => {
+        this.onReport({ kind: 'applyRefused', path });
+      },
+    );
     this.sayViewerOnce();
     return true;
   }
