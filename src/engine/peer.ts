@@ -42,6 +42,20 @@ import { applyFrame, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
 
 /**
+ * Whether a session's clocks may hold a process open.
+ *
+ * A timer that is not `unref`ed keeps a Node process alive until it is cleared, and a session
+ * that is never destroyed therefore never lets its process end. Nothing a session does is work
+ * the machine has to wait for — §13.8's clocks are the caller's own elapsed time — so every
+ * timer this module starts is unreferenced, and the browser, where there is no such thing, is
+ * left alone by the optional call.
+ */
+function unrefTimer(timer: unknown): void {
+  const handle = timer as { unref?: () => void } | undefined;
+  handle?.unref?.();
+}
+
+/**
  * The transaction origins this session's own changes and a peer's carry, so that a listener can
  * tell them apart: the edits this connection makes are the ones it may publish, and content
  * applied from another peer is not.
@@ -446,6 +460,10 @@ export class PeerSession {
     // §7's document: one `Y.Doc`, one `Y.Text` per path.
     this.doc = new Y.Doc();
     this.awareness = new Awareness(this.doc);
+    // y-protocols runs the awareness clock on an interval, and §8.2's renewal and expiry are
+    // read on that same clock. `destroy()` clears it, and a caller that forgets would otherwise
+    // hold its process open for ever: `unref` is what makes forgetting cost nothing.
+    unrefTimer(this.awareness._checkInterval);
   }
 
   /** A connection's session: §13.1's steps 1 and 2, and nothing sent yet. */
