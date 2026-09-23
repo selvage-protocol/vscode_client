@@ -88,7 +88,7 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |
 | `selvage.cursorLabel` | `"none"` | Whether a peer's name is drawn over the document at their caret: `none`, `floating` or `chip`. |
-| `selvage.wireVersion` | `"selvage/1"` | The version a hosted room is minted at. A join speaks the version the invite link names, whatever this says, so it applies to rooms this window hosts. Needs a server started with `--serve-version-2`. |
+| `selvage.wireVersion` | `"auto"` | The wire version this window is pinned to when it hosts: `"selvage/2"` for the encrypted wire, `"selvage/1"` for a room the server can read. `auto` is not a pin, and it is the default: the window takes what the server's `/meta` says it seats, and refuses rather than falls back where that is no `selvage/2`. A join is unaffected — it speaks the version the invite link names. |
 
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
@@ -243,9 +243,9 @@ protocol's bound on a name and the question that asks for one.
 
 ### `selvage/2` in the engine
 
-`selvage/1` is what every published client and every room in service speaks, and the engine still
-speaks it end to end. `selvage/2`'s session layer sits beside that version rather than instead of
-it, with the peer's half in `peer.ts` and the host's in `host.ts`:
+`selvage/1` is what every room in service speaks, and the engine still speaks it end to end.
+`selvage/2`'s session layer sits beside that version rather than instead of it, with the peer's
+half in `peer.ts` and the host's in `host.ts`:
 
 | Module | What it is |
 |---|---|
@@ -301,18 +301,21 @@ is what a caller drains after, because otherwise a caret goes out at the next re
 
 ### Sessions at `selvage/2`
 
-This window drives both versions. `src/adapter/extension.ts` picks one per session — the host's
-`selvage.wireVersion` setting, or the fragment of the link a join was handed — and what is left
-for the adapter is a listing and the role the room's state gives this connection. The
-socket wiring is `src/engine/relay.ts` and the adapter's vocabulary is
-`src/bridge/peer-engine.ts`; the crypto seam is the engine's default, WebCrypto, which the
-extension host has globally.
+This window drives both versions. `src/adapter/extension.ts` picks one per session — the version
+the server's `/meta` says it seats, or the `selvage.wireVersion` pin when the setting names one,
+or the fragment of the link a join was handed — and what is left for the adapter is a listing and
+the role the room's state gives this connection. The socket wiring is `src/engine/relay.ts` and
+the adapter's vocabulary is `src/bridge/peer-engine.ts`; the crypto seam is the engine's default,
+WebCrypto, which the extension host has globally.
 
 What a person does:
 
-- **Host.** Start `selvaged --serve-version-2`, and set `selvage.wireVersion` to `"selvage/2"`.
-  Anything else, including unset, is `selvage/1`, which is what every published client speaks.
-  The address, the folder and the invite are unchanged.
+- **Host.** Nothing to set. A server that seats `selvage/2` gets an encrypted room, because a
+  client that can speak that version mints it; `selvage.wireVersion: "selvage/1"` is how a room the
+  server can read is asked for deliberately. A server whose `/meta` answers with no `selvage/2` is
+  refused before a socket is opened — this client does not fall back to the readable wire — while a
+  `/meta` that cannot be read at all is not that answer: the connection is attempted and the
+  handshake reports the truth. The address, the folder and the invite are unchanged.
 - **Join.** Nothing: paste the link. A `selvage/2` invite carries the room key and the host key on
   its fragment, and a client that cannot read them cannot join the room at all, so the link is the
   version the join speaks. A link with no fragment is a `selvage/1` join, as it always was.
@@ -341,11 +344,8 @@ the window's `globalState`. The engine's `HostStore` is the seam such a store is
 through, and it stays open for a client that has a series to continue. §13.11's per-receiver caps
 are unimplemented, as they are in the reference client.
 
-What this slice does not do. Every published client still speaks `selvage/1` unless it is asked
-for the other version, and `selvaged --serve-version-2` is not the server's default, so a room is
-minted at `selvage/2` only where both ends were told to. The relay also runs no
-resume: a dropped socket ends its session rather than re-helloing, so `§9.1`'s host return is not
-wired either.
+What this slice does not do. The relay runs no resume: a dropped socket ends its session rather
+than re-helloing, so `§9.1`'s host return is not wired either.
 
 §7.1's **host-side corpus vectors** are not here — `test/host.test.ts` is what pins the producer,
 and the peer corpus still drives the receiver's half — and §13.11's per-receiver caps are not
@@ -386,7 +386,7 @@ $ npm run build                        # → dist/extension.js
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then the server-free suite
 $ npm test                             # builds, then the same plus four against a real selvaged
-$ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged --serve-version-2
+$ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged
 $ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
 $ npm run test:interop                 # interop with a real Rust client, over both wire versions
 $ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
