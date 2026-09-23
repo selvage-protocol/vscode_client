@@ -54,6 +54,7 @@ interface AdapterExports {
   pinnedVersion(configured: unknown): string | undefined;
   fragmentOf(invite: string): string;
   fragmentKeys(fragment: string): { roomKey?: string; hostKey?: string };
+  fragmentKeyRefusal(invite: string): string | undefined;
   wireInviteFor(invite: string): string;
   buildPageLink(
     serverBase: string,
@@ -64,7 +65,7 @@ interface AdapterExports {
   parsePageLink(text: string):
     | { room: string; token: string; origin: string; fragment: string; roomKey?: string; hostKey?: string }
     | undefined;
-  Session: new (engine: unknown, options?: { mirror?: unknown; invite?: string }) => {
+  Session: new (engine: unknown, options?: { mirror?: unknown; invite?: string; version?: string }) => {
     role(): string;
     dispose(options?: { keepMirror?: boolean }): void;
   };
@@ -145,17 +146,18 @@ function keysOf(link: string): { room: string; token: string; roomKey?: string; 
 // --- what a version is decided by ------------------------------------------------
 
 test('the version an invite asks for is the one its fragment names', () => {
-  const { wireVersionOf, fragmentOf, fragmentKeys } = adapterExports();
+  const { wireVersionOf, fragmentOf, fragmentKeys, fragmentKeyRefusal } = adapterExports();
 
-  // `§5.1`: a fragment with both keys is a version-2 invite, and everything else is version 1.
+  // `§5.1`: a fragment that names either key is a version-2 invite — the version-2 reader
+  // refuses an incomplete one — and a fragment that names neither, or none at all, is version 1.
   for (const [invite, wanted] of [
     [`ws://host/session?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
     [`https://host/?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
     ['https://host/?room=r&token=t', V1],
     ['ws://host/session?room=r&token=t', V1],
     ['https://host/?room=r&token=t#', V1],
-    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}`, V1],
-    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}`, V1],
+    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}`, V2],
+    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}`, V2],
     ['https://host/?room=r&token=t#debug=1', V1],
     // A fragment that names the two keys in the other order is still a version-2 invite: what
     // `§5.1` fixes is the names, and the order a host writes them in is its business.
@@ -164,6 +166,24 @@ test('the version an invite asks for is the one its fragment names', () => {
   ] as const) {
     assert.equal(wireVersionOf(invite), wanted, `${invite} was read as ${wireVersionOf(invite)}`);
   }
+
+  // A fragment that names one key and not the other is refused locally, naming the missing one,
+  // in the words the version-2 reader uses — before the join ever dials it as a version-1 link.
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#k=${'A'.repeat(43)}`),
+    'the invite carries no host key (`h`)',
+  );
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#h=${'B'.repeat(43)}`),
+    'the invite carries no room key (`k`)',
+  );
+  // An empty value is no key either: `§5.1` has a key be 32 bytes, so nothing encodes one.
+  assert.equal(
+    fragmentKeyRefusal(`https://host/?room=r&token=t#k=&h=${'B'.repeat(43)}`),
+    'the invite carries no room key (`k`)',
+  );
+  assert.equal(fragmentKeyRefusal('https://host/?room=r&token=t#debug=1'), undefined);
+  assert.equal(fragmentKeyRefusal('https://host/?room=r&token=t'), undefined);
 
   assert.equal(fragmentOf('ws://host/session?room=r&token=t'), '');
   assert.equal(fragmentOf('https://host/?room=r&token=t#k=a&h=b'), '#k=a&h=b');
@@ -199,6 +219,26 @@ test('the setting pins a version, and anything else takes the server\u2019s word
       `${String(configured)} pinned ${String(pinnedVersion(configured))}`,
     );
   }
+});
+
+test('a fragment naming one key is refused locally, naming the missing key', async (t) => {
+  const dialled = armedSockets(t);
+  const { bundle } = activated(t);
+  // §5.1: an invite whose fragment names `k` and not `h` is a version-2 invite with a key lost.
+  // The refusal happens here — in the join command, before the name question, before the window
+  // reloads onto a room mirror and before any socket — with the version-2 reader's own words,
+  // rather than dialling it as a version-1 join and letting a server refuse the incomplete link.
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: `https://edit.example/?room=r-1&token=tok#k=${'A'.repeat(43)}`,
+    displayName: 'Bob',
+  });
+  assert.deepEqual(bundle.stub.registered.errors, ['Selvage: the invite carries no host key (`h`)']);
+  assert.deepEqual(dialled, [], 'the refusal dialled a server anyway');
+  assert.deepEqual(
+    bundle.stub.registered.clipboardWrites,
+    [],
+    'a refused join handed on an invite',
+  );
 });
 
 test('the wire URL an invite joins on never carries the fragment', () => {
@@ -635,6 +675,7 @@ function viewerSession(
   t: TestContext,
   room = "the room's own text",
   eol = 1,
+  options: { version?: string; role?: string; mirror?: boolean } = {},
 ): {
   bundle: LoadedExtension;
   session: { role(): string; dispose(): void };
@@ -663,6 +704,10 @@ function viewerSession(
   applyCount(): number;
   /** Everything the window was shown as an error. */
   errors(): string[];
+  /** Reports an engine event to the session, as the bridge would. */
+  fire(event: { type: string; peers?: unknown[]; path?: string; graceMs?: number; peer?: unknown; reason?: string }): void;
+  /** How many times the session took the mirror away. */
+  mirrorRemoved(): number;
 } {
   const bundle = loadBundle();
   bundle.stub.reset();
@@ -738,7 +783,7 @@ function viewerSession(
   const listeners = new Set<
     (event: { type: string; peers: unknown[]; path?: string }) => void
   >();
-  let role = 'guest';
+  let role = options.role ?? 'guest';
   const engine = {
     session: () => ({
       roomId: 'r-viewer',
@@ -780,6 +825,7 @@ function viewerSession(
     disconnect: async () => undefined,
     inviteUrl: () => undefined,
   };
+  let mirrorRemoved = 0;
   const mirror = {
     room: 'r-viewer',
     window: 'w-1',
@@ -788,9 +834,15 @@ function viewerSession(
     materialise: () => ({ mirrored: [], refused: [] }),
     republish: () => ({ mirrored: [], refused: [], removed: [] }),
     clearInvite: () => undefined,
-    remove: () => undefined,
+    remove: () => {
+      mirrorRemoved += 1;
+    },
   };
-  const session = new adapter.Session(engine, { mirror, invite: 'https://host/?room=r-viewer&token=t' });
+  const session = new adapter.Session(engine, {
+    ...(options.mirror === false ? {} : { mirror }),
+    invite: 'https://host/?room=r-viewer&token=t',
+    version: options.version ?? 'selvage/2',
+  });
   t.after(() => {
     session.dispose();
   });
@@ -838,6 +890,14 @@ function viewerSession(
     pending: () => queued.length,
     applyCount: () => asks,
     errors: () => bundle.stub.registered.errors,
+    /** Reports an engine event to the session, as the bridge would. */
+    fire: (event: { type: string; peers?: unknown[]; path?: string; graceMs?: number; peer?: unknown; reason?: string }) => {
+      for (const listener of listeners) {
+        listener(event as { type: string; peers: unknown[] });
+      }
+    },
+    /** How many times the session took the mirror away. */
+    mirrorRemoved: () => mirrorRemoved,
   };
 }
 
@@ -1041,4 +1101,60 @@ test('a document that refuses every apply says so once per episode', async (t) =
     'a viewer got one dialog per refused keystroke',
   );
   assert.deepEqual(window.inserts, [], 'a viewer published content');
+});
+
+// --- the two endings a socket close can be, and what each takes -----------------
+
+test('a version-2 guest whose bounded retry gave up keeps its mirror', (t) => {
+  const window = viewerSession(t);
+  // §9.1's retry is visible while it runs; the bar is the surface that shows it.
+  window.fire({ type: 'reconnecting' });
+  const bar = String(
+    window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+  );
+  assert.match(bar, /reconnecting…/, 'the retry did not reach the status bar');
+
+  window.fire({ type: 'disconnected' });
+  assert.equal(
+    window.mirrorRemoved(),
+    0,
+    "a version-2 guest's mirror is the only copy of its work and was removed",
+  );
+  assert.deepEqual(
+    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    ['Selvage: the connection ended and the session is over; it could not be re-established.'],
+  );
+});
+
+test('a version-2 session with no mirror says its wire cannot resume a hosting session', (t) => {
+  // A `selvage/2` host holds no mirror, and this wire has no host resume, so its drop is the end
+  // of the session and is said as that rather than as a retry that never happened.
+  const window = viewerSession(t, undefined, undefined, { mirror: false });
+  window.fire({ type: 'disconnected' });
+  assert.deepEqual(
+    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    [
+      'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
+    ],
+  );
+});
+
+test('a version-1 guest keeps the drop ending it always had', (t) => {
+  const window = viewerSession(t, undefined, undefined, { version: 'selvage/1' });
+  window.fire({ type: 'disconnected' });
+  assert.equal(window.mirrorRemoved(), 1, 'a version-1 session changed what a drop takes');
+});
+
+test('a version-2 window says it is waiting for the host rather than claiming guest', (t) => {
+  // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used
+  // to read that window as `guest` — a claim a version-2 peer cannot make yet.
+  const window = viewerSession(t);
+  const bar = String(
+    window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+  );
+  assert.match(
+    bar,
+    /waiting for the host/,
+    `the window claimed a role the room has not given it: ${bar}`,
+  );
 });

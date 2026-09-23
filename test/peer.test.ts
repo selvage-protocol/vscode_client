@@ -266,6 +266,30 @@ test('a second state that commits our key sends no second handshake', async () =
   assert.equal(peer.handshakeCount, 1);
 });
 
+test('two keys naming one seat read as the first key in §6.1\'s order', async () => {
+  const now = await room();
+  const peer = await session();
+  const other = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(13))) as SessionKeypair;
+  const spelling = (key: SessionKeypair): string => encodeKey(key.public);
+  // The state writes the later key first, so a reader that let the last entry win would take
+  // its role. §6.1 fixes the reading on the key that comes first in UTF-16 code-unit order,
+  // the rule `entries()`, `hostSeat()` and this map all share.
+  const [earlier, later] = [now.peer, other].sort((left, right) =>
+    spelling(left) < spelling(right) ? -1 : 1,
+  ) as [SessionKeypair, SessionKeypair];
+  assert.deepEqual(
+    await peer.deliver(
+      1,
+      await state(now.host, 1, [
+        [later, 'host', 'p-shared'],
+        [earlier, 'guest', 'p-shared'],
+      ]),
+    ),
+    { status: 'applied', kind: 1 },
+  );
+  assert.deepEqual([...peer.rolesBySeat()], [['p-shared', 'guest']]);
+});
+
 test('an edit past the end of the text is refused, and a guest publishes its delta', async () => {
   const now = await room();
   const peer = await session();
@@ -423,6 +447,66 @@ test('the flush carries this connection\'s edits and not a peer\'s content', asy
       replica.getText('theirs.md').toString(),
       '',
       "and not the peer's content, which the room already had",
+    );
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
+});
+
+test('a dropped socket publishes nothing under the key it held, and the re-seat flushes what it wrote', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+
+  // A frame the live connection queued under the key it holds, which the dead socket takes with
+  // it: the re-seat is a new key, and the room commits nothing under the old one.
+  peer.open('theirs.md');
+  await peer.tick(1);
+  peer.detach();
+  assert.equal(
+    peer.takeOutbound().length,
+    0,
+    'the dead socket takes the frame it never sent, rather than it going out on the new one',
+  );
+
+  // An edit sealed under that key now is a frame every peer refuses `uncommitted_key`, so it is
+  // held back instead and published by the state that commits the new key (§13.1's step 4).
+  assert.equal(await peer.insert('README.md', 0, 'typed while away'), false);
+  assert.equal(peer.text('README.md'), 'typed while away', 'and the replica holds it');
+
+  const newSeat = 'p-new';
+  await peer.reseat(newSeat, ['p-host'], 0);
+
+  const recommit = await frame(
+    now.host,
+    1,
+    2,
+    utf8({
+      issued: 2,
+      listing: ['README.md'],
+      peers: { [encodeKey(peer.sessionKey)]: { peer_id: newSeat, role: 'guest' } },
+    }),
+  );
+  assert.deepEqual(await peer.deliver(2, recommit), { status: 'applied', kind: 1 });
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 2, "the handshake, then the edit the drop held back");
+  const delta = await publishedFrame(out[1] as Uint8Array);
+  assert.equal(delta.kind, 0);
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  try {
+    applyFrame(Uint8Array.from(delta.payload as number[]), replica, watching, 'corpus');
+    assert.equal(
+      replica.getText('README.md').toString(),
+      'typed while away',
+      'the room never hears the edit made while the socket was gone',
     );
   } finally {
     watching.destroy();

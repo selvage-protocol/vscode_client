@@ -373,12 +373,14 @@ export class PeerSession {
 
   private readonly crypto: FrameCrypto;
   private readonly frameKey: Uint8Array;
-  private readonly session: SessionKeypair;
+  /** Mutable because §9.1 mints a new session keypair for every connection, a reconnect included. */
+  private session: SessionKeypair;
   private readonly declaredRole: 'guest' | 'viewer' | undefined;
   private readonly renew: number;
   private readonly expire: number;
-  private readonly seat: string | undefined;
-  private readonly roster: Set<string>;
+  /** Mutable because a reconnect is a new seat on a new connection (§9.1). */
+  private seat: string | undefined;
+  private roster: Set<string>;
   private readonly reader: Reader;
   private readonly host: HostProducer | undefined;
   private readonly doc: Y.Doc;
@@ -390,6 +392,16 @@ export class PeerSession {
   /** The clock of the most recent tick or delivery, which a queued frame is stamped with. */
   private clockOfLastMove = 0;
   private readonly outbound: Uint8Array[] = [];
+  /**
+   * Whether the socket under this session is gone and no new one has taken its place (§9.1).
+   *
+   * The session key a dropped connection held is not one the room will commit again, so an edit
+   * sealed under it now is a frame every peer refuses `uncommitted_key`. A detached session
+   * therefore publishes nothing — what it would have sent goes to {@link unsent} instead, and the
+   * state that commits the re-seat's key flushes it — and keeps nothing queued for the socket
+   * that went (see {@link detach}).
+   */
+  private detached = false;
   private readonly held = new Set<string>();
   private holdsSent: string[] = [];
   private holdsAnnouncedAt: number | undefined;
@@ -733,11 +745,17 @@ export class PeerSession {
    * The roles the applied state assigns, by the seat each committed key is labelled (§7.1).
    *
    * A seat may hold one key (§7.1), so this is a map and not a list; a key the state names
-   * without a seat label is left out rather than labelled with nothing.
+   * without a seat label is left out rather than labelled with nothing. Where one `peer_id` is
+   * named under two keys, the reading is §6.1's: the entry whose key comes first in UTF-16
+   * code-unit order, which is the order {@link committedEntries} sorts by, so this agrees with
+   * `entries()`, `hostSeat()` and a second receiver on the same bytes.
    */
   rolesBySeat(): Map<string, string> {
     const out = new Map<string, string>();
     for (const entry of this.committedEntries()) {
+      if (out.has(entry.peerId)) {
+        continue;
+      }
       out.set(entry.peerId, entry.role);
     }
     return out;
@@ -909,6 +927,54 @@ export class PeerSession {
       if (this.host !== undefined) {
         await this.publishState(clock, 'roster');
       }
+    });
+  }
+
+  /**
+   * §9.1: a dropped socket is recovered by a fresh `session.hello` on a new socket, and a
+   * reconnecting client is a new peer. What that changes here is the connection and nothing
+   * about the replica: a new session keypair for the new connection (§13.1's step 2), the new
+   * seat, the roster the handshake seated it among, and the clocks that belong to a connection.
+   *
+   * What survives is what §9.1 says survives — the `Y.Doc`, the receiver's marks (which are
+   * what refuses a replayed state or closing), the roles the last state assigned until the next
+   * state replaces them, and the paths this connection still holds open. `announcedAt`,
+   * `handshakenAt` and `resyncFrom` are cleared so the first tick after the re-seat re-announces
+   * the new key (§13.1's step 4) and re-runs the sync handshake (§13.1's step 6). The `ending` is
+   * cleared because a drop is recoverable and the session did not end; the `fault` is cleared
+   * because it belonged to the connection that died. The awareness id is rotated for the same
+   * reason §9.1 gives: a library may remember an id whose state was removed and drop its next
+   * publish, so the rejoined peer would look like one with no cursor at all (`§8.4`).
+   */
+  reseat(seat: string, roster: Iterable<string>, awarenessClientId: number): Promise<void> {
+    return this.serial(async () => {
+      const session = await mintSessionKey(this.crypto);
+      if (session === undefined) {
+        this.fault = 'a session key could not be minted for the reconnect';
+        return;
+      }
+      this.session = session;
+      this.detached = false;
+      this.seat = seat;
+      this.roster = new Set(roster);
+      const previousAwareness = this.awareness.clientID;
+      this.awareness.clientID = awarenessClientId >>> 0;
+      if (previousAwareness !== this.awareness.clientID) {
+        // The old id's entry is this connection's leftover, not a peer's; left behind it would
+        // answer `presence()` under a stranger's id and be tombstoned on the next rotation.
+        this.awareness.states.delete(previousAwareness);
+        this.awareness.meta.delete(previousAwareness);
+      }
+      this.awarenessRenewedAt = undefined;
+      // The counter is per key (§6.1): the new key starts at 0, and the marks the receiver
+      // keeps are keyed by the old and new keys alike, so nothing is lost by resetting it.
+      this.counter = 0;
+      this.announcedAt = undefined;
+      this.handshakenAt = undefined;
+      this.resyncFrom = undefined;
+      this.holdsAnnouncedAt = undefined;
+      this.ending = undefined;
+      this.fault = undefined;
     });
   }
 
@@ -1322,8 +1388,23 @@ export class PeerSession {
 
   /** Whether §13.1's step 4 lets this client publish anything but its announcement. */
   private mayPublish(): boolean {
-    // A session that has ended publishes nothing, whichever ending reached it (§13.10).
-    return this.ending === undefined && this.stateHeld() && this.commitsOurs();
+    // A session that has ended publishes nothing, whichever ending reached it (§13.10), and one
+    // whose socket is gone publishes nothing under the key that socket held (§9.1).
+    return !this.detached && this.ending === undefined && this.stateHeld() && this.commitsOurs();
+  }
+
+  /**
+   * The socket under this session is gone: it keeps its replica and its holds, and publishes
+   * nothing under the key the dead connection held until {@link reseat} seats a new one (§9.1).
+   *
+   * What that socket left queued goes with it, and here rather than at the re-seat: those frames
+   * are sealed under the key being left, and a re-dial that has the new socket before the re-seat
+   * has run would put them on it — where every peer refuses them, and where the edit they carry
+   * is not in {@link unsent} to be published later.
+   */
+  detach(): void {
+    this.detached = true;
+    this.outbound.splice(0, this.outbound.length);
   }
 
   /** §13.1's step 4: the session-key announcement, `kind = 4`, signed by the key it names. */

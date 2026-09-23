@@ -29,6 +29,7 @@ import type { AwarenessState, OffsetSelection, Presence, Selection } from '../en
 import { RelaySession } from '../engine/relay.ts';
 import type { RelayEvent, RelayHostOptions, RelayJoinOptions } from '../engine/relay.ts';
 import type { HostStore } from '../engine/host.ts';
+import type { ReconnectPolicy } from '../engine/reconnect.ts';
 import type { FrameCrypto } from '../engine/crypto.ts';
 import type { Keepalive } from '../engine/envelope.ts';
 import type { WebSocketFactory } from '../engine/transport.ts';
@@ -64,6 +65,14 @@ export interface PeerTransportOptions {
   keepalive?: Partial<Keepalive>;
   /** How long the upgrade and the handshake may take together. */
   handshakeTimeoutMs?: number;
+  /**
+   * §9.1's bounded reconnect for a guest whose socket drops: `false` turns it off, and the
+   * fields override the defaults. The attempt budget is raised from the room's advertised
+   * grace, which the relay reads from `/meta`.
+   */
+  reconnect?: false | Partial<ReconnectPolicy>;
+  /** `GET /meta`, over which the grace is read; a seam for a caller with its own fetch. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface PeerHostOptions extends PeerTransportOptions {
@@ -92,6 +101,12 @@ export class PeerEngine implements Engine {
 
   /** The last thing this facade told its listeners, so a report is a change and not a repeat. */
   private peerList: PeerInfo[];
+  /**
+   * The role the applied state gave this connection at the last report, which is compared on
+   * every refresh: this connection is not in `peerInfos()`, so a state that gives it a role
+   * changes nothing else a report is compared by (`§13.4`).
+   */
+  private ownRole: Role | undefined;
   private listing: readonly string[];
   private openDocuments: string[];
   private presenceList: Presence[];
@@ -124,6 +139,8 @@ export class PeerEngine implements Engine {
       ...(options.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
+      ...(options.reconnect === undefined ? {} : { reconnect: options.reconnect }),
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     };
     const engine = new PeerEngine({
       relay: await RelaySession.host(relayOptions),
@@ -148,6 +165,8 @@ export class PeerEngine implements Engine {
       ...(options.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
+      ...(options.reconnect === undefined ? {} : { reconnect: options.reconnect }),
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     };
     return new PeerEngine({
       relay: await RelaySession.join(relayOptions),
@@ -158,6 +177,7 @@ export class PeerEngine implements Engine {
   constructor(options: PeerEngineOptions) {
     this.relay = options.relay;
     this.peerList = this.relay.peerInfos();
+    this.ownRole = this.relay.appliedRole() as Role | undefined;
     this.listing = [...this.relay.listing()];
     this.openDocuments = this.roomDocuments();
     this.presenceList = this.relay.presence();
@@ -177,6 +197,15 @@ export class PeerEngine implements Engine {
   }
 
   // --- what the bridge reads --------------------------------------------------
+
+  /**
+   * The role the applied state gives this connection's own key, or `undefined` before one does
+   * (`§13.4`, `§13.9`). An adapter that shows the role has to tell that window from a `guest`:
+   * a connection no state commits yet has no role at all.
+   */
+  appliedRole(): Role | undefined {
+    return this.relay.appliedRole() as Role | undefined;
+  }
 
   session(): SessionInfo {
     const info = this.relay.sessionInfo();
@@ -311,6 +340,31 @@ export class PeerEngine implements Engine {
         this.emitEnd(event.ending);
         return;
       }
+      case 'reconnecting': {
+        // §9.1: the bounded retry is running, said as its own event so an adapter shows it
+        // rather than inferring it from silence.
+        this.emit({ type: 'reconnecting' });
+        return;
+      }
+      case 'seated': {
+        // The first seat happens before this facade exists, so a `seated` it sees is a re-seat
+        // (§9.1). The reports are forced rather than compared: the adapter reads the document
+        // set as the all-clear that ends its `reconnecting` state, and the set can be exactly
+        // what it was before the blip. The role is compared rather than forced, because a
+        // re-seat commits no key at all — the state the room answers with is what gives the
+        // connection a role, and the report for it is the `state` event below.
+        this.peerList = this.relay.peerInfos();
+        this.ownRole = this.appliedRole();
+        this.openDocuments = this.roomDocuments();
+        this.emit({ type: 'documentsChanged', documents: [...this.openDocuments] });
+        this.emit({ type: 'peersChanged', peers: this.relay.peerInfos() });
+        return;
+      }
+      case 'state': {
+        // §13.4: the roles are the applied state's word, this connection's own included.
+        this.refresh();
+        return;
+      }
       case 'failed': {
         this.emit({ type: 'sessionError', code: event.code, message: event.reason });
         return;
@@ -324,7 +378,9 @@ export class PeerEngine implements Engine {
   /** Reports whatever the relay's own event did not name, and the clocks this facade runs. */
   private refresh(): void {
     const peers = this.relay.peerInfos();
-    if (!samePeers(peers, this.peerList)) {
+    const role = this.appliedRole();
+    if (!samePeers(peers, this.peerList) || role !== this.ownRole) {
+      this.ownRole = role;
       this.peerList = peers;
       this.emit({ type: 'peersChanged', peers });
     }

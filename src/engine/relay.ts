@@ -22,7 +22,7 @@
 
 import WebSocket from 'ws';
 
-import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, parseServerMessage } from './envelope.ts';
+import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, isTerminalCode, numberField, parseServerMessage } from './envelope.ts';
 import type { Keepalive } from './envelope.ts';
 import { endingReason, parseInvite, PeerSession, unrefTimer } from './peer.ts';
 import type { Ending, PeerInvite, PeerOptions } from './peer.ts';
@@ -33,6 +33,9 @@ import { webCrypto } from './crypto-web.ts';
 import { openSocket } from './transport.ts';
 import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts';
 import { ProtocolError } from './errors.ts';
+import { DEFAULT_RECONNECT, attemptsForGrace } from './reconnect.ts';
+import type { ReconnectPolicy } from './reconnect.ts';
+import { fetchMeta } from './meta.ts';
 import { sessionBase, parseSessionUrl, sessionUrl } from './urls.ts';
 import type { SessionBase } from './urls.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from './presence.ts';
@@ -74,11 +77,23 @@ export type RelayEnding = Ending | 'room-gone';
 /** What a relay reports after it moved something. */
 export type RelayEvent =
   | { type: 'seated' }
+  /**
+   * §9.1's bounded retry is running: the socket dropped and a fresh `session.hello` on a new
+   * socket is being attempted. A `seated` follows when it lands, and an `ended` when it gives
+   * up — an adapter shows the retry instead of inferring it from silence.
+   */
+  | { type: 'reconnecting' }
   | { type: 'peers'; peers: RelayPeer[] }
   | { type: 'listing'; listing: readonly string[] }
   | { type: 'content'; documents: string[] }
   /** A content frame was applied: the replica's text for some path is not what it was. */
   | { type: 'text' }
+  /**
+   * A room state was applied. §13.4's roles are the state's word and it can change this
+   * connection's own role — which no peer-set comparison sees, because this connection is not
+   * in the peer set — so the application is said rather than left for the next frame to imply.
+   */
+  | { type: 'state' }
   | { type: 'ended'; ending: RelayEnding }
   /** A fault the server reported: its code (§11) is the caller's to read, not only its words. */
   | { type: 'failed'; code: string; reason: string };
@@ -94,6 +109,14 @@ export interface RelayOptions {
   /** Overrides the clock the server advertises. The server's numbers are the session's. */
   keepalive?: Partial<Keepalive>;
   handshakeTimeoutMs?: number;
+  /**
+   * §9.1's bounded reconnect for a guest whose socket drops. `false` turns it off; the fields
+   * override the defaults, and the attempt budget is raised from the room's advertised grace
+   * (see {@link RelayOptions.fetchImpl}) exactly as the version-1 engine raises its own.
+   */
+  reconnect?: false | Partial<ReconnectPolicy>;
+  /** `GET /meta`, over which the room's grace is read; a seam for a caller with its own fetch. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Minting a room (`PROTOCOL.md` §5.1, §7.1). */
@@ -157,6 +180,35 @@ export class RelaySession {
   private fault: string | undefined;
   private destroyed = false;
 
+  /** §9.1's bounded reconnect: the policy, its grace-sized budget, and the retry in flight. */
+  private readonly reconnect: ReconnectPolicy;
+  private retryBudget: number;
+  /** Whether the caller named the attempt budget: an explicit number is the caller's to choose. */
+  private readonly maxAttemptsGiven: boolean;
+  private attempts = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Whether this relay reconnects. A guest may — §9.1's rejoin is a fresh `session.hello` — and
+   * a host may not: this client writes no host store and this wire has no resume for a hosting
+   * session, so a host's drop ends the session honestly rather than claiming a retry it cannot
+   * make.
+   */
+  private readonly canReconnect: boolean;
+  /** What a re-dial repeats: the seam options, the wire URL and the display name. */
+  private dialOptions: RelayOptions | undefined;
+  private dialUrl: string | undefined;
+  /** The invite's room and two keys, which a re-seat reuses (§13.1's steps 1–2). */
+  private invitePair: { roomId: string; roomKey: Uint8Array; hostKey: Uint8Array } | undefined;
+  /** Which attempt's socket is still this relay's; a superseded socket's close is ignored. */
+  private generation = 0;
+  /**
+   * Whether the socket now open is still in its `session.hello` exchange. A handshake refusal is
+   * a refusal of *this* attempt, which on a reconnect is a re-dial and not the live session, so
+   * the relay cannot tell them apart by whether a session exists — the session it already holds
+   * is the one being re-seated.
+   */
+  private handshaking = false;
+
   /** The frames that arrived before the session existed, in arrival order. */
   private readonly inbox: QueuedFrame[] = [];
   private draining = false;
@@ -187,10 +239,20 @@ export class RelaySession {
     crypto: FrameCrypto,
     factory: WebSocketFactory,
     ownRole: 'guest' | 'viewer' | undefined,
+    options: RelayOptions,
+    canReconnect: boolean,
   ) {
     this.crypto = crypto;
     this.factory = factory;
     this.ownRole = ownRole;
+    this.canReconnect = canReconnect;
+    this.reconnect =
+      options.reconnect === false
+        ? { ...DEFAULT_RECONNECT, enabled: false }
+        : { ...DEFAULT_RECONNECT, ...options.reconnect };
+    this.retryBudget = this.reconnect.maxAttempts;
+    this.maxAttemptsGiven =
+      options.reconnect !== false && options.reconnect?.maxAttempts !== undefined;
   }
 
   // --- opening a session -----------------------------------------------------
@@ -201,6 +263,8 @@ export class RelaySession {
       options.crypto ?? webCrypto,
       options.webSocketFactory ?? defaultFactory,
       undefined,
+      options,
+      false,
     );
     await relay.mint(options);
     return relay;
@@ -216,6 +280,8 @@ export class RelaySession {
       options.crypto ?? webCrypto,
       options.webSocketFactory ?? defaultFactory,
       options.declaredRole,
+      options,
+      true,
     );
     await relay.admit(options, read.invite);
     return relay;
@@ -262,6 +328,11 @@ export class RelaySession {
     if (parsed === undefined) {
       throw new Error('the invite does not address a session endpoint');
     }
+    this.invitePair = { roomId: invite.room, roomKey: invite.roomKey, hostKey: invite.hostKey };
+    // §9.1: the room's own grace is what the retry budget has to span, read the way the
+    // version-1 engine reads it. Best effort — an unreachable `/meta` decides nothing — and it
+    // is awaited so a drop immediately after the join still finds the budget in place.
+    await this.applyGrace(parsed.base, options);
     const info = await this.dial(options, parsed.base, invite.socketUrl, options.displayName);
     this.info = info;
     await this.seat(options, {
@@ -274,6 +345,34 @@ export class RelaySession {
     });
   }
 
+  /**
+   * Sizes the retry budget from `/meta`'s advertised grace, the number §9.1 says a client that
+   * knows the room's grace keeps retrying through. It only ever grows, so a room the server has
+   * reaped answers `room_unknown` — terminal — while a budget that gave up early would lose a
+   * room that was still joinable.
+   */
+  private async applyGrace(base: SessionBase, options: RelayOptions): Promise<void> {
+    // An explicit budget is the caller's, exactly as the version-1 engine reads it.
+    if (!this.reconnect.enabled || this.maxAttemptsGiven) {
+      return;
+    }
+    let meta;
+    try {
+      meta = await fetchMeta(
+        base,
+        options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
+      );
+    } catch {
+      // Unreachable or not JSON: not an answer about the room's grace.
+      return;
+    }
+    const graceMs = numberField(meta.keepalive, 'room_grace_ms');
+    if (graceMs === undefined || graceMs <= 0) {
+      return;
+    }
+    this.retryBudget = Math.max(this.retryBudget, attemptsForGrace(graceMs, this.reconnect));
+  }
+
   /** Opens the socket, says `session.hello` at `selvage/2`, and waits to be seated. */
   private async dial(
     options: RelayOptions,
@@ -283,12 +382,21 @@ export class RelaySession {
   ): Promise<RelaySessionInfo> {
     this.dialled = base;
     this.ownName = displayName;
+    // Every dial is its own attempt: a socket a later dial has superseded must not end the
+    // session when it closes.
+    const generation = (this.generation += 1);
+    this.dialOptions = options;
+    this.dialUrl = url;
     const timeout = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
     const attempt = new AbortController();
+    this.handshaking = true;
     let seating: (answer: RelaySessionInfo) => void = () => undefined;
     let refusing: (error: Error) => void = () => undefined;
     const seated = new Promise<RelaySessionInfo>((resolve, reject) => {
-      seating = resolve;
+      seating = (answer) => {
+        this.handshaking = false;
+        resolve(answer);
+      };
       refusing = reject;
     });
     void seated.catch(() => undefined);
@@ -298,13 +406,26 @@ export class RelaySession {
       attempt.abort(error);
     }, timeout);
     try {
-      this.socket = await openSocket(
+      const socket = await openSocket(
         url,
         {
-          onText: (text) => this.onText(text, seating, refusing),
-          onBinary: (bytes) => this.enqueue({ binary: bytes }),
+          onText: (text) => {
+            if (generation === this.generation) {
+              this.onText(text, seating, refusing);
+            }
+          },
+          onBinary: (bytes) => {
+            if (generation === this.generation) {
+              this.enqueue({ binary: bytes });
+            }
+          },
           onClose: (code, reason) => {
-            if (this.info === undefined) {
+            if (generation !== this.generation) {
+              // A superseded attempt: its close is not this session's, and the attempt that
+              // replaced it owns the socket now.
+              return;
+            }
+            if (this.handshaking) {
               // Closed before it was seated: the handshake will never finish.
               refusing(new Error(`the socket closed before the session was seated: ${code} ${reason}`));
               return;
@@ -318,19 +439,37 @@ export class RelaySession {
         this.factory,
         attempt.signal,
       );
+      if (generation !== this.generation) {
+        socket.close();
+        throw new Error('the connection attempt was superseded');
+      }
+      this.socket = socket;
       // §8.4: the id the server records for this connection is the id this session's
       // awareness states carry, so a peer's caret is attributed to the seat that published it.
+      // A reconnect mints a fresh one (§9.1): an id a peer has already tombstoned would have
+      // its first republish dropped, and the rejoined peer would look like one with no cursor.
       this.awarenessId = awarenessClientId(this.crypto);
-      this.socket.sendText(
+      socket.sendText(
         JSON.stringify(helloEnvelope(displayName, options, this.awarenessId)),
       );
       const info = await seated;
-      this.start = performance.now();
+      if (generation !== this.generation) {
+        this.socket?.close();
+        this.socket = undefined;
+        throw new Error('the connection attempt was superseded');
+      }
+      // §13.8 reads this session's clocks as elapsed time from its seat, so the clock keeps
+      // running across a reconnect instead of restarting under the marks it already holds.
+      if (this.start === 0) {
+        this.start = performance.now();
+      }
       this.peerList = [...info.peers];
       return info;
     } catch (error) {
-      this.socket?.close();
-      this.socket = undefined;
+      if (generation === this.generation) {
+        this.socket?.close();
+        this.socket = undefined;
+      }
       throw error instanceof Error ? error : new Error(String(error));
     } finally {
       clearTimeout(deadline);
@@ -653,10 +792,14 @@ export class RelaySession {
       return;
     }
     this.destroyed = true;
+    this.clearRetry();
     if (this.timer !== undefined) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    // A dial in flight is this connection's own; superseding it keeps its socket from being
+    // read as a live session's when it lands after the caller has left.
+    this.generation += 1;
     this.socket?.close();
     this.socket = undefined;
     this.session?.destroy();
@@ -682,7 +825,7 @@ export class RelaySession {
       seating(info);
       return;
     }
-    if (message.event === eventName.sessionError && this.session === undefined) {
+    if (message.event === eventName.sessionError && this.handshaking) {
       refusing(this.sessionFault(message.params));
       return;
     }
@@ -743,14 +886,137 @@ export class RelaySession {
 
   private onClose(code: number, reason: string): void {
     // A disconnect this client asked for is not the room ending: the relay is already gone.
-    if (this.destroyed) {
+    if (this.destroyed || this.ending !== undefined) {
       return;
     }
-    if (this.ending === undefined) {
-      this.ending = 'room-gone';
-      this.emit({ type: 'ended', ending: 'room-gone' });
+    const said = `the connection ended (${code}${reason === '' ? '' : ` ${reason}`})`;
+    this.socket = undefined;
+    // A host has no resume on this wire (no host store; §9.1's host return is unwired), so its
+    // drop is the end of the session and is said as one. A guest's is recoverable (§9.1).
+    if (!this.canReconnect || !this.reconnect.enabled || this.session === undefined) {
+      this.fault ??= said;
+      this.endWith('room-gone');
+      return;
     }
-    this.fault ??= `the connection ended (${code}${reason === '' ? '' : ` ${reason}`})`;
+    this.fault ??= said;
+    // The drop is what makes the key this session holds unusable: the room will not commit it
+    // again, so an edit sealed under it now is a frame every peer refuses. Detaching sends
+    // those edits to the held-back set instead, which the state that commits the new key
+    // flushes (§13.1's step 4), and drops what the dead socket never sent — here, and not when
+    // the re-dial has its socket, because that socket would be handed frames sealed under the
+    // key the room is about to drop.
+    this.session.detach();
+    this.scheduleReconnect();
+  }
+
+  /**
+   * §9.1's bounded reconnect: a dropped guest socket is re-helloed on a new socket, with
+   * exponential backoff. The retry is said out loud first — an adapter cannot tell a quiet
+   * socket from a slow room — and it is bounded by the attempt budget, which the room's own
+   * advertised grace raised (see {@link applyGrace}).
+   */
+  private scheduleReconnect(): void {
+    if (this.destroyed || this.ending !== undefined) {
+      return;
+    }
+    if (this.attempts >= this.retryBudget) {
+      this.endWith('room-gone');
+      return;
+    }
+    const delay = Math.min(
+      this.reconnect.initialDelayMs * 2 ** this.attempts,
+      this.reconnect.maxDelayMs,
+    );
+    this.attempts += 1;
+    this.emit({ type: 'reconnecting' });
+    // A listener may have ended the session from the event above; scheduling the retry after
+    // it would reopen a destroyed relay.
+    if (this.destroyed || this.ending !== undefined) {
+      return;
+    }
+    this.retryTimer = setTimeout(() => {
+      void this.retry();
+    }, delay);
+    unrefTimer(this.retryTimer);
+  }
+
+  /** One re-dial: the same invite, a fresh `session.hello`, and the same session reseated. */
+  private async retry(): Promise<void> {
+    this.retryTimer = undefined;
+    if (this.destroyed || this.ending !== undefined) {
+      return;
+    }
+    const options = this.dialOptions;
+    const url = this.dialUrl;
+    const pair = this.invitePair;
+    const base = this.dialled;
+    if (options === undefined || url === undefined || pair === undefined || base === undefined) {
+      this.endWith('room-gone');
+      return;
+    }
+    let info: RelaySessionInfo;
+    try {
+      info = await this.dial(options, base, url, this.ownName);
+    } catch (error) {
+      const code = error instanceof ProtocolError ? error.code : undefined;
+      // §9.1: a refusal a retry cannot change — `room_unknown`, `token_invalid`, and a fault in
+      // the reserved `x.` namespace — is a stop, not another attempt. The reason is reported as
+      // the fault it is before the session ends, so the person is told why.
+      if (code !== undefined && terminalForRetry(code)) {
+        this.fault = error instanceof Error ? error.message : String(error);
+        this.emit({ type: 'failed', code, reason: this.fault });
+        this.endWith('room-gone');
+        return;
+      }
+      this.scheduleReconnect();
+      return;
+    }
+    if (this.destroyed || this.ending !== undefined) {
+      return;
+    }
+    this.info = info;
+    this.attempts = 0;
+    // The drop's own sentence is over once the room is back; a real session fault, if any,
+    // is still read from the session below.
+    this.fault = this.session?.failure;
+    const session = this.session;
+    if (session === undefined) {
+      this.endWith('room-gone');
+      return;
+    }
+    try {
+      // §9.1: the rejoin is a new peer — a new session keypair, the new seat — over the same
+      // replica, whose marks and holds survive. §13.1's steps 4 and 6 replay the announcement
+      // and the sync handshake, and the room's own state re-send restores the rest.
+      await session.reseat(
+        info.seat,
+        info.peers.map((peer) => peer.peer_id),
+        this.awarenessId ?? 0,
+      );
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
+    this.emit({ type: 'seated' });
+    await this.drain();
+    await this.pump();
+  }
+
+  /** Sets this session's ending, once, and reports it. */
+  private endWith(ending: RelayEnding): void {
+    if (this.ending !== undefined) {
+      return;
+    }
+    this.ending = ending;
+    this.clearRetry();
+    this.emit({ type: 'ended', ending });
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== undefined) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+    }
   }
 
   private enqueue(frame: QueuedFrame): void {
@@ -789,6 +1055,8 @@ export class RelaySession {
       // §13.5's content, and only content: a state, a holds set and a closing change no text.
       if (outcome.status === 'applied' && outcome.kind === 0) {
         this.emit({ type: 'text' });
+      } else if (outcome.status === 'applied' && outcome.kind === 1) {
+        this.emit({ type: 'state' });
       }
       return;
     }
@@ -827,8 +1095,9 @@ export class RelaySession {
         break;
       }
       case eventName.roomGone: {
-        this.ending = 'room-gone';
-        this.emit({ type: 'ended', ending: 'room-gone' });
+        // §9.1: a room destroyed under a seated connection is an ending and not a retry, and
+        // the wire has announced it, so no re-dial is attempted.
+        this.endWith('room-gone');
         break;
       }
       case eventName.sessionError: {
@@ -1081,4 +1350,13 @@ function mergePeer(peers: RelayPeer[], peer: RelayPeer): RelayPeer[] {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, at) => value === right[at]);
+}
+
+/**
+ * §9.1: a refusal a retry cannot change. The four named codes are terminal (§11, `isTerminalCode`),
+ * and so is a fault in the reserved `x.` namespace — capacity, in this slice — which a handshake
+ * refused with **MUST NOT** have re-helloed automatically.
+ */
+function terminalForRetry(code: string): boolean {
+  return code.startsWith('x.') || isTerminalCode(code);
 }
