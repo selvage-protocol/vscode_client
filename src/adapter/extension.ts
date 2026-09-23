@@ -312,6 +312,12 @@ export interface RoomEngine extends Engine {
   grantedPaths(): string[];
   /** The invite this connection can hand on, or `undefined` when it holds no token. */
   inviteUrl(): string | undefined;
+  /**
+   * The role the applied state gives this connection's own key, or `undefined` before one does.
+   * A version-2 connection has no role until a state commits its key (`§13.4`); the version-1
+   * engine knows its role at the handshake and does not implement this.
+   */
+  appliedRole?(): Role | undefined;
   rename(displayName: string): Promise<void>;
   /** Publishes the whole listing this host shares (`§7.1`). */
   grant(paths: readonly string[]): Promise<void>;
@@ -379,6 +385,7 @@ function roomEngine2(engine: PeerEngine): RoomEngine {
     rename: (displayName: string) => engine.rename(displayName),
     disconnect: () => engine.disconnect(),
     inviteUrl: () => engine.inviteUrl(),
+    appliedRole: () => engine.appliedRole(),
   };
 }
 
@@ -582,13 +589,19 @@ export class Session {
    * host has none — its invite is built from the wire address it minted.
    */
   private readonly joinedWith: string | undefined;
+  /** The version this session speaks (§5.1): the two endings below read it. */
+  private readonly version: WireVersion;
   /** The room events the follow and the pending go-to re-resolve on. */
   private readonly stopEngine: () => void;
 
   constructor(
     engine: RoomEngine,
-    options: { mirror?: Mirror; invite?: string; listing?: readonly string[] } = {},
+    options: { mirror?: Mirror; invite?: string; listing?: readonly string[]; version?: WireVersion } = {},
   ) {
+    // The wire version this window speaks, which the two endings below read: a `selvage/2`
+    // guest's bounded retry (or its give-up) is not a `selvage/1` drop, and a `selvage/2` host
+    // has no resume where a `selvage/1` host does.
+    this.version = options.version ?? WIRE_VERSION_1;
     // A viewer is a peer: `§13.9` puts its documents where a guest's are — under the mirror —
     // and the role is the room state's to give, so this is read as "not the host" rather than
     // as "a guest".
@@ -742,6 +755,16 @@ export class Session {
 
   role(): Role {
     return this.engine.session().role;
+  }
+
+  /**
+   * Whether this window is still waiting for the state that decides its role (`§13.3`). A
+   * version-2 connection has no role until a state commits its key, and `role()` reads that
+   * window as `guest`: an editor can be typed into and a bar says it may edit, when neither is
+   * known yet. A version-1 connection knows its role at the handshake and never waits.
+   */
+  private waitingForRole(): boolean {
+    return this.version === WIRE_VERSION_2 && this.engine.appliedRole?.() === undefined;
   }
 
   /**
@@ -2291,8 +2314,22 @@ export class Session {
         break;
       }
       case 'disconnected': {
+        // A `selvage/2` guest reaches this only when §9.1's bounded retry gave up, and the
+        // mirror is then the only copy of what it wrote, so it stays — the treatment a room that
+        // closed under it already gets. A `selvage/2` host has no resume on this wire (no host
+        // store), so its drop ends the session and says that rather than a retry that will not
+        // happen. A `selvage/1` session keeps the behaviour its engine always had.
+        if (this.version === WIRE_VERSION_2 && this.mirror !== undefined) {
+          void vscode.window.showWarningMessage(
+            'Selvage: the connection ended and the session is over; it could not be re-established.',
+          );
+          this.dispose({ keepMirror: true });
+          break;
+        }
         void vscode.window.showWarningMessage(
-          'Selvage: the connection ended and the session is over; it could not be re-established.',
+          this.version === WIRE_VERSION_2
+            ? 'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.'
+            : 'Selvage: the connection ended and the session is over; it could not be re-established.',
         );
         this.dispose();
         break;
@@ -2320,11 +2357,23 @@ export class Session {
     // person asks of it: which side of the room they are on, and whether anyone else is here.
     // A viewer is a third side and not a guest: `§13.9` has it read the room and publish no
     // content, and a bar reading `guest` would say it may edit.
-    const who =
-      this.role() === 'host' ? 'hosting' : this.role() === 'viewer' ? 'view-only' : 'guest';
+    const who = this.waitingForRole()
+      ? 'waiting for the host'
+      : this.role() === 'host'
+        ? 'hosting'
+        : this.role() === 'viewer'
+          ? 'view-only'
+          : 'guest';
     this.status.text = `$(radio-tower) Selvage: ${who} — ${peopleInRoom(this.peers.length + 1)}`;
+    const side = this.waitingForRole()
+      ? 'Waiting for the host in'
+      : this.role() === 'host'
+        ? 'Hosting'
+        : this.role() === 'viewer'
+          ? 'Viewer in'
+          : 'Guest in';
     const lines = [
-      `${this.role() === 'host' ? 'Hosting' : this.role() === 'viewer' ? 'Viewer in' : 'Guest in'} this session`,
+      `${side} this session`,
       `In the room: ${summarise([this.names(), 'you'].flat())}`,
       `Documents the room offers: ${summarise(this.documents)}`,
       `Shared from this window: ${summarise(shared)}`,
@@ -2578,7 +2627,7 @@ async function host(
       minted = await walkSharedFolders();
     }
     const listing = version2 ? listingSource(minted ?? []) : undefined;
-    engine = await vscode.window.withProgress(
+    engine = await vscode.window.withProgress<RoomEngine>(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${baseUrl}…`,
@@ -2611,7 +2660,10 @@ async function host(
     }
     return;
   }
-  current = new Session(engine, minted === undefined ? {} : { listing: minted });
+  current = new Session(engine, {
+    ...(minted === undefined ? {} : { listing: minted }),
+    version: version2 ? WIRE_VERSION_2 : WIRE_VERSION_1,
+  });
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();
@@ -2854,7 +2906,7 @@ async function joinGuestRoom(options: {
   try {
     // The same wait a host has, said the same way: the room's own address rather than the
     // wire URL, which carries the token that joined it.
-    engine = await vscode.window.withProgress(
+    engine = await vscode.window.withProgress<RoomEngine>(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${base}…`,
@@ -2876,7 +2928,11 @@ async function joinGuestRoom(options: {
     void vscode.window.showErrorMessage(`Selvage: could not join the session. ${why}`);
     return;
   }
-  const session = new Session(engine, { mirror: live, invite: options.invite });
+  const session = new Session(engine, {
+    mirror: live,
+    invite: options.invite,
+    version: version2 ? WIRE_VERSION_2 : WIRE_VERSION_1,
+  });
   if (deactivated) {
     // The window went away while the join was in flight. The seat is nobody's: it is given
     // back through the same teardown a live session gets, rather than left connected and

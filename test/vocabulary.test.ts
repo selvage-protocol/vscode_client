@@ -95,6 +95,7 @@ const SENTENCES = [
   '`Selvage: could not save ${}; the file on disk is behind the room.`',
   '`Selvage: could not save ${}; the file on disk is behind the room (${}).`',
   "'Selvage: the connection ended and the session is over; it could not be re-established.'",
+  "'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.'",
   // Host and join: what each costs a room that is already live, and the window a join takes.
   '`Selvage: you are hosting this session; joining another session ends this room for everyone.`',
   '`Selvage: you are in this session; joining another session leaves it.`',

@@ -65,7 +65,7 @@ interface AdapterExports {
   parsePageLink(text: string):
     | { room: string; token: string; origin: string; fragment: string; roomKey?: string; hostKey?: string }
     | undefined;
-  Session: new (engine: unknown, options?: { mirror?: unknown; invite?: string }) => {
+  Session: new (engine: unknown, options?: { mirror?: unknown; invite?: string; version?: string }) => {
     role(): string;
     dispose(options?: { keepMirror?: boolean }): void;
   };
@@ -675,6 +675,7 @@ function viewerSession(
   t: TestContext,
   room = "the room's own text",
   eol = 1,
+  options: { version?: string; role?: string; mirror?: boolean } = {},
 ): {
   bundle: LoadedExtension;
   session: { role(): string; dispose(): void };
@@ -703,6 +704,10 @@ function viewerSession(
   applyCount(): number;
   /** Everything the window was shown as an error. */
   errors(): string[];
+  /** Reports an engine event to the session, as the bridge would. */
+  fire(event: { type: string; peers?: unknown[]; path?: string; graceMs?: number; peer?: unknown; reason?: string }): void;
+  /** How many times the session took the mirror away. */
+  mirrorRemoved(): number;
 } {
   const bundle = loadBundle();
   bundle.stub.reset();
@@ -778,7 +783,7 @@ function viewerSession(
   const listeners = new Set<
     (event: { type: string; peers: unknown[]; path?: string }) => void
   >();
-  let role = 'guest';
+  let role = options.role ?? 'guest';
   const engine = {
     session: () => ({
       roomId: 'r-viewer',
@@ -820,6 +825,7 @@ function viewerSession(
     disconnect: async () => undefined,
     inviteUrl: () => undefined,
   };
+  let mirrorRemoved = 0;
   const mirror = {
     room: 'r-viewer',
     window: 'w-1',
@@ -828,9 +834,15 @@ function viewerSession(
     materialise: () => ({ mirrored: [], refused: [] }),
     republish: () => ({ mirrored: [], refused: [], removed: [] }),
     clearInvite: () => undefined,
-    remove: () => undefined,
+    remove: () => {
+      mirrorRemoved += 1;
+    },
   };
-  const session = new adapter.Session(engine, { mirror, invite: 'https://host/?room=r-viewer&token=t' });
+  const session = new adapter.Session(engine, {
+    ...(options.mirror === false ? {} : { mirror }),
+    invite: 'https://host/?room=r-viewer&token=t',
+    version: options.version ?? 'selvage/2',
+  });
   t.after(() => {
     session.dispose();
   });
@@ -878,6 +890,14 @@ function viewerSession(
     pending: () => queued.length,
     applyCount: () => asks,
     errors: () => bundle.stub.registered.errors,
+    /** Reports an engine event to the session, as the bridge would. */
+    fire: (event: { type: string; peers?: unknown[]; path?: string; graceMs?: number; peer?: unknown; reason?: string }) => {
+      for (const listener of listeners) {
+        listener(event as { type: string; peers: unknown[] });
+      }
+    },
+    /** How many times the session took the mirror away. */
+    mirrorRemoved: () => mirrorRemoved,
   };
 }
 
@@ -1081,4 +1101,60 @@ test('a document that refuses every apply says so once per episode', async (t) =
     'a viewer got one dialog per refused keystroke',
   );
   assert.deepEqual(window.inserts, [], 'a viewer published content');
+});
+
+// --- the two endings a socket close can be, and what each takes -----------------
+
+test('a version-2 guest whose bounded retry gave up keeps its mirror', (t) => {
+  const window = viewerSession(t);
+  // §9.1's retry is visible while it runs; the bar is the surface that shows it.
+  window.fire({ type: 'reconnecting' });
+  const bar = String(
+    window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+  );
+  assert.match(bar, /reconnecting…/, 'the retry did not reach the status bar');
+
+  window.fire({ type: 'disconnected' });
+  assert.equal(
+    window.mirrorRemoved(),
+    0,
+    "a version-2 guest's mirror is the only copy of its work and was removed",
+  );
+  assert.deepEqual(
+    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    ['Selvage: the connection ended and the session is over; it could not be re-established.'],
+  );
+});
+
+test('a version-2 session with no mirror says its wire cannot resume a hosting session', (t) => {
+  // A `selvage/2` host holds no mirror, and this wire has no host resume, so its drop is the end
+  // of the session and is said as that rather than as a retry that never happened.
+  const window = viewerSession(t, undefined, undefined, { mirror: false });
+  window.fire({ type: 'disconnected' });
+  assert.deepEqual(
+    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    [
+      'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
+    ],
+  );
+});
+
+test('a version-1 guest keeps the drop ending it always had', (t) => {
+  const window = viewerSession(t, undefined, undefined, { version: 'selvage/1' });
+  window.fire({ type: 'disconnected' });
+  assert.equal(window.mirrorRemoved(), 1, 'a version-1 session changed what a drop takes');
+});
+
+test('a version-2 window says it is waiting for the host rather than claiming guest', (t) => {
+  // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used
+  // to read that window as `guest` — a claim a version-2 peer cannot make yet.
+  const window = viewerSession(t);
+  const bar = String(
+    window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
+  );
+  assert.match(
+    bar,
+    /waiting for the host/,
+    `the window claimed a role the room has not given it: ${bar}`,
+  );
 });
