@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { parseInvite } from '../src/engine/peer.ts';
 import { RelaySession } from '../src/engine/relay.ts';
+import type { RelayEvent } from '../src/engine/relay.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
 
@@ -84,6 +85,47 @@ test('selvage/2: a host mints, a guest joins, and the listing arrives', async (t
   assert.equal(guest.isHost, false);
   assert.equal(host.isHost, true);
   assert.equal(host.sessionInfo().roomId, guest.sessionInfo().roomId);
+});
+
+test("selvage/2: a peer's hold is reported as the room's open set", async (t) => {
+  const server = await RealServer.start({ serveVersion2: true });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { host, guest } = await pair(server);
+  t.after(() => {
+    host.disconnect();
+    guest.disconnect();
+  });
+  const events: RelayEvent[] = [];
+  host.on((event) => {
+    events.push(event);
+  });
+  // §13.1's step 4: nothing the guest holds counts until a state commits its key.
+  await waitFor("the host's state to commit the guest's key", () => guest.appliedRole() ?? false, {
+    timeoutMs: 15_000,
+    describe: () => guest.sessionInfo().peers,
+  });
+  guest.open(PATH);
+  assert.deepEqual(guest.heldPaths(), [PATH], 'the hold was not taken');
+
+  // The host's replica holds no text for the path — a hold is the only thing that names it —
+  // so this is the change the room's open set has to be reported from, and what a host reads
+  // its own working copy for. §13.7's holds replace version 1's `doc.opened` set.
+  const reported = await waitFor(
+    "the host's relay to report the room's open set",
+    () => {
+      for (const event of events) {
+        if (event.type === 'content' && event.documents.includes(PATH)) {
+          return event.documents;
+        }
+      }
+      return false;
+    },
+    { describe: () => events.map((event) => event.type) },
+  );
+  assert.deepEqual(reported, [PATH]);
+  assert.deepEqual(host.documents(), [], 'the replica holds no text for the path');
 });
 
 test('selvage/2: an edit crosses a real server in both directions', async (t) => {

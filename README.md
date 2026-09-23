@@ -88,6 +88,7 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |
 | `selvage.cursorLabel` | `"none"` | Whether a peer's name is drawn over the document at their caret: `none`, `floating` or `chip`. |
+| `selvage.wireVersion` | `"selvage/1"` | The version a hosted room is minted at. A join speaks the version the invite link names, whatever this says, so it applies to rooms this window hosts. Needs a server started with `--serve-version-2`. |
 
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
@@ -298,13 +299,53 @@ a seal would compute the same keystroke twice — so an offset outside the docum
 rather than rejected. And **an awareness state handed in is a frame a moment later**: `whenIdle()`
 is what a caller drains after, because otherwise a caret goes out at the next renewal window.
 
-What this slice does not do. Every published client still speaks `selvage/1` by default and no VS
-Code adapter calls the relay yet — the Neovim and browser clients are the ones that drive
-`src/bridge/peer-engine.ts`, and their READMEs are where that is described. The relay also runs no
+### Sessions at `selvage/2`
+
+This window drives both versions. `src/adapter/extension.ts` picks one per session — the host's
+`selvage.wireVersion` setting, or the fragment of the link a join was handed — and what is left
+for the adapter is a listing and the role the room's state gives this connection. The
+socket wiring is `src/engine/relay.ts` and the adapter's vocabulary is
+`src/bridge/peer-engine.ts`; the crypto seam is the engine's default, WebCrypto, which the
+extension host has globally.
+
+What a person does:
+
+- **Host.** Start `selvaged --serve-version-2`, and set `selvage.wireVersion` to `"selvage/2"`.
+  Anything else, including unset, is `selvage/1`, which is what every published client speaks.
+  The address, the folder and the invite are unchanged.
+- **Join.** Nothing: paste the link. A `selvage/2` invite carries the room key and the host key on
+  its fragment, and a client that cannot read them cannot join the room at all, so the link is the
+  version the join speaks. A link with no fragment is a `selvage/1` join, as it always was.
+- **Copy the invite.** Unchanged, and it now carries the fragment: the page link this window hands
+  on is the same room, token and two keys as the connection's own wire invite. The wire URL the
+  socket is handed never contains a `#`.
+- **Everything else** — the mirror, the grant tree, participants, follow and jump, the fetch
+  command, the save policy, the reconnect messaging — is the same code over the same bridge, so it
+  works in a version-2 room without being told which version it is in.
+
+**A viewer's documents are read-only.** A `selvage/2` room's state assigns roles (`§13.4`), and a
+connection seated as `viewer` gets the room's documents with their edits refused: `§13.9` has a
+viewer publish no content, so a buffer that accepted a keystroke would show text the room never
+receives. The editor has no per-document read-only flag an extension can set, so the edit is put
+back — the room's text returns and the attempt is said once, in the sentence both clients use.
+This client declares `guest` and has no command to ask for the other role: what a host does with
+the state is a later phase's, and a client that could ask to be a viewer would be inventing a
+request the protocol does not have.
+
+**The host key lives for the session.** A `§7.1` host signs its states with a key this window
+mints when it mints the room, and holds in memory: the key, and the `issued` series that goes
+with it, are gone when the session is. A returning host is what would keep them, and this client
+runs no resume (`§9.1`), so there is nothing to read back today — and a private signing seed is
+a secret, which is why the store that does land with a resume will be `context.secrets` and not
+the window's `globalState`. The engine's `HostStore` is the seam such a store is handed in
+through, and it stays open for a client that has a series to continue. §13.11's per-receiver caps
+are unimplemented, as they are in the reference client.
+
+What this slice does not do. Every published client still speaks `selvage/1` unless it is asked
+for the other version, and `selvaged --serve-version-2` is not the server's default, so a room is
+minted at `selvage/2` only where both ends were told to. The relay also runs no
 resume: a dropped socket ends its session rather than re-helloing, so `§9.1`'s host return is not
-wired either — `HostStore` is what a returning host continues its `issued` series from, and the
-seam is tested with a store that records the writes, but no relay reconnects to a room it already
-held.
+wired either.
 
 §7.1's **host-side corpus vectors** are not here — `test/host.test.ts` is what pins the producer,
 and the peer corpus still drives the receiver's half — and §13.11's per-receiver caps are not

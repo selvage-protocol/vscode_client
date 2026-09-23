@@ -29,6 +29,7 @@ import {
   isCompatible,
   method,
 } from '../../src/engine/envelope.ts';
+import { WIRE_VERSION_V2 } from '../../src/engine/relay.ts';
 import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
 import { baseOf } from './base.ts';
 
@@ -56,6 +57,16 @@ export interface FakeServerOptions {
    */
   refuseGrant?: boolean;
   /**
+   * Models `selvaged --serve-version-2`: a hello at `selvage/2` is seated rather than refused.
+   *
+   * The version's server is a room registry, a relay and a timer, which is what this already
+   * is for the frames that version uses — `session.hello`, `session.rename`, the opaque binary
+   * relay and the room's membership — and a room minted here is pinned to the version that
+   * minted it, as the reference server pins one. `test/selvaged.test.ts` and
+   * `test/relay-selvaged.test.ts` are what run the real one.
+   */
+  serveVersion2?: boolean;
+  /**
    * Models a server that seats a host without handing it the room's token: `room.created` names
    * the room and carries no token. That is the one way a live room reaches a client with no
    * invite to hand on, and it is a fault to survive rather than a shape to expect — `PROTOCOL.md`
@@ -78,6 +89,8 @@ interface Room {
   token: string;
   hostId: string | null;
   peers: Set<string>;
+  /** The wire version the minting connection spoke: a room serves that one and no other. */
+  version: string;
   documents: string[];
   /** The host's listing, in the order it was published: the server never normalises it. */
   grant: string[];
@@ -132,6 +145,13 @@ export class FakeServer {
   helloRefusal: { code: string; message: string } | undefined = undefined;
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
   readonly unansweredOpens = new Set<string>();
+  /**
+   * The wire version each connection claimed in its `session.hello`, in arrival order. What a
+   * client speaks is otherwise invisible to a test without a real server: the version is not in
+   * any reply, and a v2 hello against a server that seats only v1 is refused rather than
+   * answered.
+   */
+  readonly hellos: string[] = [];
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -348,8 +368,10 @@ export class FakeServer {
       );
       return;
     }
-    if (!isCompatible(String(message.v))) {
-      this.refuse(client, code.unsupportedVersion, `unsupported ${message.v}`);
+    const version = String(message.v);
+    this.hellos.push(version);
+    if (!this.seats(version)) {
+      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
       return;
     }
     const params = (message.params ?? {}) as Record<string, unknown>;
@@ -377,6 +399,7 @@ export class FakeServer {
         token: hex(16),
         hostId: client.id,
         peers: new Set([client.id]),
+        version,
         documents: [],
         grant: [],
       };
@@ -402,6 +425,13 @@ export class FakeServer {
     const existing = this.rooms.get(room);
     if (existing === undefined) {
       this.refuse(client, code.roomUnknown, `no such room: ${room}`);
+      return;
+    }
+    // A room is pinned to the version its minting connection spoke, so a connection speaking
+    // the other one is refused rather than seated — judged before the token, as `§11` orders
+    // the checks on a frame and as the reference server judges them.
+    if (version !== existing.version) {
+      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
       return;
     }
     if (token === undefined || token !== existing.token) {
@@ -466,6 +496,21 @@ export class FakeServer {
     };
   }
 
+  /**
+   * Whether this server seats a connection that speaks `version` (`§10`): the major this
+   * client speaks itself, or `selvage/2` when the option models `--serve-version-2`.
+   *
+   * One reading, asked by the handshake and by every text request after it: the reference
+   * server judges the version on each frame, so a seated connection that sends a request at
+   * another version is refused rather than answered.
+   */
+  private seats(version: string): boolean {
+    return (
+      isCompatible(version) ||
+      (this.options.serveVersion2 === true && version === WIRE_VERSION_V2)
+    );
+  }
+
   private handleText(client: Client, text: string): void {
     let message: Record<string, unknown>;
     try {
@@ -479,7 +524,7 @@ export class FakeServer {
       this.alert(client, code.badMessage, 'a request needs an id');
       return;
     }
-    if (!isCompatible(String(message.v))) {
+    if (!this.seats(String(message.v))) {
       this.respond(client, id, undefined, {
         code: code.unsupportedVersion,
         message: `unsupported ${String(message.v)}`,

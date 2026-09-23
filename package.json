@@ -210,6 +210,16 @@
           "type": "string",
           "description": "The WebSocket address to host on. Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
         },
+        "selvage.wireVersion": {
+          "type": "string",
+          "enum": ["selvage/1", "selvage/2"],
+          "enumDescriptions": [
+            "The version every released server seats. Document text, cursors and the folder listing are read by the server.",
+            "The version where the server relays bytes it cannot read: the room's listing, its roles and its content are sealed under keys that travel in the invite link's fragment. It needs a server started with --serve-version-2."
+          ],
+          "default": "selvage/1",
+          "description": "The version a hosted room is minted at. A join speaks the version the invite link names, whatever this says, so this applies only to rooms this window hosts. Leave it at selvage/1 unless the server was started with --serve-version-2."
+        },
         "selvage.displayName": {
           "type": "string",
           "description": "The name other participants see. At most 32 UTF-16 code units, so an emoji costs two; a longer name is refused. A change while a session is live renames this connection at once, and applies to the next host or join."
@@ -255,11 +265,12 @@
     "test:selvaged": "node --test test/selvaged.test.ts",
     "test:relay": "node --test test/relay.test.ts",
     "test:relay-selvaged": "node --test test/relay-selvaged.test.ts",
+    "test:selvage2": "node --test test/selvage2-selvaged.test.ts",
     "test:interop": "node --test test/interop.test.ts",
     "test:peer-corpus": "node --test test/peer-corpus.test.ts",
     "subject": "node test/helpers/selvage-subject.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",
-    "test:fast": "npm run build && node --test test/amplification.test.ts test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/https-invite.test.ts test/server-address.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/participants.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/listing-burst.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/relay.test.ts test/envelope.test.ts test/sealed.test.ts test/peer.test.ts test/host.test.ts test/url-invariant.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/reclaim-grant.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts test/timers.test.ts"
+    "test:fast": "npm run build && node --test test/amplification.test.ts test/boundary.test.ts test/perf-budget.test.ts test/manifest.test.ts test/commands.test.ts test/https-invite.test.ts test/selvage2-adapter.test.ts test/server-address.test.ts test/vocabulary.test.ts test/adapter-presence.test.ts test/follow.test.ts test/participants.test.ts test/display-name.test.ts test/documents.test.ts test/labels.test.ts test/listing-burst.test.ts test/gutter.test.ts test/grant.test.ts test/grant-watch.test.ts test/mirror.test.ts test/editing.test.ts test/bridge.test.ts test/relay.test.ts test/envelope.test.ts test/sealed.test.ts test/peer.test.ts test/host.test.ts test/url-invariant.test.ts test/presence.test.ts test/crossing.test.ts test/engine.test.ts test/reconnect.test.ts test/reclaim-grant.test.ts test/receipt.test.ts test/seed-gates.test.ts test/serve.test.ts test/spikes/*.test.ts test/timers.test.ts"
   },
   "dependencies": {
     "lib0": "0.2.117",

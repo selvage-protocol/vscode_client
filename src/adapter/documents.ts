@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { diff } from '../bridge/index.ts';
+import { applyChange, diff, render } from '../bridge/index.ts';
 import type {
   Cursor,
   EditorHost,
@@ -86,6 +86,18 @@ export class WorkspaceEditor implements EditorHost {
    * than on every open event and every save.
    */
   private readonly unshareable = new Set<string>();
+  /**
+   * The text each in-flight *bridge* apply of this window's asked its document to hold, by room
+   * path: what tells a change event whether it is the room's own edit landing or a keystroke
+   * (`{@link applyingTo}`). One entry per apply, because an apply issued while another is still
+   * in flight — a put-back over a put-back, which a fast typist produces — is its own answer.
+   *
+   * A put-back's ask is deliberately not recorded: a put-back is this adapter correcting the
+   * buffer, not the bridge applying the room's text, so a change event carrying it is judged
+   * against the replica like any keystroke. Otherwise it would excuse the buffer holding text
+   * the room has moved past, and `bridge.documentChanged` would publish it into the replica.
+   */
+  private readonly askedFor = new Map<string, string[]>();
 
   constructor(options: WorkspaceEditorOptions) {
     this.role = options.role;
@@ -177,6 +189,15 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined) {
       return false;
     }
+    return this.offer(path, document, change, true);
+  }
+
+  private async offer(
+    path: string,
+    document: vscode.TextDocument,
+    change: TextChange,
+    bridgeApply: boolean,
+  ): Promise<boolean> {
     // `false` means the editor refused the change and the buffer is unchanged: the editor
     // stamps a workspace edit with the version its document mirror holds and refuses one whose
     // version has moved, so a `false` says the range — not the change — no longer fits. The
@@ -207,8 +228,23 @@ export class WorkspaceEditor implements EditorHost {
         ),
         offered.text,
       );
-      if (await vscode.workspace.applyEdit(edit)) {
-        return true;
+      // What the buffer holds if this edit lands, recorded for as long as the apply is in
+      // flight: the change event the editor fires for it arrives inside that window, and it is
+      // this — not a count of everything in flight — that says whose edit the buffer holds.
+      // Only a bridge apply is recorded: a put-back is this adapter's own correction, and a
+      // change event carrying its target is either the replica's text already or a keystroke.
+      const expected = applyChange(before, offered);
+      if (bridgeApply) {
+        this.noteAsked(path, expected);
+      }
+      try {
+        if (await vscode.workspace.applyEdit(edit)) {
+          return true;
+        }
+      } finally {
+        if (bridgeApply) {
+          this.forgetAsked(path, expected);
+        }
       }
       const current = document.getText();
       if (current === before) {
@@ -220,6 +256,67 @@ export class WorkspaceEditor implements EditorHost {
       }
       offered = moved;
       before = current;
+    }
+  }
+
+  /**
+   * The room's text back into a document the buffer had moved away from: how a viewer's edit is
+   * discarded (`§13.9`), as the inverse of the change the buffer took. Offered the way
+   * {@link applyChange} offers one — through the same rebase — but without recording the ask,
+   * because a put-back is this adapter's own correction and never the bridge applying the
+   * room's text.
+   *
+   * `text` is the replica's, which is LF-only, and the buffer may hold `\r\n`: it is rendered
+   * into the document's own endings first, the way every other writer in the policy does, so a
+   * refused keystroke in a CRLF document does not rewrite the whole document's endings.
+   *
+   * The caller passes the document rather than a path because the change event that asked for
+   * this is the one holding it, and a document the room has since stopped sharing has nothing
+   * to put back. `false` is the editor refusing every offer: the buffer then still holds the
+   * edit, and the caller is what says so.
+   */
+  async putBack(path: string, document: vscode.TextDocument, text: string): Promise<boolean> {
+    const held = document.getText();
+    const room = render(text, this.lineEnding(path));
+    if (held === room) {
+      return true;
+    }
+    return this.offer(path, document, diff(held, room), false);
+  }
+
+  /**
+   * Whether a *bridge* apply of this window's has asked this document to hold `text` and has
+   * not settled. A change event carrying it is the room's own edit landing, not a keystroke.
+   *
+   * Per path and by text, because neither a count of the applies in flight nor the path alone
+   * can tell the two apart: an apply for another path says nothing about this one, and an apply
+   * for this path that has not landed has not moved this buffer either (`§13.9`). A put-back's
+   * ask is not recorded here, so a change event carrying one is a keystroke to refuse.
+   */
+  applyingTo(path: string, text: string): boolean {
+    return this.askedFor.get(path)?.includes(text) ?? false;
+  }
+
+  private noteAsked(path: string, text: string): void {
+    const texts = this.askedFor.get(path);
+    if (texts === undefined) {
+      this.askedFor.set(path, [text]);
+      return;
+    }
+    texts.push(text);
+  }
+
+  private forgetAsked(path: string, text: string): void {
+    const texts = this.askedFor.get(path);
+    if (texts === undefined) {
+      return;
+    }
+    const at = texts.lastIndexOf(text);
+    if (at >= 0) {
+      texts.splice(at, 1);
+    }
+    if (texts.length === 0) {
+      this.askedFor.delete(path);
     }
   }
 
@@ -279,10 +376,14 @@ export class WorkspaceEditor implements EditorHost {
     this.documents.clear();
     this.paths.clear();
     this.unshareable.clear();
+    this.askedFor.clear();
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {
-    if (this.role === 'guest') {
+    if (this.role !== 'host') {
+      // A viewer's documents live where a guest's do (`§13.9`): under the mirror, which is the
+      // only working copy this window has of the room.
+      //
       // The mirror's own marker is the client's bookkeeping, not a document: it must
       // never publish, or a join's invite would reach the room it names.
       if (uri.scheme !== 'file' || this.mirrorRoot === undefined) {

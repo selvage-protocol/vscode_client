@@ -312,7 +312,7 @@ export class PeerEngine implements Engine {
         return;
       }
       case 'failed': {
-        this.emit({ type: 'sessionError', code: 'error', message: event.reason });
+        this.emit({ type: 'sessionError', code: event.code, message: event.reason });
         return;
       }
       default: {
