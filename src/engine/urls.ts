@@ -87,7 +87,7 @@ export function percentDecode(text: string): string {
       index += 2;
       continue;
     }
-    literal += char === '+' ? ' ' : char;
+    literal += char;
   }
   flush();
   return decoder.decode(new Uint8Array(bytes));
