@@ -266,6 +266,30 @@ test('a second state that commits our key sends no second handshake', async () =
   assert.equal(peer.handshakeCount, 1);
 });
 
+test('two keys naming one seat read as the first key in §6.1\'s order', async () => {
+  const now = await room();
+  const peer = await session();
+  const other = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(13))) as SessionKeypair;
+  const spelling = (key: SessionKeypair): string => encodeKey(key.public);
+  // The state writes the later key first, so a reader that let the last entry win would take
+  // its role. §6.1 fixes the reading on the key that comes first in UTF-16 code-unit order,
+  // the rule `entries()`, `hostSeat()` and this map all share.
+  const [earlier, later] = [now.peer, other].sort((left, right) =>
+    spelling(left) < spelling(right) ? -1 : 1,
+  ) as [SessionKeypair, SessionKeypair];
+  assert.deepEqual(
+    await peer.deliver(
+      1,
+      await state(now.host, 1, [
+        [later, 'host', 'p-shared'],
+        [earlier, 'guest', 'p-shared'],
+      ]),
+    ),
+    { status: 'applied', kind: 1 },
+  );
+  assert.deepEqual([...peer.rolesBySeat()], [['p-shared', 'guest']]);
+});
+
 test('an edit past the end of the text is refused, and a guest publishes its delta', async () => {
   const now = await room();
   const peer = await session();

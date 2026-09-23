@@ -733,11 +733,17 @@ export class PeerSession {
    * The roles the applied state assigns, by the seat each committed key is labelled (§7.1).
    *
    * A seat may hold one key (§7.1), so this is a map and not a list; a key the state names
-   * without a seat label is left out rather than labelled with nothing.
+   * without a seat label is left out rather than labelled with nothing. Where one `peer_id` is
+   * named under two keys, the reading is §6.1's: the entry whose key comes first in UTF-16
+   * code-unit order, which is the order {@link committedEntries} sorts by, so this agrees with
+   * `entries()`, `hostSeat()` and a second receiver on the same bytes.
    */
   rolesBySeat(): Map<string, string> {
     const out = new Map<string, string>();
     for (const entry of this.committedEntries()) {
+      if (out.has(entry.peerId)) {
+        continue;
+      }
       out.set(entry.peerId, entry.role);
     }
     return out;
