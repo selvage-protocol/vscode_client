@@ -216,9 +216,10 @@ one event loop. There is no worker, no native module and no second process.
 
 | Layer | What it is | What it needs to be tested |
 |---|---|---|
-| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect | a socket |
+| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame and peer session | a socket |
 | `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution | a replica and an editor interface |
 | `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
+| `src/node/` | the Node half of the crypto seam the engine asks a caller for: HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto` | nothing |
 
 The first two layers never import `vscode`, and they are the copy the other two clients carry:
 `nvim_client/vendor/{engine,bridge}` and `web_client/src/{engine,bridge}` are taken from here and
@@ -239,6 +240,44 @@ listeners; `documents.ts` decides which documents are shared; `mirror.ts` is the
 disk; `decorations.ts`, `labels.ts` and `gutter.ts` draw a peer; `display-name.ts` holds the
 protocol's bound on a name and the question that asks for one.
 
+### `selvage/2` in the engine
+
+`selvage/1` is what every published client and every room in service speaks, and the engine still
+speaks it end to end. `selvage/2`'s peer side sits beside that version rather than instead of it:
+
+| Module | What it is |
+|---|---|
+| `src/engine/crypto.ts` | the crypto seam a `selvage/2` frame needs — HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 — as an interface the caller supplies |
+| `src/engine/sealed.ts` | `CANONICAL.md` §6.1's bytes: the envelope's layout, the key schedule, the canonical key encoding, the four sealed payloads, and the ten-step read with the reason each step reports |
+| `src/engine/peer.ts` | `PROTOCOL.md` §13: the invite's fragment and its local refusal, the session keypair and its announcement, the order of operations at a join, verify-before-apply, attribution by the key that verified and the role the applied state gives it, a `viewer`'s content refused, the holds and their lease, the two windows that end a session, and §13.10's lifecycle |
+| `src/node/crypto.ts` | that seam over Node's `crypto`, which is what this client and the corpus subject use |
+
+Every rule in those two modules is `PROTOCOL.md` §13's or `CANONICAL.md` §6.1's, and each is
+pinned twice: `test/sealed.test.ts` and `test/peer.test.ts` build their own frames from constants
+and run without a sibling checkout, and `test/peer-corpus.test.ts` replays the peer corpus — it
+seals each frame vector's recipe with this engine's `seal` and checks the bytes against the
+vector's own `hex`, reads every frame through `Reader`, and drives the six decision vectors
+through a subject.
+
+That subject is `test/helpers/selvage-subject.ts`: the engine behind
+`specification/runner/subject.py`'s line protocol, so the corpus's own runner drives this client
+with
+
+```console
+$ python3 specification/runner/run_peer.py --subject "node test/helpers/selvage-subject.ts"
+```
+
+The crypto primitives are a seam and not an import because the engine is also the code the browser
+client drives, and a page has no `node:crypto` — nor a synchronous one, since WebCrypto is
+asynchronous. `src/node/` is outside the two directories the other clients copy for the same
+reason: it is the Node half.
+
+What this slice does not do. Nothing wires `PeerSession` to a socket, so no client here joins or
+hosts a `selvage/2` room yet, and the host's own half of §7.1 — publishing a state at mint, on
+every `peer.joined` and on every announcement it accepts — is not implemented; a session reads
+and applies the host's state. §13.11's per-receiver caps are not implemented either (how many keys
+and marks §13.3 allows a client to keep, and how many paths and bytes of paths it will hold).
+
 ## Checks
 
 ```console
@@ -246,6 +285,7 @@ $ npm run build                        # → dist/extension.js
 $ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
 $ npm run test:fast                    # builds, then the server-free suite
 $ npm test                             # builds, then the same plus four against a real selvaged
+$ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
 $ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
 ```
 
@@ -253,7 +293,10 @@ $ scripts/ci-local.sh all              # actionlint over the workflows, then the
 `.github/workflows/ci.yml`. `all` is `lint` plus `client`: `lint` needs `nix`; `client` is
 `npm ci`, `typecheck`, `build` and `test:fast`. CI runs the server-free suite only, because the
 four tests in `test/selvaged.test.ts` need a built `selvaged` from the sibling `reference_server`
-checkout, which the workflow does not have.
+checkout, which the workflow does not have. `test:peer-corpus` needs the sibling `specification`
+checkout for the same reason, and `SELVAGE_SPECIFICATION` names another one; `npm test` runs it
+along with `test:interop.test.ts`, which needs the sibling `reference_server` and a built
+`interop_peer`.
 
 ```console
 $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
