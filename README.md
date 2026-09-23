@@ -243,9 +243,11 @@ protocol's bound on a name and the question that asks for one.
 
 ### `selvage/2` in the engine
 
-`selvage/1` is what every room in service speaks, and the engine still speaks it end to end.
-`selvage/2`'s session layer sits beside that version rather than instead of it, with the peer's
-half in `peer.ts` and the host's in `host.ts`:
+The engine speaks both versions end to end. Which one a room is depends on what the server
+seats and on the `selvage.wireVersion` pin: an unpinned host on a server that seats `selvage/2`
+mints it, a pin is honoured where the server seats it and refused where it does not, and a join
+speaks the version its invite names. `selvage/2`'s session layer sits beside `selvage/1` rather
+than instead of it, with the peer's half in `peer.ts` and the host's in `host.ts`:
 
 | Module | What it is |
 |---|---|

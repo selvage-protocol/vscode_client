@@ -3213,11 +3213,13 @@ export function wireVersionOf(invite: string): WireVersion {
  * The version the setting pins this window to, from `selvage.wireVersion`, or `undefined` when it
  * pins nothing.
  *
- * A pin is deliberate, and it is a host's own choice: `selvage/1` hosts a room the server can
- * read, `selvage/2` hosts the encrypted one whatever `/meta` says. Unset — the declared default —
- * is not a pin: the window takes the server's word. Neither is anything no version grammar
- * accepts: only the two spellings pin it, and the numbers a person types by habit are read as
- * them. A guest is unaffected either way — a join speaks the version its invite names.
+ * A pin is deliberate, and it is a host's own choice of which version to host: `selvage/1` is the
+ * deliberate way to host a room the server can read, and `selvage/2` asks for the encrypted one,
+ * honoured where `/meta` seats it and refused where `/meta` answered without it. Unset — the
+ * declared default — is not a pin: the window takes the server's word. Neither is anything no
+ * version grammar accepts: only the two spellings pin it, and the numbers a person types by
+ * habit are read as them. A guest is unaffected either way — a join speaks the version its
+ * invite names.
  */
 export function pinnedVersion(configured: unknown): WireVersion | undefined {
   if (configured === 2 || configured === '2' || configured === WIRE_VERSION_2) {
