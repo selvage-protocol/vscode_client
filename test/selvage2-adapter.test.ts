@@ -10,7 +10,9 @@
  *
  * A version is not visible in any reply, so each "which version did this speak" case is read
  * from the hello the server recorded (`FakeServer.hellos`) rather than inferred: a room that
- * seats at all is a room whose hello was accepted, and the recorded string is the evidence.
+ * seats at all is a room whose hello was accepted, and the recorded string is the evidence. The
+ * list is what arrived rather than what was seated, so a refused hello is in it as well — which
+ * is where the fragment-less link's refusal is read from.
  */
 
 import { test } from 'node:test';
