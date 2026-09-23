@@ -34,9 +34,9 @@ import type { PeerEntry, RoomState, SessionKeypair } from './sealed.ts';
 export type HostRole = 'host' | 'guest' | 'viewer';
 
 /**
- * The host rules a subject may remove, one each, for the corpus's mutation census
- * (`PROTOCOL.md` §13.11). The names are the specification runner's `SUBJECT_MUTATIONS`, which
- * is the seam the corpus reconciles them across.
+ * The host rules a subject may remove, one each, for a mutation census (`PROTOCOL.md` §13.11):
+ * each names a rule this producer's clean behaviour rests on, so that a test can show it fails
+ * without it rather than only that it holds with it.
  */
 export const HOST_MUTATIONS = [
   'withhold-commitment',
@@ -422,7 +422,8 @@ export class HostProducer {
     return this.windowFrom === undefined || clock - this.windowFrom >= this.renew;
   }
 
-  private commit(spelling: string, declared: 'guest' | 'viewer' | undefined): void {    const seat = this.label();
+  private commit(spelling: string, declared: 'guest' | 'viewer' | undefined): void {
+    const seat = this.label();
     if (seat === undefined) {
       return;
     }
@@ -449,17 +450,18 @@ export class HostProducer {
    *
    * Nothing on the wire ties a key to a seat — an announcement names no peer and the relay
    * says nothing about which connection sent one (§13.4) — so a host can tell in no case this
-   * engine can see, and the label is the belief §7.1 calls it rather than a fact. The host's
-   * own seat is never handed to another key: it carries the host's own connection's key, and
-   * an entry there would be a second key for one seat (§7.1) and would unseat the one entry
-   * that says which seated peer holds the host key (§13.4).
+   * engine can see, and the label is the belief §7.1 calls it rather than a fact.
    *
-   * A roster whose every other seat already carries a key is §7.1's *commit every
-   * announcement* and its *at most one key per seat* meeting, and that section does not say
-   * which seat gives way. This host replaces the key it has held longest, which is the one
-   * most likely to belong to a connection the roster no longer has; with no seat to replace
-   * it falls back to its own, which is `CANONICAL.md` §6.1's shape for a host's error here and
-   * is read the same way by every receiver.
+   * A roster whose every seat already carries a key is §7.1's *commit every announcement* and
+   * its *at most one key per seat* meeting, and that section does not say which seat gives way.
+   * This host replaces the key it has held longest, which is the one most likely to belong to a
+   * connection the roster no longer has. A key that arrives before its seat does — an
+   * announcement whose `peer.joined` the host has not been given yet — leaves no other seat to
+   * replace, and the label is then the host's own, which §7.1 permits by name (*its own
+   * included*) and which it obliges over withholding the commitment. That is the one case where
+   * two keys carry one seat, and §7.1's *at most one key per seat*, with §13.3's derivation from
+   * it, does not allow for it: the commitment is what a peer cannot do without, so the label is
+   * the half that gives way.
    */
   private label(): string | undefined {
     if (this.ownSeat === undefined) {

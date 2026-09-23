@@ -371,6 +371,64 @@ test('a declaration changes nothing for a key the state already commits', async 
   );
 });
 
+/** How many entries of a published state's `peers` label one seat. */
+function seatedUnder(peers: Record<string, { peer_id: string; role: string }>, seat: string): number {
+  return Object.values(peers).filter((entry) => entry.peer_id === seat).length;
+}
+
+test('a second key for a seat replaces the key it held there', async () => {
+  const now = await room();
+  const { peer } = await hostHosting(['README.md']);
+  peer.takeOutbound();
+  await peer.seatJoined(10, 'p-alice');
+  await peer.deliver(20, await announce(now.peer, 1, 'guest'));
+  await peer.tick(20);
+  const before = published(peer).at(-1);
+  assert.equal(seatedUnder(before?.peers ?? {}, 'p-alice'), 1);
+
+  // Every seat the roster names already carries a key, so §7.1's *at most one key per seat*
+  // forces the replacement: the new key takes the seat the host has held longest.
+  const second = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(31))) as SessionKeypair;
+  await peer.deliver(400, await announce(second, 1, 'guest'));
+  await peer.tick(400);
+  const after = published(peer).at(-1);
+  assert.equal(seatedUnder(after?.peers ?? {}, 'p-alice'), 1, '§7.1: at most one key per seat');
+  assert.deepEqual(after?.peers[encodeKey(second.public)], {
+    peer_id: 'p-alice',
+    role: 'guest',
+  });
+  assert.equal(
+    after?.peers[encodeKey(now.peer.public)],
+    undefined,
+    'the replaced key is dropped from the state',
+  );
+
+  // §13.3: a state that replaces a key revokes what the earlier one granted, so the replaced
+  // key's content is refused from that state on.
+  const stale = await contentFrame(now.peer, 9, 'README.md', 'gone');
+  assert.equal((await peer.deliver(500, stale)).status, 'dropped');
+  assert.equal(peer.droppedFrames.at(-1)?.reason, 'uncommitted_key');
+});
+
+test('`duplicate-seat` is what makes one key per seat a rule rather than a description', async () => {
+  const now = await room();
+  const { peer } = await hostHosting(['README.md']);
+  peer.mutate('duplicate-seat');
+  peer.takeOutbound();
+  await peer.seatJoined(10, 'p-alice');
+  await peer.deliver(20, await announce(now.peer, 1, 'guest'));
+  await peer.tick(20);
+  const second = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(31))) as SessionKeypair;
+  await peer.deliver(400, await announce(second, 1, 'guest'));
+  await peer.tick(400);
+  const last = published(peer).at(-1);
+  assert.equal(
+    seatedUnder(last?.peers ?? {}, 'p-alice'),
+    2,
+    'mutated: two keys are committed under one seat, which §7.1 forbids',
+  );
+});
+
 test('an announcement for a key the state already commits publishes no new edition', async () => {
   const now = await room();
   const { peer } = await hostHosting(['README.md']);
@@ -449,6 +507,29 @@ test('the issued series continues from the store, and a foreign key starts at 1'
     published(third.peer).at(-1)?.issued,
     1,
     'a series that belongs to another key is not this host’s to continue',
+  );
+});
+
+test('a returning host publishes its own new key and replaces the entry it held before', async () => {
+  const store = new MemoryStore();
+  const before = await hostHosting(['README.md'], {}, store);
+  const minted = published(before.peer).at(-1);
+  assert.equal(Object.values(minted?.peers ?? {})[0]?.role, 'host');
+
+  // §9.1: a rejoin is a new peer, so the state a returning host publishes carries the new
+  // connection's key in its own entry — the whole of what a resume is in this version.
+  const returning = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(17))) as SessionKeypair;
+  const after = await hostHosting(['README.md'], { sessionSeed: returning.seed }, store);
+  const state = published(after.peer).at(-1);
+  assert.deepEqual(
+    Object.keys(state?.peers ?? {}),
+    [encodeKey(returning.public)],
+    'the returning connection’s new key is the room’s only one',
+  );
+  assert.equal(state?.peers[encodeKey(returning.public)]?.role, 'host');
+  assert.ok(
+    (state?.issued ?? 0) > (minted?.issued ?? 0),
+    '§7.1: its state is above every state it has published',
   );
 });
 

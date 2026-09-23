@@ -3,7 +3,8 @@
  * an editor. Import from here rather than from the individual modules.
  */
 
-export { SelvageEngine } from './engine.ts';export type {
+export { SelvageEngine } from './engine.ts';
+export type {
   ConnectOptions,
   JoinOptions,
   KeepaliveClock,
@@ -32,7 +33,8 @@ export {
   PeerSession,
   endingReason,
   parseInvite,
-} from './peer.ts';export type {
+} from './peer.ts';
+export type {
   AppliedFrame,
   DroppedFrame,
   Ending,
