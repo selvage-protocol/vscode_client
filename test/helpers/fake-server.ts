@@ -29,6 +29,7 @@ import {
   isCompatible,
   method,
 } from '../../src/engine/envelope.ts';
+import { WIRE_VERSION_V2 } from '../../src/engine/relay.ts';
 import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
 import { baseOf } from './base.ts';
 
@@ -55,6 +56,16 @@ export interface FakeServerOptions {
    * own bound (`PROTOCOL.md` §5) — so `doc.grant` is answered `bad_params`.
    */
   refuseGrant?: boolean;
+  /**
+   * Models `selvaged --serve-version-2`: a hello at `selvage/2` is seated rather than refused.
+   *
+   * The version's server is a room registry, a relay and a timer, which is what this already
+   * is for the frames that version uses — `session.hello`, `session.rename`, the opaque binary
+   * relay and the room's membership — so a room pinned to it behaves here exactly as it does
+   * against the reference server. `test/selvaged.test.ts` and `test/relay-selvaged.test.ts` are
+   * what run the real one.
+   */
+  serveVersion2?: boolean;
   /**
    * Models a server that seats a host without handing it the room's token: `room.created` names
    * the room and carries no token. That is the one way a live room reaches a client with no
@@ -132,6 +143,13 @@ export class FakeServer {
   helloRefusal: { code: string; message: string } | undefined = undefined;
   /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
   readonly unansweredOpens = new Set<string>();
+  /**
+   * The wire version each connection claimed in its `session.hello`, in arrival order. What a
+   * client speaks is otherwise invisible to a test without a real server: the version is not in
+   * any reply, and a v2 hello against a server that seats only v1 is refused rather than
+   * answered.
+   */
+  readonly hellos: string[] = [];
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -348,8 +366,15 @@ export class FakeServer {
       );
       return;
     }
-    if (!isCompatible(String(message.v))) {
-      this.refuse(client, code.unsupportedVersion, `unsupported ${message.v}`);
+    const version = String(message.v);
+    this.hellos.push(version);
+    // A version-2 hello is seated only by a server that serves it: `selvaged` needs
+    // `--serve-version-2`, and a room is pinned to the version that minted it.
+    const seated =
+      isCompatible(version) ||
+      (this.options.serveVersion2 === true && version === WIRE_VERSION_V2);
+    if (!seated) {
+      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
       return;
     }
     const params = (message.params ?? {}) as Record<string, unknown>;
