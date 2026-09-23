@@ -17,11 +17,12 @@ You need:
 ### Install
 
 Install it from the
-[Marketplace](https://marketplace.visualstudio.com/items?itemName=selvage-protocol.selvage-client),
-or search the Extensions view for Selvage:
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=selvage-protocol.selvage)
+or [Open VSX](https://open-vsx.org/extension/selvage-protocol/selvage), or search the
+Extensions view for Selvage:
 
 ```console
-$ code --install-extension selvage-protocol.selvage-client
+$ code --install-extension selvage-protocol.selvage
 ```
 
 You can install a `.vsix` instead: the one attached to a
@@ -29,13 +30,13 @@ You can install a `.vsix` instead: the one attached to a
 
 ```console
 $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
-$ npm run package                      # → selvage-client-<version>.vsix in the repo root
-$ code --install-extension selvage-client-<version>.vsix
+$ npm run package                      # → selvage-<version>.vsix in the repo root
+$ code --install-extension selvage-<version>.vsix
 ```
 
 `.github/workflows/release.yml` packages the extension, attaches the `.vsix` to the GitHub Release
-and publishes it to the Marketplace as `selvage-protocol.selvage-client`; the owner triggers a
-release from that workflow. `npm run package` runs `vsce package`, which runs the `npm run build`
+and publishes it to the Marketplace and to Open VSX as `selvage-protocol.selvage`; the owner
+triggers a release from that workflow. `npm run package` runs `vsce package`, which runs the `npm run build`
 used everywhere else first, so the `.vsix` always carries a fresh `dist/extension.js`.
 `scripts/build.mjs` leaves only `vscode` external, so that one file bundles the engine, the bridge,
 `ws`, `yjs` and `y-protocols`; there is no `node_modules/` in the `.vsix`. `vsce package -o <path>`

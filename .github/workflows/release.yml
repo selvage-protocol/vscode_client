@@ -1,7 +1,7 @@
 name: release
 
 # A release packages the extension (`vsce package`), attaches the `.vsix` to a GitHub
-# Release, and publishes it to the VS Code Marketplace as `selvage-protocol.selvage-client`.
+# Release, and publishes it to the VS Code Marketplace as `selvage-protocol.selvage`.
 # There is no `VSCE_PAT`: publishing uses `vsce publish --azure-credential`, authenticating as
 # a Microsoft Entra ID app registration federated to this repository's `marketplace`
 # environment (see the publish job below). Trusted publishing (`--oidc`) is not available for
@@ -15,9 +15,9 @@ name: release
 # there the pushed ref is the commit), and an existing release has its `.vsix` asset
 # refreshed rather than a second release. A pull request runs ci.yml instead and can never
 # publish or release.
-# `version` has no default (unlike the sibling repositories' release workflows) because the
-# Marketplace already carries a hand-uploaded `0.1.0` build with no git provenance: a run
-# started without a deliberately chosen version would otherwise collide with it.
+# `version` has no default (unlike the sibling repositories' release workflows): the number a
+# release cuts is named deliberately, and everything the run asserts, tags and publishes
+# follows from it.
 #
 # `package.json:4` carries the version the run asserts against.
 #
@@ -115,7 +115,7 @@ jobs:
         id: package
         run: |
           npm run package
-          vsix="selvage-client-${{ steps.version.outputs.version }}.vsix"
+          vsix="selvage-${{ steps.version.outputs.version }}.vsix"
           echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -249,9 +249,10 @@ jobs:
           cat > release-notes.md <<EOF
           # Selvage for VS Code v${RELEASE_VERSION}
 
-          Install the attached \`${VSIX}\` (\`code --install-extension ${VSIX}\`), or from the
-          VS Code Marketplace once this version has published there
-          (\`selvage-protocol.selvage-client\`).
+          Install the attached \`${VSIX}\` (\`code --install-extension ${VSIX}\`), or once this
+          version has published, \`code --install-extension selvage-protocol.selvage\` from the
+          [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=selvage-protocol.selvage)
+          or [Open VSX](https://open-vsx.org/extension/selvage-protocol/selvage).
           EOF
           if gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1; then
             echo "release v${RELEASE_VERSION} already exists; refreshing the vsix asset."
