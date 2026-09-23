@@ -1,0 +1,830 @@
+/**
+ * A `selvage/2` session over a socket: the wiring `PeerSession` (`PROTOCOL.md` §13) and the
+ * host's producer half (`§7.1`) were written to be handed, and that nothing here handed them.
+ *
+ * {@link PeerSession} decides; this module moves the bytes. It opens the WebSocket, sends
+ * `session.hello` at `selvage/2`, seats the connection from `room.created`/`room.joined`, then
+ * hands every binary frame to the session and every frame the session produced to the socket.
+ * It runs the session's clocks on a timer of its own (`§13.8`), because a session renews nothing
+ * if only the caller moves it.
+ *
+ * It lives outside `src/engine/` on purpose. The engine is the copy `nvim_client` and
+ * `web_client` carry, and the socket half is a Node concern: it takes Node's `WebSocket`, the
+ * Node crypto seam and the wall clock, and a page supplies its own. A browser or a companion
+ * writes the same wiring over its own transport rather than importing this one.
+ *
+ * **What it is not.** It is the relay and nothing above it. `PeerSession` exposes the receiver's
+ * observables and the producer's frame, but no editor surface: there is no way to publish a local
+ * awareness state, no way to read a peer's awareness, no local delete, and no way for a client to
+ * read the role the applied state gives its own key. A VS Code adapter needs all four, so nothing
+ * here is called by one yet — see `README.md` and `ai_notes/docs/studies/e2ee-plan.md` §11.
+ */
+
+import WebSocket from 'ws';
+
+import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, parseServerMessage } from '../engine/envelope.ts';
+import type { Keepalive } from '../engine/envelope.ts';
+import { endingReason, parseInvite, PeerSession } from '../engine/peer.ts';
+import type { Ending, PeerInvite, PeerOptions } from '../engine/peer.ts';
+import type { HostStore } from '../engine/host.ts';
+import { encodeKey, mintSessionKey } from '../engine/sealed.ts';
+import type { FrameCrypto } from '../engine/crypto.ts';
+import { openSocket } from '../engine/transport.ts';
+import type { OpenSocket, WebSocketFactory, WebSocketLike } from '../engine/transport.ts';
+import { sessionBase, parseSessionUrl, sessionUrl } from '../engine/urls.ts';
+import type { SessionBase } from '../engine/urls.ts';
+import { nodeCrypto } from './crypto.ts';
+
+/** The version this module speaks. `selvage/1` is the engine's, and stays where it is. */
+export const WIRE_VERSION_V2 = 'selvage/2';
+
+/** How long the upgrade and the handshake may take together before the connection is abandoned. */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/** A peer as `selvage/2` records it: `PROTOCOL.md` §6.1's `PeerInfo` without `role`. */
+export interface RelayPeer {
+  peer_id: string;
+  display_name: string;
+  awareness_client_id?: number;
+}
+
+/** What the server said at the end of the `selvage/2` handshake. */
+export interface RelaySessionInfo {
+  roomId: string;
+  /** Present only for the connection that minted the room, and never echoed after. */
+  token?: string;
+  /** This connection's seat: the `peer_id` the relay showed it under. */
+  seat: string;
+  /** The seats already in the room, without this connection. */
+  peers: RelayPeer[];
+  capabilities: string[];
+  keepalive: Keepalive;
+  baseUrl: SessionBase;
+}
+
+/**
+ * Why a `selvage/2` session is over. `§13.10`'s three are `PeerSession`'s own; `room-gone` is
+ * the relay's, which no peer can sign because the room is not a key.
+ */
+export type RelayEnding = Ending | 'room-gone';
+
+/** What a relay reports after it moved something. */
+export type RelayEvent =
+  | { type: 'seated' }
+  | { type: 'peers'; peers: RelayPeer[] }
+  | { type: 'listing'; listing: readonly string[] }
+  | { type: 'content'; documents: string[] }
+  | { type: 'ended'; ending: RelayEnding }
+  | { type: 'failed'; reason: string };
+
+export type RelayEventListener = (event: RelayEvent) => void;
+
+/** What both a mint and a join are given. */
+export interface RelayOptions {
+  crypto?: FrameCrypto;
+  webSocketFactory?: WebSocketFactory;
+  /** Free-form client identifier, for diagnostics (`PROTOCOL.md` §5). */
+  client?: string;
+  /** Overrides the clock the server advertises. The server's numbers are the session's. */
+  keepalive?: Partial<Keepalive>;
+  handshakeTimeoutMs?: number;
+}
+
+/** Minting a room (`PROTOCOL.md` §5.1, §7.1). */
+export interface RelayHostOptions extends RelayOptions {
+  baseUrl: string;
+  displayName: string;
+  /** The room's working tree as this host enumerates it: names, and no content (`§7.1`). */
+  listing(): readonly string[];
+  /** The room key, persisted with the host key so a returning host re-derives the same frame key. */
+  roomKey?: Uint8Array;
+  /** The host key's 32-byte seed, persisted so a returning host can still sign a state. */
+  hostSeed?: Uint8Array;
+  /** Where the host key and its `issued` are kept (`§7.1`); omitted is an in-memory host. */
+  store?: HostStore;
+}
+
+/** The two keys and the address, when a caller holds them apart from a link (`§5.1`). */
+export interface RelayHandover {
+  socketUrl: string;
+  room: string;
+  token: string;
+  roomKey: Uint8Array;
+  hostKey: Uint8Array;
+}
+
+/** Joining the room a link names (`PROTOCOL.md` §5.1, §13.1). */
+export interface RelayJoinOptions extends RelayOptions {
+  /** The invite link, either form, with its fragment: the wire URL or the page link. */
+  invite: string;
+  displayName: string;
+  /** The role this connection declares in its announcement; the state is what assigns it. */
+  declaredRole?: 'guest' | 'viewer';
+  /** The connection URL and the two keys, when a caller holds them apart from a link. */
+  handover?: RelayHandover;
+}
+
+interface QueuedFrame {
+  text?: string;
+  binary?: Uint8Array;
+}
+
+/**
+ * One `selvage/2` connection: a socket, a {@link PeerSession} and the clocks between them.
+ *
+ * Every method that changes the session is async, because the crypto seam is
+ * (`src/engine/crypto.ts`), and the relay serializes nothing itself: `PeerSession` already decides
+ * one thing at a time, and `takeOutbound` hands frames back in the order it produced them.
+ */
+export class RelaySession {
+  private readonly crypto: FrameCrypto;
+  private readonly factory: WebSocketFactory;
+  private readonly listeners = new Set<RelayEventListener>();
+
+  private socket: OpenSocket | undefined;
+  private session: PeerSession | undefined;
+  private info: RelaySessionInfo | undefined;
+  private start = 0;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private pendingInvite: string | undefined;
+  private ending: RelayEnding | undefined;
+  private fault: string | undefined;
+  private destroyed = false;
+
+  /** The frames that arrived before the session existed, in arrival order. */
+  private readonly inbox: QueuedFrame[] = [];
+  private draining = false;
+
+  /** The server base this connection dialled, which a reply cannot name itself. */
+  private dialled: SessionBase | undefined;
+  /** The role this connection declared, which the applied state is what assigns. */
+  private readonly ownRole: 'guest' | 'viewer' | undefined;
+
+  /** The peers the relay showed, and the last listing and document set that were reported. */
+  private peerList: RelayPeer[] = [];
+  private lastListing: readonly string[] = [];
+  private lastDocuments: string[] = [];
+
+  private constructor(
+    crypto: FrameCrypto,
+    factory: WebSocketFactory,
+    ownRole: 'guest' | 'viewer' | undefined,
+  ) {
+    this.crypto = crypto;
+    this.factory = factory;
+    this.ownRole = ownRole;
+  }
+
+  // --- opening a session -----------------------------------------------------
+
+  /** Mints a room; this connection is its host by holding the host key's private half. */
+  static async host(options: RelayHostOptions): Promise<RelaySession> {
+    const relay = new RelaySession(
+      options.crypto ?? nodeCrypto,
+      options.webSocketFactory ?? defaultFactory,
+      undefined,
+    );
+    await relay.mint(options);
+    return relay;
+  }
+
+  /** Joins the room an invite names; the fragment is read here and never reaches the socket. */
+  static async join(options: RelayJoinOptions): Promise<RelaySession> {
+    const read = readInvite(options);
+    if (!read.ok) {
+      throw new Error(read.reason);
+    }
+    const relay = new RelaySession(
+      options.crypto ?? nodeCrypto,
+      options.webSocketFactory ?? defaultFactory,
+      options.declaredRole,
+    );
+    await relay.admit(options, read.invite);
+    return relay;
+  }
+
+  private async mint(options: RelayHostOptions): Promise<void> {
+    const base = sessionBase(options.baseUrl);
+    if (base === undefined) {
+      throw new Error(`not a session address: ${options.baseUrl}`);
+    }
+    const roomKey = options.roomKey ?? this.random(32, 'the room key');
+    if (roomKey.length !== 32) {
+      throw new Error('a room key is 32 bytes');
+    }
+    const hostSeed = options.hostSeed ?? this.random(32, 'the host key');
+    const host = await mintSessionKey(this.crypto, hostSeed);
+    if (host === undefined) {
+      throw new Error('the host key could not be derived from its seed');
+    }
+    const info = await this.dial(options, base, sessionUrl(base), options.displayName);
+    this.info = info;
+    // §7.1: the host signs states with the key the invite's `h` carries, and publishes its first
+    // one at mint, which is what brings the listing into existence for the first joiner.
+    await this.seat(options, {
+      roomId: info.roomId,
+      roomKey,
+      hostKey: host.public,
+      seat: info.seat,
+      roster: info.peers.map((peer) => peer.peer_id),
+      host: {
+        hostSeed,
+        listing: options.listing,
+        ...(options.store === undefined ? {} : { store: options.store }),
+      },
+    });
+    // The invite is the room key and the host's public key in the fragment, `§5.1`'s order.
+    if (info.token !== undefined) {
+      this.pendingInvite = `${sessionUrl(base, info.roomId, info.token)}#k=${encodeKey(roomKey)}&h=${encodeKey(host.public)}`;
+    }
+  }
+
+  private async admit(options: RelayJoinOptions, invite: PeerInvite): Promise<void> {
+    const parsed = parseSessionUrl(invite.socketUrl);
+    if (parsed === undefined) {
+      throw new Error('the invite does not address a session endpoint');
+    }
+    const info = await this.dial(options, parsed.base, invite.socketUrl, options.displayName);
+    this.info = info;
+    await this.seat(options, {
+      roomId: invite.room,
+      roomKey: invite.roomKey,
+      hostKey: invite.hostKey,
+      seat: info.seat,
+      roster: info.peers.map((peer) => peer.peer_id),
+      ...(options.declaredRole === undefined ? {} : { declaredRole: options.declaredRole }),
+    });
+  }
+
+  /** Opens the socket, says `session.hello` at `selvage/2`, and waits to be seated. */
+  private async dial(
+    options: RelayOptions,
+    base: SessionBase,
+    url: string,
+    displayName: string,
+  ): Promise<RelaySessionInfo> {
+    this.dialled = base;
+    const timeout = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    const attempt = new AbortController();
+    let seating: (answer: RelaySessionInfo) => void = () => undefined;
+    let refusing: (error: Error) => void = () => undefined;
+    const seated = new Promise<RelaySessionInfo>((resolve, reject) => {
+      seating = resolve;
+      refusing = reject;
+    });
+    void seated.catch(() => undefined);
+    const deadline = setTimeout(() => {
+      const error = new Error('the server did not answer session.hello in time');
+      refusing(error);
+      attempt.abort(error);
+    }, timeout);
+    try {
+      this.socket = await openSocket(
+        url,
+        {
+          onText: (text) => this.onText(text, seating, refusing),
+          onBinary: (bytes) => this.enqueue({ binary: bytes }),
+          onClose: (code, reason) => {
+            if (this.info === undefined) {
+              // Closed before it was seated: the handshake will never finish.
+              refusing(new Error(`the socket closed before the session was seated: ${code} ${reason}`));
+              return;
+            }
+            this.onClose(code, reason);
+          },
+          onError: () => {
+            // The close handler reports it; an error alone does not end a session.
+          },
+        },
+        this.factory,
+        attempt.signal,
+      );
+      this.socket.sendText(JSON.stringify(helloEnvelope(displayName, options, this.crypto)));
+      const info = await seated;
+      this.start = performance.now();
+      this.peerList = [...info.peers];
+      return info;
+    } catch (error) {
+      this.socket?.close();
+      this.socket = undefined;
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  private async seat(options: RelayOptions, peer: Omit<PeerOptions, 'keepalive' | 'crypto'>): Promise<void> {
+    const session = await PeerSession.create({
+      ...peer,
+      crypto: this.crypto,
+      keepalive: keepaliveOf(this.info?.keepalive, options.keepalive),
+    });
+    if (session === undefined) {
+      throw new Error('the session could not be built from the invite');
+    }
+    this.session = session;
+    this.fault ??= session.failure;
+    this.timer = setInterval(() => {
+      void this.pump();
+    }, this.info?.keepalive.awareness_renew_ms ?? DEFAULT_KEEPALIVE.awareness_renew_ms);
+    this.emit({ type: 'seated' });
+    // §13.1's step 4: a guest's announcement belongs at the join, and a host's first state is
+    // already in the outbound queue, so both go out on this tick rather than on a timer the
+    // caller would wait a whole renewal window for.
+    await this.drain();
+    await this.pump();
+  }
+
+  private random(length: number, what: string): Uint8Array {
+    try {
+      return this.crypto.randomBytes(length);
+    } catch {
+      throw new Error(`${what} could not be minted from the platform's CSPRNG`);
+    }
+  }
+
+  // --- what a caller reads ---------------------------------------------------
+
+  /** The connection's session description. Throws before it is seated. */
+  sessionInfo(): RelaySessionInfo {
+    if (this.info === undefined) {
+      throw new Error('the relay is not seated');
+    }
+    return this.info;
+  }
+
+  /** The invite this connection can hand on: the wire URL, its fragment carrying both keys. */
+  invite(): string | undefined {
+    return this.pendingInvite;
+  }
+
+  /** The role this connection declared; the applied state is what assigns one (`§13.4`). */
+  get declaredRole(): 'guest' | 'viewer' | undefined {
+    return this.ownRole;
+  }
+
+  get isHost(): boolean {
+    return this.session?.isHost ?? false;
+  }
+
+  /** §13.10's ending, or `room-gone` when the relay said the room is over. */
+  get end(): RelayEnding | undefined {
+    return this.ending ?? this.session?.end;
+  }
+
+  /** A sentence for the three endings `§13.10` has; `room-gone`'s is the adapter's. */
+  endingSentence(): string | undefined {
+    if (this.ending === 'room-gone') {
+      return 'the room is gone';
+    }
+    const end = this.ending ?? this.session?.end;
+    return end === undefined ? undefined : endingReason(end);
+  }
+
+  get failure(): string | undefined {
+    return this.fault ?? this.session?.failure;
+  }
+
+  peers(): RelayPeer[] {
+    return [...this.peerList];
+  }
+
+  listing(): readonly string[] {
+    return this.session?.listing ?? this.lastListing;
+  }
+
+  documents(): string[] {
+    return this.session?.documents() ?? this.lastDocuments;
+  }
+
+  text(path: string): string {
+    return this.session?.text(path) ?? '';
+  }
+
+  heldPaths(): string[] {
+    return this.session?.heldPaths() ?? [];
+  }
+
+  /** Subscribes to relay events. Returns the unsubscribe function. */
+  on(listener: RelayEventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  // --- what the caller hands in ----------------------------------------------
+
+  /** §13.1's join order: a hold is taken once the state is held, not before. */
+  open(path: string): void {
+    this.session?.open(path);
+  }
+
+  /** Releases every path this connection held (`§13.7`). */
+  release(): void {
+    this.session?.release();
+  }
+
+  /** One local insert. Returns whether it was published — a `viewer`'s is not (`§13.9`). */
+  async insert(path: string, index: number, text: string): Promise<boolean> {
+    const session = this.session;
+    if (session === undefined) {
+      return false;
+    }
+    const published = await session.insert(path, index, text);
+    this.drainOutbound();
+    return published;
+  }
+
+  /** The host's listing changed: the whole tree as it now is (`§7.1`). */
+  async listingChanged(): Promise<void> {
+    const session = this.session;
+    if (session === undefined) {
+      return;
+    }
+    await session.listingChanged(this.clock());
+    this.report();
+    this.drainOutbound();
+  }
+
+  /** §7.1's closing: the host's statement that the room is over. */
+  async closeRoom(): Promise<boolean> {
+    const session = this.session;
+    if (session === undefined) {
+      return false;
+    }
+    const closed = await session.closeRoom();
+    this.drainOutbound();
+    return closed;
+  }
+
+  /** Runs the session's clocks once, which is what a caller with its own timer calls. */
+  async tick(): Promise<void> {
+    await this.pump();
+  }
+
+  /** Ends the session: the socket closed, the clock stopped, the document released. */
+  disconnect(): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    if (this.timer !== undefined) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    this.socket?.close();
+    this.socket = undefined;
+    this.session?.destroy();
+  }
+
+  // --- the frame path --------------------------------------------------------
+
+  private onText(
+    text: string,
+    seating: (answer: RelaySessionInfo) => void,
+    refusing: (error: Error) => void,
+  ): void {
+    const message = parseServerMessage(text);
+    if (message === undefined) {
+      return;
+    }
+    if (message.event === eventName.roomCreated || message.event === eventName.roomJoined) {
+      const info = this.infoOf(message.params);
+      if (info === undefined) {
+        refusing(new Error('the handshake reply was not a room description'));
+        return;
+      }
+      seating(info);
+      return;
+    }
+    if (message.event === eventName.sessionError && this.session === undefined) {
+      refusing(new Error(message.error?.message ?? 'the server refused the session'));
+      return;
+    }
+    this.enqueue({ text });
+  }
+
+  /** The `room.created`/`room.joined` params, with the base the caller dialled. */
+  private infoOf(params: unknown): RelaySessionInfo | undefined {
+    if (!isRecord(params)) {
+      return undefined;
+    }
+    const roomId = typeof params['room_id'] === 'string' ? params['room_id'] : undefined;
+    const self = peerOf(params['self']);
+    if (roomId === undefined || self === undefined || this.dialled === undefined) {
+      return undefined;
+    }
+    const peers: RelayPeer[] = [];
+    if (Array.isArray(params['peers'])) {
+      for (const entry of params['peers']) {
+        const peer = peerOf(entry);
+        if (peer !== undefined) {
+          peers.push(peer);
+        }
+      }
+    }
+    const keepalive = isRecord(params['keepalive']) ? params['keepalive'] : {};
+    return {
+      roomId,
+      ...(typeof params['token'] === 'string' ? { token: params['token'] } : {}),
+      seat: self.peer_id,
+      peers,
+      capabilities: Array.isArray(params['capabilities'])
+        ? params['capabilities'].filter((name): name is string => typeof name === 'string')
+        : [],
+      keepalive: {
+        ping_interval_ms: numberOr(keepalive['ping_interval_ms'], DEFAULT_KEEPALIVE.ping_interval_ms),
+        awareness_renew_ms: numberOr(keepalive['awareness_renew_ms'], DEFAULT_KEEPALIVE.awareness_renew_ms),
+        awareness_expire_ms: numberOr(keepalive['awareness_expire_ms'], DEFAULT_KEEPALIVE.awareness_expire_ms),
+      },
+      baseUrl: this.dialled,
+    };
+  }
+
+  private onClose(code: number, reason: string): void {
+    if (this.ending === undefined) {
+      this.ending = 'room-gone';
+      this.emit({ type: 'ended', ending: 'room-gone' });
+    }
+    this.fault ??= `the connection ended (${code}${reason === '' ? '' : ` ${reason}`})`;
+  }
+
+  private enqueue(frame: QueuedFrame): void {
+    this.inbox.push(frame);
+    void this.drain();
+  }
+
+  /** One frame at a time, in the order it arrived, whichever side of the seat it came from. */
+  private async drain(): Promise<void> {
+    if (this.draining || this.session === undefined) {
+      return;
+    }
+    this.draining = true;
+    try {
+      while (this.inbox.length > 0) {
+        const frame = this.inbox.shift();
+        if (frame === undefined) {
+          break;
+        }
+        await this.process(frame);
+      }
+    } finally {
+      this.draining = false;
+    }
+    this.report();
+    this.drainOutbound();
+  }
+
+  private async process(frame: QueuedFrame): Promise<void> {
+    const session = this.session;
+    if (session === undefined) {
+      return;
+    }
+    if (frame.binary !== undefined) {
+      await session.deliver(this.clock(), frame.binary);
+      return;
+    }
+    if (frame.text === undefined) {
+      return;
+    }
+    const message = parseServerMessage(frame.text);
+    if (message === undefined) {
+      return;
+    }
+    switch (message.event) {
+      case eventName.peerJoined: {
+        const peer = peerOf(message.params);
+        if (peer !== undefined) {
+          this.peerList = mergePeer(this.peerList, peer);
+          await session.seatJoined(this.clock(), peer.peer_id);
+        }
+        break;
+      }
+      case eventName.peerLeft: {
+        const peerId = textOf(message.params, 'peer_id');
+        if (peerId !== undefined) {
+          this.peerList = this.peerList.filter((peer) => peer.peer_id !== peerId);
+          await session.seatLeft(this.clock(), peerId);
+        }
+        break;
+      }
+      case eventName.peerRenamed: {
+        const peerId = textOf(message.params, 'peer_id');
+        const name = textOf(message.params, 'display_name');
+        if (peerId !== undefined && name !== undefined) {
+          this.peerList = this.peerList.map((peer) =>
+            peer.peer_id === peerId ? { ...peer, display_name: name } : peer,
+          );
+        }
+        break;
+      }
+      case eventName.roomGone: {
+        this.ending = 'room-gone';
+        this.emit({ type: 'ended', ending: 'room-gone' });
+        break;
+      }
+      case eventName.sessionError: {
+        this.fault = message.error?.message ?? 'the server reported a fault';
+        this.emit({ type: 'failed', reason: this.fault });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** One tick of the session's own clocks, then whatever it published. */
+  private async pump(): Promise<void> {
+    const session = this.session;
+    if (session === undefined || this.ending !== undefined) {
+      return;
+    }
+    await session.tick(this.clock());
+    this.fault ??= session.failure;
+    this.report();
+    this.drainOutbound();
+  }
+
+  private drainOutbound(): void {
+    const session = this.session;
+    if (session === undefined || this.socket === undefined) {
+      return;
+    }
+    for (const frame of session.takeOutbound()) {
+      if (this.socket.isOpen) {
+        this.socket.sendBinary(frame);
+      }
+    }
+    this.fault ??= session.failure;
+  }
+
+  private report(): void {
+    const session = this.session;
+    if (session === undefined) {
+      return;
+    }
+    const listing = session.listing;
+    if (!sameStrings(listing, this.lastListing)) {
+      this.lastListing = [...listing];
+      this.emit({ type: 'listing', listing: this.lastListing });
+    }
+    const documents = session.documents();
+    if (!sameStrings(documents, this.lastDocuments)) {
+      this.lastDocuments = documents;
+      this.emit({ type: 'content', documents });
+    }
+    const end = session.end;
+    if (end !== undefined && this.ending === undefined) {
+      this.ending = end;
+      this.emit({ type: 'ended', ending: end });
+    }
+    this.emit({ type: 'peers', peers: this.peers() });
+  }
+
+  private emit(event: RelayEvent): void {
+    for (const listener of this.listeners) {
+      listener(event);
+    }
+  }
+
+  /** §13.8's clock: this client's own monotone elapsed time from its seat. */
+  private clock(): number {
+    return performance.now() - this.start;
+  }
+}
+
+// --- the invite -------------------------------------------------------------
+
+type InviteRead = { ok: true; invite: PeerInvite } | { ok: false; reason: string };
+
+/** Reads a link, or the two keys handed over apart from one (`§5.1`'s escape hatch). */
+function readInvite(options: RelayJoinOptions): InviteRead {
+  if (options.handover !== undefined) {
+    const { socketUrl, room, token, roomKey, hostKey } = options.handover;
+    if (roomKey.length !== 32 || hostKey.length !== 32) {
+      return { ok: false, reason: 'the handover carries no 32-byte room key or host key' };
+    }
+    return { ok: true, invite: { socketUrl, room, token, roomKey, hostKey } };
+  }
+  return parseInvite(wireInvite(options.invite));
+}
+
+/**
+ * A link read back as the wire form `parseInvite` reads. The page form names the same room,
+ * token and fragment over the scheme a browser speaks; `parseInvite` takes the endpoint form,
+ * so the page is resolved to the connection URL first and the fragment is carried across
+ * unchanged.
+ */
+export function wireInvite(link: string): string {
+  const hash = link.indexOf('#');
+  const address = hash === -1 ? link : link.slice(0, hash);
+  const fragment = hash === -1 ? '' : link.slice(hash);
+  if (address.endsWith('/session')) {
+    return link;
+  }
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    return link;
+  }
+  const scheme = url.protocol === 'http:' ? 'ws:' : url.protocol === 'https:' ? 'wss:' : undefined;
+  if (scheme === undefined) {
+    return link;
+  }
+  const room = url.searchParams.get('room');
+  const token = url.searchParams.get('token');
+  if (room === null || room === '' || token === null || token === '') {
+    return link;
+  }
+  const base = sessionBase(`${scheme}//${url.host}${url.pathname.replace(/\/+$/, '')}`);
+  if (base === undefined) {
+    return link;
+  }
+  return `${sessionUrl(base, room, token)}${fragment}`;
+}
+
+// --- the handshake envelopes ------------------------------------------------
+
+/** The clocks the session runs on: the server's, overridden by the caller's (`§8.2`). */
+function keepaliveOf(advertised: Keepalive | undefined, given: Partial<Keepalive> | undefined): Keepalive {
+  return {
+    ping_interval_ms: given?.ping_interval_ms ?? advertised?.ping_interval_ms ?? DEFAULT_KEEPALIVE.ping_interval_ms,
+    awareness_renew_ms:
+      given?.awareness_renew_ms ?? advertised?.awareness_renew_ms ?? DEFAULT_KEEPALIVE.awareness_renew_ms,
+    awareness_expire_ms:
+      given?.awareness_expire_ms ?? advertised?.awareness_expire_ms ?? DEFAULT_KEEPALIVE.awareness_expire_ms,
+  };
+}
+
+/** `session.hello` at `selvage/2`: no `role`, because the version seats nobody as anything. */
+function helloEnvelope(displayName: string, options: RelayOptions, crypto: FrameCrypto): Record<string, unknown> {
+  return {
+    v: WIRE_VERSION_V2,
+    id: 1,
+    method: 'session.hello',
+    params: {
+      display_name: displayName,
+      awareness_client_id: awarenessClientId(crypto),
+      capabilities: [...CLIENT_CAPABILITIES],
+      ...(options.client === undefined ? {} : { client: options.client }),
+    },
+  };
+}
+
+/** A seat's awareness client id, which the relay records and nothing here publishes under. */
+function awarenessClientId(crypto: FrameCrypto): number {
+  let bytes: Uint8Array;
+  try {
+    bytes = crypto.randomBytes(4);
+  } catch {
+    return 0;
+  }
+  return (((bytes[0] ?? 0) << 24) | ((bytes[1] ?? 0) << 16) | ((bytes[2] ?? 0) << 8) | (bytes[3] ?? 0)) >>> 0;
+}
+
+function defaultFactory(url: string): WebSocketLike {
+  return new WebSocket(url) as unknown as WebSocketLike;
+}
+
+function peerOf(value: unknown): RelayPeer | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const peerId = typeof value['peer_id'] === 'string' ? value['peer_id'] : undefined;
+  const displayName = typeof value['display_name'] === 'string' ? value['display_name'] : undefined;
+  if (peerId === undefined || displayName === undefined) {
+    return undefined;
+  }
+  const awareness = typeof value['awareness_client_id'] === 'number' ? value['awareness_client_id'] : undefined;
+  return {
+    peer_id: peerId,
+    display_name: displayName,
+    ...(awareness === undefined ? {} : { awareness_client_id: Math.trunc(awareness) }),
+  };
+}
+
+function textOf(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return typeof value[key] === 'string' ? value[key] : undefined;
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mergePeer(peers: RelayPeer[], peer: RelayPeer): RelayPeer[] {
+  const without = peers.filter((existing) => existing.peer_id !== peer.peer_id);
+  return [...without, peer];
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, at) => value === right[at]);
+}
