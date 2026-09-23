@@ -936,3 +936,23 @@ test('a put-back refused after another converged the buffer is not reported', as
   assert.equal(window.text(), room, 'the buffer did not end on the room text');
   assert.deepEqual(window.errors(), [], 'a refusal the buffer had already answered was reported');
 });
+
+test('a document that refuses every apply says so once per episode', async (t) => {
+  const window = viewerSession(t);
+  window.setRole('viewer');
+  const room = window.room();
+  window.bundle.stub.registered.applyEditImpl = () => Promise.resolve(false);
+
+  // Three keystrokes against an editor that refuses every put-back: one episode of a viewer's
+  // text not going back, not three.
+  window.type(`${room} one`);
+  window.type(`${room} one two`);
+  window.type(`${room} one two three`);
+  await settled();
+  assert.equal(
+    window.errors().filter((message) => message.includes(PATH)).length,
+    1,
+    'a viewer got one dialog per refused keystroke',
+  );
+  assert.deepEqual(window.inserts, [], 'a viewer published content');
+});

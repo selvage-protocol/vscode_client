@@ -602,6 +602,15 @@ export class Session {
    * an applied state, so the sentence is said once rather than on every state that carries it.
    */
   private viewerSaid = false;
+  /**
+   * Paths whose refused put-back has been said since the buffer was last on the replica. The
+   * bridge's own `applyRefused` is per episode (`bridge.ts` `refuse`), and a viewer typing into
+   * a document that refuses every apply is one episode: without this it is one dialog per
+   * keystroke. An entry goes when the buffer is back on the replica — a put-back that settled,
+   * or a change event that finds it there — which is the episode ending, and when the document
+   * closes, so a reopen is judged afresh.
+   */
+  private readonly refusedPutBacks = new Set<string>();
   /** The one flush the interval allows, while one is armed. */
   private selectionTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -1992,6 +2001,7 @@ export class Session {
   private close(document: vscode.TextDocument): void {
     const path = this.editor.forget(document.uri);
     if (path !== undefined) {
+      this.refusedPutBacks.delete(path);
       this.bridge.documentClosed(path);
       this.refreshStatus();
     }
@@ -2039,7 +2049,13 @@ export class Session {
     }
     const room = this.engine.text(path);
     const held = document.getText();
-    if (matchesReplica(held, room) || this.editor.applyingTo(path, held)) {
+    if (matchesReplica(held, room)) {
+      // The buffer is on the replica again: whatever a refused put-back last said is over, so a
+      // fresh refusal is a new episode and is said again.
+      this.refusedPutBacks.delete(path);
+      return false;
+    }
+    if (this.editor.applyingTo(path, held)) {
       return false;
     }
     // A put-back the editor refuses leaves the buffer holding the edit the room never
@@ -2053,6 +2069,7 @@ export class Session {
     void this.editor.putBack(path, document, room).then(
       (back) => {
         if (back) {
+          this.refusedPutBacks.delete(path);
           return;
         }
         this.reportRefusedPutBack(document, path);
@@ -2066,16 +2083,25 @@ export class Session {
   }
 
   /**
-   * Says that a put-back the editor refused left the buffer holding text the room does not.
+   * Says that a put-back the editor refused left the buffer holding text the room does not:
+   * the bridge's own sentence for two texts that are apart and stay apart, said once per
+   * episode rather than once per keystroke, and not said at all when another put-back has
+   * already converged the buffer.
    *
    * The buffer is re-read against the replica as it stands now rather than trusted to the
    * answer the put-back gave, because a refusal describes the state it met and the buffer may
    * have moved since.
    */
   private reportRefusedPutBack(document: vscode.TextDocument, path: string): void {
-    if (!matchesReplica(document.getText(), this.engine.text(path))) {
-      this.onReport({ kind: 'applyRefused', path });
+    if (matchesReplica(document.getText(), this.engine.text(path))) {
+      this.refusedPutBacks.delete(path);
+      return;
     }
+    if (this.refusedPutBacks.has(path)) {
+      return;
+    }
+    this.refusedPutBacks.add(path);
+    this.onReport({ kind: 'applyRefused', path });
   }
 
   /**
