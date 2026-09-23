@@ -24,7 +24,7 @@ import WebSocket from 'ws';
 
 import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, event as eventName, parseServerMessage } from './envelope.ts';
 import type { Keepalive } from './envelope.ts';
-import { endingReason, parseInvite, PeerSession } from './peer.ts';
+import { endingReason, parseInvite, PeerSession, unrefTimer } from './peer.ts';
 import type { Ending, PeerInvite, PeerOptions } from './peer.ts';
 import type { HostStore } from './host.ts';
 import { encodeKey, mintSessionKey } from './sealed.ts';
@@ -346,6 +346,9 @@ export class RelaySession {
     this.timer = setInterval(() => {
       void this.pump();
     }, keepalive.awareness_renew_ms);
+    // The session's clock is the relay's own interval, and `disconnect` clears it; a caller that
+    // never disconnects would otherwise hold its process open for as long as the session lives.
+    unrefTimer(this.timer);
     this.emit({ type: 'seated' });
     // §13.1's step 4: a guest's announcement belongs at the join, and a host's first state is
     // already in the outbound queue, so both go out on this tick rather than on a timer the
