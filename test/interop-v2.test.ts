@@ -27,19 +27,24 @@
  *   for below — a different fact from `selvage/1`'s `doc.granted`, and the only one there is.
  * - **A state vector on the engine's side.** The `selvage/2` relay exposes none, so history
  *   agreement is read from the Rust report alone. The version-1 leg still compares both.
+ * - **Whether a state commits a given key yet.** A seat's role is the applied state's word
+ *   (§13.4), but the way that state draws a key it does not name is `guest` too, and the
+ *   `interop_peer` example declares no role, so neither replica can be asked the question. The
+ *   reply is what says so: `insert`'s `published` is `true` only once a state commits the key.
  *
- * None of that weakens the version-1 leg: it asserts all three, unchanged.
+ * None of that weakens the version-1 leg: it asserts all of it, unchanged.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { SelvageEngine } from '../src/engine/engine.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
-import { RustPeer, waitForReport } from './helpers/interop_peer.ts';
+import { RustPeer, START_MS, waitForReport } from './helpers/interop_peer.ts';
 import { RealServer } from './helpers/selvaged.ts';
-import { waitFor } from './helpers/wait.ts';
+import { WAIT_MS, waitFor } from './helpers/wait.ts';
 
 const PATH = 'notes.txt';
 const OTHER = 'src/main.rs';
@@ -252,11 +257,22 @@ test('interop over selvage/2: an edit made before a committing state is held, th
     await server.stop();
   });
 
-  // §7.1's publish-rate bound is what makes this deterministic: a host MAY treat one state as
-  // answering every session-key announcement it accepts inside the next `awareness_renew_ms`.
-  // A window wide enough to spawn a process in is a window the guest's own announcement lands
-  // inside, so its key stays uncommitted for as long as the test needs.
-  const keepalive = { awareness_renew_ms: 2000, awareness_expire_ms: 8000 };
+  // §7.1's publish-rate bound is what makes this deterministic, and the window below is derived
+  // from the bound rather than guessed at. A host MAY treat one state as answering every
+  // session-key announcement it accepts inside the next `awareness_renew_ms`, and it answers
+  // none inside that window: so an announcement accepted in the window leaves the key
+  // uncommitted until the window ends. The window is twice the harness's own bound on the
+  // guest's startup — `START_MS`, the deadline `RustPeer.start` allows the first report, plus
+  // `WAIT_MS`, the deadline the insert's reply gets — so on any run that reaches the assertion
+  // below the fold cannot have ended first, whatever the machine is doing: a startup slower
+  // than that budget fails `RustPeer.start`, loudly and with the step that stalled, rather than
+  // reaching the assertion as a `published: true`. §8.2's expiry is four windows, which is more
+  // than enough for a renewal to fall inside the expiry it renews.
+  const publishWindowMs = 2 * (START_MS + WAIT_MS);
+  const keepalive = {
+    awareness_renew_ms: publishWindowMs,
+    awareness_expire_ms: 4 * publishWindowMs,
+  };
   const tree = [PATH];
   const host = await PeerEngine.host({
     baseUrl: server.wsBase,
@@ -279,20 +295,34 @@ test('interop over selvage/2: an edit made before a committing state is held, th
   host.insert(PATH, 0, SEED);
 
   // A warmer: a second guest whose announcement is the state that opens that window, because
-  // §7.1 opens it on an answer and not on the clock.
-  const warmer = await PeerEngine.join({ invite, displayName: 'Cy', keepalive });
+  // §7.1 opens it on an answer and not on the clock. It declares `viewer`, which is what makes
+  // the wait below the proof of the premise rather than a guess at it: a seat's role is the
+  // applied state's word, and `guest` — the way every peer a state does not name is drawn — is
+  // the one answer that cannot be `viewer`. So a state answering the warmer is published, and
+  // the window is open, before the guest below is spawned; the wait cannot be satisfied by a
+  // roster that merely seats it (`PROTOCOL.md` §13.4).
+  const warmer = await PeerEngine.join({
+    invite,
+    displayName: 'Cy',
+    declaredRole: 'viewer',
+    keepalive,
+  });
   t.after(() => {
     warmer.disconnect();
   });
   const warmerSeat = warmer.session().peer.peer_id;
   await waitFor(
-    "the host’s state to commit the warmer’s key",
+    "the host’s state to commit the warmer’s key, which opens the publish window",
     () =>
       host.session().peers.find((record) => record.peer_id === warmerSeat)?.role ===
-      'guest',
+      'viewer',
     { describe: () => host.session().peers },
   );
 
+  // Spawned inside that window. Nothing else the host publishes in the meantime commits this
+  // guest's key: the room announces `peer.joined` before it relays a word of the joining
+  // connection's own, so the roster state that join obliges is published without the key, and
+  // §7.1's window is what folds the announcement that follows it.
   const peer = await RustPeer.start({ invite, path: PATH, name: 'Bob', version: 2 });
   t.after(async () => {
     await peer.stop();
@@ -302,7 +332,9 @@ test('interop over selvage/2: an edit made before a committing state is held, th
   // `published: false` rather than refusing. How much of the seed the guest holds by now is not
   // read: content is applied while no state commits this key, so its replica may be empty or may
   // hold the seed when the edit lands, and where the merge then puts the text is the CRDT's
-  // business. That the edit and the seed both arrive is what is asserted.
+  // business. That the edit and the seed both arrive is what is asserted. A `true` here would
+  // mean the host had already published a state committing this key, which is the premise the
+  // window above exists for and not a refusal; the reply is printed so the two read apart.
   const held = await peer.insertReply(0, 'guest: ');
   assert.equal(
     held.published,
@@ -314,19 +346,35 @@ test('interop over selvage/2: an edit made before a committing state is held, th
     `the edit is in the Rust replica meanwhile: ${JSON.stringify(held)}`,
   );
 
-  // A state the host owes and §7.1's rate bound is folding: it goes out when the window the
-  // warmer opened closes, which no clock of this test's may hurry. The deadline below is wider
-  // than a renewal window and a half so the fold is waited out rather than raced, and it reports
-  // the text the engine held.
-  const atEngine = await waitFor(
-    'the held edit to be published and applied',
-    () => {
-      const text = host.text(PATH);
-      return text.includes('guest: ') ? text : false;
-    },
-    { timeoutMs: 15_000, describe: () => host.text(PATH) },
+  // §13.1's step 4 releases the frame on the first state that commits this connection's key, and
+  // §7.1 obliges a state whenever the host's listing changes — a state that carries every key
+  // committed by then, the guest's among them as soon as the host has accepted its announcement.
+  // Whether it has yet is not something this side can read: §7.1 folds an announcement inside the
+  // window above rather than answering it, the announcement is written by a second process whose
+  // own first report may be printed before it, and the guest's role says nothing (a key no state
+  // names is drawn `guest` as well). So the test asks for one listing state per attempt until the
+  // edit lands: an attempt that lands before the announcement is accepted publishes a state
+  // without the key — one §7.1 owes on the change anyway — and the next one carries it. A host
+  // answering the folded announcement at the window's own end is `test/host.test.ts`'s subject;
+  // waiting for that here would cost this test the window the premise above needs, not the tenths
+  // of a second it costs this way. `WAIT_MS` bounds the attempts, so a release that never comes
+  // is reported with the number of states the host published for it rather than waited out.
+  const releaseDeadline = Date.now() + WAIT_MS;
+  let statesAsked = 0;
+  let atEngine = host.text(PATH);
+  while (!atEngine.includes('guest: ') && Date.now() < releaseDeadline) {
+    statesAsked += 1;
+    // The listing is replaced wholesale by every state, so the attempts alternate the tree the
+    // host shares: a state that only repeated the last one would be §7.1's re-send and carry no
+    // key the state before it did not.
+    await host.grant(statesAsked % 2 === 1 ? [PATH, OTHER] : [PATH]);
+    await delay(25);
+    atEngine = host.text(PATH);
+  }
+  assert.ok(
+    atEngine.includes('guest: '),
+    `the held edit is still unpublished after ${statesAsked} listing states and ${WAIT_MS}ms, and the engine holds ${JSON.stringify(atEngine)}`,
   );
-  assert.ok(atEngine.includes('guest: '));
   assert.ok(atEngine.includes(SEED), 'the seed and the held edit are both there');
 
   const bobOnEngine = await waitForPeerOn(host, 'Bob');

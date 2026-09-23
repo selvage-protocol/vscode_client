@@ -24,8 +24,14 @@ const REFERENCE_SERVER = resolve(REPO_ROOT, '..', 'reference_server');
 export const BUILD_HINT =
   "nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvage-harness --example interop_peer'";
 
-/** Joining two processes is slower than one round trip; only the first report gets this. */
-const START_MS = 30_000;
+/**
+ * Joining two processes is slower than one round trip; only the first report gets this.
+ *
+ * Exported because it is a bound a caller may reason from rather than a number to keep a copy
+ * of: a window that must outlast the peer's startup is that window plus this budget, and a
+ * startup that crosses it fails here instead of reaching a caller's assertion.
+ */
+export const START_MS = 30_000;
 
 export function interopPeerBinary(): string {
   const fromEnv = process.env.SELVAGE_INTEROP_PEER;
