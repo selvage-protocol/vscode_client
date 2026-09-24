@@ -30,7 +30,7 @@ import type { HostStore } from './host.ts';
 import { encodeKey, mintSessionKey } from './sealed.ts';
 import type { FrameCrypto } from './crypto.ts';
 import { webCrypto } from './crypto-web.ts';
-import { openSocket } from './transport.ts';
+import { MAX_INBOUND_MESSAGE_BYTES, openSocket } from './transport.ts';
 import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts';
 import { ProtocolError } from './errors.ts';
 import { DEFAULT_RECONNECT, attemptsForGrace } from './reconnect.ts';
@@ -1292,7 +1292,7 @@ function awarenessClientId(crypto: FrameCrypto): number {
 }
 
 function defaultFactory(url: string): WebSocketLike {
-  return new WebSocket(url) as unknown as WebSocketLike;
+  return new WebSocket(url, { maxPayload: MAX_INBOUND_MESSAGE_BYTES }) as unknown as WebSocketLike;
 }
 
 /**

@@ -25,6 +25,19 @@ export type WebSocketFactory = (url: string) => WebSocketLike;
 /** `readyState` of an open WebSocket. */
 export const SOCKET_OPEN = 1;
 
+/**
+ * The largest WebSocket message a Node socket will buffer, in bytes: handed to `ws` as its
+ * `maxPayload`, which also bounds what a compressed message may inflate to. Left unset, `ws`
+ * reads up to 100 MiB into memory before anything in the engine can judge the size, so a
+ * server could make a client hold that much per message for the cost of a small compressed one.
+ *
+ * Over it, `ws` ends the connection, which is what `PROTOCOL.md` §2.1 says a message over a
+ * transport bound does: a dropped socket, with no session error. 16 MiB is the informative
+ * bound that section names and twice the reference server's own (`MAX_FRAME_BYTES`, 8 MiB),
+ * so no message a conforming server relays comes near it.
+ */
+export const MAX_INBOUND_MESSAGE_BYTES = 16 * 1024 * 1024;
+
 export interface TransportHandlers {
   onText(text: string): void;
   onBinary(bytes: Uint8Array): void;
