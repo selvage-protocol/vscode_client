@@ -23,7 +23,6 @@ import type { LoadedExtension } from './helpers/bundle.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
 
-const V2 = 'selvage/2';
 const PATH = 'notes.txt';
 const SEED = 'a room the extension hosts at version two\n';
 
@@ -79,7 +78,7 @@ function activated(t: TestContext): { bundle: LoadedExtension; storage: string }
   const bundle = loadBundle();
   bundle.stub.reset();
   const storage = testStoragePath(t);
-  bundle.stub.configure({ wireVersion: V2, openOnJoin: false });
+  bundle.stub.configure({ openOnJoin: false });
   bundle.activate({
     subscriptions: [],
     globalState: bundle.stub.globalState,

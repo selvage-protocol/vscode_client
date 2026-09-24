@@ -4,13 +4,9 @@
  * page link a host copies, and the read-only documents `§13.4`'s `viewer` gets.
  *
  * Everything here is the built extension with the editor API stubbed, over the fake server —
- * which seats both versions, and relays the sealed frames it cannot read. What that covers is the
- * adapter's own decisions; `test/relay-selvaged.test.ts` and `test/selvage2-selvaged.test.ts` are
- * the same paths over a real `selvaged`.
- *
- * A window here is pinned where the case is about a version-1 room and left at the setting's
- * declared default where it is about the rule: a hosting client takes its version from what the
- * server's `/meta` says it seats unless `selvage.wireVersion` pins it.
+ * which accepts whatever `v` a hello claims, and relays the sealed frames it cannot read. What
+ * that covers is the adapter's own decisions; `test/relay-selvaged.test.ts` and
+ * `test/selvage2-selvaged.test.ts` are the same paths over a real `selvaged`.
  *
  * A version is not visible in any reply, so each "which version did this speak" case is read
  * from the hello the server recorded (`FakeServer.hellos`) rather than inferred: a room that
@@ -43,8 +39,6 @@ const V2 = 'selvage/2';
 
 /** The bundle's pure invite helpers, and the two surfaces the viewer case drives. */
 interface AdapterExports {
-  wireVersionOf(invite: string): string;
-  pinnedVersion(configured: unknown): string | undefined;
   fragmentOf(invite: string): string;
   fragmentKeys(fragment: string): { roomKey?: string; hostKey?: string };
   fragmentKeyRefusal(invite: string): string | undefined;
