@@ -25,6 +25,7 @@ import { peerColour } from '../src/bridge/cursors.ts';
 import type { Cursor } from '../src/bridge/cursors.ts';
 import type { TextChange } from '../src/bridge/editing.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from '../src/engine/presence.ts';
+import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import type { PeerInfo, Role } from '../src/engine/envelope.ts';
 import type { SessionInfo } from '../src/engine/session.ts';
 import type { LiveSession } from './helpers/live-session.ts';
@@ -162,6 +163,7 @@ class EngineStub implements Engine {
   presenceList: Presence[] = [];
   resolved: OffsetSelection | undefined;
   role: Role = 'host';
+  private readonly listeners = new Set<EngineEventListener>();
 
   has(path: string): boolean {
     return this.texts.has(path);
@@ -215,8 +217,16 @@ class EngineStub implements Engine {
     return this.resolved;
   }
 
-  on(): () => void {
-    return () => undefined;
+  on(listener: EngineEventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Says what happened in the room, as the relay's own frame does. */
+  emit(event: EngineEvent): void {
+    for (const listener of [...this.listeners]) {
+      listener(event);
+    }
   }
 }
 
@@ -618,6 +628,73 @@ test('a peer caret that does not resolve here is not drawn at offset zero', () =
   const drawn = bridge.cursors();
   assert.equal(drawn.length, 1);
   assert.deepEqual([drawn[0]?.anchor, drawn[0]?.head], [4, 4]);
+  bridge.dispose();
+});
+
+/**
+ * The caret follow.test.ts stages, as a sequence rather than a race: presence that cannot
+ * resolve, an editor that is already visible, and then the room's text. Resolution happens
+ * where a draw happens, so the frame that brings the text is the last chance to draw the
+ * caret — no presence change follows it, and the editor was visible before it.
+ */
+test('a peer caret is drawn on the frame that brings its document', () => {
+  const engine = new EngineStub();
+  engine.role = 'guest';
+  engine.presenceList = [peerCaret(PATH)];
+  engine.resolved = undefined;
+  const host = new FakeEditor();
+  // The buffer the guest's editor shows, already holding the room's text: the opening that
+  // takes the `arrive` path rather than an apply, so nothing is in flight to wait for.
+  host.open(PATH, 'base\n');
+  const bridge = new SessionBridge({ engine, host, autoSave: false, reconcileSettleMs: 0 });
+  bridge.documentOpened(PATH);
+
+  // Presence has arrived and the replica holds nothing for the path, so a draw here draws
+  // nothing, and nothing else in the room has changed since.
+  assert.deepEqual(bridge.cursors(), []);
+  assert.equal(host.cursors.length, 0, 'a caret the replica cannot resolve was drawn');
+
+  engine.texts.set(PATH, 'base\n');
+  engine.resolved = { anchor: 4, head: 4 };
+  engine.emit({ type: 'documentChanged', path: PATH });
+
+  assert.deepEqual(
+    host.cursors.map((cursor) => [cursor.path, cursor.anchor, cursor.head]),
+    [[PATH, 4, 4]],
+    'the frame that made the caret resolvable did not draw it',
+  );
+  bridge.dispose();
+});
+
+/**
+ * The same caret in the editor a real window has: a mirror placeholder, which is opened
+ * holding nothing, so the room's text has to be applied into it. The draw waits for that
+ * apply — the offsets are converted against the buffer, which is behind the replica until
+ * it lands — and happens on the settlement instead.
+ */
+test('a peer caret waits for the room text to land in the buffer before it is drawn', async () => {
+  const engine = new EngineStub();
+  engine.role = 'guest';
+  engine.presenceList = [peerCaret(PATH)];
+  engine.resolved = { anchor: 4, head: 4 };
+  const host = new FakeEditor();
+  // The mirror placeholder a real window opens, holding nothing: the room's text has to be
+  // applied into it, so the buffer is behind the replica until the apply lands.
+  host.open(PATH, '');
+  const bridge = new SessionBridge({ engine, host, autoSave: false, reconcileSettleMs: 0 });
+  bridge.documentOpened(PATH);
+
+  engine.texts.set(PATH, 'base\n');
+  engine.emit({ type: 'documentChanged', path: PATH });
+  assert.equal(host.cursors.length, 0, 'the caret was drawn against a buffer the text had not landed in');
+
+  await host.settle();
+  assert.equal(host.text(PATH), 'base\n');
+  assert.deepEqual(
+    host.cursors.map((cursor) => [cursor.path, cursor.anchor, cursor.head]),
+    [[PATH, 4, 4]],
+    'the caret was not drawn once the room text landed',
+  );
   bridge.dispose();
 });
 
