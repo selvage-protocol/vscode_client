@@ -104,7 +104,9 @@ setting, or a remembered address, and all four read it the same way: a bare host
 published shape, `wss://<host>`, because the room is dialled over TLS. The `/session` path every
 Selvage server answers belongs to the engine, which appends it to whatever base it is given, so a
 base that already ends in `/session` has that suffix removed before the engine appends its own;
-any other path is kept, because a server behind a prefix was named on purpose.
+any other path is kept, because a server behind a prefix was named on purpose. An invite link is
+not a server address: its query and fragment are the room, its token and its key, so a link
+pasted wherever an address is asked for is refused and nothing is remembered.
 
 `Selvage: Change the server` reports the address the next host will use and offers the same box
 to change it, without hosting first. While `selvage.serverUrl` is configured that setting
