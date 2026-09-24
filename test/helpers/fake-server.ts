@@ -225,9 +225,9 @@ export class FakeServer {
 
   /**
    * Announces a peer to one client, as the room's own membership does when it is seated: the
-   * frame every re-seat carries, where `host.attached` is only the frame a host reclaiming a
-   * room between hosts raises. Sending it by hand is how a case gets driven where the attach
-   * frame does not arrive — a guest whose socket was down when the host came back.
+   * frame every seat carries, and the only one that announces a return — no server frame marks a
+   * host (`PROTOCOL.md` §13). Sending it by hand is how a case gets driven where the announcement
+   * does not arrive — a guest whose socket was down when the host came back.
    */
   announcePeerToClient(displayName: string, peer: PeerInfo): void {
     this.sendToClient(displayName, JSON.stringify({ v: WIRE_VERSION, event: event.peerJoined, params: { peer } }));
