@@ -442,11 +442,22 @@ export class PeerEngine implements Engine {
    * scan holds the text it held, so an awareness-only frame — a peer moving a caret — reads no
    * document at all, and a keystroke reads the one it changed. A path this facade has not seen
    * yet is always read, and so is every path when the relay cannot say what changed.
+   *
+   * What is read is the paths the relay names as documents **and** the ones a transaction just
+   * touched. The two are not the same set: a path whose content has arrived is a root the
+   * decoder has not materialised — `documents()` counts the `Y.Text`s and does not name it until
+   * something reads it — so a scan that took `documents()` for the whole of it would leave a
+   * guest holding the room's text and never told, and the next keystroke would be diffed against
+   * a document the editor was never shown.
    */
   private scanTexts(): void {
     const touched = this.relay.takeTouched();
     const changed = touched === undefined ? undefined : new Set(touched);
-    for (const path of this.relay.documents()) {
+    const paths = new Set<string>(this.relay.documents());
+    for (const path of changed ?? []) {
+      paths.add(path);
+    }
+    for (const path of paths) {
       if (changed !== undefined && this.texts.has(path) && !changed.has(path)) {
         continue;
       }

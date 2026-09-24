@@ -180,6 +180,11 @@ async function publishedFrame(
   return { kind: envelope.kind, payload };
 }
 
+/** The kind of each published frame, which is what a test reads a connection's traffic as. */
+async function kindsOf(frames: readonly Uint8Array[]): Promise<number[]> {
+  return Promise.all(frames.map(async (bytes) => (await publishedFrame(bytes)).kind));
+}
+
 // --- §13.1, the order of operations at a join -----------------------------------
 
 test('the announcement goes out first and nothing else before a state', async () => {
@@ -497,9 +502,15 @@ test('a dropped socket publishes nothing under the key it held, and the re-seat 
   );
   assert.deepEqual(await peer.deliver(2, recommit), { status: 'applied', kind: 1 });
   const out = peer.takeOutbound();
-  assert.equal(out.length, 2, "the handshake, then the edit the drop held back");
+  // Three: the handshake, the held set under the key the state just committed — §13.7 ties a
+  // held set to the connection that announced it, and this connection is a new one — and the
+  // edit the drop held back.
+  assert.equal(out.length, 3, 'the handshake, the edit the drop held back, then the held set');
   const delta = await publishedFrame(out[1] as Uint8Array);
   assert.equal(delta.kind, 0);
+  const held = await publishedFrame(out[2] as Uint8Array);
+  assert.equal(held.kind, 3, 'the new key announces the whole held set');
+  assert.deepEqual(held.payload, { holds: ['theirs.md'] });
   const replica = new Y.Doc();
   const watching = new Awareness(replica);
   try {
@@ -767,6 +778,31 @@ test('a hold set is announced wholesale, and an empty one is a release', async (
   assert.deepEqual((await publishedFrame(released[0] as Uint8Array)).payload, { holds: [] });
 });
 
+test('a hold taken before this connection may publish goes out with the state that commits it', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+  // §13.1's step 4 holds every publication but the announcement back until a state commits this
+  // key, and §13.7 has a changed set go out when it changes: a hold taken in that window is a
+  // change with nothing sent for it, and the renewal clock alone carries it a whole window
+  // later. For a path the host has to supply that is a room nobody has asked the host to read.
+  peer.open('README.md');
+  await peer.tick(1);
+  const beforeCommit = peer.takeOutbound();
+  assert.ok(
+    !(await kindsOf(beforeCommit)).includes(3),
+    '§13.1\u2019s step 4 holds the held set back with everything else',
+  );
+
+  await peer.deliver(2, await state(now.host, 2, [[now.ours, 'guest', 'p-self']]));
+  const kinds = await kindsOf(peer.takeOutbound());
+  assert.ok(
+    kinds.includes(3),
+    `the held set went out with the state that committed this key: ${JSON.stringify(kinds)}`,
+  );
+});
+
 test('an idle holder keeps renewing its holds on its own clock', async () => {
   const now = await room();
   const peer = await session();
@@ -798,6 +834,35 @@ test('a holds message from a key no state commits is refused, and the session go
   });
   assert.equal(peer.peerHolds().size, 0);
   assert.equal(peer.end, undefined, 'a refused frame never ends a session');
+});
+
+// --- the documents a replica holds -----------------------------------------------
+
+/**
+ * §13.5's receipt, and what an adapter decides from it: a path this window has only *read* is
+ * not one the room has sent. Reading a room path gives the replica a document for it, so a
+ * client that could not tell the two apart would treat every path it drew as published — a
+ * guest would stop holding a listed path nothing had arrived for, and a host would take its own
+ * reading for the room's word and never seed its working copy.
+ */
+test('reading a path nothing has been written to is not the room sending one', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+
+  // A window that draws the room reads the replica for a path the room names, and one the room
+  // has not published reads as an empty document.
+  assert.equal(peer.text('never/published.md'), '', 'nothing has arrived');
+  assert.equal(peer.length('never/published.md'), 0);
+  assert.equal(peer.has('never/published.md'), false, 'attention is not a receipt');
+  assert.deepEqual(peer.documents(), [], 'and no document arrived for it');
+
+  // Text that does arrive is a receipt, and reads as the room's.
+  await peer.deliver(2, await content(now.peer, 1, 'never/published.md', 'arrived\n'));
+  assert.equal(peer.has('never/published.md'), true);
+  assert.equal(peer.text('never/published.md'), 'arrived\n');
+  assert.deepEqual(peer.documents(), ['never/published.md']);
 });
 
 test('a seat joining makes the held set due again, and one leaving loses its holds', async () => {

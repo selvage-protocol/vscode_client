@@ -1038,3 +1038,73 @@ test('a host reads the paths the room asks for a few at a time', async (t) => {
     `${editor.mostInFlight} reads were in flight at once`,
   );
 });
+
+/**
+ * Read-on-hold, through two adapters: a guest opens a path the host's own window never opens,
+ * and the host has to read its working copy because the guest asked. The hold is the ask, the
+ * room's open-document set is how the host hears it, and the host's copy is what the guest is
+ * given — nothing else in this suite covers a path that was only ever a name until somebody
+ * held it.
+ *
+ * The host's window reads the replica for the path first, which is what a window that draws the
+ * room's documents does, and what the browser client's own proof caught: reading a room path's
+ * text used to give the replica a document for it, so a host that had merely looked read its own
+ * attention as the room's word and never seeded its working copy at all.
+ */
+test('a guest holding a path the host has never opened is given the host’s copy of it', async (t) => {
+  const session = await fakeSession();
+  const disk = 'the host’s own copy of it\n';
+  const hostEditor = new FakeEditor();
+  hostEditor.disk.set(OTHER, disk);
+  const hostBridge = new SessionBridge({
+    engine: slice(session.host),
+    host: hostEditor,
+    autoSave: false,
+  });
+  hostEditor.attach(hostBridge);
+  const guestEditor = new FakeEditor();
+  const guestBridge = new SessionBridge({
+    engine: slice(session.guest),
+    host: guestEditor,
+    autoSave: false,
+  });
+  guestEditor.attach(guestBridge);
+  t.after(async () => {
+    hostBridge.dispose();
+    guestBridge.dispose();
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+
+  // The room has published nothing for the path, so a window drawing it reads an empty
+  // document: that is attention, and not the room's receipt.
+  assert.equal(session.host.text(OTHER), '', 'the room has published nothing for the path');
+  assert.equal(session.host.has(OTHER), false, 'reading a path is not the room publishing it');
+
+  // The guest's adapter opens the path; the hold it takes is what asks the host for the text.
+  guestEditor.open(OTHER, '');
+  guestBridge.documentOpened(OTHER);
+
+  await waitFor('the host to read its working copy', () =>
+    hostEditor.reads.includes(OTHER) ? true : false,
+    { describe: () => ({ reads: [...hostEditor.reads] }) },
+  );
+  await waitFor(
+    'the guest to be given the host’s copy',
+    () => (session.guest.text(OTHER) === disk ? true : false),
+    {
+      describe: () => ({
+        host: session.host.text(OTHER),
+        guest: session.guest.text(OTHER),
+        documents: session.guest.documents(),
+      }),
+    },
+  );
+  // And the adapter puts it in front of the guest, over the empty placeholder the mirror filled.
+  await waitFor(
+    'the guest’s buffer to hold it',
+    () => (guestEditor.text(OTHER) === disk ? true : false),
+    { describe: () => guestEditor.text(OTHER) },
+  );
+});
