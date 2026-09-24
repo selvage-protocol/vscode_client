@@ -98,12 +98,6 @@ export interface PeerOptions {
   invite: string;
   path: string;
   name: string;
-  /**
-   * Makes the wire version explicit. The link is still what decides it: `--version 2` on a
-   * link with no fragment, and `--version 1` on a link that carries one, are refused before a
-   * socket is opened rather than overriding the reading.
-   */
-  version?: 1 | 2;
 }
 
 interface Waiter {
@@ -150,9 +144,6 @@ export class RustPeer {
       '--name',
       options.name,
     ];
-    if (options.version !== undefined) {
-      args.push('--version', String(options.version));
-    }
     const child = spawn(interopPeerBinary(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });

@@ -12,10 +12,7 @@ import * as vscode from 'vscode';
 import { MAX_GRANT_PATH_BYTES, PeerEngine, SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
 import type { Engine, FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
 import {
-  SelvageEngine,
   code as errCode,
-  fetchMeta,
-  hostVersion,
   isProtocolError,
   parseSessionUrl,
   sessionBase,
@@ -23,14 +20,11 @@ import {
 } from '../engine/index.ts';
 import type {
   EngineEventListener,
-  HostDecision,
-  Meta,
   OffsetSelection,
   PeerInfo,
   Role,
   Selection,
   SessionInfo,
-  WireVersion,
 } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
@@ -318,15 +312,9 @@ interface Participant {
   /** The document the peer says it is in, when this client knows of one. */
   path?: string;
 }
-/** The two versions this adapter can host a room at, spelled as the wire spells them. */
-const WIRE_VERSION_1 = 'selvage/1';
-const WIRE_VERSION_2 = 'selvage/2';
-
 /**
- * What a session drives, whichever version is seated: the bridge's own slice, plus the room
- * facts an adapter reads and the four things it hands in. `SelvageEngine` is the version-1
- * one and {@link roomEngine2} wraps the version-2 `PeerEngine` into the same shape, which is
- * what lets {@link Session} hold either without asking which room it is in.
+ * What a session drives: the bridge's own slice, plus the room facts an adapter reads and
+ * the four things it hands in. {@link roomEngine} wraps the `PeerEngine` into this shape.
  */
 export interface RoomEngine extends Engine {
   session(): SessionInfo;
@@ -339,9 +327,8 @@ export interface RoomEngine extends Engine {
   /** The invite this connection can hand on, or `undefined` when it holds no token. */
   inviteUrl(): string | undefined;
   /**
-   * The role the applied state gives this connection's own key, or `undefined` before one does.
-   * A version-2 connection has no role until a state commits its key (`§13.4`); the version-1
-   * engine knows its role at the handshake and does not implement this.
+   * The role the applied state gives this connection's own key, or `undefined` before one does:
+   * a connection has no role until a state commits its key (`§13.4`).
    */
   appliedRole?(): Role | undefined;
   rename(displayName: string): Promise<void>;
@@ -351,7 +338,7 @@ export interface RoomEngine extends Engine {
 }
 
 /**
- * The listing a version-2 host shares (`§7.1`), as the folder walk sees it.
+ * The listing a host shares (`§7.1`), as the folder walk sees it.
  *
  * A state is sealed from this rather than the server holding one, so a host has one place to
  * read its working tree and one to say it changed — the same shape the Neovim companion's
@@ -374,14 +361,14 @@ function listingSource(paths: readonly string[] = []): ListingSource {
 }
 
 /**
- * The version-2 engine in the shape {@link Session} drives.
+ * The engine in the shape {@link Session} drives.
  *
  * Three of the facts are the relay's own reading rather than the session's, and are read here
  * the way the page's own wrapper reads them: the seats come from the handshake with the roles
  * the applied state gives them, the room's documents are the paths somebody holds (`§13.7`),
  * and the connection's invite is the wire URL with `§5.1`'s fragment on it.
  */
-function roomEngine2(engine: PeerEngine): RoomEngine {
+function roomEngine(engine: PeerEngine): RoomEngine {
   return {
     session: () => engine.session(),
     text: (path: string) => engine.text(path),
@@ -436,7 +423,7 @@ function mintHostSeed(): Uint8Array {
  * The listing is sealed into the room's first state, so it is read before the mint rather than
  * after: a host that minted first would put an empty tree in front of its first guest.
  */
-async function hostVersion2(options: {
+async function hostRoom(options: {
   baseUrl: string;
   displayName: string;
   listing: ListingSource;
@@ -445,7 +432,7 @@ async function hostVersion2(options: {
   // No `store`: the key and its `issued` series are this session's, and a run that cannot be
   // resumed has nothing to write them down for. The engine's `HostStore` is the seam a resume
   // hands one to.
-  return roomEngine2(
+  return roomEngine(
     await PeerEngine.host({
       baseUrl: options.baseUrl,
       displayName: options.displayName,
@@ -463,12 +450,12 @@ async function hostVersion2(options: {
  * else, and the engine strips the fragment before it builds the socket URL, so nothing this
  * adapter passes on the wire carries a `#`.
  */
-async function joinVersion2(options: {
+async function joinRoom(options: {
   invite: string;
   displayName: string;
   client?: string;
 }): Promise<RoomEngine> {
-  return roomEngine2(
+  return roomEngine(
     await PeerEngine.join({
       invite: options.invite,
       displayName: options.displayName,
@@ -617,19 +604,13 @@ export class Session {
    * host has none — its invite is built from the wire address it minted.
    */
   private readonly joinedWith: string | undefined;
-  /** The version this session speaks (§5.1): the two endings below read it. */
-  private readonly version: WireVersion;
   /** The room events the follow and the pending go-to re-resolve on. */
   private readonly stopEngine: () => void;
 
   constructor(
     engine: RoomEngine,
-    options: { mirror?: Mirror; invite?: string; listing?: readonly string[]; version?: WireVersion } = {},
+    options: { mirror?: Mirror; invite?: string; listing?: readonly string[] } = {},
   ) {
-    // The wire version this window speaks, which the two endings below read: a `selvage/2`
-    // guest's bounded retry (or its give-up) is not a `selvage/1` drop, and a `selvage/2` host
-    // has no resume where a `selvage/1` host does.
-    this.version = options.version ?? WIRE_VERSION_1;
     // A viewer is a peer: `§13.9` puts its documents where a guest's are — under the mirror —
     // and the role is the room state's to give, so this is read as "not the host" rather than
     // as "a guest".
@@ -644,7 +625,7 @@ export class Session {
     this.granted = engine.grantedPaths();
     this.listedNow = new Set(this.granted);
     this.autoOpen = peer;
-    // A `selvage/2` host minted with the folder already read, so the room's first state seals
+    // A host minted with the folder already read, so the room's first state seals
     // that listing and the tree is in front of the first guest. Publishing the same one again
     // would move the room's edition for nothing, so it counts as the listing this session has
     // already established and the first walk finds nothing new to say.
@@ -752,7 +733,7 @@ export class Session {
           break;
       }
     });
-    // A `selvage/2` guest's role is the room state's word and usually arrives after the join, on
+    // A guest's role is the room state's word and usually arrives after the join, on
     // the `peersChanged` an applied state produces; this covers the case where it was already
     // applied by the time the window is seated.
     this.sayViewerOnce();
@@ -787,12 +768,11 @@ export class Session {
 
   /**
    * Whether this window is still waiting for the state that decides its role (`§13.3`). A
-   * version-2 connection has no role until a state commits its key, and `role()` reads that
-   * window as `guest`: an editor can be typed into and a bar says it may edit, when neither is
-   * known yet. A version-1 connection knows its role at the handshake and never waits.
+   * connection has no role until a state commits its key, and `role()` reads that window as
+   * `guest`: an editor can be typed into and a bar says it may edit, when neither is known yet.
    */
   private waitingForRole(): boolean {
-    return this.version === WIRE_VERSION_2 && this.engine.appliedRole?.() === undefined;
+    return this.engine.appliedRole?.() === undefined;
   }
 
   /**
@@ -2353,12 +2333,11 @@ export class Session {
         break;
       }
       case 'disconnected': {
-        // A `selvage/2` guest reaches this only when §9.1's bounded retry gave up, and the
-        // mirror is then the only copy of what it wrote, so it stays — the treatment a room that
-        // closed under it already gets. A `selvage/2` host has no resume on this wire (no host
-        // store), so its drop ends the session and says that rather than a retry that will not
-        // happen. A `selvage/1` session keeps the behaviour its engine always had.
-        if (this.version === WIRE_VERSION_2 && this.mirror !== undefined) {
+        // A guest reaches this only when §9.1's bounded retry gave up, and the mirror is then
+        // the only copy of what it wrote, so it stays — the treatment a room that closed under
+        // it already gets. A host has no resume (no host store), so its drop ends the session
+        // and says that rather than a retry that will not happen.
+        if (this.mirror !== undefined) {
           void vscode.window.showWarningMessage(
             'Selvage: the connection ended and the session is over; it could not be re-established.',
           );
@@ -2366,9 +2345,7 @@ export class Session {
           break;
         }
         void vscode.window.showWarningMessage(
-          this.version === WIRE_VERSION_2
-            ? 'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.'
-            : 'Selvage: the connection ended and the session is over; it could not be re-established.',
+          'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
         );
         this.dispose();
         break;
@@ -2523,12 +2500,10 @@ function connectRefusal(error: unknown, check: string): string {
       // The server's own text for this code is "the room is gone" (`session.rs`), so a
       // parenthetical would only say the sentence twice.
       return 'That room is gone.';
-    case errCode.unsupportedVersion:
-      return `This client and that server speak different versions (${error.message}).`;
     case errCode.helloRequired:
       // The handshake did not finish, and this code covers both ways that happens: the
       // server refused a first frame that was not `session.hello` (`session.rs`), and the
-      // engine's own deadline passed with nothing answering (`engine.ts`). Neither leaves a
+      // relay's own deadline passed with nothing answering. Neither leaves a
       // session, and the window says the one thing true of both.
       return `No server answered — ${check}`;
     default:
@@ -2640,15 +2615,6 @@ async function host(
   if (displayName === undefined) {
     return;
   }
-  // A room is minted at the version the server seats (`PROTOCOL.md` §2): an unpinned window mints
-  // `selvage/2` wherever the server offers it, refuses locally rather than falling back where it
-  // does not, and mints `selvage/1` only when `selvage.wireVersion` pins it there. A join is not
-  // this choice — it speaks the version its invite names, whatever this says.
-  const version = await hostingVersion(baseUrl);
-  if (version === undefined) {
-    return;
-  }
-  const version2 = version === WIRE_VERSION_2;
   let engine: RoomEngine;
   let minted: readonly string[] | undefined;
   try {
@@ -2656,30 +2622,26 @@ async function host(
     // yet — so it is said while it happens, the way the reconnect path says its own. The
     // argument is read before this, so the progress wrapper cannot capture it.
     //
-    // `§7.1` seals a version-2 room's first state from the listing, so the folder is walked
+    // `§7.1` seals the room's first state from the listing, so the folder is walked
     // before the mint rather than after: a host that minted first would put an empty tree in
     // front of its first guest, and a room that grants nothing is a different room from one
     // whose listing is late. A walk that fails is not a reason to refuse the room — the
     // session's own watcher reports the folder it cannot read — and the room simply starts
     // with the empty listing it would have had.
-    if (version2) {
-      minted = await walkSharedFolders();
-    }
-    const listing = version2 ? listingSource(minted ?? []) : undefined;
+    minted = await walkSharedFolders();
+    const listing = listingSource(minted);
     engine = await vscode.window.withProgress<RoomEngine>(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${baseUrl}…`,
       },
       () =>
-        version2 && listing !== undefined
-          ? hostVersion2({
-              baseUrl,
-              displayName,
-              listing,
-              client: CLIENT,
-            })
-          : SelvageEngine.host(baseUrl, displayName, { client: CLIENT }),
+        hostRoom({
+          baseUrl,
+          displayName,
+          listing,
+          client: CLIENT,
+        }),
     );
   } catch (error) {
     const why = connectRefusal(
@@ -2700,8 +2662,7 @@ async function host(
     return;
   }
   current = new Session(engine, {
-    ...(minted === undefined ? {} : { listing: minted }),
-    version: version2 ? WIRE_VERSION_2 : WIRE_VERSION_1,
+    listing: minted,
   });
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
@@ -2862,16 +2823,13 @@ async function joinGuestRoom(options: {
   if (deactivated) {
     return;
   }
-  // The fragment is read off the link before anything else is, because it is what says which
-  // version this join speaks: `§5.1`'s room key and host key travel there and nowhere else, and
-  // a client that cannot read them cannot join a version-2 room at all. The wire URL the
-  // version-1 engine is handed has none — a fragment left on it would glue into the token — and
-  // the version-2 one is handed the whole link, which reads its keys and never puts them in a
-  // request.
+  // The fragment is read off the link before anything else is: `§5.1`'s room key and host key
+  // travel there and nowhere else, and a client that cannot read them cannot join the room at
+  // all. The wire URL is built from the link's server, and the fragment is put back on it here
+  // so the one link the engine reads carries both.
   const fragment = fragmentOf(options.invite);
   const wire = wireInviteFor(options.invite);
   const invite = `${wire}${fragment}`;
-  const version2 = wireVersionOf(invite) === WIRE_VERSION_2;
   const base = sessionAddress(wire);
   const room = parseSessionUrl(wire)?.join.room ?? 'room';
   let mirror = options.resume;
@@ -2950,10 +2908,7 @@ async function joinGuestRoom(options: {
         location: vscode.ProgressLocation.Notification,
         title: `Selvage: connecting to ${base}…`,
       },
-      () =>
-        version2
-          ? joinVersion2({ invite, displayName: options.displayName, client: CLIENT })
-          : SelvageEngine.join(wire, options.displayName, { client: CLIENT }),
+      () => joinRoom({ invite, displayName: options.displayName, client: CLIENT }),
     );
   } catch (error) {
     // A failed join leaves no room-shaped window behind: the folder goes, and the
@@ -2970,7 +2925,6 @@ async function joinGuestRoom(options: {
   const session = new Session(engine, {
     mirror: live,
     invite: options.invite,
-    version: version2 ? WIRE_VERSION_2 : WIRE_VERSION_1,
   });
   if (deactivated) {
     // The window went away while the join was in flight. The seat is nobody's: it is given
@@ -2982,7 +2936,11 @@ async function joinGuestRoom(options: {
   current = session;
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
-  const landing = joinedMessage(engine.documents());
+  await roomSettled(engine);
+  // The room's listing is the sealed wire's own statement of what it holds, and it is what
+  // `openFromRoom` lands on; the holds follow it and are unioned in, so a room that grants
+  // nothing still names what somebody has open.
+  const landing = joinedMessage(grantUnion(engine.grantedPaths(), engine.documents()));
   const answer = await vscode.window.showInformationMessage(landing.message, ...landing.buttons);
   if (answer !== undefined && landing.buttons.includes(answer)) {
     await openDocument();
@@ -3071,11 +3029,10 @@ async function triageMirrors(
  */
 function inviteLinkRefusal(value: string): string | undefined {
   const invite = value.trim();
-  // `§5.1`'s fragment is checked before either form is read, because it is what says which
-  // version the join speaks: a fragment that names one of the two keys and not the other is a
-  // version-2 invite with a key lost, and it is refused here — before the name question, before
-  // the window reloads onto a room mirror, and before any socket — in the version-2 reader's own
-  // words, rather than dialled as a version-1 join.
+  // `§5.1`'s fragment is checked before either form is read: a fragment that names one of the
+  // two keys and not the other is an invite with a key lost, and it is refused here — before the
+  // name question, before the window reloads onto a room mirror, and before any socket — in the
+  // reader's own words.
   const fragment = fragmentKeyRefusal(invite);
   if (fragment !== undefined) {
     return fragment;
@@ -3294,25 +3251,8 @@ function fragmentFor(keys: { roomKey?: string; hostKey?: string }): string {
 }
 
 /**
- * The version an invite asks for, from the one thing that says it: `§5.1`'s fragment, which
- * carries the room key and the host key.
- *
- * A `selvage/1` invite has no fragment of ours, and a server seats a version-2 room only for a
- * connection that can read one, so a link whose fragment names neither key is a version-1 join
- * and stays one. A fragment that names either key — even one that names only one, or names one
- * with an empty value — is a version-2 invite: it is a version-2 host's fragment, and it is the
- * version-2 reader (`parseInvite`) that refuses an incomplete one **locally, before a socket**,
- * in its own words. Reading only the name here is what routes such a link to that refusal
- * rather than dialling it as a version-1 join.
- */
-export function wireVersionOf(invite: string): WireVersion {
-  const { roomKey, hostKey } = fragmentKeys(fragmentOf(invite));
-  return roomKey !== undefined || hostKey !== undefined ? WIRE_VERSION_2 : WIRE_VERSION_1;
-}
-
-/**
  * The missing key a fragment that names one of `§5.1`'s two keys is refused with, or `undefined`
- * when the fragment is absent or names neither. The words are the version-2 reader's own
+ * when the fragment is absent or names neither. The words are the reader's own
  * (``parseInvite` in `src/engine/peer.ts`), so a person told what is missing pastes the same fix
  * the engine would have asked for. An empty value counts as missing: `§5.1` has a key be 32
  * bytes, so nothing encodes an empty one.
@@ -3329,70 +3269,6 @@ export function fragmentKeyRefusal(invite: string): string | undefined {
     return 'the invite carries no host key (`h`)';
   }
   return undefined;
-}
-
-/**
- * The version the setting pins this window to, from `selvage.wireVersion`, or `undefined` when it
- * pins nothing.
- *
- * A pin is deliberate, and it is a host's own choice of which version to host: `selvage/1` is the
- * deliberate way to host a room the server can read, and `selvage/2` asks for the encrypted one,
- * honoured where `/meta` seats it and refused where `/meta` answered without it. Unset — the
- * declared default — is not a pin: the window takes the server's word. Neither is anything no
- * version grammar accepts: only the two spellings pin it, and the numbers a person types by
- * habit are read as them. A guest is unaffected either way — a join speaks the version its
- * invite names.
- */
-export function pinnedVersion(configured: unknown): WireVersion | undefined {
-  if (configured === 2 || configured === '2' || configured === WIRE_VERSION_2) {
-    return WIRE_VERSION_2;
-  }
-  if (configured === 1 || configured === '1' || configured === WIRE_VERSION_1) {
-    return WIRE_VERSION_1;
-  }
-  return undefined;
-}
-
-/**
- * The wire version this window hosts a room at, from the server's `/meta` and the setting's pin.
- *
- * `/meta` is read best effort: a body that could not be read decides nothing, and the handshake
- * reports the truth. The choice is the engine's (`hostVersion`), so every client answers this the
- * same way. `undefined` is a refusal — the sentence for it is shown here, and no socket is opened
- * for one.
- */
-async function hostingVersion(baseUrl: string): Promise<WireVersion | undefined> {
-  const pin = pinnedVersion(config().get<unknown>('wireVersion'));
-  let meta: Meta | undefined;
-  try {
-    meta = await fetchMeta(baseUrl);
-  } catch {
-    // Unreachable, not JSON, or no fetch at all: not an answer about versions.
-    meta = undefined;
-  }
-  const decided = hostVersion(meta, pin);
-  if (decided.outcome === 'mint') {
-    return decided.version;
-  }
-  void vscode.window.showWarningMessage(hostVersionRefusal(baseUrl, decided));
-  return undefined;
-}
-
-/**
- * What a local refusal says: the server it names, the version it does not seat, and what that
- * server seats instead. The versions are `/meta`'s own words, so the sentence reports what the
- * server said rather than a reading of it, and nothing here names a setting: the words are the
- * ones both clients say (`test/vocabulary.test.ts`).
- */
-function hostVersionRefusal(
-  baseUrl: string,
-  refusal: Extract<HostDecision, { outcome: 'refuse' }>,
-): string {
-  const offered = refusal.offered.length === 0 ? 'nothing' : refusal.offered.join(', ');
-  if (refusal.reason === 'pin-not-seated') {
-    return `Selvage: the wire version is pinned to ${refusal.pin}, and ${baseUrl} does not seat it — its /meta offers ${offered} — so hosting there is refused rather than fallen back from.`;
-  }
-  return `Selvage: ${baseUrl} does not seat selvage/2, the encrypted wire — its /meta offers ${offered} — so a room hosted there would be one the server can read.`;
 }
 
 /** True for a value that opens with a scheme, `ws://` or `https://`, rather than a bare host. */
@@ -3422,7 +3298,7 @@ export function normaliseServerUrl(text: string): string {
 /**
  * The page link for an engine's session, or `undefined` when it holds no token.
  *
- * `§5.1`'s fragment rides along: the connection's own invite is the wire URL with the room key
+ * The fragment rides along: the connection's own invite is the wire URL with the room key
  * and the host key on it, and a page link is the same invite over the scheme a browser speaks,
  * so a host that handed on the query alone would hand on a link to a room nobody could join. The
  * fragment is read off the wire invite rather than rebuilt from the engine's keys, so what a
@@ -3447,10 +3323,8 @@ function pageInviteFor(engine: RoomEngine): string | undefined {
  * its own origin names, while a `ws://` invite — a room whose server serves no page — joins as it
  * stands.
  *
- * The fragment is stripped here, and this is the one place it is: a version-1 engine reads the
- * whole of what it is handed as a query, so a fragment left on would glue into the token. A
- * version-2 join is handed the fragment separately, by {@link joinVersion2}, which reads it and
- * never puts it in a request.
+ * The fragment is stripped here, because it is not part of the URL a socket is dialled at: the
+ * two keys travel as the fragment of the one link the engine reads, and never in a request.
  */
 export function wireInviteFor(invite: string): string {
   const hash = invite.indexOf('#');
@@ -3490,6 +3364,42 @@ interface Notice {
 
 function messageWithButton(message: string, button?: string): Notice {
   return { message, buttons: button === undefined ? [] : [button] };
+}
+
+/**
+ * The room's own statement of the documents it holds, waited for briefly before the landing names
+ * them.
+ *
+ * §13.1 puts the listing and the holds in the first state that commits this connection's key,
+ * which arrives just after the handshake: a landing composed from the handshake alone would tell a
+ * guest that a room with documents in it has none. A room that holds nothing reports nothing, so
+ * the bound is what keeps an empty room from holding the notice back rather than a deadline the
+ * wait hopes to beat.
+ */
+async function roomSettled(engine: RoomEngine, timeoutMs = 750): Promise<void> {
+  const known = (): boolean =>
+    engine.grantedPaths().length > 0 || engine.documents().length > 0;
+  if (known()) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      stop();
+      resolve();
+    };
+    const stop = engine.on((event) => {
+      if (event.type === 'documentsChanged' || event.type === 'grantChanged') {
+        finish();
+      }
+    });
+    const timer = setTimeout(finish, timeoutMs);
+  });
 }
 
 /**

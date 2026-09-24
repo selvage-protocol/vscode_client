@@ -216,15 +216,15 @@ test('every module of the editor-independent half is reachable from a test', () 
 test('the editor-independent half exports the vocabulary an adapter is written against', async () => {
   const engine = await import('../src/engine/index.ts');
   for (const name of [
-    'SelvageEngine',
+    'MAX_DISPLAY_NAME_UNITS',
+    'PeerSession',
     'ProtocolError',
-    'EngineClosedError',
     'isProtocolError',
     'caret',
     'parseSessionUrl',
-    'inviteUrl',
     'fetchMeta',
     'openSocket',
+    'seal',
     'WIRE_VERSION',
   ]) {
     assert.ok(name in engine, `the engine's public surface has no ${name}`);

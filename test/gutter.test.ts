@@ -21,13 +21,13 @@ import {
   onePerLine,
 } from '../src/adapter/gutter.ts';
 import { ANONYMOUS_INITIALS, INITIALS_LIMIT, initials, peerColour } from '../src/bridge/index.ts';
-import { SelvageEngine } from '../src/engine/index.ts';
-import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
+import { LiveSession } from './helpers/live-session.ts';
+import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 
-const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
+const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
 const PATH = 'workspace/README.md';
 const COLOUR = '#e06c75';
 
@@ -157,12 +157,17 @@ interface Decoration {
 async function room(
   t: TestContext,
   paths: string[],
-): Promise<{ server: FakeServer; host: SelvageEngine; invite: string }> {
-  const server = await FakeServer.start();
+): Promise<{ server: FakeServer; host: LiveSession; invite: string }> {
+  // The wire's clocks are the server's to advertise, and a test that waits on a hold or a
+  // caret needs them short: §13.7 renews a held set on the renewal clock, so the suite runs
+  // on a sub-second one rather than the fifteen seconds a deployed server would state.
+  const server = await FakeServer.start({
+    keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 },
+  });
   t.after(async () => {
     await server.stop();
   });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
+  const host = await LiveSession.host(server.wsBase, 'Ada', OPTIONS);
   t.after(async () => {
     await host.disconnect();
   });
@@ -213,9 +218,12 @@ async function installEditor(
   roomId: string,
   path: string,
   text: string,
-  host: { documents(): string[] },
+  host: { peerDocuments(): string[] },
 ): Promise<StubEditor> {
   const root = mirrorWindowDir(storage, roomId);
+  // The room's listing is what makes the path openable at all: a mirror file the listing does
+  // not name is not shared, so the wait is for the listing to have arrived, not for a turn.
+  await waitForMirrorFiles(storage, roomId, [path]);
   const document: StubDocument = {
     uri: bundle.stub.Uri.parse(`file://${root}/${path}`),
     eol: 1,
@@ -241,7 +249,7 @@ async function installEditor(
   // tests wait for is drawn off presence, so the hold settling first is what keeps a
   // single first frame from racing the room it names.
   await waitFor(`the room to hold ${path} open`, () =>
-    host.documents().includes(path) ? true : false,
+    host.peerDocuments().includes(path) ? true : false,
   );
   return editor;
 }
@@ -361,7 +369,7 @@ test('a peer-controlled label renders as plain text, never as a link', async (t)
   await host.rename('[Open](https://attacker.example)');
   const relabelled = await waitFor('the hostile label to be drawn', () => {
     bundle.stub.fire('visibleEditors');
-    return hoverRaws(editor).length > 0 ? true : false;
+    return hoverRaws(editor).some((hover) => JSON.stringify(hover).includes('Open')) ? true : false;
   });
   assert.ok(relabelled, 'no hover was drawn');
   const raw = hoverRaws(editor).at(-1);

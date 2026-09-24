@@ -1,10 +1,8 @@
 /**
  * Interop over the new wire: the real TypeScript engine hosts a `selvage/2` room and the real
  * Rust client joins it through the host's own invite — fragment and all — over one real
- * `selvaged` on its defaults, which seat both versions and advertise both.
+ * `selvaged` on its defaults, which seat `selvage/2`.
  *
- * `interop.test.ts` beside this one drives `selvage/1` and keeps every claim it made there: one
- * room, the same text, the same state vectors, and presence and selections in both directions.
  * Here the wire is the zero-knowledge one. The server is a payload-opaque relay; the room's
  * listing and the roles live in a state the host signs and seals; and which role a connection
  * holds is a fact the peers verify rather than a value the server asserts (`PROTOCOL.md` §7.1,
@@ -20,19 +18,16 @@
  *
  * - **Presence and awareness expiry.** The Rust side's `selvage/2` session applies no awareness
  *   and publishes none yet, so `interop_peer` answers `select` with `unsupported` and reports
- *   `presence: []` always. The caret assertions `interop.test.ts` makes have no counterpart
- *   here; that leg keeps making them.
+ *   `presence: []` always, so the caret assertions have no counterpart here.
  * - **The server-owned grant.** `selvage/2`'s server keeps membership only. The room's
  *   open-document set is §13.7's union of the live holds, which is what both sides are asked
- *   for below — a different fact from `selvage/1`'s `doc.granted`, and the only one there is.
+ *   for below, and not a server-asserted `doc.granted`.
  * - **A state vector on the engine's side.** The `selvage/2` relay exposes none, so history
- *   agreement is read from the Rust report alone. The version-1 leg still compares both.
+ *   agreement is read from the Rust report alone.
  * - **Whether a state commits a given key yet.** A seat's role is the applied state's word
  *   (§13.4), but the way that state draws a key it does not name is `guest` too, and the
  *   `interop_peer` example declares no role, so neither replica can be asked the question. The
  *   reply is what says so: `insert`'s `published` is `true` only once a state commits the key.
- *
- * None of that weakens the version-1 leg: it asserts all of it, unchanged.
  */
 
 import { test } from 'node:test';
@@ -40,8 +35,6 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
-import { SelvageEngine } from '../src/engine/engine.ts';
-import { isProtocolError } from '../src/engine/errors.ts';
 import { RustPeer, START_MS, waitForReport } from './helpers/interop_peer.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { WAIT_MS, waitFor } from './helpers/wait.ts';
@@ -75,21 +68,6 @@ async function waitForPeerOn(engine: PeerEngine, displayName: string) {
   );
 }
 
-/**
- * Runs `work` and answers the refusal it raised. A call that succeeds is the failure: this is the
- * shape every anti-downgrade assertion below takes, because the defect it guards against is a
- * connection that comes up rather than one that raises. The refusal itself and not only its
- * sentence, because `ProtocolError.code` is the half a caller branches on and the half a refusal
- * has to carry to be told apart from any other fault.
- */
-async function refusalOf(work: () => Promise<unknown>): Promise<Error> {
-  try {
-    await work();
-  } catch (error) {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-  throw new Error('the call was expected to be refused, and it succeeded');
-}
 
 test('interop over selvage/2: the engine hosts, the Rust client joins with the sealed invite, and the two converge', async (t) => {
   const server = await RealServer.start();
@@ -323,7 +301,7 @@ test('interop over selvage/2: an edit made before a committing state is held, th
   // guest's key: the room announces `peer.joined` before it relays a word of the joining
   // connection's own, so the roster state that join obliges is published without the key, and
   // §7.1's window is what folds the announcement that follows it.
-  const peer = await RustPeer.start({ invite, path: PATH, name: 'Bob', version: 2 });
+  const peer = await RustPeer.start({ invite, path: PATH, name: 'Bob' });
   t.after(async () => {
     await peer.stop();
   });
@@ -405,118 +383,5 @@ test('interop over selvage/2: an edit made before a committing state is held, th
       merged: converged.text,
       documents: host.session().documents,
     }),
-  );
-});
-
-test('interop over selvage/2: a sealed invite is refused by a server that does not seat the version', async (t) => {
-  // The one failure mode a confidentiality feature cannot have is the silent downgrade, so the
-  // negative control is the point of this file's third test: the whole link is used against a
-  // server that seats `selvage/1` only, and every path that could drop the fragment and come up
-  // as version 1 has to refuse instead.
-  const sealedServer = await RealServer.start();
-  // `selvage/1` alone, which is a server this client refuses to host on and one it cannot
-  // silently fall back to.
-  const plainServer = await RealServer.start({ serveVersion1Only: true });
-  t.after(async () => {
-    await plainServer.stop();
-    await sealedServer.stop();
-  });
-
-  const host = await PeerEngine.host({
-    baseUrl: sealedServer.wsBase,
-    displayName: 'Ada',
-    listing: { current: () => [PATH], replace: () => undefined },
-  });
-  const sealed = host.inviteUrl();
-  host.disconnect();
-  assert.ok(sealed !== undefined);
-  // The same sealed invite, addressed at the server that does not seat the version. Only the
-  // address moves: the fragment is still the whole of what names the room.
-  const misplaced = sealed.replace(sealedServer.address, plainServer.address);
-  assert.match(
-    misplaced,
-    /#k=[A-Za-z0-9_-]{43}&h=[A-Za-z0-9_-]{43}$/,
-    'the fragment survives the rewrite, so the link still names a selvage/2 room',
-  );
-
-  // The Rust client reads the fragment and the server's `/meta`, which names `selvage/1` alone,
-  // and refuses before it dials rather than seating the connection as version 1 (§2, §10: a
-  // reachable `/meta` with no version at major 2 is a local refusal). The refusal carries the
-  // code and names the version the invite needs; the sentence is the client's.
-  const rustRefusal = await refusalOf(() =>
-    RustPeer.start({ invite: misplaced, path: PATH, name: 'Bob', version: 2 }),
-  );
-  assert.match(rustRefusal.message, /unsupported_version/, rustRefusal.message);
-  assert.match(rustRefusal.message, /selvage\/2/, rustRefusal.message);
-
-  // The engine must not come up as version 1 either. It raises, and resolving is the silent
-  // downgrade this whole test exists to catch. It reads the same `/meta` and refuses the same way,
-  // before a socket: the code is `unsupported_version`, so a caller tells §11's terminal codes
-  // apart from an ordinary fault, and the sentence names the version the invite needs.
-  const engineRefusal = await refusalOf(() =>
-    PeerEngine.join({ invite: misplaced, displayName: 'Bob' }),
-  );
-  assert.ok(
-    isProtocolError(engineRefusal, 'unsupported_version'),
-    `the engine refused with ${engineRefusal.name}: ${engineRefusal.message}`,
-  );
-  assert.match(engineRefusal.message, /selvage\/2/, engineRefusal.message);
-
-  // The choice is exact in both directions, and a mismatch is an error before a socket opens.
-  const fragmentless = `ws://${plainServer.address}/session?room=r-1&token=t-1`;
-  const toldTwo = await refusalOf(() =>
-    RustPeer.start({ invite: fragmentless, path: PATH, name: 'Bob', version: 2 }),
-  );
-  assert.match(toldTwo.message, /carries no fragment/, toldTwo.message);
-  const toldOne = await refusalOf(() =>
-    RustPeer.start({ invite: sealed, path: PATH, name: 'Bob', version: 1 }),
-  );
-  assert.match(toldOne.message, /two keys/, toldOne.message);
-  // And the engine refuses a link that names no key rather than joining it as version 1. Its own
-  // sentence says so, and it is read from the link before a socket is opened: §5.1 puts the key
-  // material in the fragment, so a link without one leaves this engine nothing to dial for. The
-  // factory is armed to hold that: a refusal that dialled anyway fails here rather than passing.
-  let dialled = false;
-  const keyless = await refusalOf(() =>
-    PeerEngine.join({
-      invite: fragmentless,
-      displayName: 'Bob',
-      webSocketFactory: () => {
-        dialled = true;
-        throw new Error('the engine dialled a link whose fragment names no key');
-      },
-    }),
-  );
-  assert.match(keyless.message, /carries no fragment/, keyless.message);
-  assert.ok(!dialled, 'the fragment is read before a connection is opened');
-
-  // The positive control, so the refusals above are the fragment's doing and not a server that
-  // seats nobody: the same `selvage/1`-only server mints a version-1 room and seats the same
-  // Rust client in it, and that client's replies carry no `published` member at all because
-  // version 1 has nothing to say about it.
-  const plainHost = await SelvageEngine.host(plainServer.wsBase, 'Ada', {
-    client: 'selvage-vscode-test/0.1.0',
-  });
-  t.after(async () => {
-    await plainHost.disconnect();
-  });
-  const plainInvite = plainHost.inviteUrl();
-  assert.ok(plainInvite !== undefined);
-  assert.ok(
-    !plainInvite.includes('#'),
-    'a version-1 link carries no fragment, which is what makes the two links distinguishable',
-  );
-  const plainPeer = await RustPeer.start({ invite: plainInvite, path: PATH, name: 'Bob' });
-  t.after(async () => {
-    await plainPeer.stop();
-  });
-  const plainReport = await plainPeer.report();
-  assert.equal(plainReport.session.role, 'guest');
-  assert.equal(plainReport.session.room, plainHost.session().roomId);
-  const plainInsert = await plainPeer.insertReply(0, 'plain ');
-  assert.equal(
-    plainInsert.published,
-    undefined,
-    'selvage/1 has no step 4 and so reports nothing about publishing',
   );
 });

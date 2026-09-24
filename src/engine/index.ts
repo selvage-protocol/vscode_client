@@ -3,14 +3,7 @@
  * an editor. Import from here rather than from the individual modules.
  */
 
-export { SelvageEngine } from './engine.ts';
-export type {
-  ConnectOptions,
-  JoinOptions,
-  KeepaliveClock,
-  ReconnectPolicy,
-  SessionInfo,
-} from './engine.ts';
+export type { SessionInfo } from './session.ts';
 export type { FrameCrypto } from './crypto.ts';
 export {
   HOST_MUTATIONS,
@@ -81,20 +74,15 @@ export type {
   Selection,
 } from './presence.ts';
 export { caret } from './presence.ts';
-export { EngineClosedError, ProtocolError, isProtocolError } from './errors.ts';
+export { ProtocolError, isProtocolError } from './errors.ts';
 export {
   CLIENT_CAPABILITIES,
   DEFAULT_KEEPALIVE,
   MAX_DISPLAY_NAME_UNITS,
   WIRE_VERSION,
-  close,
-  closeCodeFor,
   code,
   event,
-  isCompatible,
   isTerminalCode,
-  method,
-  parseVersion,
 } from './envelope.ts';
 export type {
   ErrorObject,
@@ -104,10 +92,9 @@ export type {
   PeerInfo,
   Role,
 } from './envelope.ts';
-export { fetchMeta, hostVersion, joinRefusal, metaAccepts } from './meta.ts';
-export type { HostDecision, WireVersion } from './meta.ts';
+export { fetchMeta } from './meta.ts';
+export type { MetaOptions } from './meta.ts';
 export {
-  inviteUrl,
   metaUrl,
   parseSessionUrl,
   sessionBase,
@@ -121,3 +108,4 @@ export type {
   WebSocketFactory,
   WebSocketLike,
 } from './transport.ts';
+export type { ReconnectPolicy } from './reconnect.ts';

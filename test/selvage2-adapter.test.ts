@@ -26,27 +26,20 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 import { RelaySession } from '../src/engine/relay.ts';
-import { isProtocolError } from '../src/engine/errors.ts';
-import { SelvageEngine } from '../src/engine/engine.ts';
 import { baseOf } from './helpers/base.ts';
 import {
   BUNDLE,
   ROOT,
-  landStashedJoin,
   loadBundle,
   testStoragePath,
-  waitForMirrorFiles,
 } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import type { FakeServerOptions } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 
-/** The version string, spelled as the wire spells it. */
+/** The wire version, spelled as the wire spells it. */
 const V2 = 'selvage/2';
-const V1 = 'selvage/1';
-/** The setting's declared default: not a pin, so the server's `/meta` decides. */
-const AUTO = 'auto';
 
 /** The bundle's pure invite helpers, and the two surfaces the viewer case drives. */
 interface AdapterExports {
@@ -109,66 +102,15 @@ function activated(t: TestContext): { bundle: LoadedExtension; storage: string; 
   return { bundle, storage, adapter: bundle as unknown as AdapterExports };
 }
 
-/**
- * A second live window: a new module, so its session state starts empty while the first
- * window's does not. Command dispatch reaches the latest registration, so the first window's
- * commands are done being used once this one activates.
- */
-function freshActivated(t: TestContext): {
-  bundle: LoadedExtension;
-  storage: string;
-  adapter: AdapterExports;
-} {
-  const require = createRequire(import.meta.url);
-  delete require.cache[require.resolve(BUNDLE)];
-  return activated(t);
-}
 
-/** A room's page link, as a host's clipboard carries it, with the two keys of `§5.1` split out. */
-function keysOf(link: string): { room: string; token: string; roomKey?: string; hostKey?: string } {
-  const url = new URL(link);
-  const room = url.searchParams.get('room') ?? '';
-  const token = url.searchParams.get('token') ?? '';
-  const keys = new Map(
-    url.hash
-      .replace(/^#/, '')
-      .split('&')
-      .map((part) => [part.split('=')[0] ?? '', part.split('=').slice(1).join('=')]),
-  );
-  return {
-    room,
-    token,
-    ...(keys.get('k') === undefined ? {} : { roomKey: keys.get('k') as string }),
-    ...(keys.get('h') === undefined ? {} : { hostKey: keys.get('h') as string }),
-  };
-}
 
 // --- what a version is decided by ------------------------------------------------
 
-test('the version an invite asks for is the one its fragment names', () => {
-  const { wireVersionOf, fragmentOf, fragmentKeys, fragmentKeyRefusal } = adapterExports();
+test('a fragment that names one of the two keys is refused locally, by the missing name', () => {
+  const { fragmentOf, fragmentKeys, fragmentKeyRefusal } = adapterExports();
 
-  // `§5.1`: a fragment that names either key is a version-2 invite — the version-2 reader
-  // refuses an incomplete one — and a fragment that names neither, or none at all, is version 1.
-  for (const [invite, wanted] of [
-    [`ws://host/session?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
-    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`, V2],
-    ['https://host/?room=r&token=t', V1],
-    ['ws://host/session?room=r&token=t', V1],
-    ['https://host/?room=r&token=t#', V1],
-    [`https://host/?room=r&token=t#k=${'A'.repeat(43)}`, V2],
-    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}`, V2],
-    ['https://host/?room=r&token=t#debug=1', V1],
-    // A fragment that names the two keys in the other order is still a version-2 invite: what
-    // `§5.1` fixes is the names, and the order a host writes them in is its business.
-    [`https://host/?room=r&token=t#h=${'B'.repeat(43)}&k=${'A'.repeat(43)}`, V2],
-    ['', V1],
-  ] as const) {
-    assert.equal(wireVersionOf(invite), wanted, `${invite} was read as ${wireVersionOf(invite)}`);
-  }
-
-  // A fragment that names one key and not the other is refused locally, naming the missing one,
-  // in the words the version-2 reader uses — before the join ever dials it as a version-1 link.
+  // `§5.1`: a fragment that names one of the two keys and not the other is an invite with a key
+  // lost, and it is refused locally — before a socket — in the reader's own words.
   assert.equal(
     fragmentKeyRefusal(`https://host/?room=r&token=t#k=${'A'.repeat(43)}`),
     'the invite carries no host key (`h`)',
@@ -193,32 +135,17 @@ test('the version an invite asks for is the one its fragment names', () => {
   assert.deepEqual(fragmentKeys(''), {});
 });
 
-test('the setting pins a version, and anything else takes the server\u2019s word', () => {
-  const { pinnedVersion } = adapterExports();
-  // §2: a pin is deliberate, so only the two spellings a version grammar accepts pin anything —
-  // `auto` is the declared default and is not one, and neither is a value no grammar accepts.
-  for (const [configured, wanted] of [
-    [V2, V2],
-    ['2', V2],
-    [2, V2],
-    [V1, V1],
-    ['1', V1],
-    [1, V1],
-    [AUTO, undefined],
-    ['', undefined],
-    [undefined, undefined],
-    [null, undefined],
-    ['true', undefined],
-    [true, undefined],
-    ['selvage', undefined],
-    [3, undefined],
-  ] as const) {
-    assert.equal(
-      pinnedVersion(configured),
-      wanted,
-      `${String(configured)} pinned ${String(pinnedVersion(configured))}`,
-    );
-  }
+test("a host mints a room and hands its two keys on in the link's fragment", async (t) => {
+  const { server, invite } = await hosted(t);
+  // §5.1: the room key and the host key are what a joiner cannot do without, and the link a
+  // host copies is the only place they travel.
+  assert.deepEqual(server.hellos, [V2], 'the host did not mint a sealed room');
+  assert.match(
+    invite,
+    /#[k]=[A-Za-z0-9_-]{43}&h=[A-Za-z0-9_-]{43}$/,
+    `the copied link carries no fragment: ${invite}`,
+  );
+  assert.equal(new URL(invite).origin, server.httpBase);
 });
 
 test('a fragment naming one key is refused locally, naming the missing key', async (t) => {
@@ -342,16 +269,15 @@ function armedSockets(t: TestContext): string[] {
 }
 
 /**
- * A window hosting on the fake server, its `selvage.wireVersion` set the way the test names it:
- * `AUTO` is the setting's declared default and an unpinned window, `V1` and `V2` are pins.
+ * A window hosting on the fake server, with the file a case is about in its folder when it
+ * names one.
  */
 async function hosted(
   t: TestContext,
-  options: { wireVersion?: string; share?: string; server?: FakeServerOptions } = {},
+  options: { share?: string; server?: FakeServerOptions } = {},
 ): Promise<{ bundle: LoadedExtension; server: FakeServer; invite: string }> {
   const server = await serverFor(t, options.server ?? {});
   const { bundle } = activated(t);
-  bundle.stub.configure({ wireVersion: options.wireVersion ?? AUTO });
   bundle.stub.put('README.md', 'the readme\n');
   if (options.share !== undefined) {
     bundle.stub.put(PATH, options.share);
@@ -363,134 +289,9 @@ async function hosted(
   return { bundle, server, invite: await copiedInvite(bundle) };
 }
 
-/**
- * A window whose host was refused: the command run, and the sentence the refusal was said with —
- * a local refusal warns, and the handshake's own refusal is the error the mint reports, so both
- * are read here. The wait is on that sentence, so a case about a refusal cannot pass by hosting.
- */
-async function refused(
-  t: TestContext,
-  server: FakeServer,
-  wireVersion: string,
-): Promise<{ bundle: LoadedExtension; said: string }> {
-  const { bundle } = activated(t);
-  bundle.stub.configure({ wireVersion });
-  bundle.stub.put('README.md', 'the readme\n');
-  await bundle.stub.commands.executeCommand('selvage.host', {
-    serverUrl: server.wsBase,
-    displayName: 'Ada',
-  });
-  const said = await waitFor(
-    'the refusal',
-    () => bundle.stub.registered.warnings[0] ?? bundle.stub.registered.errors[0] ?? false,
-    { describe: () => [...bundle.stub.registered.warnings, ...bundle.stub.registered.errors] },
-  );
-  return { bundle, said };
-}
-
-test('an unpinned host where the server seats both mints a version-2 room', async (t) => {
-  const { server, invite } = await hosted(t);
-  // §2: a client that can speak `selvage/2` is the one that mints it, so a server advertising it
-  // moves a host onto the encrypted wire without anything being set.
-  assert.deepEqual(server.hellos, [V2], 'a server that seats both did not get an encrypted room');
-  assert.match(
-    invite,
-    /#[k]=[A-Za-z0-9_-]{43}&h=[A-Za-z0-9_-]{43}$/,
-    `the copied link carries no fragment: ${invite}`,
-  );
-  assert.equal(new URL(invite).origin, server.httpBase);
-});
-
-test('an unpinned host where the server seats only selvage/1 refuses before any socket', async (t) => {
-  const dialled = armedSockets(t);
-  const server = await serverFor(t, { serveVersion1Only: true });
-  const { bundle, said } = await refused(t, server, AUTO);
-
-  // §2: the refusal is the client's own, and it names the server and says what it does not seat.
-  assert.equal(
-    said,
-    `Selvage: ${server.wsBase} does not seat selvage/2, the encrypted wire — its /meta offers selvage/1 — so a room hosted there would be one the server can read.`,
-  );
-  assert.deepEqual(dialled, [], 'the refusal dialled the server anyway');
-  assert.equal(server.acceptedConnections, 0, 'the refusal opened a socket');
-  assert.deepEqual(server.hellos, [], 'the refusal reached a handshake');
-  assert.deepEqual(bundle.stub.registered.errors, [], 'the refusal read as a failure');
-  assert.deepEqual(
-    bundle.stub.registered.clipboardWrites,
-    [],
-    'a room that was never minted handed on an invite',
-  );
-});
-
-test('a /meta that cannot be read is not an answer: the host attempts selvage/2', async (t) => {
-  const { server } = await hosted(t, { server: { metaStatus: 404 } });
-  // §2's unreachable case is "connect anyway": an endpoint that answered nothing has not said
-  // the server refuses `selvage/2`, so the attempt is made and the handshake decides.
-  assert.deepEqual(server.hellos, [V2], 'an unreadable /meta decided the version');
-});
-
-test('a /meta that cannot be read hands the choice to the handshake, which is loud', async (t) => {
-  const server = await serverFor(t, { serveVersion1Only: true, metaStatus: 503 });
-  const { bundle, said } = await refused(t, server, AUTO);
-  // The same shape against a server that seats `selvage/1` alone: the attempt is the handshake's,
-  // and what comes back is `unsupported_version` rather than a version this client fell back to.
-  assert.match(said, /selvage\/2/);
-  assert.match(said, /different versions/);
-  assert.deepEqual(
-    bundle.stub.registered.errors,
-    [said],
-    'the refusal of the handshake was not reported as a failure',
-  );
-  assert.deepEqual(server.hellos, [V2], 'the attempt did not reach the server');
-});
-
-test('a window pinned to selvage/1 mints a version-1 room and hands on a fragment-less link', async (t) => {
-  const { server, invite } = await hosted(t, { wireVersion: V1 });
-  // The pin is the deliberate way to host a room the server can read: the version-2 path, and the
-  // fragment it would put in the link, are not taken.
-  assert.deepEqual(server.hellos, [V1], 'a pinned window did not speak selvage/1');
-  assert.equal(
-    keysOf(invite).roomKey,
-    undefined,
-    'a version-1 host handed on a fragment it cannot have',
-  );
-  assert.equal(keysOf(invite).hostKey, undefined);
-});
-
-test('a pin to selvage/2 where the server seats only selvage/1 is refused', async (t) => {
-  const dialled = armedSockets(t);
-  const server = await serverFor(t, { serveVersion1Only: true });
-  const { said } = await refused(t, server, V2);
-
-  // §10: a pinned version the server does not seat is a refusal, and never a fall back to the one
-  // it does seat.
-  assert.equal(
-    said,
-    `Selvage: the wire version is pinned to selvage/2, and ${server.wsBase} does not seat it — its /meta offers selvage/1 — so hosting there is refused rather than fallen back from.`,
-  );
-  assert.deepEqual(dialled, [], 'the refusal dialled the server anyway');
-  assert.equal(server.acceptedConnections, 0, 'the refusal opened a socket');
-});
-
-test('a host pinned at selvage/2 mints a version-2 room and hands on the keys in its fragment', async (t) => {
-  const { server, invite } = await hosted(t, { wireVersion: V2 });
-  assert.deepEqual(server.hellos, [V2], 'the setting did not reach the wire');
-  // `§5.1`: the fragment is `k` then `h`, each 32 bytes in base64url without padding, and the
-  // page link carries it — a version-2 room has no token-only way in. The link is the same
-  // room and the same token as the host's own wire invite, with the fragment on it.
-  assert.match(
-    invite,
-    /\?room=[^&]+&token=[^#]+#[k]=[A-Za-z0-9_-]{43}&h=[A-Za-z0-9_-]{43}$/,
-    `the copied link carries no fragment: ${invite}`,
-  );
-  const keys = keysOf(invite);
-  assert.ok(keys.roomKey !== undefined && keys.hostKey !== undefined);
-  assert.notEqual(keys.token, '');
-  assert.equal(new URL(invite).origin, server.httpBase);
-});
 
 test('a name set during a version-2 session is a live rename, told to the room', async (t) => {
-  const { bundle, server } = await hosted(t, { wireVersion: V2 });
+  const { bundle, server } = await hosted(t);
   await bundle.stub.commands.executeCommand('selvage.displayName', { name: 'Robert' });
   // A version is judged on each frame and not only on the handshake, so `session.rename` is
   // where a connection seated at `selvage/2` finds out: a server that seats only the hello
@@ -501,86 +302,9 @@ test('a name set during a version-2 session is a live rename, told to the room',
   assert.deepEqual(server.displayNames(), ['Robert'], 'the room did not take the new name');
 });
 
-test('the page link says the version the fragment names, for the guest as well as the host', async (t) => {
-  const { server, invite } = await hosted(t, { wireVersion: V2 });
-  const room = keysOf(invite).room;
-
-  // The guest, in its own window. The join reloads onto the room's mirror, and the listing it
-  // lands on there is the property that matters: a version-2 room's tree is sealed under the
-  // key the fragment carries, so a mirror holding it is a fragment that reached the engine.
-  const guest = freshActivated(t);
-  await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    invite,
-    displayName: 'Bob',
-  });
-  await landStashedJoin(guest.bundle, guest.storage, room, 'Bob');
-  await waitForMirrorFiles(guest.storage, room, ['README.md']);
-  assert.deepEqual(
-    server.hellos,
-    [V2, V2],
-    `the guest did not speak the version the link named: ${JSON.stringify(server.hellos)}`,
-  );
-
-  // The same room reached without the fragment is a `selvage/1` invite, and a room is pinned
-  // to the version that minted it: that hello is refused rather than seated, so nothing about
-  // a version-2 room is reachable without the fragment that names it.
-  const token = keysOf(invite).token ?? '';
-  const legacy = `http://${new URL(invite).host}/?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`;
-  assert.equal(keysOf(legacy).roomKey, undefined);
-  const { wireInviteFor } = adapterExports();
-  await assert.rejects(
-    SelvageEngine.join(wireInviteFor(legacy), 'Bob'),
-    (error: unknown) => isProtocolError(error, 'unsupported_version'),
-    'a fragment-less link to this room was seated',
-  );
-  assert.deepEqual(
-    server.hellos,
-    [V2, V2, V1],
-    `the fragment-less link did not reach the room as a version-1 hello: ${JSON.stringify(server.hellos)}`,
-  );
-});
-
-test('a fragment-less invite joins a version-1 room as a version-1 connection', async (t) => {
-  const { server, invite } = await hosted(t, { wireVersion: V1 });
-  const room = keysOf(invite).room;
-
-  const guest = freshActivated(t);
-  await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    invite,
-    displayName: 'Bob',
-  });
-  await landStashedJoin(guest.bundle, guest.storage, room, 'Bob');
-  await waitForMirrorFiles(guest.storage, room, ['README.md']);
-  assert.deepEqual(
-    server.hellos,
-    [V1, V1],
-    `a fragment-less link joined at the wrong version: ${JSON.stringify(server.hellos)}`,
-  );
-});
-
-test('a version-1 wire invite with a stray hash on it still joins its room', async (t) => {
-  const { server, invite } = await hosted(t, { wireVersion: V1 });
-  const room = keysOf(invite).room;
-  const token = keysOf(invite).token ?? '';
-  // A chat client that appends an anchor, or a paste that kept one: `§5.1` defines no fragment
-  // for a version-1 invite, and what a version-1 engine reads is the whole of what it is handed
-  // as a query — so a fragment left on would glue into the token and the join would be refused,
-  // as a token that is not the room's.
-  const wire = `${server.wsBase}/session?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}#debug=1`;
-
-  const guest = freshActivated(t);
-  await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    invite: wire,
-    displayName: 'Bob',
-  });
-  await landStashedJoin(guest.bundle, guest.storage, room, 'Bob');
-  await waitForMirrorFiles(guest.storage, room, ['README.md']);
-  assert.deepEqual(server.hellos, [V1, V1], `the stray hash cost the join its version`);
-});
-
 test('a version-2 host serves the path the room holds, as it does in a version-1 room', async (t) => {
   const seed = "the host's own copy of a file, read for a peer\n";
-  const { invite } = await hosted(t, { wireVersion: V2, share: seed });
+  const { invite } = await hosted(t, { share: seed });
   // The second peer is the engine, and it is what reads the served text back: the window is the
   // side that has to notice the hold and read its own working copy for it.
   const guest = await RelaySession.join({ invite, displayName: 'Bob' });
@@ -675,7 +399,7 @@ function viewerSession(
   t: TestContext,
   room = "the room's own text",
   eol = 1,
-  options: { version?: string; role?: string; mirror?: boolean } = {},
+  options: { role?: string; mirror?: boolean } = {},
 ): {
   bundle: LoadedExtension;
   session: { role(): string; dispose(): void };
@@ -841,7 +565,6 @@ function viewerSession(
   const session = new adapter.Session(engine, {
     ...(options.mirror === false ? {} : { mirror }),
     invite: 'https://host/?room=r-viewer&token=t',
-    version: options.version ?? 'selvage/2',
   });
   t.after(() => {
     session.dispose();
@@ -1139,11 +862,6 @@ test('a version-2 session with no mirror says its wire cannot resume a hosting s
   );
 });
 
-test('a version-1 guest keeps the drop ending it always had', (t) => {
-  const window = viewerSession(t, undefined, undefined, { version: 'selvage/1' });
-  window.fire({ type: 'disconnected' });
-  assert.equal(window.mirrorRemoved(), 1, 'a version-1 session changed what a drop takes');
-});
 
 test('a version-2 window says it is waiting for the host rather than claiming guest', (t) => {
   // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used

@@ -29,7 +29,7 @@ import type * as vscode from 'vscode';
 
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
-import { SelvageEngine } from '../src/engine/index.ts';
+import { LiveSession } from './helpers/live-session.ts';
 import { MAX_GRANT_PATHS } from '../src/bridge/index.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
 
@@ -47,7 +47,7 @@ const {
 } =
   await import('../src/adapter/mirror.ts');
 
-const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
+const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
 const ROOT = resolve(import.meta.dirname, '..');
 const CASES = join(ROOT, '.tmp', 'mirror-tests');
 
@@ -91,18 +91,18 @@ test('a listing materialises as empty files with the directories on the way', (t
 });
 
 test('a listing from a real room materialises', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
+  const host = await LiveSession.host(server.wsBase, 'Ada', OPTIONS);
   t.after(async () => {
     await host.disconnect();
   });
   await host.grant(['README.md', 'notes/guide/intro.md', 'src/main.rs']);
   const invite = host.inviteUrl();
   assert.ok(invite !== undefined, 'the host was given no invite link');
-  const guest = await SelvageEngine.join(invite, 'Bob', OPTIONS);
+  const guest = await LiveSession.join(invite, 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });

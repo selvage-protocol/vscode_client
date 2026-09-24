@@ -2,9 +2,8 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { SelvageEngine } from '../../src/engine/engine.ts';
-import type { EngineEvent } from '../../src/engine/events.ts';
-import type { OffsetSelection, Presence } from '../../src/engine/presence.ts';
+import type { EngineEvent, EngineEventListener } from '../../src/engine/events.ts';
+import type { OffsetSelection, Presence, Selection } from '../../src/engine/presence.ts';
 import type { PeerInfo } from '../../src/engine/envelope.ts';
 
 /** How long a test is willing to wait for a condition that should hold immediately. */
@@ -48,10 +47,15 @@ export async function waitFor<T>(
   }
 }
 
+/** An engine as the waits below read it: the readings a test polls, and its event stream. */
+interface Readable {
+  text(path: string): string;
+}
+
 /** Waits until both engines hold identical text for `path`, then returns it. */
 export async function converge(
-  a: SelvageEngine,
-  b: SelvageEngine,
+  a: Readable,
+  b: Readable,
   path: string,
   options: WaitOptions = {},
 ): Promise<string> {
@@ -69,32 +73,9 @@ export async function converge(
   );
 }
 
-/**
- * Waits until two engines hold the same text *and* the same history for it: text equality
- * alone is not convergence, the state vectors have to agree as well (spec §7).
- */
-export async function catchUp(
-  a: SelvageEngine,
-  b: SelvageEngine,
-  path: string,
-  options: WaitOptions = {},
-): Promise<string> {
-  const text = await converge(a, b, path, options);
-  await waitFor(
-    `the replicas to agree on history for ${path}`,
-    () => {
-      const left = JSON.stringify(a.stateVector());
-      const right = JSON.stringify(b.stateVector());
-      return left === right ? left : false;
-    },
-    { ...options, describe: () => [a.stateVector(), b.stateVector()] },
-  );
-  return text;
-}
-
 /** Waits until `engine` can see a peer with this display name. */
 export async function waitForPeer(
-  engine: SelvageEngine,
+  engine: { peers(): PeerInfo[] },
   displayName: string,
 ): Promise<PeerInfo> {
   return waitFor(`peer ${displayName} to appear`, () => {
@@ -107,7 +88,7 @@ export async function waitForPeer(
 
 /** Waits until `engine` sees awareness from a peer with this display name. */
 export async function waitForPresence(
-  engine: SelvageEngine,
+  engine: { presence(): Presence[] },
   displayName: string,
 ): Promise<Presence> {
   return waitFor(`presence from ${displayName}`, () => {
@@ -124,7 +105,10 @@ export async function waitForPresence(
  * it anchors into, and resolve on a later poll.
  */
 export async function waitForSelection(
-  engine: SelvageEngine,
+  engine: {
+    presence(): Presence[];
+    resolveSelection(path: string, selection: Selection): OffsetSelection | undefined;
+  },
   displayName: string,
   path: string,
   matches: (selection: OffsetSelection) => boolean = () => true,
@@ -163,7 +147,7 @@ export interface Recorder {
   stop(): void;
 }
 
-export function record(engine: SelvageEngine): Recorder {
+export function record(engine: { on(listener: EngineEventListener): () => void }): Recorder {
   const events: EngineEvent[] = [];
   const stop = engine.on((event) => {
     events.push(event);

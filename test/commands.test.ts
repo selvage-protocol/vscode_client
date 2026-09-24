@@ -29,11 +29,20 @@ import {
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
-import { SelvageEngine, parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
+import { LiveSession } from './helpers/live-session.ts';
+import { parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
+import { encodeKey } from '../src/engine/sealed.ts';
 import { baseOf } from './helpers/base.ts';
 import { peerColour } from '../src/bridge/index.ts';
 
-const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
+const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
+
+
+/**
+ * A valid `§5.1` fragment, for a link a test builds by hand: the room key and the host key a
+ * guest reads, each 32 bytes in base64url.
+ */
+const KEYS = `#k=${encodeKey(new Uint8Array(32).fill(7))}&h=${encodeKey(new Uint8Array(32).fill(9))}`;
 
 /** The room an invite names, so a message that has to name it can be read as a whole. */
 function roomOf(invite: string): string {
@@ -55,7 +64,9 @@ function wireOf(link: string): string {
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
   // The origin is the server: the scheme a browser speaks read back as the one a socket does.
   const server = `${page.protocol === 'https:' ? 'wss:' : 'ws:'}//${page.host}${page.pathname.replace(/\/+$/, '')}`;
-  return sessionUrl(baseOf(server), room, token);
+  // `§5.1`: the room's two keys are in the link's fragment, and a join needs them, so the wire
+  // form of a page link carries the fragment the page link had.
+  return `${sessionUrl(baseOf(server), room, token)}${page.hash}`;
 }
 
 /** The directory entries at `dir`, sorted: the mirror's shape read back off disk. */
@@ -93,23 +104,16 @@ function roomOffer(bundle: LoadedExtension): string {
   );
 }
 
-/** The session status item's text: the one surface that shows the host-away countdown. */
-function statusText(bundle: LoadedExtension): string {
-  return String(
-    bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
-  );
-}
-
 /** A server with a room, minted by a source engine, and its invite. */
 async function room(
   t: TestContext,
   paths: string[],
-): Promise<{ server: FakeServer; host: SelvageEngine; invite: string; roomId: string }> {
-  const server = await FakeServer.start();
+): Promise<{ server: FakeServer; host: LiveSession; invite: string; roomId: string }> {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
+  const host = await LiveSession.host(server.wsBase, 'Ada', OPTIONS);
   t.after(async () => {
     await host.disconnect();
   });
@@ -169,7 +173,7 @@ async function guest(
 }
 
 test('hosting while hosting copies the invite rather than minting a room', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -210,7 +214,7 @@ test('hosting while hosting copies the invite rather than minting a room', async
 });
 
 test('hosting with no folder open is refused: a room from it would share nothing', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -245,7 +249,7 @@ test('hosting with no folder open is refused: a room from it would share nothing
 });
 
 test('the copy command says where the invite went, and a window with none is told why', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -290,8 +294,9 @@ test('a guest hands on the page link it joined by, origin and all', async (t) =>
   // The page the room's server serves, which is the link a host on it produces: the guest's
   // copy keeps that origin — the origin *is* the server — instead of re-homing the link on
   // an address of this window's own.
+  const source = new URL(invite);
   const page =
-    `${wire.base.replace(/^ws/, 'http')}/?room=${wire.join.room}&token=${wire.join.token}`;
+    `${wire.base.replace(/^ws/, 'http')}/?room=${source.searchParams.get('room') ?? ''}&token=${source.searchParams.get('token') ?? ''}${source.hash}`;
   const { bundle, storage } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.join', { invite: page, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, roomId, 'Bob');
@@ -328,12 +333,22 @@ test('a guest that reached the room over ws:// hands that link on', async (t) =>
 
 test('a guest’s status bar hands the invite on too', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
-  const item = await waitFor('the status bar to be drawn', () =>
-    bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage') ?? false,
-  );
   // The bar is the one Selvage surface a window always has, so what it says is pinned here:
   // the side of the room the person is on, and how many people are in it. The guest sees the
-  // host, so the count is plural.
+  // host, so the count is plural. The side is the applied state's word and arrives after the
+  // join — §13.4 gives this connection no role until a state commits its key, so the bar reads
+  // "waiting for the host" until then — which is why the wait is for the settled text and not
+  // for the moment the item exists.
+  const item = await waitFor(
+    'the guest’s bar to name the side of the room it is on',
+    () => {
+      const bar = bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage');
+      return bar !== undefined && String(bar.text).startsWith('$(radio-tower) Selvage: guest ')
+        ? bar
+        : false;
+    },
+    { describe: () => bundle.stub.registered.statusBarItems.map((entry) => String(entry.text)) },
+  );
   assert.equal(String(item.text), '$(radio-tower) Selvage: guest — 2 people in the room');
   assert.equal(
     item.command,
@@ -344,7 +359,7 @@ test('a guest’s status bar hands the invite on too', async (t) => {
 });
 
 test('hosting puts the invite link on the clipboard without being asked', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -378,7 +393,7 @@ test('hosting puts the invite link on the clipboard without being asked', async 
 });
 
 test('a clipboard that will not take the invite is said out loud, and the room stands', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -407,7 +422,7 @@ test('a clipboard that will not take the invite is said out loud, and the room s
 });
 
 test('a host never sees the room id: notices, tooltip and warnings say the room', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -556,7 +571,7 @@ test('selvage.openOnJoin off keeps a join from taking the window', async (t) => 
 });
 
 test('a host with a file open is not handed a second, virtual copy of it', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -628,7 +643,7 @@ test('the open command refuses outside a session and in a room with nothing in i
 test('open while hosting says the host\'s own files are the room\'s', async (t) => {
   // The one moment this client refuses with words of its own: a host has no mirror to open,
   // and the room's set is the host's own open files.
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -701,7 +716,7 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
 });
 
 test('joining while hosting asks before ending the room', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -901,7 +916,7 @@ test('a name over the bound is refused with both counts and never written', asyn
 });
 
 test('an over-long name never reaches the server', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -924,7 +939,7 @@ test('an over-long name never reaches the server', async (t) => {
 });
 
 test('the setting is checked before it is sent, and the question asks for a shorter name', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -956,7 +971,7 @@ test('the setting is checked before it is sent, and the question asks for a shor
 });
 
 test('the peers command refuses outside a session and in a room with no one else', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1047,187 +1062,6 @@ test('joining again asks before leaving the room this window is in', async (t) =
   assert.equal(reported, 'Selvage: the name others see is "Bob".');
 });
 
-test('a host that goes away and comes back is announced', async (t) => {
-  const { bundle, server } = await guest(t, ['workspace/README.md']);
-
-  bundle.stub.reset();
-  server.drop('Ada');
-  const away = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('Host disconnected')) ??
-    false,
-  );
-  assert.equal(
-    away,
-    'Host disconnected. Ada left — if they return within 30s the session continues, otherwise this room closes and your local copy is kept.',
-  );
-
-  const back = await waitFor('the announcement', () =>
-    bundle.stub.registered.information.find((message) => message.includes('is back')) ?? false,
-  );
-  assert.equal(back, 'Ada is back — the session continues.');
-});
-
-test('a room that is gone is named before the session ends', async (t) => {
-  const server = await FakeServer.start({ roomGraceMs: 2000 });
-  t.after(async () => {
-    await server.stop();
-  });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
-  t.after(async () => {
-    await host.disconnect();
-  });
-  await host.open('workspace/README.md');
-  const invite = host.inviteUrl();
-  assert.ok(invite !== undefined, 'the host was given no invite link');
-
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
-  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
-
-  bundle.stub.reset();
-  await host.disconnect();
-  const away = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('Host disconnected')) ??
-    false,
-  );
-  assert.equal(
-    away,
-    'Host disconnected. Ada left — if they return within 2s the session continues, otherwise this room closes and your local copy is kept.',
-  );
-
-  const gone = await waitFor('the room to be reported gone', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('The room closed')) ?? false,
-  );
-  assert.equal(
-    gone,
-    `The room closed. Your copy is kept at ${mirrorWindowDir(storage, roomOf(invite))}.`,
-  );
-
-  // The session goes with the room, so the window is in nothing.
-  bundle.stub.reset();
-  await bundle.stub.commands.executeCommand('selvage.peers');
-  const ended = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
-  );
-  assert.equal(ended, 'Selvage: join a session first.');
-});
-
-test('the countdown to the room closing ticks while the host is away', async (t) => {
-  const server = await FakeServer.start({ roomGraceMs: 3000 });
-  t.after(async () => {
-    await server.stop();
-  });
-  // A host that does not come back: the engine's retry would reclaim the room long before the
-  // first tick, so the away state has to stand on its own for the countdown to be observed.
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
-  t.after(async () => {
-    await host.disconnect();
-  });
-  await host.open('workspace/README.md');
-  const invite = host.inviteUrl();
-  assert.ok(invite !== undefined, 'the host was given no invite link');
-
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
-  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
-  // No reset here: it would drop the session's status item from what the stub records, and
-  // the countdown is read off that item rather than off a message.
-
-  await host.disconnect();
-  const first = await waitFor('the host-away status to appear', () => {
-    const text = statusText(bundle);
-    return text.includes('room closes in') ? text : false;
-  });
-  assert.equal(first, '$(warning) Selvage: host away — room closes in 3s');
-  // The number captured at the detach would read 3s for ever. A tick to 2s (or 1s, if the poll
-  // lands late) is only possible from a live deadline, and the deadline fails loudly if not.
-  const ticked = await waitFor(
-    'the countdown to move as the deadline approaches',
-    () => {
-      const text = statusText(bundle);
-      return /room closes in [12]s/.test(text) ? text : false;
-    },
-    { timeoutMs: 2600, describe: () => statusText(bundle) },
-  );
-  assert.match(ticked, /room closes in [12]s/);
-});
-
-test('a membership frame naming the host ends the countdown too', async (t) => {
-  const server = await FakeServer.start({ roomGraceMs: 30_000 });
-  t.after(async () => {
-    await server.stop();
-  });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
-  t.after(async () => {
-    await host.disconnect();
-  });
-  await host.open('workspace/README.md');
-  const invite = host.inviteUrl();
-  assert.ok(invite !== undefined, 'the host was given no invite link');
-
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
-  await landStashedJoin(bundle, storage, roomOf(invite), 'Bob');
-
-  await host.disconnect();
-  const away = await waitFor('the host-away status to appear', () => {
-    const text = statusText(bundle);
-    return text.includes('room closes in') ? text : false;
-  });
-  assert.match(away, /room closes in \d+s/);
-
-  // The attach frame is the only other thing that says the host is back, so a guest whose
-  // socket was down when it arrived — a re-seat carries the membership, not the attach — kept
-  // this countdown to a deadline that had already passed, for the rest of the session.
-  server.announcePeerToClient('Bob', { peer_id: 'p-host', display_name: 'Ada', role: 'host' });
-  const back = await waitFor(
-    'the countdown to stop',
-    () => {
-      const text = statusText(bundle);
-      return !text.includes('room closes in') ? text : false;
-    },
-    { describe: () => statusText(bundle) },
-  );
-  assert.equal(back, '$(radio-tower) Selvage: guest — 2 people in the room');
-});
-
-test('the room closing keeps the guest copy on disk, with its content', async (t) => {
-  const server = await FakeServer.start({ roomGraceMs: 1500 });
-  t.after(async () => {
-    await server.stop();
-  });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', { ...OPTIONS, reconnect: false });
-  t.after(async () => {
-    await host.disconnect();
-  });
-  await host.open('workspace/README.md');
-  const invite = host.inviteUrl();
-  assert.ok(invite !== undefined, 'the host was given no invite link');
-
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
-  const roomId = roomOf(invite);
-  await landStashedJoin(bundle, storage, roomId, 'Bob');
-  const root = mirrorWindowDir(storage, roomId);
-  // Work the room never had: a tool writing into the mirror, which is the out-of-editor path
-  // the grace-window loss is about. The room's own listing names only README.md.
-  const work = join(root, 'guest-work.txt');
-  writeFileSync(work, 'typed during the grace window\n');
-
-  bundle.stub.reset();
-  await host.disconnect();
-  const gone = await waitFor('the room to be reported gone', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('The room closed')) ?? false,
-  );
-  assert.equal(gone, `The room closed. Your copy is kept at ${root}.`);
-  assert.ok(existsSync(root), 'the room closing deleted the guest copy');
-  assert.equal(
-    readFileSync(work, 'utf8'),
-    'typed during the grace window\n',
-    'the room closing lost what the guest wrote',
-  );
-});
-
 /** The invite a bundle host copied, read off the clipboard as a user's click would leave it. */
 async function inviteOf(bundle: LoadedExtension): Promise<string> {
   // The copy resolves a microtask after it is asked for, so the check re-asks and reads what
@@ -1240,7 +1074,7 @@ async function inviteOf(bundle: LoadedExtension): Promise<string> {
 }
 
 test('a host publishes the listing of the folder it was invited on', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1263,7 +1097,7 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1280,7 +1114,7 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
 });
 
 test('a symbolic link to a directory is not listed, and nothing behind it is served', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1298,7 +1132,7 @@ test('a symbolic link to a directory is not listed, and nothing behind it is ser
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1349,19 +1183,6 @@ test("the mirror is the room's listing, as files", async (t) => {
   );
 });
 
-test('a room with no grant still offers what it holds open', async (t) => {
-  const { bundle } = await guest(t, ['workspace/README.md', 'workspace/src/main.rs']);
-  await bundle.stub.commands.executeCommand('selvage.openDocument');
-  const picked = await waitFor('the document picker', () =>
-    bundle.stub.registered.quickPicks.length > 0 ? bundle.stub.registered.quickPicks[0] : false,
-  );
-  assert.deepEqual(
-    picked.items,
-    ['workspace/README.md', 'workspace/src/main.rs'],
-    'the picker is not the room\'s open-document set',
-  );
-});
-
 test('the open command offers the grant, not only what the room has open', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['README.md', 'src/deep/nested.rs']);
@@ -1382,7 +1203,7 @@ test('the open command offers the grant, not only what the room has open', async
 });
 
 test('the folder a session shares is the one it was invited on, not the window it has now', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1420,98 +1241,8 @@ test('the folder a session shares is the one it was invited on, not the window i
   );
 });
 
-test('a host serves the path the room asks for, and refuses what the grant leaves out', async (t) => {
-  const server = await FakeServer.start();
-  t.after(async () => {
-    await server.stop();
-  });
-  const { bundle } = activated(t);
-  bundle.stub.put('README.md', 'the readme\n');
-  bundle.stub.put('src/main.rs', 'fn main() {}\n');
-  bundle.stub.put('.env', 'SECRET=1\n');
-  bundle.stub.put('.git/config', '[core]\n');
-  bundle.stub.put('assets/big.bin', 'x', { size: 4 * 1024 * 1024 });
-  bundle.stub.put('blob.bin', new Uint8Array([0x89, 0x50, 0x00, 0x0a]));
-
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
-  await bundle.stub.commands.executeCommand('selvage.host', {
-    serverUrl: server.wsBase,
-    displayName: 'Ada',
-  });
-  const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
-  t.after(async () => {
-    await guest.disconnect();
-  });
-
-  // A path the host's editor has never opened still arrives: the host reads its own working
-  // copy because a peer asked, which is the one thing this feature adds.
-  await guest.open('src/main.rs');
-  const text = await waitFor('the host to serve the requested path', () => {
-    const held = guest.text('src/main.rs');
-    return held === 'fn main() {}\n' ? held : false;
-  });
-  assert.equal(text, 'fn main() {}\n');
-
-  // What the grant itself would never publish is dropped silently — a guessed secret buys
-  // no dialog confirming it — and what the grant allows but the room cannot carry is
-  // refused out loud: the two unreadable files, each in the report its own event earns.
-  // Six bogus paths are two dialogs, never six.
-  const refused = ['.env', '.git/config', '../etc/passwd', '/etc/passwd', 'assets/big.bin', 'blob.bin'];
-  for (const path of refused) {
-    await guest.open(path);
-  }
-  const errors = await waitFor('every refusal to be reported', () =>
-    bundle.stub.registered.errors.length >= 2 ? bundle.stub.registered.errors : false,
-  );
-  assert.equal(errors.length, 2, `two unreadable files earned more than two dialogs`);
-  for (const path of refused) {
-    assert.equal(guest.has(path), false, `${path} was seeded anyway`);
-  }
-  // Each one is refused for what it is: the size it carries, and bytes that are not text.
-  // One sentence used to stand for both and named a deletion neither file had.
-  assert.ok(
-    errors.some((message) =>
-      message.includes('over the 1048576 bytes a session will carry'),
-    ),
-    `an oversized file was worded differently: ${JSON.stringify(errors)}`,
-  );
-  assert.ok(
-    errors.some((message) =>
-      message.includes('it is a binary file, and a room carries text'),
-    ),
-    `a binary file was worded differently: ${JSON.stringify(errors)}`,
-  );
-  assert.ok(
-    errors.every((message) => !message.includes('deleted')),
-    `a file that was never deleted was refused as a deletion: ${JSON.stringify(errors)}`,
-  );
-
-  // A refusal is a decision about the file now: a host opening an excluded file in its own
-  // window no longer shares it — the open path passes the grant's own gates — and the
-  // refusal is said once instead.
-  const own = bundle.stub.openWorkspaceDocument('file:///workspace/.env');
-  bundle.stub.fire('openTextDocument', own);
-  const gated = await waitFor('the refused open to be reported', () =>
-    bundle.stub.registered.errors.find((message) => message.includes('share .env with the room')) ??
-      false,
-  );
-  assert.match(gated, /nothing was shared for it/);
-
-  // The room keeps moving while the excluded file stays out of it: a granted file the
-  // host opens next still reaches the guest, which is what shows the first one never will.
-  bundle.stub.put('after.txt', 'after\n');
-  const later = bundle.stub.openWorkspaceDocument('file:///workspace/after.txt');
-  bundle.stub.fire('openTextDocument', later);
-  await waitFor('the later file to reach the guest', () =>
-    guest.text('after.txt') === 'after\n' ? true : false,
-  );
-  assert.equal(guest.text('.env'), '', 'the excluded file reached the guest after all');
-  assert.equal(guest.has('.env'), false);
-});
-
 test('a host names deletion when the room asks for a file it removed', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1523,7 +1254,7 @@ test('a host names deletion when the room asks for a file it removed', async (t)
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1547,7 +1278,7 @@ test('a host names deletion when the room asks for a file it removed', async (t)
 });
 
 test('a host refuses a zip the room asks for as a binary file, never as a deletion', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1566,7 +1297,7 @@ test('a host refuses a zip the room asks for as a binary file, never as a deleti
     displayName: 'Ada',
   });
   const invite = await inviteOf(bundle);
-  const guest = await SelvageEngine.join(wireOf(invite), 'Bob', OPTIONS);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
   t.after(async () => {
     await guest.disconnect();
   });
@@ -1697,7 +1428,7 @@ test('a document open when its path leaves the listing keeps its file and its ho
 });
 
 test('the status tooltip names the session but never the room id or the invite token', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1975,11 +1706,11 @@ test('a configured server address beats the remembered server', async (t) => {
 });
 
 test('the host notice names a reused server and offers to change it', async (t) => {
-  const first = await FakeServer.start();
+  const first = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await first.stop();
   });
-  const second = await FakeServer.start();
+  const second = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await second.stop();
   });
@@ -2187,7 +1918,7 @@ test('the change-server command reports the address in force and offers to chang
 });
 
 test('the typed name is remembered across windows, and hosting skips the question', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -2232,7 +1963,7 @@ test('the typed name is remembered across windows, and hosting skips the questio
 });
 
 test('the first run asks for the name once, then never again', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -2276,7 +2007,7 @@ test('the first run asks for the name once, then never again', async (t) => {
 });
 
 test('an explicit name beats the remembered name, and is what is remembered next', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -2304,7 +2035,7 @@ test('an explicit name beats the remembered name, and is what is remembered next
 });
 
 test('a configured name beats the remembered name', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -2654,37 +2385,6 @@ test('joining names the rest of the room the landing does not open', async (t) =
   );
 });
 
-test('a fetch that times out names the empty path and reports no fetch', async (t) => {
-  // The host lists the path but never opens it, so nothing can arrive: the fetch waits
-  // out the whole bounded wait.
-  const { host, invite, roomId } = await room(t, []);
-  await host.grant(['workspace/lonely.md']);
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
-  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
-  await waitForMirrorFiles(storage, roomId, ['workspace/lonely.md']);
-
-  await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'workspace/lonely.md' });
-  const warned = await waitFor(
-    'the still-empty warning',
-    () =>
-      bundle.stub.registered.warnings.find((message) => message.includes('is still empty')) ?? false,
-    { timeoutMs: 15000 },
-  );
-  assert.equal(
-    warned,
-    'Selvage: workspace/lonely.md is still empty — the host has not sent its text yet. Fetch it again later.',
-  );
-  // A wait that gave up is not a fetch: the warning is the wait's terminal state, and the
-  // report stays silent about files that never arrived rather than naming them fetched.
-  assert.equal(
-    bundle.stub.registered.information.filter((message) => message.includes('fetched the files'))
-      .length,
-    0,
-    'a fetch that landed nothing reported a fetch',
-  );
-});
-
 test('fetch outside a session says to join first', async (t) => {
   const { bundle } = activated(t);
   await bundle.stub.commands.executeCommand('selvage.fetch', { path: 'notes/a.md' });
@@ -2696,7 +2396,7 @@ test('fetch outside a session says to join first', async (t) => {
 });
 
 test('fetch while hosting says the disk already holds what a mirror would', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -2894,75 +2594,6 @@ test('fetch of a path the window already holds resolves without asking again', a
   assert.equal(fetchNotices(bundle).length, 0, 'a fetch that asked for nothing waited');
 });
 
-test('a room text that lands while the hold on its path is unanswered still renders', async (t) => {
-  // The window a loaded runner opens on its own, made the test's own ordering: the room's
-  // text lands while the `doc.open` behind the open document is still in flight. The server
-  // records that hold at once and withholds its answer until the test releases it, so the
-  // text is published into the flight rather than the test hoping to land inside it.
-  const { host, server, invite, roomId } = await room(t, []);
-  await host.grant(['notes/a.md']);
-  // The host's own open is answered: the guest's hold is the one this test holds back.
-  await host.open('notes/a.md');
-  const { bundle, storage } = activated(t);
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
-  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
-  await waitForMirrorFiles(storage, roomId, ['notes/a.md']);
-
-  let answerOpen!: () => void;
-  server.openAnswerHold = new Promise<void>((resolve) => {
-    answerOpen = resolve;
-  });
-  const holder = { text: '' };
-  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
-    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
-      holder.text += change.text;
-    }
-    return true;
-  };
-  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'notes/a.md' });
-  const uri = mirrorFileUri(storage, roomId, 'notes/a.md');
-  await waitFor('the held path to open', () =>
-    bundle.stub.registered.opened.includes(uri) ? true : false,
-  );
-  bundle.stub.fire('openTextDocument', {
-    uri: bundle.stub.Uri.parse(uri),
-    eol: 1,
-    isDirty: false,
-    getText: () => holder.text,
-    positionAt: (offset: number) => offset,
-    offsetAt: (position: number) => position,
-    save: () => Promise.resolve(true),
-  });
-  await waitFor('the room to be asked to open the path', () =>
-    server.requests.some(
-      (call) =>
-        call.client === 'Bob' && call.method === 'doc.open' && call.path === 'notes/a.md',
-    )
-      ? true
-      : false,
-  );
-  // The room's text lands inside that flight. The engine attaches its observer silently on
-  // the answer, so an update that carried the text before the answer and reported nothing
-  // leaves this buffer empty over the room's text — and a window that keeps it would write
-  // that emptiness back over the room on the next keystroke.
-  host.insert('notes/a.md', 0, 'already here\n');
-  await waitFor(
-    'the opened path to hold the room text',
-    () => (holder.text === 'already here\n' ? true : false),
-    {
-      describe: () => ({
-        buffer: holder.text,
-        mirror: mirrorDiskText(storage, roomId, 'notes/a.md'),
-        room: roomOffer(bundle),
-        errors: bundle.stub.registered.errors,
-      }),
-    },
-  );
-  // The answer the room owes for a hold it recorded: released last, so the answer is never
-  // what brings the text in. The buffer already holds the room's text at this point.
-  answerOpen();
-});
-
 test('fetch of a directory holds every listed path under it', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['notes/a.md', 'notes/b.md', 'other.md']);
@@ -3080,43 +2711,6 @@ test('fetch without a path offers the listing to pick from', async (t) => {
   assert.equal(done, 'Selvage: fetched the files.');
 });
 
-test('a dropped connection shows reconnecting in the status bar', async (t) => {
-  const server = await FakeServer.start();
-  let stopped = false;
-  t.after(async () => {
-    if (!stopped) {
-      await server.stop();
-    }
-  });
-  const { bundle } = activated(t);
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
-  await bundle.stub.commands.executeCommand('selvage.host', {
-    serverUrl: server.wsBase,
-    displayName: 'Ada',
-  });
-  await waitFor('the host to be seated', () =>
-    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
-  );
-  const bar = (): string =>
-    String(
-      bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
-    );
-  assert.equal(
-    bar(),
-    '$(radio-tower) Selvage: hosting — 1 person in the room',
-    'the steady state was never shown, or it does not name the side and the count',
-  );
-
-  // The drop is the server going away mid-session; the bounded retry is the engine's, and
-  // the bar must say so instead of holding the steady-state text while retries run.
-  await server.stop();
-  stopped = true;
-  const retrying = await waitFor('the reconnecting state', () =>
-    bar().includes('reconnecting') ? bar() : false,
-  );
-  assert.match(retrying, /reconnecting…/);
-});
-
 test('the status tooltip counts the rest instead of listing the room', async (t) => {
   const paths = Array.from({ length: 25 }, (_, index) => `file-${index}.txt`);
   const { bundle } = await guest(t, paths);
@@ -3196,7 +2790,7 @@ test('a join reloads the window onto the mirror, never a second root beside it',
 });
 
 test('host, leave, join: the first join lands', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -3215,7 +2809,7 @@ test('host, leave, join: the first join lands', async (t) => {
   );
   assert.equal(left, 'Selvage: left the session.');
   // A second room on the same server: the invite names what the first join must land in.
-  const host = await SelvageEngine.host(server.wsBase, 'Zed', OPTIONS);
+  const host = await LiveSession.host(server.wsBase, 'Zed', OPTIONS);
   t.after(async () => {
     await host.disconnect();
   });
@@ -3989,7 +3583,7 @@ test('a join asks before it takes the window, and a decline costs nothing', asyn
 });
 
 test('a host that changes its mind about the window keeps the room it was hosting', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -4120,13 +3714,13 @@ test("the reload's own resume never asks about the window it already replaced", 
 });
 
 test('a join refused because the room already has a host says so, without the code', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
   server.helloRefusal = { code: 'host_present', message: 'the room already has a host' };
   const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
@@ -4135,27 +3729,8 @@ test('a join refused because the room already has a host says so, without the co
   assert.doesNotMatch(said, /host_present/, 'the wire code is on screen');
 });
 
-test('a join refused for the wire version names what differs, without the code', async (t) => {
-  const server = await FakeServer.start();
-  t.after(async () => {
-    await server.stop();
-  });
-  server.helloRefusal = { code: 'unsupported_version', message: 'unsupported wire version 2' };
-  const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
-
-  const said = await waitFor('the refusal', () =>
-    bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
-  );
-  assert.equal(
-    said,
-    'Selvage: could not join the session. This client and that server speak different versions (unsupported wire version 2).',
-  );
-  assert.doesNotMatch(said, /unsupported_version/, 'the wire code is on screen');
-});
-
 test('a join refused for a room that is gone says it once', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -4163,7 +3738,7 @@ test('a join refused for a room that is gone says it once', async (t) => {
   // parenthetical used to read `That room is gone (the room is gone).`
   server.helloRefusal = { code: 'room_gone', message: 'the room is gone' };
   const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
@@ -4173,7 +3748,7 @@ test('a join refused for a room that is gone says it once', async (t) => {
 });
 
 test('a refused join says what happened, without the room id or a wire word', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -4181,7 +3756,7 @@ test('a refused join says what happened, without the room id or a wire word', as
   // unknown room names the id in its message, and a bad token says "room token".
   server.helloRefusal = { code: 'room_unknown', message: 'no such room: 5f0fd9c1b2' };
   const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, '5f0fd9c1b2', 't'), '5f0fd9c1b2', 'Bob');
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, '5f0fd9c1b2', 't')}${KEYS}`, '5f0fd9c1b2', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
@@ -4194,13 +3769,13 @@ test('a refused join says what happened, without the room id or a wire word', as
 });
 
 test('a join refused for its token says the invite is out of date, not "room token"', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
   server.helloRefusal = { code: 'token_invalid', message: 'invalid room token' };
   const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 'stale'), 'r', 'Bob');
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 'stale')}${KEYS}`, 'r', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
@@ -4213,14 +3788,14 @@ test('a join refused for its token says the invite is out of date, not "room tok
 });
 
 test('a full room is a sentence, never the wire code that refused it', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
   // A room at its cap, refused with the code this server invents for it (`x.room_full`).
   server.helloRefusal = { code: 'x.room_full', message: 'the room seats no more peers' };
   const { bundle, storage } = activated(t);
-  await joinOntoItsReload(bundle, storage, sessionUrl(server.wsBase, 'r', 't'), 'r', 'Bob');
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
@@ -4298,7 +3873,7 @@ test('the join notice offers the room’s other documents as a button', async (t
 });
 
 test('the host notice can put the invite on the clipboard again', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });

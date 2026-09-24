@@ -23,7 +23,7 @@ declare const sessionBaseBrand: unique symbol;
  * authority, at most a path prefix, the scheme always written with `//`, and no
  * credentials, query, fragment or endpoint path. `sessionBase` is the only thing that
  * produces one, and every component that reads a base — `sessionUrl`, `metaUrl`,
- * `inviteUrl`, `SessionUrl.base`, `SessionInfo.baseUrl` — takes this type rather than a
+ * `sessionUrl`, `metaUrl`, `SessionUrl.base`, `SessionInfo.baseUrl` — takes this type rather than a
  * `string`, so a component cannot be handed an un-normalised value and read a different
  * server out of it than the component that produced it. A `ws:` URL needs no `//`
  * (RFC 3986 §3), so the spelling is part of what has to be normalised rather than
@@ -220,18 +220,3 @@ export function metaUrl(base: SessionBase): string {
   return `${base.replace(/^ws(s?):\/\//, 'http$1://')}${META_PATH}`;
 }
 
-/**
- * The invite URL for a session: the server, the room and the token. `undefined` when
- * there is no token to share — only the connection that minted the room has one.
- */
-export function inviteUrl(session: {
-  baseUrl: SessionBase;
-  roomId: string;
-  token?: string;
-}): string | undefined {
-  const { token } = session;
-  if (token === undefined || token === '') {
-    return undefined;
-  }
-  return sessionUrl(session.baseUrl, session.roomId, token);
-}

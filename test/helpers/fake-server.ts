@@ -1,15 +1,15 @@
 /**
- * A minimal server speaking both wire versions, for tests that must not depend on a Rust build.
+ * A minimal server for the sealed wire, for tests that must not depend on a Rust build.
  *
  * It implements the parts of `PROTOCOL.md`
- * (https://github.com/selvage-protocol/specification) the engine talks to: the handshake and
- * its refusals (§5, §9), the open-document set and its hold semantics (§5), event
- * delivery (§6), payload-opaque binary relay (§3, §7) and the room grace period (§9).
+ * (https://github.com/selvage-protocol/specification) a client talks to: the handshake and
+ * its refusals (§5, §9), the room's membership (§6), payload-opaque binary relay (§3, §7),
+ * the holds a room's open-document set is read from (§13.7) and the room grace period (§9).
  *
- * It is not the reference server and does not pretend to be: `test/selvaged.test.ts`
- * runs the real one. What this exists for is the paths that need a fault the reference
- * server will not produce on demand — a dropped socket, a hostile `x.` event, `/meta`
- * naming a version this client cannot speak.
+ * It is not the reference server and does not pretend to be: `test/relay-selvaged.test.ts`,
+ * `test/selvage2-selvaged.test.ts` and `test/selvage2-reconnect-selvaged.test.ts` run the real
+ * one. What this exists for is the paths that need a fault the reference server will not produce
+ * on demand — a dropped socket, a hostile `x.` event, a room that is reaped under a guest.
  */
 
 import { createServer } from 'node:http';
@@ -26,17 +26,15 @@ import {
   close,
   code,
   event,
-  method,
 } from '../../src/engine/envelope.ts';
-import { WIRE_VERSION_V2 } from '../../src/engine/relay.ts';
-import type { MetaKeepalive, PeerInfo, Role } from '../../src/engine/envelope.ts';
+import type { MetaKeepalive, PeerInfo } from '../../src/engine/envelope.ts';
 import { baseOf } from './base.ts';
 
 export interface FakeServerOptions {
   /**
-   * What `/meta` advertises as its wire versions. Omitted, it advertises what the server seats,
-   * which is both versions unless `serveVersion1Only` narrows it: a body that disagreed with the
-   * handshake would model a server no client should trust.
+   * What `/meta` advertises as its wire versions. Omitted, it advertises what the server seats:
+   * the one wire. A body that disagreed with the handshake would model a server no client should
+   * trust.
    */
   metaWireVersions?: string[];
   /** The keepalive the server advertises in the handshake and in `/meta`. */
@@ -49,23 +47,6 @@ export interface FakeServerOptions {
   silent?: boolean;
   /** Go silent once this many connections have been accepted, for a retry's timeout. */
   silentAfter?: number;
-  /**
-   * `false` models a server that predates the grant: `doc.grant` is answered
-   * `unknown_method` and the connection stays open.
-   */
-  grant?: boolean;
-  /**
-   * Models a server that understands the grant and will not store this listing — one over its
-   * own bound (`PROTOCOL.md` §5) — so `doc.grant` is answered `bad_params`.
-   */
-  refuseGrant?: boolean;
-  /**
-   * Models `selvaged --serve-version-1-only`: `selvage/1` alone is seated, and `/meta`
-   * advertises that alone, so a `selvage/2` hello is refused `unsupported_version` — the shape of
-   * a server that predates `selvage/2`, or one narrowed deliberately. The default is the
-   * reference server's: both versions are seated and both are advertised.
-   */
-  serveVersion1Only?: boolean;
   /**
    * Models a server that seats a host without handing it the room's token: `room.created` names
    * the room and carries no token. That is the one way a live room reaches a client with no
@@ -84,16 +65,17 @@ interface Client {
   seated: boolean;
 }
 
+/** The two methods a client sends as text; the rest of its traffic is sealed frames. */
+const method = {
+  sessionHello: 'session.hello',
+  rename: 'session.rename',
+} as const;
+
 interface Room {
   id: string;
   token: string;
   hostId: string | null;
   peers: Set<string>;
-  /** The wire version the minting connection spoke: a room serves that one and no other. */
-  version: string;
-  documents: string[];
-  /** The host's listing, in the order it was published: the server never normalises it. */
-  grant: string[];
   reap?: ReturnType<typeof setTimeout>;
 }
 
@@ -101,23 +83,7 @@ interface Room {
 const SERVER_CAPABILITIES = [
   'y-protocols/1',
   'awareness',
-  'open-document-set',
-  'host-reclaim',
 ];
-
-/**
- * The wire versions a fake server seats, in the order `/meta` writes them: the reference server's
- * default is both, and `serveVersion1Only` is the one option that narrows it.
- *
- * A `selvage/2` server is a room registry, a relay and a timer, which is what this already is for
- * the frames that version uses — `session.hello`, `session.rename`, the opaque binary relay and
- * the room's membership — and a room minted here is pinned to the version that minted it, as the
- * reference server pins one. `test/selvaged.test.ts` and `test/relay-selvaged.test.ts` are what
- * run the real one.
- */
-function seatedVersions(options: FakeServerOptions): string[] {
-  return options.serveVersion1Only === true ? [WIRE_VERSION] : [WIRE_VERSION, WIRE_VERSION_V2];
-}
 
 function hex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
@@ -137,19 +103,12 @@ export class FakeServer {
   /** Every `session.rename` handled, in arrival order: the peer and the name asked for. */
   readonly renames: Array<{ peerId: string; displayName: string }> = [];
   /** Every `doc.grant` handled, in arrival order: the peer and the listing it published. */
-  readonly grants: Array<{ peerId: string; paths: string[] }> = [];
   /**
-   * How many `doc.grant` frames arrived, whether or not the server applied them: what a host
-   * attempted rather than only what a server kept.
+   * The wire version each connection claimed in its `session.hello`, in arrival order. What a
+   * client speaks is otherwise invisible to a test without a real server: the version is not in
+   * any reply.
    */
-  grantAttempts = 0;
-  /**
-   * When set, `doc.grant` answers wait for it first, so a send can be held in flight
-   * while a later walk sends its own. Arrivals are still counted at once.
-   */
-  grantHold: Promise<void> | undefined = undefined;
-  /** Paths whose `doc.open` is refused, so a test can refuse a reconnect's re-open. */
-  readonly refusedOpens = new Set<string>();
+  readonly hellos: string[] = [];
   /**
    * When set, every later handshake is refused with this code and the matching close — the
    * shape a full room or a full server refuses a retry with. A refusal is an `x.` capacity
@@ -157,23 +116,7 @@ export class FakeServer {
    * (`PROTOCOL.md` §9.1, §11); the fake server produces the fault the real one will not
    * produce on demand. */
   helloRefusal: { code: string; message: string } | undefined = undefined;
-  /** Paths whose `doc.open` is accepted and never answered, for the request deadline. */
-  readonly unansweredOpens = new Set<string>();
-  /**
-   * When set, the answer to a `doc.open` waits for it first, so a hold can be left in flight
-   * for exactly as long as a test says: the window a loaded runner opens on its own, made the
-   * test's own ordering. The hold itself is recorded on the server at once — the room's set
-   * moves as the real server's would — and only the answer, and the `doc.opened` that follows
-   * it, wait.
-   */
-  openAnswerHold: Promise<void> | undefined = undefined;
-  /**
-   * The wire version each connection claimed in its `session.hello`, in arrival order. What a
-   * client speaks is otherwise invisible to a test without a real server: the version is not in
-   * any reply, and a v2 hello against a server that seats only v1 is refused rather than
-   * answered.
-   */
-  readonly hellos: string[] = [];
+
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
   > &
@@ -188,7 +131,7 @@ export class FakeServer {
     this.http = http;
     this.wss = wss;
     this.options = {
-      metaWireVersions: seatedVersions(options),
+      metaWireVersions: [WIRE_VERSION],
       ...options,
     };
     this.wsBase = baseOf(`ws://127.0.0.1:${port}`);
@@ -209,7 +152,7 @@ export class FakeServer {
       response.end(
         JSON.stringify({
           server: 'fake-selvaged/0.0.0',
-          wire_versions: options.metaWireVersions ?? seatedVersions(options),
+          wire_versions: options.metaWireVersions ?? [WIRE_VERSION],
           capabilities: [...SERVER_CAPABILITIES],
           keepalive: {
             ...DEFAULT_KEEPALIVE,
@@ -390,12 +333,7 @@ export class FakeServer {
       );
       return;
     }
-    const version = String(message.v);
-    this.hellos.push(version);
-    if (!this.seats(version)) {
-      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
-      return;
-    }
+    this.hellos.push(String(message.v));
     const params = (message.params ?? {}) as Record<string, unknown>;
     const displayName =
       typeof params.display_name === 'string' ? params.display_name : '';
@@ -407,8 +345,6 @@ export class FakeServer {
       this.refuse(client, this.helloRefusal.code, this.helloRefusal.message);
       return;
     }
-    const claimed: Role | undefined =
-      params.role === 'host' ? 'host' : params.role === 'guest' ? 'guest' : undefined;
     const awareness =
       typeof params.awareness_client_id === 'number'
         ? Math.trunc(params.awareness_client_id)
@@ -421,9 +357,6 @@ export class FakeServer {
         token: hex(16),
         hostId: client.id,
         peers: new Set([client.id]),
-        version,
-        documents: [],
-        grant: [],
       };
       this.rooms.set(minted.id, minted);
       client.roomId = minted.id;
@@ -449,36 +382,18 @@ export class FakeServer {
       this.refuse(client, code.roomUnknown, `no such room: ${room}`);
       return;
     }
-    // A room is pinned to the version its minting connection spoke, so a connection speaking
-    // the other one is refused rather than seated — judged before the token, as `§11` orders
-    // the checks on a frame and as the reference server judges them.
-    if (version !== existing.version) {
-      this.refuse(client, code.unsupportedVersion, `unsupported ${version}`);
-      return;
-    }
     if (token === undefined || token !== existing.token) {
       this.refuse(client, code.tokenInvalid, 'invalid room token');
       return;
     }
-    const role: Role = claimed ?? 'guest';
-    if (role === 'host' && existing.hostId !== null) {
-      this.refuse(client, code.hostPresent, 'the room already has a host');
-      return;
-    }
-    const wasHostless = existing.hostId === null;
-    if (role === 'host') {
-      existing.hostId = client.id;
-      if (existing.reap !== undefined) {
-        clearTimeout(existing.reap);
-        existing.reap = undefined;
-      }
-    }
+    // This server seats nobody as the host: a room's roles are the host's own state to assign
+    // (`§13.4`), and this one only records the minting connection so it can reap the room.
     existing.peers.add(client.id);
     client.roomId = existing.id;
     client.peer = {
       peer_id: client.id,
       display_name: displayName,
-      role,
+      role: 'guest',
       ...(awareness === undefined ? {} : { awareness_client_id: awareness }),
     };
     client.seated = true;
@@ -487,16 +402,7 @@ export class FakeServer {
       event.roomJoined,
       this.sessionParams(existing, client, {}),
     );
-    // A joining connection learns the room's grant straight after its `room.joined`, and only
-    // when the room grants something (§6.3).
-    if (existing.grant.length > 0) {
-      this.send(client, event.docGranted, { paths: existing.grant });
-    }
-    if (wasHostless && role === 'host') {
-      this.broadcast(existing, { peer: client.peer }, event.hostAttached, client.id);
-    } else {
-      this.broadcast(existing, { peer: client.peer }, event.peerJoined, client.id);
-    }
+    this.broadcast(existing, { peer: client.peer }, event.peerJoined, client.id);
   }
 
   private sessionParams(
@@ -512,22 +418,9 @@ export class FakeServer {
         .filter((id) => id !== client.id)
         .map((id) => this.peers.get(id))
         .filter((peer): peer is PeerInfo => peer !== undefined),
-      documents: room.documents,
       capabilities: [...SERVER_CAPABILITIES],
       keepalive: { ...DEFAULT_KEEPALIVE, ...this.options.keepalive },
     };
-  }
-
-  /**
-   * Whether this server seats a connection that speaks `version` (`§10`): whichever versions
-   * {@link seatedVersions} names.
-   *
-   * One reading, asked by the handshake and by every text request after it: the reference
-   * server judges the version on each frame, so a seated connection that sends a request at
-   * another version is refused rather than answered.
-   */
-  private seats(version: string): boolean {
-    return seatedVersions(this.options).includes(version);
   }
 
   private handleText(client: Client, text: string): void {
@@ -543,100 +436,8 @@ export class FakeServer {
       this.alert(client, code.badMessage, 'a request needs an id');
       return;
     }
-    if (!this.seats(String(message.v))) {
-      this.respond(client, id, undefined, {
-        code: code.unsupportedVersion,
-        message: `unsupported ${String(message.v)}`,
-      });
-      client.socket.close(close.unsupportedVersion, 'version');
-      return;
-    }
     const params = (message.params ?? {}) as Record<string, unknown>;
     switch (message.method) {
-      case method.docGrant: {
-        const room = this.rooms.get(client.roomId ?? '');
-        if (room === undefined) {
-          this.respond(client, id, undefined, {
-            code: code.roomGone,
-            message: 'the room is gone',
-          });
-          return;
-        }
-        this.grantAttempts += 1;
-        if (this.grantHold !== undefined) {
-          // The send is in flight until the test releases it; the answer follows then.
-          const held = this.grantHold;
-          void held.then(() => {
-            this.answerGrant(client, id, room, params);
-          });
-          return;
-        }
-        this.answerGrant(client, id, room, params);
-        return;
-      }
-      case method.docOpen:
-      case method.docClose: {
-        const path = typeof params.path === 'string' ? params.path : '';
-        this.requests.push({
-          client: client.peer.display_name,
-          method: String(message.method),
-          path,
-        });
-        if (message.method === method.docOpen && this.refusedOpens.has(path)) {
-          this.respond(client, id, undefined, {
-            code: code.badParams,
-            message: 'this path is refused',
-          });
-          return;
-        }
-        if (message.method === method.docOpen && this.unansweredOpens.has(path)) {
-          // A wedged server: the request was received and no answer is coming.
-          return;
-        }
-        if (path.trim() === '') {
-          this.respond(client, id, undefined, {
-            code: code.badParams,
-            message: 'path is required',
-          });
-          return;
-        }
-        const room = this.rooms.get(client.roomId ?? '');
-        if (room === undefined) {
-          this.respond(client, id, undefined, {
-            code: code.roomGone,
-            message: 'the room is gone',
-          });
-          return;
-        }
-        if (message.method === method.docOpen) {
-          client.holds.add(path);
-          if (!room.documents.includes(path)) {
-            room.documents.push(path);
-          }
-        } else {
-          client.holds.delete(path);
-          this.release(room, path);
-        }
-        const answer = (): void => {
-          this.respond(client, id, { documents: room.documents });
-          this.broadcast(
-            room,
-            {
-              peer_id: client.id,
-              path,
-              documents: room.documents,
-            },
-            message.method === method.docOpen ? event.docOpened : event.docClosed,
-          );
-        };
-        if (message.method === method.docOpen && this.openAnswerHold !== undefined) {
-          const held = this.openAnswerHold;
-          void held.then(answer);
-          return;
-        }
-        answer();
-        return;
-      }
       case method.sessionHello: {
         this.respond(client, id, undefined, {
           code: code.alreadySeated,
@@ -667,7 +468,6 @@ export class FakeServer {
         }
         client.peer = { ...client.peer, display_name: displayName };
         this.respond(client, id, {});
-        // Addressed like `doc.opened`: to every peer, the one that renamed included (§6).
         this.broadcast(room, { peer_id: client.id, display_name: displayName }, event.peerRenamed);
         return;
       }
@@ -677,16 +477,6 @@ export class FakeServer {
           message: `no such method: ${String(message.method)}`,
         });
       }
-    }
-  }
-
-  /** A path leaves the room's set only when no peer holds it any more (§5). */
-  private release(room: Room, path: string): void {
-    const held = [...room.peers].some((peerId) =>
-      this.clients.get(peerId)?.holds.has(path),
-    );
-    if (!held) {
-      room.documents = room.documents.filter((document) => document !== path);
     }
   }
 
@@ -709,11 +499,6 @@ export class FakeServer {
     if (!wasHost) {
       return;
     }
-    this.broadcast(
-      room,
-      { grace_ms: this.options.roomGraceMs ?? 30_000 },
-      event.hostDetached,
-    );
     if (this.options.roomGraceMs === undefined) {
       return;
     }
@@ -731,56 +516,6 @@ export class FakeServer {
   }
 
   // -- frames ---------------------------------------------------------------
-
-  /**
-   * Answers one `doc.grant`, at once or once a held send is released. The room is the
-   * one the arrival found: a held send answers for the room as it was sent to.
-   */
-  private answerGrant(
-    client: Client,
-    id: number,
-    room: Room,
-    params: Record<string, unknown>,
-  ): void {
-    if (this.options.grant === false) {
-      this.respond(client, id, undefined, {
-        code: code.unknownMethod,
-        message: 'no such method: doc.grant',
-      });
-      return;
-    }
-    if (this.options.refuseGrant === true) {
-      this.respond(client, id, undefined, {
-        code: code.badParams,
-        message: 'the listing is over the bound this server will store',
-      });
-      return;
-    }
-    const paths = Array.isArray(params.paths) ? params.paths : undefined;
-    if (
-      paths === undefined ||
-      paths.some((path) => typeof path !== 'string' || path.trim() === '')
-    ) {
-      this.respond(client, id, undefined, {
-        code: code.badParams,
-        message: 'paths is required and every path must be non-blank',
-      });
-      return;
-    }
-    if (room.hostId !== client.id) {
-      this.respond(client, id, undefined, {
-        code: code.badParams,
-        message: "the room's grant is its host's to publish",
-      });
-      return;
-    }
-    const listing = paths as string[];
-    this.grants.push({ peerId: client.id, paths: [...listing] });
-    // Stored and relayed verbatim: the fake server does not sort or deduplicate either.
-    room.grant = [...listing];
-    this.respond(client, id, {});
-    this.broadcast(room, { paths: room.grant }, event.docGranted);
-  }
 
   private relay(from: Client, frame: Buffer): void {
     const room = this.rooms.get(from.roomId ?? '');
@@ -859,8 +594,6 @@ function closeCode(codeName: string): number {
       return close.roomGone;
     case code.hostPresent:
       return close.hostPresent;
-    case code.unsupportedVersion:
-      return close.unsupportedVersion;
     default:
       return close.protocolError;
   }

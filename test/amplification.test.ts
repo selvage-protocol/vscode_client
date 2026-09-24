@@ -20,7 +20,6 @@ import type { TestContext } from 'node:test';
 import * as Y from 'yjs';
 import { Awareness } from 'y-protocols/awareness';
 
-import { SelvageEngine } from '../src/engine/engine.ts';
 import {
   MESSAGE_QUERY_AWARENESS,
   MESSAGE_SYNC,
@@ -28,19 +27,12 @@ import {
   encodeSyncStep1,
   encodeUpdate,
 } from '../src/engine/sync.ts';
-import { ControlledSocket } from './helpers/controlled-socket.ts';
-import { waitFor } from './helpers/wait.ts';
 
 const PATH = 'src/main.rs';
 
 /** A frame of query messages: one byte each, the run a peer can pack into one frame. */
 const QUERY_RUN_BYTES = 256 * 1024;
 
-const KEEPALIVE = {
-  ping_interval_ms: 30_000,
-  awareness_renew_ms: 15_000,
-  awareness_expire_ms: 30_000,
-};
 
 /** How many bytes a set of replies holds, and how many replies it is. */
 function measured(replies: Uint8Array[]): { count: number; bytes: number } {
@@ -156,71 +148,4 @@ test('a legitimate frame is still applied and still answered', (t) => {
   update.destroy();
 });
 
-/** An engine seated on a socket the test drives, so a frame can be delivered exactly. */
-async function seated(t: TestContext): Promise<{
-  engine: SelvageEngine;
-  socket: ControlledSocket;
-}> {
-  const socket = new ControlledSocket();
-  const attempted = SelvageEngine.host('ws://controlled.test', 'Ada', {
-    meta: 'skip',
-    reconnect: false,
-    webSocketFactory: () => socket,
-  });
-  let engine: SelvageEngine | undefined;
-  let failure: unknown;
-  void attempted.then(
-    (seatedEngine) => {
-      engine = seatedEngine;
-    },
-    (error: unknown) => {
-      failure = error;
-    },
-  );
-  t.after(async () => {
-    await engine?.disconnect();
-  });
-  await waitFor('the engine to attach its handlers', () => socket.onopen !== null);
-  socket.open();
-  await waitFor('the engine to send session.hello', () => socket.sent.length > 0);
-  socket.deliver(
-    JSON.stringify({
-      v: 'selvage/1',
-      event: 'room.created',
-      params: {
-        room_id: 'r-cap1',
-        token: 'tok',
-        self: { peer_id: 'p-host', display_name: 'Ada', role: 'host' },
-        peers: [],
-        documents: [],
-        capabilities: [],
-        keepalive: KEEPALIVE,
-      },
-    }),
-  );
-  return {
-    engine: await waitFor('the handshake to complete', () => engine ?? false, {
-      describe: () => ({ failure }),
-    }),
-    socket,
-  };
-}
 
-test('the engine writes nothing back for a hostile frame, and goes on', async (t) => {
-  const { engine, socket } = await seated(t);
-  const before = socket.sentBinary.length;
-
-  socket.deliverBinary(new Uint8Array(QUERY_RUN_BYTES).fill(MESSAGE_QUERY_AWARENESS));
-  assert.equal(
-    socket.sentBinary.length,
-    before,
-    `${socket.sentBinary.length - before} frames written for a hostile frame`,
-  );
-
-  // The session goes on: the next legitimate frame is applied as usual.
-  const update = new Y.Doc();
-  update.getText(PATH).insert(0, 'after\n');
-  socket.deliverBinary(encodeUpdate(Y.encodeStateAsUpdate(update)));
-  assert.equal(engine.text(PATH), 'after\n');
-  update.destroy();
-});

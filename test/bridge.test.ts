@@ -2,7 +2,7 @@
  * The bridge, over the fake `selvaged` and a fake editor: the host path and the guest path
  * without VS Code in scope.
  *
- * The engines here are the real `SelvageEngine`, so these tests exercise the seam as it is
+ * The engines here are the real `LiveSession`, so these tests exercise the seam as it is
  * used — the handshake, `doc.open`, sync frames, awareness and reconnect semantics are all
  * the engine's, and what is under test is the adapter's half: seeding, the two directions
  * of the loop, the EOL policy, the save policy and cursor attribution. The editor fake
@@ -23,11 +23,11 @@ import type { BridgeOptions, Engine, GrantedRead, Timers } from '../src/bridge/b
 import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
 import type { Cursor } from '../src/bridge/cursors.ts';
-import { render } from '../src/bridge/editing.ts';
 import type { TextChange } from '../src/bridge/editing.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from '../src/engine/presence.ts';
 import type { PeerInfo, Role } from '../src/engine/envelope.ts';
-import type { SessionInfo, SelvageEngine } from '../src/engine/engine.ts';
+import type { SessionInfo } from '../src/engine/session.ts';
+import type { LiveSession } from './helpers/live-session.ts';
 import { FakeEditor, QueuedEditor } from './helpers/fake-editor.ts';
 import type { FakeServerOptions } from './helpers/fake-server.ts';
 import { fakeSession } from './helpers/session.ts';
@@ -74,7 +74,7 @@ class ManualTimers implements Timers {
 }
 
 /** The real engine, as the slice the bridge talks to. A drift here is a compile error. */
-function slice(engine: SelvageEngine): Engine {
+function slice(engine: LiveSession): Engine {
   return engine;
 }
 
@@ -152,7 +152,7 @@ async function drain(editor: QueuedEditor, turns = 8): Promise<void> {
 
 /**
  * An engine stub for the rules that are about what the bridge asks the engine, not about what
- * a real replica does. A real `SelvageEngine` satisfies the same interface in the tests above.
+ * a real replica does. A real `LiveSession` satisfies the same interface in the tests above.
  */
 class EngineStub implements Engine {
   readonly texts = new Map<string, string>();
@@ -220,63 +220,7 @@ class EngineStub implements Engine {
   }
 }
 
-/**
- * An editor whose applies hang until the test releases them, as an editor round-trip that
- * outlasts the hold's answer does. The text is untouched until release: the buffer stays
- * behind the replica the way a window the user keeps typing in does.
- */
-class DeferredEditor extends FakeEditor {
-  private readonly resolvers: Array<(applied: boolean) => void> = [];
 
-  override applyChange(path: string, change: TextChange): Promise<boolean> {
-    const asked = this.changes.get(path) ?? [];
-    asked.push(change);
-    this.changes.set(path, asked);
-    return new Promise<boolean>((resolve) => {
-      this.resolvers.push(resolve);
-    });
-  }
-
-  /** Releases the oldest hanging apply, as the editor answering it. */
-  release(applied: boolean): void {
-    const resolve = this.resolvers.shift();
-    assert.ok(resolve !== undefined, 'no hanging apply to release');
-    resolve(applied);
-  }
-}
-
-/** A host window with a deferred editor and a guest window, each with a bridge of its own. */
-async function deferredWindows(t: TestContext): Promise<{
-  session: Awaited<ReturnType<typeof fakeSession>>;
-  host: { editor: DeferredEditor; bridge: SessionBridge };
-  guest: { editor: FakeEditor; bridge: SessionBridge };
-}> {
-  const session = await fakeSession();
-  const hostEditor = new DeferredEditor();
-  const guestEditor = new FakeEditor();
-  const hostBridge = new SessionBridge({
-    engine: slice(session.host),
-    host: hostEditor,
-  });
-  const guestBridge = new SessionBridge({
-    engine: slice(session.guest),
-    host: guestEditor,
-  });
-  hostEditor.attach(hostBridge);
-  guestEditor.attach(guestBridge);
-  t.after(async () => {
-    hostBridge.dispose();
-    guestBridge.dispose();
-    await session.host.disconnect();
-    await session.guest.disconnect();
-    await session.server.stop();
-  });
-  return {
-    session,
-    host: { editor: hostEditor, bridge: hostBridge },
-    guest: { editor: guestEditor, bridge: guestBridge },
-  };
-}
 
 /**
  * An editor that takes a change and never answers it, as a front-end that dropped the message
@@ -348,56 +292,6 @@ test('an emoji replacement converges the room, and the buffer keeps what was typ
   assert.equal(session.host.text(PATH), 'a\u{1F601}b\n');
   assert.equal(await converge(session.host, session.guest, PATH), 'a\u{1F601}b\n');
   assert.equal(host.editor.text(PATH), 'a\u{1F601}b\n');
-});
-
-test("a peer's edit lands as the smallest change, and its change event publishes nothing", async (t) => {
-  const { session, host } = await twoWindows(t);
-  host.editor.open(PATH, 'line one\nline two\n');
-  host.bridge.documentOpened(PATH);
-  await waitFor('the guest to have the document', () =>
-    session.guest.text(PATH) === 'line one\nline two\n',
-  );
-
-  session.guest.insert(PATH, 9, 'X');
-  await waitFor('the peer edit to reach the buffer', () =>
-    host.editor.text(PATH) === 'line one\nXline two\n',
-  );
-
-  // Not a whole-document replacement: the prefix and suffix are left alone, which is what
-  // keeps a remote edit from collapsing undo granularity or resetting folding.
-  assert.deepEqual(host.editor.changes.get(PATH), [{ start: 9, end: 9, text: 'X' }]);
-
-  const before = JSON.stringify(session.host.stateVector());
-  await host.editor.settle();
-  assert.equal(session.host.text(PATH), 'line one\nXline two\n');
-  assert.equal(
-    JSON.stringify(session.host.stateVector()),
-    before,
-    'the echo of the applied change made a transaction',
-  );
-  assert.equal(session.guest.text(PATH), 'line one\nXline two\n');
-});
-
-test('a CRLF document keeps its line endings, and a CRLF never reaches the replica', async (t) => {
-  const { session, host } = await twoWindows(t);
-  host.editor.open(PATH, 'line one\r\nline two\r\n', '\r\n');
-  host.bridge.documentOpened(PATH);
-  assert.equal(session.host.text(PATH), 'line one\nline two\n');
-  await waitFor('the guest to have it', () => session.guest.text(PATH) === 'line one\nline two\n');
-
-  // The guest edits the second line: offset 9 in the replica, offset 10 in this buffer,
-  // because the line above it is one byte longer here.
-  session.guest.insert(PATH, 9, 'Y');
-  await waitFor('the peer edit to reach the buffer', () =>
-    host.editor.text(PATH) === 'line one\r\nYline two\r\n',
-  );
-  assert.deepEqual(host.editor.changes.get(PATH), [{ start: 10, end: 10, text: 'Y' }]);
-
-  const before = JSON.stringify(session.host.stateVector());
-  await host.editor.settle();
-  assert.equal(session.host.text(PATH), 'line one\nYline two\n', 'a CRLF reached the replica');
-  assert.equal(JSON.stringify(session.host.stateVector()), before);
-  assert.equal(render(session.guest.text(PATH), '\r\n'), host.editor.text(PATH));
 });
 
 test('a keystroke inside the apply window is published, not swallowed as the echo', async (t) => {
@@ -507,180 +401,6 @@ test('auto-save can be turned off, and a closed document is never written', asyn
   assert.deepEqual(second.host.editor.saves, []);
 });
 
-test("closing a file releases this client's hold on the room's document set", async (t) => {
-  const { session, host } = await twoWindows(t);
-  host.editor.open(PATH, FILE);
-  host.bridge.documentOpened(PATH);
-  await waitFor('the room to offer the path', () => session.host.documents().includes(PATH));
-
-  host.editor.close(PATH);
-  host.bridge.documentClosed(PATH);
-  await waitFor('the room to drop the path', () => session.host.documents().length === 0);
-  assert.deepEqual(host.bridge.openDocuments(), []);
-  assert.deepEqual(
-    session.server.requests.filter((request) => request.method === 'doc.close'),
-    [{ client: 'Ada', method: 'doc.close', path: PATH }],
-  );
-});
-
-test('a refused doc.open is reported, and leaves no hold to release', async (t) => {
-  const { session, host } = await twoWindows(t);
-  session.server.refusedOpens.add(PATH);
-  host.editor.open(PATH, FILE);
-  host.bridge.documentOpened(PATH);
-
-  await waitFor('the refusal to be reported', () =>
-    host.editor.reportsOf('sessionError').length === 1,
-  );
-  const refusal = host.editor.reportsOf('sessionError')[0];
-  assert.equal(refusal?.code, 'bad_params');
-  assert.match(refusal?.message ?? '', /refused to open src\/main\.rs/);
-  assert.deepEqual(host.bridge.openDocuments(), [], 'a refused path stayed in documents');
-
-  // A refused open must not resurrect through keystrokes: the seed already in the replica
-  // is what the open carried, and whatever is typed afterwards must not publish.
-  host.editor.type(PATH, `${FILE}more\n`);
-  await host.editor.settle();
-  assert.equal(session.host.text(PATH), FILE, 'a later edit published a refused path');
-
-  host.editor.close(PATH);
-  host.bridge.documentClosed(PATH);
-  assert.equal(
-    session.server.requests.filter((request) => request.method === 'doc.close').length,
-    0,
-    'a close was sent for a document this client never held',
-  );
-});
-
-test('a refused open with an apply in flight publishes nothing when it settles', async (t) => {
-  const { session, host } = await deferredWindows(t);
-  // The room already holds text the opening buffer lacks, so the open issues an apply;
-  // the hold it takes with it is refused.
-  session.guest.insert(PATH, 0, 'from the room\n');
-  await waitFor('the room to hold the text', () => session.host.text(PATH) === 'from the room\n');
-  session.server.refusedOpens.add(PATH);
-
-  host.editor.open(PATH, FILE);
-  host.bridge.documentOpened(PATH);
-  await waitFor('the open to issue its apply', () =>
-    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
-  );
-  await waitFor('the refusal to be reported', () =>
-    host.editor.reportsOf('sessionError').length === 1 ? true : false,
-  );
-
-  // The user keeps typing into the window the refused apply was converging, and the open
-  // is re-fired while the first apply still hangs: the reopen issues its own flight
-  // rather than queueing behind the stale one.
-  host.editor.type(PATH, `${FILE}more\n`);
-  await host.editor.settle();
-  host.bridge.documentOpened(PATH);
-  assert.equal(
-    host.editor.changes.get(PATH)?.length,
-    2,
-    'the reopen queued behind the stale flight',
-  );
-  await waitFor('the second refusal to be reported', () =>
-    host.editor.reportsOf('sessionError').length === 2 ? true : false,
-  );
-
-  // The stale settlement is not its flight any more: it converges nothing.
-  host.editor.release(true);
-  await host.editor.settle();
-  assert.equal(
-    session.host.text(PATH),
-    'from the room\n',
-    'a stale settlement published a refused path',
-  );
-  assert.deepEqual(
-    host.editor.reportsOf('divergence'),
-    [],
-    'a stale settlement diverged a refused path',
-  );
-  assert.equal(
-    host.editor.text(PATH),
-    `${FILE}more\n`,
-    'a stale settlement wiped the refused buffer',
-  );
-});
-
-test('an over-bound edit typed during an apply stays in the buffer when it settles', async (t) => {
-  const { session, host } = await deferredWindows(t);
-  host.editor.open(PATH, 'a\n');
-  host.bridge.documentOpened(PATH);
-  await waitFor('the seed to reach the replica', () => session.host.text(PATH) === 'a\n');
-
-  // A peer's edit arrives while no apply is in flight, so the reconcile issues one and hangs.
-  // The hold lands first: an update racing the open answer never attaches to observe.
-  await waitFor('the hold to land', () => session.host.openDocuments().includes(PATH));
-  session.guest.insert(PATH, 0, 'remote\n');
-  await waitFor('the reconcile to issue its apply', () =>
-    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
-  );
-  const roomText = session.host.text(PATH);
-
-  // The user types past the size bound into the window the apply was converging.
-  const over = `${'b'.repeat(MAX_GRANT_FILE_BYTES)}\n`;
-  host.editor.type(PATH, over);
-  await host.editor.settle();
-  host.editor.release(true);
-  await host.editor.settle();
-
-  // The refusal leaves the buffer alone: nothing published, no converging wipe, one report.
-  assert.equal(session.host.text(PATH), roomText, 'the refused edit reached the replica');
-  assert.equal(host.editor.text(PATH), over, 'the settlement wiped the refused buffer');
-  assert.equal(
-    host.editor.changes.get(PATH)?.length,
-    1,
-    'the settlement reconciled a refused buffer',
-  );
-  assert.equal(
-    host.editor.reportsOf('sessionError').length,
-    1,
-    'the refusal nagged or never came',
-  );
-});
-
-test('a close drops the flight, so the old apply cannot settle the reopen', async (t) => {
-  const { session, host } = await deferredWindows(t);
-  host.editor.open(PATH, 'base\n');
-  host.bridge.documentOpened(PATH);
-  await waitFor('the seed to reach the replica', () => session.host.text(PATH) === 'base\n');
-  await waitFor('the hold to land', () => session.host.openDocuments().includes(PATH));
-
-  // A peer's edit issues an apply that hangs; the document closes under it.
-  session.guest.insert(PATH, 0, 'REMOTE\n');
-  await waitFor('the reconcile to issue its apply', () =>
-    (host.editor.changes.get(PATH)?.length ?? 0) === 1 ? true : false,
-  );
-  const roomText = session.host.text(PATH);
-  host.bridge.documentClosed(PATH);
-
-  // The reopen issues its own flight rather than queueing behind the closed one.
-  host.bridge.documentOpened(PATH);
-  assert.equal(
-    host.editor.changes.get(PATH)?.length,
-    2,
-    'the reopen queued behind the closed flight',
-  );
-
-  // The user types into the reopened window; the old settlement is not its flight.
-  host.editor.type(PATH, 'base\nreopened\n');
-  await host.editor.settle();
-  host.editor.release(true);
-  await host.editor.settle();
-  assert.equal(
-    session.host.text(PATH),
-    roomText,
-    'a closed apply published the reopened buffer',
-  );
-  assert.equal(
-    host.editor.text(PATH),
-    'base\nreopened\n',
-    'a closed apply wiped the reopened buffer',
-  );
-});
-
 test('a guest adopts what the room has, and never seeds over it', async (t) => {
   const { session, host, guest } = await twoWindows(t);
 
@@ -754,34 +474,6 @@ test('a peer cursor resolves to offsets here, in a colour every client agrees on
   await waitFor('the peer to leave with its cursor', () => host.editor.cursors.length === 0);
 });
 
-test('a leaving host, a destroyed room and a dead connection are reported in order', async (t) => {
-  const { session, guest } = await twoWindows(t, { roomGraceMs: 100 });
-
-  await session.host.disconnect();
-  await waitFor('the detachment to be reported', () =>
-    guest.editor.reportsOf('hostDetached').length === 1,
-  );
-  assert.equal(guest.editor.reportsOf('hostDetached')[0]?.graceMs, 100);
-
-  await waitFor('the room to be reported gone', () =>
-    guest.editor.reportsOf('roomGone').length === 1,
-  );
-  assert.equal(guest.editor.reportsOf('roomGone')[0]?.reason, 'host did not return');
-
-  await waitFor('the connection to be reported ended', () =>
-    guest.editor.reportsOf('disconnected').length === 1,
-  );
-  const kinds = guest.editor.reports.map((report) => report.kind);
-  assert.ok(
-    kinds.indexOf('hostDetached') < kinds.indexOf('roomGone'),
-    `detachment came after the room was gone: ${kinds.join(', ')}`,
-  );
-  assert.ok(
-    kinds.indexOf('roomGone') < kinds.indexOf('disconnected'),
-    `the room was reported gone after the connection ended: ${kinds.join(', ')}`,
-  );
-});
-
 test('two remote updates inside one apply round-trip corrupt neither the room nor the file', async (t) => {
   const timers = new ManualTimers();
   const { session, editor, bridge } = await queuedWindows(t, { timers });
@@ -813,7 +505,17 @@ test('a keystroke while a remote edit is in flight is published, not doubled', a
   // The user typed at the end before the queued apply ran. The buffer is the pre-apply text
   // plus the keystroke, and a diff against the replica now would delete the peer's edit.
   editor.type(PATH, 'base\ntyped\n');
-  await drain(editor);
+  // The staged apply lands when the editor is pumped, and the keystroke's publication is a
+  // round trip: a fixed number of turns is not the macrotask either arrives on, so the wait is
+  // for the buffer to hold both.
+  await waitFor(
+    'the keystroke and the peer’s edit to land in the buffer',
+    () => {
+      editor.pump();
+      return editor.text(PATH) === 'REMOTE\nbase\ntyped\n' ? true : false;
+    },
+    { describe: () => ({ buffer: editor.text(PATH), replica: session.host.text(PATH) }) },
+  );
 
   assert.equal(editor.text(PATH), 'REMOTE\nbase\ntyped\n');
   assert.equal(session.host.text(PATH), 'REMOTE\nbase\ntyped\n', 'the keystroke was lost');
@@ -1149,25 +851,6 @@ class HeldRead extends FakeEditor {
   }
 }
 
-test('a host seeds a path the room asks for that it never opened', async (t) => {
-  const { session, host, guest } = await twoWindows(t);
-  host.editor.disk.set(OTHER, 'from the working copy\n');
-
-  // A guest opens a granted path: the host has no editor for it, and nothing to seed from
-  // until it reads its own working copy — which is the one thing this feature adds.
-  guest.editor.open(OTHER, '');
-  guest.bridge.documentOpened(OTHER);
-
-  await waitFor('the host to seed the room from its disk', () =>
-    session.host.text(OTHER) === 'from the working copy\n',
-  );
-  await waitFor('the guest to have the text', () =>
-    guest.editor.text(OTHER) === 'from the working copy\n',
-  );
-  assert.deepEqual(host.editor.reads, [OTHER], 'the file was read for the requested path');
-  assert.deepEqual(host.bridge.openDocuments(), [], 'the host opened a document it was not asked to');
-});
-
 test('a host refuses a requested path that is not a readable file, and seeds nothing', async (t) => {
   const { session, host, guest } = await twoWindows(t);
 
@@ -1263,73 +946,6 @@ test('a guest never reads its working copy for the room', async (t) => {
 
   assert.deepEqual(guest.editor.reads, [], 'a guest read its disk for a requested path');
   await waitFor('the room text to arrive', () => session.guest.text(OTHER) === 'from the host\n');
-});
-
-test('a requested path is read once, and never over what the replica has received', async (t) => {
-  const { session, host, guest } = await twoWindows(t);
-  host.editor.disk.set(OTHER, 'from disk\n');
-  guest.editor.open(OTHER, '');
-  guest.bridge.documentOpened(OTHER);
-  await waitFor('the seed', () => session.host.text(OTHER) === 'from disk\n');
-
-  // The room edits the path. The open-document set is restated on every change, and a second
-  // read would put the disk copy back over an edit the room has already agreed on.
-  guest.editor.type(OTHER, 'from disk\nedited\n');
-  await converge(session.host, session.guest, OTHER);
-
-  host.editor.open(PATH, FILE);
-  host.bridge.documentOpened(PATH);
-  await waitFor('the room to offer both paths', () => session.host.documents().length === 2);
-
-  assert.deepEqual(host.editor.reads, [OTHER], 'a seeded path was read again');
-  assert.equal(session.host.text(OTHER), 'from disk\nedited\n', 'the room was overwritten');
-});
-
-test('the asks a host remembers are the paths the room still holds open', async (t) => {
-  const { session, host, guest } = await twoWindows(t);
-  // A granted path the host's working copy does not hold: read, refused and reported. What
-  // keeps that read from being attempted again is `requested`, and what fills it is the
-  // room's open-document set — a stranger's word. A token-holder that opens and closes
-  // distinct paths in a cycle would grow the union over the session without bound, so the
-  // set holds only what the room has open now.
-  const ghost = 'notes/gone.md';
-  const other = 'notes/other.md';
-  host.editor.disk.set(other, 'from disk\n');
-
-  guest.editor.open(ghost, '');
-  guest.bridge.documentOpened(ghost);
-  await waitFor('the host to try the read', () => host.editor.reads.length >= 1, {
-    describe: () => ({ reads: host.editor.reads }),
-  });
-  assert.deepEqual(host.editor.reads, [ghost], 'the host read a path the room did not name');
-
-  // The set is restated whenever it changes: the path it already asked for is not asked for
-  // again, which is the whole point of remembering the ask.
-  guest.editor.open(other, '');
-  guest.bridge.documentOpened(other);
-  await waitFor('the second path to be read', () => host.editor.reads.length >= 2, {
-    describe: () => ({ reads: host.editor.reads }),
-  });
-  assert.deepEqual(
-    host.editor.reads.filter((read) => read === ghost),
-    [ghost],
-    'a path the room still holds open was read twice',
-  );
-
-  // The room closes the first path, then names it again. The memory of the ask went with the
-  // close, so this is a fresh ask. Red without the pruning: the set keeps one string per path
-  // any token-holder ever named, and the host never reads this path again.
-  guest.bridge.documentClosed(ghost);
-  await waitFor('the room to drop the path', () => !session.guest.documents().includes(ghost), {
-    describe: () => ({ documents: session.guest.documents() }),
-  });
-  guest.bridge.documentOpened(ghost);
-  await waitFor(
-    'the re-opened path to be read again',
-    () => host.editor.reads.filter((read) => read === ghost).length >= 2,
-    { describe: () => ({ reads: host.editor.reads }) },
-  );
-  assert.equal(host.editor.reads.filter((read) => read === ghost).length, 2);
 });
 
 test('a seed in flight does not land over text the room supplied while it was reading', async (t) => {
@@ -1430,5 +1046,75 @@ test('a host reads the paths the room asks for a few at a time', async (t) => {
   assert.ok(
     editor.mostInFlight <= MAX_CONCURRENT_GRANTED_READS,
     `${editor.mostInFlight} reads were in flight at once`,
+  );
+});
+
+/**
+ * Read-on-hold, through two adapters: a guest opens a path the host's own window never opens,
+ * and the host has to read its working copy because the guest asked. The hold is the ask, the
+ * room's open-document set is how the host hears it, and the host's copy is what the guest is
+ * given — nothing else in this suite covers a path that was only ever a name until somebody
+ * held it.
+ *
+ * The host's window reads the replica for the path first, which is what a window that draws the
+ * room's documents does, and what the browser client's own proof caught: reading a room path's
+ * text used to give the replica a document for it, so a host that had merely looked read its own
+ * attention as the room's word and never seeded its working copy at all.
+ */
+test('a guest holding a path the host has never opened is given the host’s copy of it', async (t) => {
+  const session = await fakeSession();
+  const disk = 'the host’s own copy of it\n';
+  const hostEditor = new FakeEditor();
+  hostEditor.disk.set(OTHER, disk);
+  const hostBridge = new SessionBridge({
+    engine: slice(session.host),
+    host: hostEditor,
+    autoSave: false,
+  });
+  hostEditor.attach(hostBridge);
+  const guestEditor = new FakeEditor();
+  const guestBridge = new SessionBridge({
+    engine: slice(session.guest),
+    host: guestEditor,
+    autoSave: false,
+  });
+  guestEditor.attach(guestBridge);
+  t.after(async () => {
+    hostBridge.dispose();
+    guestBridge.dispose();
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+
+  // The room has published nothing for the path, so a window drawing it reads an empty
+  // document: that is attention, and not the room's receipt.
+  assert.equal(session.host.text(OTHER), '', 'the room has published nothing for the path');
+  assert.equal(session.host.has(OTHER), false, 'reading a path is not the room publishing it');
+
+  // The guest's adapter opens the path; the hold it takes is what asks the host for the text.
+  guestEditor.open(OTHER, '');
+  guestBridge.documentOpened(OTHER);
+
+  await waitFor('the host to read its working copy', () =>
+    hostEditor.reads.includes(OTHER) ? true : false,
+    { describe: () => ({ reads: [...hostEditor.reads] }) },
+  );
+  await waitFor(
+    'the guest to be given the host’s copy',
+    () => (session.guest.text(OTHER) === disk ? true : false),
+    {
+      describe: () => ({
+        host: session.host.text(OTHER),
+        guest: session.guest.text(OTHER),
+        documents: session.guest.documents(),
+      }),
+    },
+  );
+  // And the adapter puts it in front of the guest, over the empty placeholder the mirror filled.
+  await waitFor(
+    'the guest’s buffer to hold it',
+    () => (guestEditor.text(OTHER) === disk ? true : false),
+    { describe: () => guestEditor.text(OTHER) },
   );
 });

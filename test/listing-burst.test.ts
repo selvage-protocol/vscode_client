@@ -32,9 +32,9 @@ import {
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
-import { SelvageEngine } from '../src/engine/index.ts';
+import { LiveSession } from './helpers/live-session.ts';
 
-const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
+const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
 
 /** How many applications one burst may cost: the leading one, the window's end, and slack. */
 const MAX_APPLICATIONS = 3;
@@ -49,7 +49,7 @@ const BURST = 12;
 const UNMIRRORABLE = 'could not be written to disk';
 
 interface Room {
-  host: SelvageEngine;
+  host: LiveSession;
   bundle: LoadedExtension;
   storage: string;
   roomId: string;
@@ -59,11 +59,11 @@ interface Room {
 
 /** A room a source engine hosts, and a guest window landed on its mirror. */
 async function seated(t: TestContext): Promise<Room> {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', OPTIONS);
+  const host = await LiveSession.host(server.wsBase, 'Ada', OPTIONS);
   t.after(async () => {
     await host.disconnect();
   });

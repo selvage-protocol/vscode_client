@@ -169,7 +169,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
-import { SelvageEngine } from '../src/engine/engine.ts';
+import { LiveSession } from './helpers/live-session.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -184,7 +184,7 @@ const TEXT_A = 'aaa\nbbb\nccc\n';
 interface RoomSeat {
   bundle: LoadedExtension;
   server: FakeServer;
-  host: SelvageEngine;
+  host: LiveSession;
   invite: string;
   hostId: string;
   roomFile(path: string): string;
@@ -192,8 +192,8 @@ interface RoomSeat {
 
 /** A room with text in one path, and the bundle joined to it as `Bob`. */
 async function seat(t: TestContext): Promise<RoomSeat> {
-  const server = await FakeServer.start();
-  const host = await SelvageEngine.host(
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  const host = await LiveSession.host(
     server.wsBase,
     'Ada',
     options({ baseUrl: server.wsBase, displayName: 'Ada', reconnect: false }),
@@ -236,8 +236,8 @@ async function peerIn(
   seat_: RoomSeat,
   name: string,
   at: number,
-): Promise<SelvageEngine> {
-  const peer = await SelvageEngine.join(
+): Promise<LiveSession> {
+  const peer = await LiveSession.join(
     seat_.invite,
     name,
     options({ baseUrl: seat_.server.wsBase, displayName: name, reconnect: false }),
@@ -627,6 +627,12 @@ test('a row action calls through to go, follow and stop', async (t) => {
   bundle.stub.window.activeTextEditor = editor;
   bundle.stub.window.visibleTextEditors = [editor];
   bundle.stub.fire('openTextDocument', document);
+  // The guest's hold is what brings the room's text into its replica, and the caret the go-to
+  // lands on is an anchor into that text: waiting for the hold is waiting for the landing to be
+  // possible at all, rather than for turns.
+  await waitFor(`the room to hold ${PATH_A} open`, () =>
+    seat_.host.peerDocuments().includes(PATH_A) ? true : false,
+  );
   seat_.host.setSelection(PATH_A, { anchor: 5, head: 5 });
   const adaRow = await waitFor('Ada to list with their file known', () => {
     const current = viewNodes(bundle);
@@ -767,7 +773,7 @@ function bundleExports(): {
 }
 
 test('a presence path outside the grant badges nothing, nowhere', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -782,10 +788,6 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
   t.after(() => {
     bundle.deactivate();
   });
-  // A room in this suite is a version-1 one: a hosting client takes its version from what the
-  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
-  // `selvage/1` says so.
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -799,8 +801,10 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
   const page = bundleExports().parsePageLink(bundle.stub.registered.clipboard);
   assert.ok(page !== undefined, 'the host copied no invite link');
   // The origin is the server, which for this room is the fake server it was hosted on.
-  const wire = sessionUrl(server.wsBase, page.room, page.token);
-  const mallory = await SelvageEngine.join(
+  // `§5.1`: the room's two keys are in the link's fragment, so the peer joins with that link's
+  // own wire form rather than with the query alone.
+  const wire = `${sessionUrl(server.wsBase, page.room, page.token)}${(page as { fragment?: string }).fragment ?? ''}`;
+  const mallory = await LiveSession.join(
     wire,
     'Mallory',
     options({ baseUrl: server.wsBase, displayName: 'Mallory', reconnect: false }),
@@ -834,7 +838,7 @@ test('a presence path outside the grant badges nothing, nowhere', async (t) => {
 
 
 test('hosting an empty room retires the welcome row at once', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -849,7 +853,6 @@ test('hosting an empty room retires the welcome row at once', async (t) => {
     [],
     'the session-less view has rows of its own',
   );
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

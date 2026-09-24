@@ -17,7 +17,7 @@ import type { TestContext } from 'node:test';
 import { SessionBridge } from '../src/bridge/bridge.ts';
 import type { BridgeOptions, Engine } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
-import type { SessionInfo } from '../src/engine/engine.ts';
+import type { SessionInfo } from '../src/engine/session.ts';
 import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import { FakeEditor } from './helpers/fake-editor.ts';
 import type { FakeServerOptions } from './helpers/fake-server.ts';
@@ -123,12 +123,23 @@ test('opening an oversize file shares nothing, however the bytes count', async (
 });
 
 test('typing a document past the size bound refuses the edit and publishes nothing', async (t) => {
-  const { session, host } = await twoWindows(t);
+  const { session, host, guest } = await twoWindows(t);
   const path = 'notes.txt';
   const base = `${'a'.repeat(MAX_GRANT_FILE_BYTES - 64)}\n`;
   host.editor.open(path, base);
   host.bridge.documentOpened(path);
   await waitFor('the seed to reach the replica', () => session.host.text(path) === base);
+
+  // §13.7: the room sends a path's text to the peers that hold it, so the guest takes the hold
+  // the same way a window with the file open does, and waits for the text the hold brings.
+  guest.editor.open(path, '');
+  guest.bridge.documentOpened(path);
+  await waitFor('the guest to hold the path', () =>
+    session.host.peerDocuments().includes(path),
+  );
+  await waitFor('the seed to reach the guest', () => session.guest.text(path) === base, {
+    timeoutMs: 20000,
+  });
 
   // Opened under the bound, typed past it: the keystroke is refused, not published.
   host.editor.type(path, `${base}${'b'.repeat(128)}`);
