@@ -2613,6 +2613,14 @@ async function host(
   if (baseUrl === undefined || baseUrl === '') {
     return;
   }
+  // An invite link is not a server address: its query names the room and its token and its
+  // fragment is the room key, so a host that took one as a base would remember the key on its
+  // way to a failure. Refused here, before either, in the box's own words.
+  const refusedAddress = serverAddressRefusal(baseUrl);
+  if (refusedAddress !== undefined) {
+    void vscode.window.showErrorMessage(`Selvage: ${refusedAddress}`);
+    return;
+  }
   lastServer = baseUrl;
   await rememberServer(context, baseUrl);
   const displayName = await resolveDisplayName(args?.displayName, context);
@@ -3959,6 +3967,29 @@ async function resolveServerUrl(): Promise<{ url: string; fromMemory: boolean } 
 }
 
 /**
+ * Why a value in a server-address position is not a server address, or `undefined` when it is.
+ *
+ * The argument, the setting, the box's answer and the remembered address all take a server
+ * address, never an invite link: a link's query carries the room and its token and its fragment
+ * the room key, so accepting one here would write the key down and hand it to the next host as
+ * the address to dial. The paste is refused in the reader's own words instead, and nothing is
+ * remembered. What else a server address may not name is `sessionBase`'s judgement — the one
+ * reading of one the engine dials — rather than a second copy of that rule here.
+ */
+function serverAddressRefusal(value: string): string | undefined {
+  const text = value.trim();
+  if (text === '') {
+    return 'Enter the address the server printed when it started.';
+  }
+  if (sessionBase(normaliseServerUrl(text)) !== undefined) {
+    return undefined;
+  }
+  return text.includes('?') || text.includes('#')
+    ? 'that is an invite link, not a server address. Paste the address the server printed when it started, not the link you send to your guest.'
+    : 'that does not look like a server address. Paste the address the server printed when it started, e.g. selvage.example or ws://127.0.0.1:8080.';
+}
+
+/**
  * The first run's question, and the remembered address's change box: the same box either
  * way, starting from the demo default the first time and from the address in force when
  * it is changed. The value is what the next host reuses, so a change answers once.
@@ -3970,8 +4001,7 @@ function serverInput(value: string): vscode.InputBoxOptions {
     placeHolder: 'The address the server prints when it starts',
     value,
     ignoreFocusOut: true,
-    validateInput: (entry) =>
-      entry.trim() === '' ? 'Enter the address the server printed when it started.' : undefined,
+    validateInput: (entry) => serverAddressRefusal(entry),
   };
 }
 
@@ -4040,11 +4070,18 @@ async function changeServer(
 /**
  * Writes a server address the memento keeps for the next host, in memory and in
  * `globalState`, and confirms when it takes effect: never the live room, only the next host.
+ * A value that is not a server address is refused and says so rather than being written: this
+ * is the one path to the memento besides a host, so nothing else reaches it with a link.
  */
 async function writeServer(
   context: vscode.ExtensionContext | undefined,
   value: string,
 ): Promise<void> {
+  const refusedAddress = serverAddressRefusal(value);
+  if (refusedAddress !== undefined) {
+    void vscode.window.showErrorMessage(`Selvage: ${refusedAddress}`);
+    return;
+  }
   const address = normaliseServerUrl(value);
   lastServer = address;
   await rememberServer(context, address);

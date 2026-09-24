@@ -166,6 +166,82 @@ test('hosting on a bare host dials the completed address', async (t) => {
   );
 });
 
+/**
+ * An invite link is a room and its key, and neither is a server address.
+ *
+ * The address that reproduces the defect is the page invite a host copies —
+ * `https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY` — whose query carries the room
+ * and its token and whose fragment carries the room key and the host key. `normaliseServerUrl`
+ * leaves both on, so a paste of it used to be written into `selvage.lastServer` before the
+ * engine refused to dial it: the key on disk, in a window's memento, for a host that never
+ * happened. Every position an address is taken — the box's answer, the argument and the
+ * `Change the server` writes — refuses it now, in the words both clients use, and stores
+ * nothing.
+ */
+test('an invite link is refused as a server address, and never remembered', async (t) => {
+  const invite = 'https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY';
+  const refusal =
+    'that is an invite link, not a server address. Paste the address the server printed when it started, not the link you send to your guest.';
+  const bundle = freshActivated(t);
+  const stored = (): unknown => bundle.stub.globalState.get('selvage.lastServer');
+  const refused = (): string | false =>
+    bundle.stub.registered.errors.find((line: string) => line.includes('invite link, not a server address')) ??
+    false;
+  const failures = (): string[] =>
+    bundle.stub.registered.errors.filter((line: string) => line.includes('could not host'));
+  // The answer is refused or written down; either way the command is done with it, so what the
+  // memento holds can be read rather than sampled.
+  const handled = async (what: string): Promise<void> => {
+    await waitFor(what, () => refused() !== false || stored() !== undefined);
+  };
+
+  // The box the first host asks with, which is where someone who reached for the link by
+  // mistake pastes it. Nothing is remembered, and the shape the box does take is still taken.
+  bundle.stub.registered.inputReply = invite;
+  await bundle.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
+  const asked = await waitFor('the server question', () => bundle.stub.registered.inputs[0] ?? false);
+  const validate = asked.validateInput as (value: string) => string | undefined;
+  await handled('the answer to the box to be dealt with');
+  assert.equal(stored(), undefined, 'the invite link was remembered as the server to host on');
+  assert.equal(validate(invite), refusal, 'the box accepted an invite link as an address');
+  assert.equal(validate('https://selvage.example/#room=r'), refusal, 'a fragment alone was accepted');
+  assert.equal(validate('ws://127.0.0.1:8080'), undefined, 'a plain server address was refused');
+  assert.equal(await waitFor('the paste to be refused', refused), `Selvage: ${refusal}`);
+  assert.deepEqual(failures(), [], 'the invite link was dialled as a server address');
+
+  // The argument skips the box, so the refusal is the host's own: the same sentence, and still
+  // neither the memento nor this window's memory holds the link.
+  bundle.stub.registered.errors.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: invite,
+    displayName: 'Ada',
+  });
+  await handled('the argument to be dealt with');
+  assert.equal(stored(), undefined, 'an invite link given as an argument was remembered');
+  assert.equal(await waitFor('the argument to be refused', refused), `Selvage: ${refusal}`);
+  assert.deepEqual(failures(), [], 'an invite link given as an argument was dialled');
+
+  // The two writes `Change the server` performs: its argument, and the answer to its box.
+  bundle.stub.registered.errors.length = 0;
+  await bundle.stub.commands.executeCommand('selvage.changeServer', { serverUrl: invite });
+  await handled('the change to be dealt with');
+  assert.equal(stored(), undefined, 'an invite link passed to Change the server was remembered');
+  assert.equal(await waitFor('the argument to be refused', refused), `Selvage: ${refusal}`);
+
+  bundle.stub.registered.errors.length = 0;
+  bundle.stub.registered.informationReply = 'Change the server';
+  bundle.stub.registered.inputReply = invite;
+  await bundle.stub.commands.executeCommand('selvage.changeServer');
+  await handled('the answer to the change box to be dealt with');
+  assert.equal(stored(), undefined, 'an invite link answered into the box was remembered');
+  assert.equal(await waitFor('the answer to be refused', refused), `Selvage: ${refusal}`);
+  assert.equal(
+    bundle.stub.registered.information.some((line: string) => line.includes('will host on')),
+    false,
+    'the change was confirmed for an address that was not written',
+  );
+});
+
 test('a clipboard the editor refuses is reported rather than claimed', async (t) => {
   const server = await FakeServer.start();
   t.after(() => server.stop());
