@@ -444,6 +444,10 @@ test('a guest shares the mirror root and nothing else', () => {
   assert.equal(editor.register(doc('file', '/mirror/../escape.md')), undefined);
   // The mirror's own marker is bookkeeping, never a document.
   assert.equal(editor.register(doc('file', `/mirror/${MIRROR_MARKER}`)), undefined);
+  // Nor is the workspace's own configuration: the room's text saved there would be applied by
+  // this window's editor, so a document at one never carries the room's text.
+  assert.equal(editor.register(doc('file', '/mirror/.vscode/settings.json')), undefined);
+  assert.equal(editor.register(doc('file', '/mirror/team.code-workspace')), undefined);
   // No scheme from the old world names a document anymore.
   assert.equal(editor.register(doc('selvage', '/mirror/a.md')), undefined);
 });

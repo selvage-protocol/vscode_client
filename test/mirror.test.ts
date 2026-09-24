@@ -35,7 +35,16 @@ import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 // The adapter module loaded directly, with the editor API stubbed for its `Uri.file`.
 registerHooks(vscodeLoader);
-const { MIRROR_MARKER, mintMirror, mirrorRelative, openMirror, pruneRoom, readMarker, sanitiseRoom } =
+const {
+  MIRROR_MARKER,
+  isWorkspaceConfigPath,
+  mintMirror,
+  mirrorRelative,
+  openMirror,
+  pruneRoom,
+  readMarker,
+  sanitiseRoom,
+} =
   await import('../src/adapter/mirror.ts');
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0', meta: 'skip' } as const;
@@ -135,6 +144,52 @@ test('a path a listing may not carry creates nothing and is reported', async (t)
   const marker = readMarker(mirror.root);
   assert.equal(marker?.room, 'r-refuse', 'the marker was clobbered by the listing');
   assert.equal(marker?.window, 'w-refuse');
+});
+
+/**
+ * A guest's mirror is its window's workspace folder, so the room's `.vscode/` would be applied
+ * by the editor rather than shown: a host could set a setting that names a program, or a task
+ * that runs one. Red without the withholding at the materialiser: every path lands on disk.
+ */
+test('the room’s workspace configuration is withheld, not mirrored', (t) => {
+  const keep = storage(t);
+  const mirror = mintMirror(keep, 'r-config', { window: 'w-config', pid: process.pid });
+  const config = [
+    '.vscode/settings.json',
+    '.vscode/tasks.json',
+    'app/.vscode/launch.json',
+    'team.code-workspace',
+  ];
+  const report = mirror.materialise(['README.md', ...config]);
+  assert.deepEqual(report.mirrored, ['README.md']);
+  assert.deepEqual(report.refused, []);
+  assert.deepEqual(report.withheld.sort(), [...config].sort());
+  assert.equal(existsSync(join(mirror.root, '.vscode')), false, 'a .vscode directory was created');
+  assert.equal(existsSync(join(mirror.root, 'team.code-workspace')), false);
+});
+
+test('workspace configuration is recognised the way the guest’s filesystem names it', () => {
+  for (const path of [
+    '.vscode/settings.json',
+    '.VSCode/tasks.json',
+    '.vscode./settings.json',
+    '.vscode /settings.json',
+    'nested/.vscode/launch.json',
+    'Team.Code-Workspace',
+    'team.code-workspace.',
+  ]) {
+    assert.equal(isWorkspaceConfigPath(path), true, `${path} was not recognised`);
+  }
+  for (const path of [
+    'README.md',
+    '.vscode',
+    '.vscode-test/run.js',
+    'docs/vscode/settings.json',
+    'src/.vscoderc',
+    'code-workspace.md',
+  ]) {
+    assert.equal(isWorkspaceConfigPath(path), false, `${path} was withheld for no reason`);
+  }
 });
 
 test('a listing past the count bound refuses its excess', (t) => {

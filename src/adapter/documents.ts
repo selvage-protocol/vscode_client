@@ -20,7 +20,7 @@ import type {
 } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 import { grantedFile, grantedText, roomPathOf } from './grant.ts';
-import { MIRROR_MARKER, mirrorRelative, plainMirrorPath } from './mirror.ts';
+import { MIRROR_MARKER, isWorkspaceConfigPath, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
 
@@ -389,8 +389,13 @@ export class WorkspaceEditor implements EditorHost {
       if (uri.scheme !== 'file' || this.mirrorRoot === undefined) {
         return undefined;
       }
+      //
+      // Nor is the workspace's own configuration: the room's text saved into `.vscode/` would
+      // be applied by this window's editor, not just shown (`isWorkspaceConfigPath`).
       const rel = mirrorRelative(this.mirrorRoot, uri.fsPath);
-      return rel === undefined || rel === MIRROR_MARKER ? undefined : rel;
+      return rel === undefined || rel === MIRROR_MARKER || isWorkspaceConfigPath(rel)
+        ? undefined
+        : rel;
     }
     if (uri.scheme !== 'file') {
       return undefined;

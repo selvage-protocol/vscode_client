@@ -200,6 +200,40 @@ test('an untrusted workspace starts the extension without resuming a room', asyn
 });
 
 /**
+ * The reload a join makes opens the window on a mirror under this extension's own storage, and
+ * no repository can put a folder there, so that one window resumes untrusted: a guest can keep
+ * the room's folder in Restricted Mode, where nothing its host wrote into it runs. A folder shaped
+ * like a mirror anywhere else is still a folder a repository could carry, and still waits.
+ */
+test('an untrusted window opened on its own mirror resumes, and a look-alike does not', async (t: TestContext) => {
+  const bundle = loadBundle();
+  bundle.stub.reset();
+  const storage = testStoragePath(t);
+  const decoy = testStoragePath(t);
+  const leftover = staleMirror(storage);
+  const lookalike = staleMirror(decoy);
+
+  bundle.stub.isTrusted = false;
+  bundle.stub.setWorkspaceFolders([lookalike]);
+  bundle.activate({ subscriptions: [], globalStorageUri: bundle.stub.Uri.file(storage) });
+  assert.deepEqual(bundle.stub.registered.warnings, [], 'a look-alike folder resumed untrusted');
+  assert.equal(existsSync(leftover), true);
+  bundle.deactivate();
+
+  bundle.stub.reset();
+  bundle.stub.isTrusted = false;
+  bundle.stub.setWorkspaceFolders([leftover]);
+  bundle.activate({ subscriptions: [], globalStorageUri: bundle.stub.Uri.file(storage) });
+  t.after(() => {
+    bundle.deactivate();
+  });
+  await waitFor('the triage to run in the untrusted mirror window', () =>
+    existsSync(leftover) ? false : true,
+  );
+  assert.match(String(bundle.stub.registered.warnings[0]), /cleaned up the files left by the last session/);
+});
+
+/**
  * The resume waits for a name and then dials a room, and the window can go away while it
  * waits: the tear-down that runs then owns nothing, so a join that lands afterwards would
  * leave a live engine and a session that nothing disposed. The port the invite names is one

@@ -156,10 +156,14 @@ export interface MirrorMarker {
   displayName?: string;
 }
 
-/** What applying a listing did: what is on disk now, and what was refused. */
+/**
+ * What applying a listing did: what is on disk now, what was refused, and what was withheld
+ * on purpose because it is workspace configuration (`isWorkspaceConfigPath`).
+ */
 export interface MirrorReport {
   mirrored: string[];
   refused: string[];
+  withheld: string[];
 }
 
 /** What a republish did, beside the materialise pass: which files it removed. */
@@ -195,6 +199,31 @@ export interface Mirror {
   clearInvite(): void;
   /** Deletes the directory recursively: leaving the room deletes the whole cache at once. */
   remove(): void;
+}
+
+/**
+ * Whether a room path names a file VS Code reads as the workspace's own configuration: anything
+ * under a `.vscode` directory (settings, tasks, launch configurations, extension
+ * recommendations) or a `.code-workspace` file.
+ *
+ * A guest's mirror is the window's workspace folder, so such a file is not just a document there:
+ * the editor applies its settings and offers its tasks and launch configurations the moment the
+ * room's text is saved into it, and in a trusted window a setting can name a program to run. The
+ * room's host chose that text, and joining a room is not agreeing to run what its host writes, so
+ * a guest neither mirrors these paths nor shares a document at one. `PROTOCOL.md` §12 has a listed
+ * path be a candidate and never a promise, so leaving one out is the receiver's decision to make.
+ *
+ * The comparison folds case and ignores trailing dots and spaces, because the filesystems a
+ * guest runs on do: `.VSCode/` on macOS and `.vscode./` on Windows are the same directory.
+ */
+export function isWorkspaceConfigPath(path: string): boolean {
+  const segments = path.split('/').map((segment) => segment.toLowerCase().replace(/[. ]+$/, ''));
+  const leaf = segments.length - 1;
+  return segments.some(
+    (segment, index) =>
+      (index < leaf && segment === '.vscode') ||
+      (index === leaf && segment.endsWith('.code-workspace')),
+  );
 }
 
 /** A room id as one path segment, the way the Neovim mirror names it. */
@@ -358,9 +387,14 @@ function handle(room: string, window: string, root: string): Mirror {
     materialise(listing: readonly string[]): MirrorReport {
       const mirrored: string[] = [];
       const refused: string[] = [];
+      const withheld: string[] = [];
       listing.forEach((path, index) => {
         if (index >= MAX_GRANT_PATHS || !isGrantedPath(path) || path === MIRROR_MARKER) {
           refused.push(path);
+          return;
+        }
+        if (isWorkspaceConfigPath(path)) {
+          withheld.push(path);
           return;
         }
         if (materialiseOne(root, path)) {
@@ -369,7 +403,7 @@ function handle(room: string, window: string, root: string): Mirror {
           refused.push(path);
         }
       });
-      return { mirrored, refused };
+      return { mirrored, refused, withheld };
     },
     republish(listing: readonly string[], held: (path: string) => boolean): RepublishReport {
       const applied = this.materialise(listing);

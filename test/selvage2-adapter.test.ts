@@ -831,8 +831,8 @@ function viewerSession(
     window: 'w-1',
     root: MIRROR_ROOT,
     uri: bundle.stub.Uri.file(MIRROR_ROOT),
-    materialise: () => ({ mirrored: [], refused: [] }),
-    republish: () => ({ mirrored: [], refused: [], removed: [] }),
+    materialise: () => ({ mirrored: [], refused: [], withheld: [] }),
+    republish: () => ({ mirrored: [], refused: [], withheld: [], removed: [] }),
     clearInvite: () => undefined,
     remove: () => {
       mirrorRemoved += 1;

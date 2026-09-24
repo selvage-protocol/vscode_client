@@ -46,6 +46,7 @@ import {
 export { resolveViewRows };
 import {
   MIRROR_MARKER,
+  isWorkspaceConfigPath,
   mintMirror,
   mirrorRelative,
   openMirror,
@@ -232,8 +233,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // dials a room, moves the window onto the mirror and clears leftovers, so it waits for a
   // window the person has trusted. One who trusts the workspace afterwards gets the triage
   // then, which is the way VS Code's own documentation says to keep a trust-gated feature.
+  //
+  // The one untrusted window that resumes is one opened on a mirror this extension minted: a
+  // folder under its own storage, which no repository can put there. That is the reload a join
+  // makes, and it lands without asking for trust, so a guest can keep the room's folder in
+  // Restricted Mode, where nothing the room's host wrote into it is run.
   if (storageUri !== undefined) {
-    if (vscode.workspace.isTrusted) {
+    if (vscode.workspace.isTrusted || windowIsOwnMirror(storageUri)) {
       void triageMirrors(storageUri, context);
     } else {
       context.subscriptions.push(
@@ -245,6 +251,22 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }
   }
+}
+
+/**
+ * Whether the window is open on one mirror directory this extension minted, and nothing else:
+ * one `file:` folder at `<storage>/rooms/<room>/<window>`. The path decides it, not a marker in
+ * the folder, because a marker is a file any repository can carry and the storage directory is
+ * not somewhere a repository can put one.
+ */
+export function windowIsOwnMirror(storage: vscode.Uri): boolean {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const only = folders[0];
+  if (folders.length !== 1 || only === undefined || only.uri.scheme !== 'file') {
+    return false;
+  }
+  const rel = mirrorRelative(vscode.Uri.joinPath(storage, 'rooms').fsPath, only.uri.fsPath);
+  return rel !== undefined && rel.split('/').length === 2;
 }
 
 export function deactivate(): void {
@@ -556,6 +578,8 @@ export class Session {
    * closes, so a reopen is judged afresh.
    */
   private readonly refusedPutBacks = new Set<string>();
+  /** Whether this session has said that the room's workspace configuration is withheld. */
+  private saidWithheld = false;
   /** The one flush the interval allows, while one is armed. */
   private selectionTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -1502,7 +1526,7 @@ export class Session {
     if (this.mirror === undefined) {
       return undefined;
     }
-    if (!isGrantedPath(path) || path === MIRROR_MARKER) {
+    if (!isGrantedPath(path) || path === MIRROR_MARKER || isWorkspaceConfigPath(path)) {
       return undefined;
     }
     return vscode.Uri.joinPath(this.mirror.uri, ...path.split('/'));
@@ -1905,6 +1929,15 @@ export class Session {
       return;
     }
     const applied = this.mirror.republish(paths, (path) => this.held(path));
+    // Workspace configuration is left out on purpose, not for want of a disk, so it is said
+    // apart from a failure and once per session: most hosts share a `.vscode/`.
+    if (applied.withheld.length > 0 && !this.saidWithheld) {
+      this.saidWithheld = true;
+      const first = applied.withheld[0] ?? '';
+      void vscode.window.showInformationMessage(
+        `Selvage: the room's workspace settings (${first}${applied.withheld.length > 1 ? ` and ${applied.withheld.length - 1} more` : ''}) are not put in this window, because VS Code would apply them rather than just show them.`,
+      );
+    }
     if (applied.refused.length > 0) {
       const first = applied.refused[0] ?? '';
       void vscode.window.showWarningMessage(
