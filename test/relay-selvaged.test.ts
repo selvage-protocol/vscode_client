@@ -11,17 +11,22 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 
+import { SessionBridge } from '../src/bridge/bridge.ts';
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { parseInvite } from '../src/engine/peer.ts';
 import { RelaySession } from '../src/engine/relay.ts';
 import type { RelayEvent } from '../src/engine/relay.ts';
+
+import { FakeEditor } from './helpers/fake-editor.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
 
 const PATH = 'notes.txt';
 const OTHER = 'src/main.rs';
 const SEED = 'a room two relays share\n';
+const DISK = 'the working copy the host reads for it\n';
 
 /** A host and a guest, and the invite between them, seated over the real server. */
 async function pair(server: RealServer): Promise<{ host: RelaySession; guest: RelaySession }> {
@@ -254,7 +259,6 @@ test('selvage/2: the page-link form joins the same room', async (t) => {
   assert.deepEqual(listed, [PATH]);
 });
 
-
 test('selvage/2: the engine facade hosts, joins, grants and exchanges an edit', async (t) => {
   const server = await RealServer.start();
   t.after(async () => {
@@ -327,4 +331,88 @@ test('selvage/2: the engine facade hosts, joins, grants and exchanges an edit', 
     return record?.state?.selection !== undefined ? record : false;
   });
   assert.equal(seen.clientId, seen.peer?.awareness_client_id);
+});
+
+/**
+ * Read-on-hold through a window that was already open: the shape the browser client's in-room
+ * driver met, and the one path in this suite where the *host* owes a state rather than a guest.
+ *
+ * §7.1 folds an announcement accepted inside a window a state already went out for: the host
+ * commits the key and answers at the end of that window. §13.1's step 4 lets a client send nothing
+ * but its announcement until a state commits its key, so the folded guest's holds (§13.7) wait on
+ * that state — and a window whose end the host's own timer misses by a whole window leaves the
+ * guest unable to publish for two, which is a path the room never hears about and a file the host
+ * never reads.
+ *
+ * The two guests differ in their renewal clock on purpose: the second one's own re-announcement is
+ * ten windows away, so the state that commits its key can only be the host discharging the fold.
+ * The window is compressed the way the conformance suite compresses it.
+ */
+test('selvage/2: a guest folded into the host\'s window is committed inside it', async (t) => {
+  const WINDOW = 600;
+  const server = await RealServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  let listing: readonly string[] = [PATH, OTHER];
+  const host = await PeerEngine.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing: {
+      current: () => listing,
+      replace: (paths) => {
+        listing = [...paths];
+      },
+    },
+    keepalive: { awareness_renew_ms: WINDOW, awareness_expire_ms: 60_000 },
+  });
+  const editor = new FakeEditor();
+  editor.disk.set(OTHER, DISK);
+  const bridge = new SessionBridge({ engine: host, host: editor, autoSave: false });
+  editor.attach(bridge);
+  t.after(async () => {
+    bridge.dispose();
+    host.disconnect();
+  });
+  const invite = host.inviteUrl();
+  assert.ok(invite !== undefined);
+
+  // A guest whose renewal clock is far longer than the host's window: nothing it sends on its own
+  // clock can commit its key, so the deadline under test is the host's alone.
+  const slow = { awareness_renew_ms: WINDOW * 10, awareness_expire_ms: WINDOW * 100 };
+  const first = await PeerEngine.join({ invite, displayName: 'Bob', keepalive: slow });
+  t.after(() => {
+    first.disconnect();
+  });
+  // The answered announcement that opens the window.
+  await waitFor('the first guest to be committed', () => first.appliedRole() ?? false, {
+    describe: () => ({ documents: first.session().documents }),
+  });
+  const opened = Date.now();
+  await delay(Math.round(WINDOW / 4));
+
+  const folded = await PeerEngine.join({ invite, displayName: 'Cy', keepalive: slow });
+  t.after(() => {
+    folded.disconnect();
+  });
+  await folded.open(OTHER);
+  await waitFor('the folded guest to be committed', () => folded.appliedRole() ?? false, {
+    timeoutMs: WINDOW * 4,
+    describe: () => ({ documents: folded.session().documents, held: folded.session().documents }),
+  });
+  const took = Date.now() - opened;
+  assert.ok(
+    took <= WINDOW + Math.round(WINDOW / 2),
+    `the folded guest was committed ${took}ms after the window opened, more than one ${WINDOW}ms window`,
+  );
+
+  // And the hold it could only publish once committed is what makes the host read its own copy.
+  await waitFor('the host to read its working copy', () => editor.reads.includes(OTHER) || false, {
+    describe: () => ({ reads: [...editor.reads], documents: host.session().documents }),
+  });
+  const arrived = await waitFor('the host\'s copy to reach the guest', () => {
+    const text = folded.text(OTHER);
+    return text === DISK ? text : false;
+  });
+  assert.equal(arrived, DISK);
 });

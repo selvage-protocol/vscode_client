@@ -378,6 +378,27 @@ export class HostProducer {
     this.owed = true;
   }
 
+  /**
+   * The clock at which §7.1's window next lets this host answer an announcement it has folded,
+   * or `undefined` when it owes no state.
+   *
+   * A window this host is waiting on began when a state went out for an announcement, which is
+   * the moment the announcement arrived and not a tick. A caller whose timer runs on the window
+   * itself can therefore miss the end of it by a whole window, and this is the instant it arms
+   * itself for instead. The deadline is reported once it has passed as well as before: the tick
+   * that lives inside this session can arrive a hair early for the window it is waiting on, and
+   * the state is still owed then.
+   */
+  owedAt(): number | undefined {
+    if (!this.owed || !this.ready() || this.windowFrom === undefined) {
+      return undefined;
+    }
+    // The end of the window, whether it has passed or not. A tick can reach it inside the same
+    // millisecond as this clock and be refused by the window it is a hair early for; the state is
+    // still owed then, and the caller has to come back rather than wait out its ordinary grid.
+    return this.windowFrom + this.renew;
+  }
+
   /** A state this host verified, whose edition its own series must stay above (§7.1). */
   verifiedState(issued: number): void {
     if (Number.isSafeInteger(issued) && issued > this.verified) {

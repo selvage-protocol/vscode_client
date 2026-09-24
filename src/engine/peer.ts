@@ -926,6 +926,45 @@ export class PeerSession {
     return this.serial(() => this.tickOne(clock));
   }
 
+  /**
+   * The next clock at which a tick has something to do that cannot wait for the renewal window,
+   * or `undefined` when the ordinary window is the next thing due.
+   *
+   * Two of the session's deadlines start from an event rather than from the tick grid: §7.1's
+   * publish window opens when a state went out for an announcement, and §13.1's step 4 renewal is
+   * due a window after the announce that set it. Both are stated in `awareness_renew_ms`, so a
+   * caller whose timer runs on that same number observes each of them up to a window late — and
+   * the first is what leaves a guest whose announcement was folded into the window unable to
+   * publish anything, its holds included (§13.7), for two windows instead of one. The other clocks
+   * are due a window after something this session published, which a tick on the window observes.
+   *
+   * A deadline is reported whether or not it has already passed. A tick that runs inside the same
+   * millisecond as the deadline can find the window a hair short of open, and a caller that then
+   * waited out its ordinary window would be a whole one late for a state it is still owed.
+   */
+  nextDeadline(): number | undefined {
+    if (this.ending !== undefined || this.detached) {
+      return undefined;
+    }
+    let soonest = this.host?.owedAt();
+    // A host has no announcement to renew: the state it published at mint commits its own key.
+    // The conditions are `reannounce`'s own, so that a deadline is only stated for a tick that
+    // would act on it — one stated for a tick that would return does not advance, and a caller
+    // arming itself for it would come back for ever.
+    if (
+      this.host === undefined &&
+      !this.commitsOurs() &&
+      !this.mutating('announce-once') &&
+      this.announcedAt !== undefined
+    ) {
+      const due = this.announcedAt + this.renew;
+      if (soonest === undefined || due < soonest) {
+        soonest = due;
+      }
+    }
+    return soonest;
+  }
+
   private async tickOne(clock: number): Promise<void> {
     this.clockOfLastMove = clock;
     this.host?.flushFrames(clock);

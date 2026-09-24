@@ -177,7 +177,20 @@ export class RelaySession {
   private session: PeerSession | undefined;
   private info: RelaySessionInfo | undefined;
   private start = 0;
-  private timer: ReturnType<typeof setInterval> | undefined;
+  /** The tick armed for whichever is sooner: the renewal grid, or a deadline the session owes. */
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  /** The renewal window, which is the grid every ordinary clock of the session is due on. */
+  private tickWindow = 0;
+  /**
+   * The clock of the next ordinary tick.
+   *
+   * It is a grid and not a delay: a tick is armed here for the *next* window since the last one,
+   * so a caller that pumps for its own reasons — an open, a frame that arrived — does not put the
+   * renewal clocks off. A room where somebody types continuously delivers frames far more often
+   * than a window, and a timer restarted on each of them would renew nothing for as long as they
+   * typed.
+   */
+  private tickAt = 0;
   private pendingInvite: string | undefined;
   private ending: RelayEnding | undefined;
   private fault: string | undefined;
@@ -498,12 +511,9 @@ export class RelaySession {
     }
     this.session = session;
     this.fault ??= session.failure;
-    this.timer = setInterval(() => {
-      void this.pump();
-    }, keepalive.awareness_renew_ms);
-    // The session's clock is the relay's own interval, and `disconnect` clears it; a caller that
-    // never disconnects would otherwise hold its process open for as long as the session lives.
-    unrefTimer(this.timer);
+    this.tickWindow = keepalive.awareness_renew_ms;
+    this.tickAt = this.clock() + this.tickWindow;
+    this.arm(this.clock());
     this.emit({ type: 'seated' });
     // §13.1's step 4: a guest's announcement belongs at the join, and a host's first state is
     // already in the outbound queue, so both go out on this tick rather than on a timer the
@@ -813,7 +823,7 @@ export class RelaySession {
     this.destroyed = true;
     this.clearRetry();
     if (this.timer !== undefined) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
     // A dial in flight is this connection's own; superseding it keeps its socket from being
@@ -1071,6 +1081,10 @@ export class RelaySession {
     }
     this.report();
     this.drainOutbound();
+    // A frame can be what changes what the session owes — an announcement it cannot answer yet
+    // is folded into §7.1's window as it is delivered — so the tick is armed again here and not
+    // only after a tick, or the deadline that fold just set would wait for the old one.
+    this.arm(this.clock());
   }
 
   private async process(frame: QueuedFrame): Promise<void> {
@@ -1156,6 +1170,39 @@ export class RelaySession {
     this.fault ??= session.failure;
     this.report();
     this.drainOutbound();
+    const now = this.clock();
+    if (now >= this.tickAt) {
+      this.tickAt = now + this.tickWindow;
+    }
+    this.arm(now);
+  }
+
+  /**
+   * Arms the next tick at whichever comes first: the ordinary renewal grid, or a deadline the
+   * session declares.
+   *
+   * The window is the grid every ordinary clock of the session is due on, and it is also the
+   * length of the two deadlines stated in it — §7.1's publish window and §13.1's step 4 renewal —
+   * each of which starts at an event rather than on a tick. A timer that ran on the window alone
+   * would observe one of those up to a whole window late; asking the session what it owes is what
+   * keeps a deadline stated in windows inside one. Every timer the engine starts is unreferenced,
+   * so a session that is never destroyed never holds its process open.
+   */
+  private arm(clock: number): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    if (this.destroyed || this.ending !== undefined) {
+      return;
+    }
+    const deadline = this.session?.nextDeadline();
+    const at = deadline === undefined || deadline > this.tickAt ? this.tickAt : deadline;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.pump();
+    }, Math.max(1, at - clock));
+    unrefTimer(this.timer);
   }
 
   private drainOutbound(): void {
