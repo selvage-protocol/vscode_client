@@ -76,7 +76,11 @@ class MemoryStore implements HostStore {
   }
 
   save(persisted: PersistedHost): void {
-    this.saved = { hostSeed: Uint8Array.from(persisted.hostSeed), issued: persisted.issued };
+    this.saved = {
+      hostSeed: Uint8Array.from(persisted.hostSeed),
+      issued: persisted.issued,
+      ...(persisted.frames === undefined ? {} : { frames: persisted.frames }),
+    };
   }
 }
 
@@ -304,6 +308,41 @@ test('a host that reaches the frame budget publishes its closing and ends', asyn
   const frame = await opened(out[0] as Uint8Array);
   assert.equal(frame.envelope.kind, 2);
   assert.equal(peer.end, 'frame-budget');
+});
+
+test('a host continues the frame count it saved, and ends at the budget from there', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 5, frames: 10 };
+  // CANONICAL.md §6.1: the host's count is the room's, so a reload continues it rather than
+  // starting at 0. The mint state and its handshake take it to the budget of 12.
+  const { peer } = await hostHosting(['README.md'], { frameBudget: 12 }, store);
+  assert.equal(peer.takeOutbound().length, 2);
+  await peer.tick(1);
+  assert.equal(peer.end, 'frame-budget', 'from the saved count, not from zero');
+});
+
+test('a host writes its moving frame count at least once a renewal interval', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  await peer.tick(0);
+  assert.equal(store.saved?.frames, 2, 'the mint state and its handshake, written on the tick');
+  await peer.deliver(1, await announce(now.peer, 1, 'guest'));
+  await peer.tick(RENEW_MS + 1);
+  assert.ok((store.saved?.frames ?? 0) >= 3, 'the delivered announcement is in the saved count');
+  assert.equal(store.saved?.issued, peer.issued, 'written beside `issued`');
+});
+
+test('a host store written before the frame count existed still loads', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 3 };
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  assert.equal(peer.issued, 4, 'the `issued` series continues');
+  await peer.tick(0);
+  assert.equal(store.saved?.frames, 2, 'and the count starts where a mint would');
 });
 
 // --- the roster -------------------------------------------------------------------

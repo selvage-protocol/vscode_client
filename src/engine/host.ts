@@ -56,12 +56,20 @@ export const MAX_LISTING_PATHS = 100_000;
 /** §13.3's third bound: the path bytes one listing may carry. */
 export const MAX_LISTING_BYTES = 4 * 1024 * 1024;
 
-/** The two values §7.1 has a host keep together: the host key, and its `issued` beside it. */
+/**
+ * What §7.1 has a host keep together: the host key, its `issued` beside it, and the room's frame
+ * count (`CANONICAL.md` §6.1).
+ */
 export interface PersistedHost {
   /** The host key's 32-byte seed — the private half of the `h` the fragment carries. */
   readonly hostSeed: Uint8Array;
   /** The highest `issued` this host has published. */
   readonly issued: number;
+  /**
+   * The room's frame count as this host has kept it since the mint (`CANONICAL.md` §6.1's frame
+   * budget). Optional so that a value saved before the count existed still loads, as `0`.
+   */
+  readonly frames?: number;
 }
 
 /**
@@ -149,6 +157,11 @@ export class HostProducer {
 
   /** The highest `issued` this host has published. */
   private issued = 0;
+  /** `CANONICAL.md` §6.1: the room's frame count, which the host's session keeps from the mint. */
+  private frames = 0;
+  /** The count the store last holds, and the clock it was written at. */
+  private savedFrames = 0;
+  private savedAt: number | undefined;
   /** The highest `issued` a state this host verified carried (§7.1). */
   private verified = 0;
   private hostCounter = 0;
@@ -206,11 +219,16 @@ export class HostProducer {
     if (
       persisted !== undefined &&
       persisted.hostSeed.length === 32 &&
-      bytesEqual(persisted.hostSeed, host.seed) &&
-      Number.isSafeInteger(persisted.issued) &&
-      persisted.issued > 0
+      bytesEqual(persisted.hostSeed, host.seed)
     ) {
-      producer.issued = persisted.issued;
+      if (Number.isSafeInteger(persisted.issued) && persisted.issued > 0) {
+        producer.issued = persisted.issued;
+      }
+      const frames = persisted.frames;
+      if (frames !== undefined && Number.isSafeInteger(frames) && frames > 0) {
+        producer.frames = frames;
+        producer.savedFrames = frames;
+      }
     }
     return producer;
   }
@@ -228,6 +246,30 @@ export class HostProducer {
   /** The highest `issued` this host has published. */
   get publishedIssued(): number {
     return this.issued;
+  }
+
+  /** The room's frame count this host continues from: `0` at a mint, the stored one on a reload. */
+  get roomFrames(): number {
+    return this.frames;
+  }
+
+  /** The session's count as it moves, kept here so every save writes it beside `issued`. */
+  countFrames(count: number): void {
+    this.frames = count;
+  }
+
+  /**
+   * `CANONICAL.md` §6.1: the count is written at least once every `awareness_renew_ms` while it
+   * moves, so a host that dies loses at most one renewal interval of it.
+   */
+  flushFrames(clock: number): void {
+    if (this.frames === this.savedFrames) {
+      return;
+    }
+    if (this.savedAt !== undefined && clock - this.savedAt < this.renew) {
+      return;
+    }
+    this.save(clock);
   }
 
   /** §7.1's own entry: exactly one key has role `host` and it is this connection's. */
@@ -427,7 +469,16 @@ export class HostProducer {
 
   private commitSeries(issued: number): void {
     this.issued = issued;
-    this.store?.save({ hostSeed: this.host.seed, issued });
+    this.save(this.savedAt);
+  }
+
+  private save(clock: number | undefined): void {
+    if (this.store === undefined) {
+      return;
+    }
+    this.store.save({ hostSeed: this.host.seed, issued: this.issued, frames: this.frames });
+    this.savedFrames = this.frames;
+    this.savedAt = clock;
   }
 
   /** §7.1's rate bound: the window the last published state opened. */
