@@ -948,7 +948,15 @@ export class PeerSession {
     }
     let soonest = this.host?.owedAt();
     // A host has no announcement to renew: the state it published at mint commits its own key.
-    if (this.host === undefined && !this.commitsOurs() && this.announcedAt !== undefined) {
+    // The conditions are `reannounce`'s own, so that a deadline is only stated for a tick that
+    // would act on it — one stated for a tick that would return does not advance, and a caller
+    // arming itself for it would come back for ever.
+    if (
+      this.host === undefined &&
+      !this.commitsOurs() &&
+      !this.mutating('announce-once') &&
+      this.announcedAt !== undefined
+    ) {
       const due = this.announcedAt + this.renew;
       if (soonest === undefined || due < soonest) {
         soonest = due;
