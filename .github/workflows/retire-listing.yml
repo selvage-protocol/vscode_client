@@ -12,13 +12,26 @@ name: retire-listing
 # and the comparison below is what makes the input safe: anything but the retired ID is
 # refused before a credential is fetched.
 #
+# `replacement_not_required_reason` exists because the guard that waits for the replacement is
+# unsatisfiable in the order the rename actually needs. The Marketplace enforces display name
+# uniqueness across the whole gallery, and `Selvage` is the display name
+# `selvage-protocol.selvage-client` already holds, so `vsce publish` of
+# `selvage-protocol.selvage` is refused — "This extension display name is taken" — until the
+# old listing is gone. Retiring first is therefore the only order that frees the name, and in
+# that order the replacement cannot be live yet, which is exactly the run that guard refuses.
+# A non-empty value is a person saying, in the run's own record and out loud in the log, why
+# the replacement cannot be live first; it skips that one check and nothing else, and the ID
+# check above still runs.
+#
 # `--azure-credential` is the same federated path the release workflow publishes with, so no
 # token is stored for this either: the job runs under the `marketplace` environment, whose name
 # is part of the OIDC subject the Microsoft Entra ID app registration is registered against,
 # and `vsce unpublish` exchanges the job's token for a credential the same way `vsce publish`
-# does. Because there is no terminal to answer `vsce`'s typed confirmation with, the two guards
-# — the input, and the replacement having to be live first — plus the environment are what
-# stand in for it, and `--force` skips the prompt rather than removing a check.
+# does. Because there is no terminal to answer `vsce`'s typed confirmation with, the input, the
+# replacement having to be live first and the environment stand in for it, and `--force` skips
+# the prompt rather than removing a check. The override above is the one exception, and it is
+# narrow on purpose: it drops the replacement check for the run that frees the display name,
+# because no run can satisfy it there. The ID check and the environment are untouched.
 #
 # Two jobs, for the reason the release workflow has two: `id-token: write` is held only by
 # `retire`, which installs nothing, and the one step that runs code from a registry —
@@ -31,6 +44,9 @@ on:
       extension_id:
         description: "The listing to retire (must be selvage-protocol.selvage-client)"
         required: true
+      replacement_not_required_reason:
+        description: "Non-empty lets the run proceed while the replacement is not live, and is printed; say why the name has to be freed first"
+        required: false
 
 concurrency:
   group: retire-listing
@@ -114,7 +130,23 @@ jobs:
       # code. It is asked of the Marketplace rather than of this checkout, because the
       # Marketplace is where the replacement has to have arrived before the only listing that
       # can be deleted is deleted.
+      #
+      # The one way past it is a non-empty `replacement_not_required_reason`, which is the
+      # display-name collision the input's own comment in the header describes: the name is
+      # held by the listing this run deletes, so the replacement cannot be live until the
+      # delete has happened, and the guard below would refuse the only run that frees it. With
+      # a reason given the guard step is skipped rather than quietly passing, and the reason is
+      # said out loud in a step of its own, so the run's log shows which order was taken and
+      # why.
+      - name: proceed without a live replacement, on the reason given
+        if: inputs.replacement_not_required_reason != ''
+        env:
+          REPLACEMENT_NOT_REQUIRED_REASON: ${{ inputs.replacement_not_required_reason }}
+        run: |
+          printf 'proceeding without a live %s: %s\n' "$REPLACEMENT_ID" "$REPLACEMENT_NOT_REQUIRED_REASON"
+
       - name: refuse while the replacement listing is not live
+        if: inputs.replacement_not_required_reason == ''
         run: |
           node ./vsce-publish/node_modules/@vscode/vsce/vsce show "$REPLACEMENT_ID" --json > replacement.json
           node - <<'JS'
