@@ -2661,9 +2661,18 @@ async function host(
     }
     return;
   }
-  current = new Session(engine, {
+  const seated = new Session(engine, {
     listing: minted,
   });
+  if (deactivated) {
+    // The window went away while the connect was in flight. The seat is nobody's: it is given
+    // back through the same teardown a live session gets, rather than left connected and
+    // unowned by a window that will never dispose it — which is what a command that outlives
+    // its window would otherwise leave behind, and what the join's own guard refuses too.
+    void seated.dispose();
+    return;
+  }
+  current = seated;
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();

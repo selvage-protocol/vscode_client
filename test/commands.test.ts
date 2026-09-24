@@ -970,6 +970,51 @@ test('the setting is checked before it is sent, and the question asks for a shor
   assert.deepEqual(server.displayNames(), ['Ada'], 'the refused setting reached the server');
 });
 
+/**
+ * The seat a host command takes, when the window it was started in is gone by the time the
+ * connect finishes: it is given back rather than left connected. The real window this models
+ * is one closed while the room was still being dialled, and the harness reaches the same
+ * state by holding the folder walk — the read the connect waits on — until after the
+ * window's own teardown.
+ *
+ * What the seat being given back costs when it is not: a live connection nobody disposes,
+ * and a session a join in the window that comes next reads as one it is already in.
+ */
+test('a host connect that outlives its window gives the seat back', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+
+  // The folder is walked before the mint, so holding the first read holds the connect
+  // before its socket: nothing is dialled yet, and the window can go first.
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  bundle.stub.registered.readHold = () => held;
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the folder walk to be held', () =>
+    bundle.stub.registered.listings > 0 ? true : false,
+  );
+
+  bundle.deactivate();
+  release();
+
+  // The connect completes into a window that is gone: it is dialled, accepted, and given
+  // back — a connection left open here is one this window will never dispose.
+  await waitFor(
+    'the connect to be given back',
+    () => (server.acceptedConnections > 0 && server.connectionCount === 0 ? true : false),
+    { describe: () => ({ accepted: server.acceptedConnections, open: server.connectionCount }) },
+  );
+});
+
 test('the peers command refuses outside a session and in a room with no one else', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
