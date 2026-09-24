@@ -35,7 +35,8 @@ import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts
 import { ProtocolError } from './errors.ts';
 import { DEFAULT_RECONNECT, attemptsForGrace } from './reconnect.ts';
 import type { ReconnectPolicy } from './reconnect.ts';
-import { fetchMeta } from './meta.ts';
+import { fetchMeta, joinRefusal } from './meta.ts';
+import type { Meta } from './envelope.ts';
 import { sessionBase, parseSessionUrl, sessionUrl } from './urls.ts';
 import type { SessionBase } from './urls.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from './presence.ts';
@@ -329,10 +330,17 @@ export class RelaySession {
       throw new Error('the invite does not address a session endpoint');
     }
     this.invitePair = { roomId: invite.room, roomKey: invite.roomKey, hostKey: invite.hostKey };
-    // §9.1: the room's own grace is what the retry budget has to span, read the way the
-    // version-1 engine reads it. Best effort — an unreachable `/meta` decides nothing — and it
-    // is awaited so a drop immediately after the join still finds the budget in place.
-    await this.applyGrace(parsed.base, options);
+    // `/meta` is the one check that precedes a socket (§10). This invite names `selvage/2`, and
+    // a reachable `/meta` that seats no version at that major is refused here, before anything
+    // is dialled, and never fallen back from (§2). The same read is where §9.1's grace comes
+    // from, and it is awaited so a drop immediately after the join still finds the budget in
+    // place. An unreachable `/meta` decides neither: the handshake does.
+    const meta = await this.readMeta(parsed.base, options);
+    const refusal = joinRefusal(meta, parsed.base);
+    if (refusal !== undefined) {
+      throw new ProtocolError('unsupported_version', refusal);
+    }
+    this.applyGrace(meta);
     const info = await this.dial(options, parsed.base, invite.socketUrl, options.displayName);
     this.info = info;
     await this.seat(options, {
@@ -351,19 +359,9 @@ export class RelaySession {
    * reaped answers `room_unknown` — terminal — while a budget that gave up early would lose a
    * room that was still joinable.
    */
-  private async applyGrace(base: SessionBase, options: RelayOptions): Promise<void> {
+  private applyGrace(meta: Meta | undefined): void {
     // An explicit budget is the caller's, exactly as the version-1 engine reads it.
-    if (!this.reconnect.enabled || this.maxAttemptsGiven) {
-      return;
-    }
-    let meta;
-    try {
-      meta = await fetchMeta(
-        base,
-        options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-      );
-    } catch {
-      // Unreachable or not JSON: not an answer about the room's grace.
+    if (meta === undefined || !this.reconnect.enabled || this.maxAttemptsGiven) {
       return;
     }
     const graceMs = numberField(meta.keepalive, 'room_grace_ms');
@@ -371,6 +369,18 @@ export class RelaySession {
       return;
     }
     this.retryBudget = Math.max(this.retryBudget, attemptsForGrace(graceMs, this.reconnect));
+  }
+
+  /** `GET /meta`, or `undefined` when it is unreachable or not JSON: no answer, not a refusal. */
+  private async readMeta(base: SessionBase, options: RelayOptions): Promise<Meta | undefined> {
+    try {
+      return await fetchMeta(
+        base,
+        options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   /** Opens the socket, says `session.hello` at `selvage/2`, and waits to be seated. */

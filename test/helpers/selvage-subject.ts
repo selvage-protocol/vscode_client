@@ -28,6 +28,8 @@ import { nodeCrypto } from '../../src/node/crypto.ts';
 import { parseInvite, PeerSession } from '../../src/engine/peer.ts';
 import type { PeerOptions } from '../../src/engine/peer.ts';
 import { fromHex } from '../../src/engine/sealed.ts';
+import { hostVersion, joinRefusal } from '../../src/engine/meta.ts';
+import type { Meta } from '../../src/engine/envelope.ts';
 
 /** How often the session's clocks are run while the caller is not asking for anything. */
 const TICK_MS = 10;
@@ -39,6 +41,22 @@ interface Running {
 }
 
 let running: Running | undefined;
+
+/**
+ * A join seated as `selvage/1`'s peer rather than as a sealed session: the link a client pinned
+ * there names, or the fall-back a link mutation removes the guard against. This subject speaks
+ * no clear wire offline, so such a seat reads no key and reports nothing — which is all a
+ * decision vector can ask of it, since a refusal has no frame either.
+ */
+let clear = false;
+
+/**
+ * The guards on the link (`runner/subject.py`'s `LINK_MUTATIONS`), removed before the `join` that
+ * reads it: §5.1's fragment and §2/§10's version gate are decided before a session exists, so
+ * they are held here until the next `join` and not handed to a session that is not there yet.
+ */
+const LINK_MUTATIONS = new Set(['accept-partial-fragment', 'fall-back-to-version-1']);
+const linkMutations = new Set<string>();
 
 /** §13.8's clock: this client's own monotone elapsed time from its seat. */
 function clock(now: Running): number {
@@ -162,13 +180,49 @@ function seed(value: string): Uint8Array {
   return raw;
 }
 
+/** What `GET /meta` answered, as the runner hands it over, or `undefined` for no answer. */
+function metaOf(command: Command): Meta | undefined {
+  const meta = command['meta'];
+  return typeof meta === 'object' && meta !== null && !Array.isArray(meta) ? (meta as Meta) : undefined;
+}
+
 /** Seats a session: the invite's two keys, the session's clock, and the seats the relay showed. */
 async function join(command: Command): Promise<void> {
   if (command['offline'] !== true) {
     throw new Error('this subject opens no socket: `join` needs `"offline": true`');
   }
-  const read = parseInvite(text(command, 'invite'));
+  if (running !== undefined || clear) {
+    throw new Error('a session is already running');
+  }
+  const invite = text(command, 'invite');
+  const meta = metaOf(command);
+  // §2: a client pinned to `selvage/1` joins the link that version names, reading no key — unless
+  // a reachable `/meta` does not seat the pin, which §10 refuses rather than falls back from.
+  if (optionalText(command, 'pin') === 'selvage/1') {
+    const pinned = hostVersion(meta, 'selvage/1');
+    if (pinned.outcome === 'refuse') {
+      throw new Error(`this server does not seat the pinned selvage/1: it offers ${pinned.offered.join(', ')}`);
+    }
+    clear = true;
+    return;
+  }
+  // §2, §10: the invite names `selvage/2`, and a reachable `/meta` without it is refused before
+  // a socket, naming the version needed — never fallen back from.
+  const refusal = joinRefusal(meta);
+  if (refusal !== undefined) {
+    if (linkMutations.has('fall-back-to-version-1')) {
+      clear = true;
+      return;
+    }
+    throw new Error(refusal);
+  }
+  // §5.1: a fragment missing either key is refused locally, by the name of the missing one.
+  const read = parseInvite(invite);
   if (!read.ok) {
+    if (linkMutations.has('accept-partial-fragment') && invite.includes('#')) {
+      clear = true;
+      return;
+    }
     throw new Error(read.reason);
   }
   const options: PeerOptions = {
@@ -202,9 +256,6 @@ async function join(command: Command): Promise<void> {
   const path = optionalText(command, 'path');
   if (path !== undefined) {
     peer.open(path);
-  }
-  if (running !== undefined) {
-    throw new Error('a session is already running');
   }
   running = { peer, start: performance.now() };
   await peer.tick(0);
@@ -244,7 +295,12 @@ async function serve(command: Command): Promise<unknown | undefined> {
       return undefined;
     }
     case 'mutate': {
-      current().peer.mutate(text(command, 'name'));
+      const name = text(command, 'name');
+      if (running === undefined && !clear && LINK_MUTATIONS.has(name)) {
+        linkMutations.add(name);
+        return undefined;
+      }
+      current().peer.mutate(name);
       return undefined;
     }
     case 'report':
@@ -252,6 +308,8 @@ async function serve(command: Command): Promise<unknown | undefined> {
     case 'quit':
       running?.peer.destroy();
       running = undefined;
+      clear = false;
+      linkMutations.clear();
       return 'stop';
     default:
       throw new Error(`unknown command ${JSON.stringify(command['cmd'])}`);
