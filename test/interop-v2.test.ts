@@ -301,7 +301,7 @@ test('interop over selvage/2: an edit made before a committing state is held, th
   // guest's key: the room announces `peer.joined` before it relays a word of the joining
   // connection's own, so the roster state that join obliges is published without the key, and
   // §7.1's window is what folds the announcement that follows it.
-  const peer = await RustPeer.start({ invite, path: PATH, name: 'Bob', version: 2 });
+  const peer = await RustPeer.start({ invite, path: PATH, name: 'Bob' });
   t.after(async () => {
     await peer.stop();
   });
