@@ -165,3 +165,27 @@ export function hostVersion(meta: Meta | undefined, pin?: WireVersion): HostDeci
   }
   return { outcome: 'refuse', reason: 'not-seated', offered };
 }
+
+/**
+ * Why a `selvage/2` join must not open a socket to this server, or `undefined` when it may
+ * (`PROTOCOL.md` §2, §10).
+ *
+ * A join speaks the version its invite names, and an invite that carries §5.1's two keys names
+ * `selvage/2`. A client that can speak it **MUST NOT** connect to a server whose reachable
+ * `/meta` names no version at major 2, and **MUST NOT** fall back to `selvage/1` instead: that
+ * would be a room the server reads, entered on the server's own word. The refusal is local,
+ * before a socket, and names the version the client would need.
+ *
+ * `meta` is what `fetchMeta` answered, and `undefined` is a `/meta` that could not be read. That
+ * is no answer, exactly as {@link hostVersion} reads it: the join is attempted and the handshake
+ * decides, where a server that seats only `selvage/1` answers `unsupported_version`, loudly. A
+ * body that names no versions at all has said nothing incompatible either.
+ */
+export function joinRefusal(meta: Meta | undefined, server?: string): string | undefined {
+  const offered = offeredVersions(meta);
+  if (meta === undefined || offered.length === 0 || offersMajor(offered, WIRE_VERSION_V2)) {
+    return undefined;
+  }
+  const where = server === undefined ? 'this server' : server;
+  return `${where} offers ${offered.join(', ')} and not ${WIRE_VERSION_V2}, which this invite needs: its room is encrypted, so it was not joined, and it is not joined in the clear instead`;
+}

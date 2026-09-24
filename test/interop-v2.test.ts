@@ -439,25 +439,20 @@ test('interop over selvage/2: a sealed invite is refused by a server that does n
     'the fragment survives the rewrite, so the link still names a selvage/2 room',
   );
 
-  // The Rust client reads the fragment, dials, and the server refuses the version rather than
-  // seating the connection as version 1. The refusal names the code it was refused with.
+  // The Rust client reads the fragment and the server's `/meta`, which names `selvage/1` alone,
+  // and refuses before it dials rather than seating the connection as version 1 (§2, §10: a
+  // reachable `/meta` with no version at major 2 is a local refusal). The refusal carries the
+  // code and names the version the invite needs; the sentence is the client's.
   const rustRefusal = await refusalOf(() =>
     RustPeer.start({ invite: misplaced, path: PATH, name: 'Bob', version: 2 }),
   );
   assert.match(rustRefusal.message, /unsupported_version/, rustRefusal.message);
-  assert.match(
-    rustRefusal.message,
-    /unsupported wire version selvage\/2/,
-    rustRefusal.message,
-  );
+  assert.match(rustRefusal.message, /selvage\/2/, rustRefusal.message);
 
   // The engine must not come up as version 1 either. It raises, and resolving is the silent
-  // downgrade this whole test exists to catch. What it was refused with is asserted, not only
-  // that it refused: the relay reads the code and the sentence from the `session.error` event's
-  // `params`, exactly as `src/engine/engine.ts` reads them for `selvage/1`, so the same refusal
-  // the Rust client names arrives at this caller with the same code beneath it. A relay that read
-  // the wrong field refused with one generic sentence and no code at all, which left a caller
-  // unable to tell `§11`'s terminal codes apart from an ordinary fault.
+  // downgrade this whole test exists to catch. It reads the same `/meta` and refuses the same way,
+  // before a socket: the code is `unsupported_version`, so a caller tells §11's terminal codes
+  // apart from an ordinary fault, and the sentence names the version the invite needs.
   const engineRefusal = await refusalOf(() =>
     PeerEngine.join({ invite: misplaced, displayName: 'Bob' }),
   );
@@ -465,11 +460,7 @@ test('interop over selvage/2: a sealed invite is refused by a server that does n
     isProtocolError(engineRefusal, 'unsupported_version'),
     `the engine refused with ${engineRefusal.name}: ${engineRefusal.message}`,
   );
-  assert.match(
-    engineRefusal.message,
-    /unsupported wire version selvage\/2/,
-    engineRefusal.message,
-  );
+  assert.match(engineRefusal.message, /selvage\/2/, engineRefusal.message);
 
   // The choice is exact in both directions, and a mismatch is an error before a socket opens.
   const fragmentless = `ws://${plainServer.address}/session?room=r-1&token=t-1`;

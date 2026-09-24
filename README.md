@@ -330,7 +330,10 @@ What a person does:
   handshake reports the truth. The address, the folder and the invite are unchanged.
 - **Join.** Nothing: paste the link. A `selvage/2` invite carries the room key and the host key on
   its fragment, and a client that cannot read them cannot join the room at all, so the link is the
-  version the join speaks. A link with no fragment is a `selvage/1` join, as it always was.
+  version the join speaks. A link with no fragment is a `selvage/1` join, as it always was. A
+  `selvage/2` link whose fragment names one key and not the other is refused by the name of the
+  missing one, and one whose server's `/meta` answers with no `selvage/2` is refused before a socket
+  is opened, exactly as a host is: neither is joined in the clear instead.
 - **Copy the invite.** Unchanged, and it now carries the fragment: the page link this window hands
   on is the same room, token and two keys as the connection's own wire invite. The wire URL the
   socket is handed never contains a `#`.
