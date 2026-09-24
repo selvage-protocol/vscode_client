@@ -786,6 +786,12 @@ async function main(): Promise<void> {
   const followMovedFile = resolve(RUN_DIR, 'follow-moved.txt');
   const followStoppedFile = resolve(RUN_DIR, 'follow-stopped.txt');
   const controlFile = RECONNECT ? resolve(RUN_DIR, 'blip-done.txt') : undefined;
+  // What the host writes once its own document holds the guest's post-blip edit. The guest waits
+  // for it before it finishes: a re-seat cannot publish under its new key until a state commits
+  // it, so the guest's edit is in flight for as long as that takes, and a window that exits with
+  // an unsent frame takes the edit out of the room with it. Without this the phase's guest side
+  // is satisfied by the guest's own buffer — text the room may never have received.
+  const phase2AckFile = RECONNECT ? resolve(RUN_DIR, 'phase2-ack.txt') : undefined;
   const hostResultFile = resolve(RUN_DIR, 'host-result.json');
   const guestResultFile = resolve(RUN_DIR, 'guest-result.json');
 
@@ -814,6 +820,7 @@ async function main(): Promise<void> {
     SELVAGE_E2E_DEADLINE_MS: String(DEADLINE_MS),
     SELVAGE_E2E_RECONNECT_DEADLINE_MS: String(RECONNECT_DEADLINE_MS),
     ...(controlFile === undefined ? {} : { SELVAGE_E2E_CONTROL_FILE: controlFile }),
+    ...(phase2AckFile === undefined ? {} : { SELVAGE_E2E_PHASE2_ACK_FILE: phase2AckFile }),
   };
 
   phase = 'launching the host and the guest join stage';
@@ -1133,12 +1140,15 @@ async function main(): Promise<void> {
     phase2: RECONNECT
       ? {
           converged:
+            phase2AckFile !== undefined &&
+            existsSync(phase2AckFile) &&
             hostOutcome?.phase2 !== undefined &&
             guestOutcome?.phase2 !== undefined &&
             hostOutcome.phase2.text === guestOutcome.phase2.text &&
             [MARKER_HOST, MARKER_GUEST, MARKER_HOST_2, MARKER_GUEST_2].every((marker) =>
               hostOutcome.phase2?.text.includes(marker),
             ),
+          acked: phase2AckFile !== undefined && existsSync(phase2AckFile),
           hostText: hostOutcome?.phase2?.text,
           guestText: guestOutcome?.phase2?.text,
         }
@@ -1247,7 +1257,9 @@ async function main(): Promise<void> {
     }
   }
   if (RECONNECT && summary.phase2?.converged !== true) {
-    throw new Error('the reconnect phase did not converge after the simulated network blip');
+    throw new Error(
+      `the reconnect phase did not converge after the simulated network blip (the host's acknowledgement of the guest's post-blip edit: ${String(summary.phase2?.acked)})`,
+    );
   }
   if (!summary.watch.converged) {
     throw new Error(

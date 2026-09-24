@@ -54,6 +54,7 @@ const PROXY_ADDR = process.env.SELVAGE_E2E_PROXY_ADDR;
 const STAGED_FILE = process.env.SELVAGE_E2E_STAGED_FILE;
 const STAGE_ERROR_FILE = process.env.SELVAGE_E2E_STAGE_ERROR_FILE;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
+const PHASE2_ACK_FILE = process.env.SELVAGE_E2E_PHASE2_ACK_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
 const MARKER_GUEST = process.env.SELVAGE_E2E_MARKER_GUEST;
@@ -540,6 +541,20 @@ async function stagePhases(rawInvite, result) {
         RECONNECT_DEADLINE_MS,
       );
       result.phase2 = { text: converged2 };
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+
+      // The buffer holds this window's own marker from the moment it typed it, whether or not
+      // the room ever received it, so the phase is not over until the host says its document has
+      // the edit. A re-seat publishes nothing until a state commits its new key (§13.1's step 4),
+      // so the edit is in flight for as long as the room's answer takes, and this window leaving
+      // with it still held is what would take it out of the room for good.
+      if (PHASE2_ACK_FILE !== undefined) {
+        await waitFor(
+          'the host to hold the edit this window made after the blip',
+          () => (fs.existsSync(PHASE2_ACK_FILE) ? true : false),
+          RECONNECT_DEADLINE_MS,
+        );
+      }
     }
 }
 

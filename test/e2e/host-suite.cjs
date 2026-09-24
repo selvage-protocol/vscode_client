@@ -37,6 +37,7 @@ const FOLLOW_READY_FILE = process.env.SELVAGE_E2E_FOLLOW_READY_FILE;
 const FOLLOW_MOVED_FILE = process.env.SELVAGE_E2E_FOLLOW_MOVED_FILE;
 const FOLLOW_STOPPED_FILE = process.env.SELVAGE_E2E_FOLLOW_STOPPED_FILE;
 const CONTROL_FILE = process.env.SELVAGE_E2E_CONTROL_FILE;
+const PHASE2_ACK_FILE = process.env.SELVAGE_E2E_PHASE2_ACK_FILE;
 const RESULT_FILE = process.env.SELVAGE_E2E_RESULT_FILE;
 const MARKER_HOST = process.env.SELVAGE_E2E_MARKER_HOST;
 const MARKER_GUEST = process.env.SELVAGE_E2E_MARKER_GUEST;
@@ -280,6 +281,15 @@ async function run() {
         RECONNECT_DEADLINE_MS,
       );
       result.phase2 = { text: converged2 };
+      // The room now holds the guest's post-blip edit, which is what the guest's side of this
+      // phase waits for: its own buffer holds that edit from the moment it types it, whether or
+      // not the room ever got it, and a re-seat publishes nothing until a state commits its new
+      // key (§13.1's step 4). The record goes first so the acknowledgement cannot find a result
+      // file that is not written yet.
+      fs.writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
+      if (PHASE2_ACK_FILE !== undefined) {
+        fs.writeFileSync(PHASE2_ACK_FILE, 'seen');
+      }
     }
   } catch (error) {
     result.error = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
