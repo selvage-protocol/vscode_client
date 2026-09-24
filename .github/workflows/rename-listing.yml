@@ -1,0 +1,290 @@
+name: rename-listing
+
+# Renames the Marketplace listing the extension used to publish under, so that the display name
+# `Selvage` stops belonging to it. `selvage-protocol.selvage-client` holds that display name,
+# and the Marketplace enforces display names across the whole gallery: `vsce publish` of
+# `selvage-protocol.selvage` is refused with "This extension display name is taken", and `vsce`
+# never checks that itself — the gallery's answer is passed through unchanged, so nothing in the
+# repository or in `vsce` establishes whether unpublishing the old listing would free the name.
+# Renaming it does not depend on that answer.
+#
+# It publishes one version of the old listing — `0.2.1`, the `v0.2.0` tree with only `version`
+# and `displayName` changed — through the same federated identity ordinary releases use. The
+# listing then says where it went, the name `Selvage` is free for `selvage-protocol.selvage`,
+# and the old listing is still there to be retired afterwards by `retire-listing.yml`, whose
+# guard is satisfiable by then because the replacement is live. Nothing is destroyed by this
+# workflow: it adds a version and changes two strings.
+#
+# Numbers, not choices. There are no inputs: every value is a literal here, so there is nothing
+# to get wrong at dispatch time and the run's own file is what the run says it did. The version
+# is a new one because the gallery refuses a version the listing already carries, and `0.2.0` is
+# the one it carries.
+#
+# It runs by hand and only by hand: `workflow_dispatch` is the entire trigger. It creates no tag
+# and no GitHub Release — `publish` holds no `contents: write` and runs no `git` command — and
+# it never touches Open VSX, where this listing does not exist.
+#
+# Two jobs, for the reason the other two workflows have two: `id-token: write` is held only by
+# `publish`, which installs nothing. `npm ci`, the build, the test suite and the standalone
+# install of `@vscode/vsce` — every step that runs code from a registry — happen in `build`,
+# which holds neither permission. The `.vsix` and the publisher cross the boundary as
+# artifacts, and `publish` only runs the `vsce` binary it downloaded.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: rename-listing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The listing to rename, and the tree its last published version came from. `v0.2.0` names
+  # `SOURCE_COMMIT` — the commit release run 35655513242 packaged `0.2.0` from — and the
+  # assertion in `build` refuses anything else, so a tag that has been moved since fails loudly
+  # rather than republishing a different tree under the old listing's name.
+  LISTING_ID: selvage-protocol.selvage-client
+  SOURCE_TAG: v0.2.0
+  SOURCE_COMMIT: da7318d77bf83e184df72234b2884a6ef8e75a96
+  SOURCE_VERSION: 0.2.0
+  # The version this run publishes, and the display name it publishes it under. The name names
+  # the replacement so that anyone who lands on the old listing is told where the extension
+  # moved, which is the whole point of renaming rather than deleting.
+  RENAMED_VERSION: 0.2.1
+  RENAMED_DISPLAY_NAME: "Selvage (moved to selvage-protocol.selvage)"
+  # Where the extension publishes now, for that display name and for the run's own log.
+  REPLACEMENT_ID: selvage-protocol.selvage
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      vsix: ${{ steps.package.outputs.vsix }}
+    steps:
+      # The tag, not the branch this workflow is dispatched from: what is republished has to be
+      # the tree the listing's `0.2.0` came from, and the workflow file itself is read from the
+      # default branch by `workflow_dispatch` regardless of what is checked out here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+          cache: npm
+
+      # First, before anything is installed or built. A tag is a name, and a name can be moved;
+      # the commit is the fact. `git rev-parse HEAD` is the tag's commit because the checkout
+      # above resolved it, and an annotated tag's own ref resolves to the tag object rather than
+      # to the commit it names, so this reads the commit and not the ref.
+      - name: refuse any tree but the one v0.2.0 names
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$SOURCE_COMMIT" ]; then
+            printf 'refusing: %s is at %s, not %s\n' "$SOURCE_TAG" "$head" "$SOURCE_COMMIT" >&2
+            exit 1
+          fi
+          echo "${SOURCE_TAG} names ${head}, which is the tree this run republishes"
+
+      # The listing is renamed, not created: if it is no longer on the Marketplace then
+      # `vsce publish` below would create it anew under an ID that was deliberately retired, so
+      # the run stops instead. Asked of the gallery rather than of this checkout, because the
+      # gallery is where the listing is. No credential: the extension query is public.
+      - name: refuse if the listing to rename is not on the Marketplace
+        env:
+          LISTING_ID: ${{ env.LISTING_ID }}
+        run: |
+          node - <<'JS'
+          const [publisher, name] = process.env.LISTING_ID.split(".");
+          fetch("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", {
+            method: "POST",
+            headers: {
+              Accept: "application/json;api-version=7.2-preview.1",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              filters: [{ criteria: [{ filterType: 7, value: process.env.LISTING_ID }], pageSize: 1 }],
+              flags: 950,
+            }),
+          })
+            .then((response) => response.json())
+            .then((body) => {
+              const found = body.results[0].extensions[0];
+              if (found === undefined
+                || found.publisher?.publisherName !== publisher
+                || found.extensionName !== name) {
+                console.error(`refusing: ${process.env.LISTING_ID} is not on the Marketplace, so there is no listing to rename`);
+                process.exit(1);
+              }
+              const versions = (found.versions ?? []).map((v) => v.version).join(", ");
+              console.log(`${process.env.LISTING_ID} is on the Marketplace as "${found.displayName}" (${versions})`);
+            })
+            .catch((error) => {
+              console.error(`refusing: the gallery could not be read (${error.message})`);
+              process.exit(1);
+            });
+          JS
+
+      # The dependency tree the tag's lockfile pins, installed from the tree as it was, so that
+      # what is built below is the released tree and not this workflow's idea of it.
+      - run: npm ci
+
+      # The manifest is the listing. `publisher` and `name` are what `vsce publish` addresses,
+      # so they are asserted rather than trusted to the tag's having been the right one.
+      - name: assert the manifest is the listing that holds the name
+        run: |
+          node - <<'JS'
+          const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
+          const [publisher, name] = process.env.LISTING_ID.split(".");
+          const wrong = [];
+          if (pkg.publisher !== publisher) wrong.push(`publisher ${pkg.publisher}`);
+          if (pkg.name !== name) wrong.push(`name ${pkg.name}`);
+          if (pkg.version !== process.env.SOURCE_VERSION) wrong.push(`version ${pkg.version}`);
+          if (wrong.length > 0) {
+            console.error(`refusing: package.json says ${wrong.join(", ")}`);
+            process.exit(1);
+          }
+          console.log(`${pkg.publisher}.${pkg.name} ${pkg.version} is published under the display name "${pkg.displayName}"`);
+          JS
+
+      # After `npm ci`, so the dependency tree installed is exactly the tag's; `vsce` reads this
+      # manifest at package time, which is the only place these two fields matter here.
+      - name: rename the manifest for this listing's last version
+        run: |
+          node - <<'JS'
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          pkg.version = process.env.RENAMED_VERSION;
+          pkg.displayName = process.env.RENAMED_DISPLAY_NAME;
+          fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+          console.log(`package.json now carries ${pkg.publisher}.${pkg.name} ${pkg.version} "${pkg.displayName}"`);
+          JS
+
+      - run: npm run typecheck
+
+      # The suite the tag's own release run passed, run here too: the tree is the released one
+      # plus two strings, and this is the check that says so rather than a comment claiming it.
+      # The four server-backed tests in `test/selvaged.test.ts` need a built `selvaged` from the
+      # sibling `reference_server` repository, which this workflow does not check out.
+      - run: npm run test:fast
+        env:
+          SELVAGE_WAIT_MS: "30000"
+
+      # `vsce package` runs `vscode:prepublish` (`npm run build`) first, so the `.vsix` carries
+      # a fresh `dist/extension.js`. It is run through this tree's own `node_modules`, which
+      # `npm ci` filled from the tag's lockfile, and before the publisher below is installed, so
+      # nothing this workflow adds can end up inside the package.
+      - name: package the renamed listing
+        id: package
+        run: |
+          npm run package
+          vsix="selvage-client-${RENAMED_VERSION}.vsix"
+          if [ ! -f "$vsix" ]; then
+            printf 'refusing: %s was not produced\n' "$vsix" >&2
+            exit 1
+          fi
+          echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
+
+      # The manifest read back out of the package, because the `.vsix` is what the gallery is
+      # handed and the file on disk is not evidence about it. A package that still carries the
+      # old display name would republish the very collision this run exists to clear.
+      - name: read the manifest back out of the package
+        env:
+          VSIX: ${{ steps.package.outputs.vsix }}
+        run: |
+          unzip -p "$VSIX" extension/package.json > packaged-manifest.json
+          node - <<'JS'
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("packaged-manifest.json", "utf8"));
+          const [publisher, name] = process.env.LISTING_ID.split(".");
+          const wrong = [];
+          if (pkg.publisher !== publisher) wrong.push(`publisher ${pkg.publisher}`);
+          if (pkg.name !== name) wrong.push(`name ${pkg.name}`);
+          if (pkg.version !== process.env.RENAMED_VERSION) wrong.push(`version ${pkg.version}`);
+          if (pkg.displayName !== process.env.RENAMED_DISPLAY_NAME) wrong.push(`displayName "${pkg.displayName}"`);
+          if (wrong.length > 0) {
+            console.error(`refusing: the package carries ${wrong.join(", ")}`);
+            process.exit(1);
+          }
+          console.log(`the package carries ${pkg.publisher}.${pkg.name} ${pkg.version} "${pkg.displayName}"`);
+          JS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsix
+          path: ${{ steps.package.outputs.vsix }}
+          if-no-files-found: error
+
+      # The same publisher, resolved the same way and into the same kind of throwaway prefix as
+      # the release and retire workflows use: the exact version `package-lock.json` pinned, so
+      # the `vsce` that publishes here is the `vsce` the rest of the release runs.
+      - name: install the extension publisher
+        run: |
+          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
+          npm install --prefix vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsce-publish
+          path: vsce-publish
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The same environment, and therefore the same federated subject, as a release:
+    # `repo:selvage-protocol@328844633/vscode_client@1368869486:environment:marketplace`, the
+    # string the Entra ID app registration's credential is registered against. This is the
+    # identity that already updates this listing, so `vsce publish` here is an ordinary update
+    # of an extension that exists rather than the creation of a new one. Whether the same
+    # identity may also *delete* the listing is a separate permission and is not assumed here:
+    # that is `retire-listing.yml`'s question, asked after this one has succeeded.
+    environment: marketplace
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VSIX: ${{ needs.build.outputs.vsix }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsix
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsce-publish
+          path: vsce-publish
+
+      # Node to run the `vsce` entry point downloaded above; nothing is installed with it. The
+      # `.bin` shim does not survive the artifact round trip — `actions/upload-artifact`
+      # excludes hidden directories, and `.bin` is one — so the package's own `bin` target is
+      # run through `node` directly, as the other two workflows do.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      - name: verify the extension publisher is present
+        run: node ./vsce-publish/node_modules/@vscode/vsce/vsce --version
+
+      # Federated identity, not a stored secret: this exchanges the job's OIDC token for a
+      # short-lived Microsoft Entra ID credential, and the app registration has no role
+      # assignment on any subscription. Client id and tenant id are public identifiers; see
+      # `release.yml` for why they are literals and how the identity is rotated.
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: 0538596d-b7e5-4f25-979f-49c437e48820
+          tenant-id: eca3c161-254f-49bc-b981-b638ee9d0fa6
+          allow-no-subscriptions: true
+
+      # A version the listing already carries is refused by the gallery and not skipped: a
+      # re-run of this workflow after a successful one is expected to fail here and say so,
+      # rather than report a rename that did not happen.
+      - name: publish the renamed listing
+        run: |
+          node ./vsce-publish/node_modules/@vscode/vsce/vsce publish --azure-credential --packagePath "$VSIX"
+          printf 'published %s %s to the VS Code Marketplace under "%s"; %s is the listing it points at\n' \
+            "$LISTING_ID" "$RENAMED_VERSION" "$RENAMED_DISPLAY_NAME" "$REPLACEMENT_ID"
