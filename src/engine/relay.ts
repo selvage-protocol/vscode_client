@@ -569,6 +569,14 @@ export class RelaySession {
     return this.session?.text(path) ?? '';
   }
 
+  /**
+   * The paths whose text changed since the last call, or `undefined` when no session is seated
+   * to say, in which case a reader treats every path as changed.
+   */
+  takeTouched(): string[] | undefined {
+    return this.session?.takeTouched();
+  }
+
   heldPaths(): string[] {
     return this.session?.heldPaths() ?? [];
   }

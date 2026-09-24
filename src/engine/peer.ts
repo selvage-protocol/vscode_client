@@ -525,6 +525,40 @@ export class PeerSession {
     // read as a participant with no caret.
     this.awareness.setLocalState(null);
     this.wireAwareness();
+    this.doc.on('afterTransaction', (transaction: Y.Transaction) => {
+      this.noteTouched(transaction);
+    });
+  }
+
+  /**
+   * The paths whose text a transaction changed, local or applied, kept until
+   * {@link takeTouched} reads them. Every change to a `Y.Text` is a transaction on this one
+   * document, so a path that is not here since the last read holds the text it held then.
+   */
+  private readonly touched = new Set<string>();
+
+  private noteTouched(transaction: Y.Transaction): void {
+    for (const type of transaction.changed.keys()) {
+      // A root `Y.Text` is a path's document; nothing else in this document is one.
+      if (type._item !== null) {
+        continue;
+      }
+      for (const [name, shared] of this.doc.share) {
+        if (shared === type) {
+          if (shared instanceof Y.Text) {
+            this.touched.add(name);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /** The paths whose text changed since the last call, and forgets them. */
+  takeTouched(): string[] {
+    const paths = [...this.touched];
+    this.touched.clear();
+    return paths;
   }
 
   /**
