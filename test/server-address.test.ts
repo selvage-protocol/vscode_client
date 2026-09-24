@@ -88,6 +88,21 @@ test('a bare server host means the TLS server, with the endpoint the engine adds
   assert.equal(normaliseServerUrl('selvage.dontblameme.dev/'), 'wss://selvage.dontblameme.dev');
 });
 
+test('the demo default is a domain on its own, and the one completion dials it over TLS', async (t) => {
+  // A fresh module: `lastServer` is module-level, and a test above remembers a real address
+  // that a shared module would still carry into this window's first question.
+  const bundle = freshActivated(t);
+  const { normaliseServerUrl } = addressHelpers();
+  // Nothing configured and nothing remembered: the question is prefilled with the default.
+  await bundle.stub.commands.executeCommand('selvage.host');
+  const asked = await waitFor('the server question', () => bundle.stub.registered.inputs[0] ?? false);
+  const prefill = String(asked.value);
+  // The bare domain is what a person would type, and it is what the box offers; what is
+  // dialled is the server that domain names, under the scheme TLS needs.
+  assert.equal(prefill, 'selvage-demo.dontblameme.dev');
+  assert.equal(normaliseServerUrl(prefill), 'wss://selvage-demo.dontblameme.dev');
+});
+
 test('an address that names the endpoint loses it, and one with a path keeps it', () => {
   const { normaliseServerUrl } = addressHelpers();
   // The engine appends `/session` to the base it is given, so keeping it would dial it twice.

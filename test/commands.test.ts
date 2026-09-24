@@ -1522,8 +1522,10 @@ test('hosting asks for the server in plain words, prefilled with the default', a
   // Settings UI, and a first-run question is the wrong place to teach it.
   assert.doesNotMatch(String(asked.prompt), /selvage\.serverUrl/);
   assert.equal(asked.placeHolder, 'The address the server prints when it starts');
-  // Nothing configured and nothing remembered: the box starts from the demo server.
-  assert.equal(asked.value, 'ws://100.64.0.3:8080');
+  // Nothing configured and nothing remembered: the box starts from the demo server, named
+  // as a person would: the domain on its own, which the one completion reads as the TLS
+  // server. `test/server-address.test.ts` pins that completion.
+  assert.equal(asked.value, 'selvage-demo.dontblameme.dev');
   assert.doesNotMatch(String(asked.placeHolder), /ws:\/\//);
   assert.doesNotMatch(String(asked.prompt), /selvaged/);
 });
@@ -1849,7 +1851,11 @@ test('the change-server command reports the address in force and offers to chang
   bundle.stub.registered.inputReply = 'ws://198.51.100.1:9';
   await bundle.stub.commands.executeCommand('selvage.changeServer');
   const asked = await waitFor('the change box', () => bundle.stub.registered.inputs[0] ?? false);
-  assert.equal(asked.value, 'ws://100.64.0.3:8080', 'the box did not start from the demo default');
+  assert.equal(
+    asked.value,
+    'selvage-demo.dontblameme.dev',
+    'the box did not start from the demo default',
+  );
   const kept = await waitFor('the address to be remembered', () =>
     bundle.stub.globalState.get('selvage.lastServer') === 'ws://198.51.100.1:9' ? true : false,
   );
