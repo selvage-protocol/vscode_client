@@ -525,6 +525,45 @@ export class PeerSession {
     // read as a participant with no caret.
     this.awareness.setLocalState(null);
     this.wireAwareness();
+    this.doc.on('afterTransaction', (transaction: Y.Transaction) => {
+      this.noteTouched(transaction);
+    });
+  }
+
+  /**
+   * The paths whose text a transaction changed, local or applied, kept until
+   * {@link takeTouched} reads them. Every change to a `Y.Text` is a transaction on this one
+   * document, so a path that is not here since the last read holds the text it held then.
+   */
+  private readonly touched = new Set<string>();
+
+  private noteTouched(transaction: Y.Transaction): void {
+    // A root type is a path's document. It is recorded whatever class it has now: content for a
+    // path this replica has not asked for yet arrives under a placeholder type, which becomes the
+    // path's `Y.Text` only when something reads it — and that swap is no transaction.
+    const roots = new Set<unknown>();
+    for (const type of transaction.changed.keys()) {
+      if (type._item === null) {
+        roots.add(type);
+      }
+    }
+    if (roots.size === 0) {
+      return;
+    }
+    // One pass over the documents, so a sync that changes many of them costs one walk and not
+    // one per changed document.
+    for (const [name, shared] of this.doc.share) {
+      if (roots.has(shared)) {
+        this.touched.add(name);
+      }
+    }
+  }
+
+  /** The paths whose text changed since the last call, and forgets them. */
+  takeTouched(): string[] {
+    const paths = [...this.touched];
+    this.touched.clear();
+    return paths;
   }
 
   /**

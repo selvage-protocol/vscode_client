@@ -117,7 +117,8 @@ const GRANT_SECRET_KEY_PREFIXES: readonly string[] = [
  * File-name suffixes of private keys, matched against the leaf segment only.
  * Errs toward secrecy: a public `id_rsa.pub` is left out with the private key beside it.
  * PKCS#12 bundles (`.p12`, `.pfx`) and Java keystores (`.jks`, `.keystore`) carry a private
- * key the same way. A local Terraform state (`.tfstate` and its `.tfstate.backup`) holds every
+ * key the same way, and so does a PuTTY private key (`.ppk`), which is text a room would carry.
+ * A local Terraform state (`.tfstate` and its `.tfstate.backup`) holds every
  * secret the configuration it describes was given, in plain text.
  */
 const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = [
@@ -127,6 +128,7 @@ const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = [
   '.pfx',
   '.jks',
   '.keystore',
+  '.ppk',
   '.tfstate',
   '.tfstate.backup',
 ];

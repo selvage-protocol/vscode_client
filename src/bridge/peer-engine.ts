@@ -434,9 +434,19 @@ export class PeerEngine implements Engine {
    * The replica's text after a content frame: the paths whose text is not what it was are the
    * ones an adapter has to reconcile. The whole replica is compared rather than the frame's own
    * paths, because a frame carries y-protocols messages and not a path (`§13.5`).
+   *
+   * What is compared is only what can differ: a path no transaction has touched since the last
+   * scan holds the text it held, so an awareness-only frame — a peer moving a caret — reads no
+   * document at all, and a keystroke reads the one it changed. A path this facade has not seen
+   * yet is always read, and so is every path when the relay cannot say what changed.
    */
   private scanTexts(): void {
+    const touched = this.relay.takeTouched();
+    const changed = touched === undefined ? undefined : new Set(touched);
     for (const path of this.relay.documents()) {
+      if (changed !== undefined && this.texts.has(path) && !changed.has(path)) {
+        continue;
+      }
       const text = this.relay.text(path);
       if (this.texts.get(path) === text) {
         continue;
