@@ -505,7 +505,17 @@ test('a keystroke while a remote edit is in flight is published, not doubled', a
   // The user typed at the end before the queued apply ran. The buffer is the pre-apply text
   // plus the keystroke, and a diff against the replica now would delete the peer's edit.
   editor.type(PATH, 'base\ntyped\n');
-  await drain(editor);
+  // The staged apply lands when the editor is pumped, and the keystroke's publication is a
+  // round trip: a fixed number of turns is not the macrotask either arrives on, so the wait is
+  // for the buffer to hold both.
+  await waitFor(
+    'the keystroke and the peer’s edit to land in the buffer',
+    () => {
+      editor.pump();
+      return editor.text(PATH) === 'REMOTE\nbase\ntyped\n' ? true : false;
+    },
+    { describe: () => ({ buffer: editor.text(PATH), replica: session.host.text(PATH) }) },
+  );
 
   assert.equal(editor.text(PATH), 'REMOTE\nbase\ntyped\n');
   assert.equal(session.host.text(PATH), 'REMOTE\nbase\ntyped\n', 'the keystroke was lost');
