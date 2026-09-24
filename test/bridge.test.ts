@@ -14,7 +14,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
-import { SessionBridge, DEFAULT_MAX_APPLY_ATTEMPTS } from '../src/bridge/bridge.ts';
+import {
+  SessionBridge,
+  DEFAULT_MAX_APPLY_ATTEMPTS,
+  MAX_CONCURRENT_GRANTED_READS,
+} from '../src/bridge/bridge.ts';
 import type { BridgeOptions, Engine, GrantedRead, Timers } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
@@ -1358,5 +1362,73 @@ test('a seed in flight does not land over text the room supplied while it was re
     session.host.text(OTHER),
     'from the room\n',
     'the disk copy was seeded over text the replica had already received',
+  );
+});
+
+/** A host editor that holds every read open, counting how many are in flight at once. */
+class CountedReads extends FakeEditor {
+  inFlight = 0;
+  mostInFlight = 0;
+  private readonly held: Array<() => void> = [];
+
+  override readGrantedFile(path: string): Promise<GrantedRead> {
+    this.reads.push(path);
+    this.inFlight += 1;
+    this.mostInFlight = Math.max(this.mostInFlight, this.inFlight);
+    return new Promise((resolve) => {
+      this.held.push(() => {
+        this.inFlight -= 1;
+        resolve({ kind: 'text', text: `${path}\n` });
+      });
+    });
+  }
+
+  /** Lets every read that is waiting finish. */
+  letAll(): void {
+    for (const release of this.held.splice(0)) {
+      release();
+    }
+  }
+}
+
+test('a host reads the paths the room asks for a few at a time', async (t) => {
+  const session = await fakeSession();
+  const editor = new CountedReads();
+  const bridge = new SessionBridge({
+    engine: slice(session.host),
+    host: editor,
+    autoSave: false,
+  });
+  editor.attach(bridge);
+  t.after(async () => {
+    bridge.dispose();
+    await session.host.disconnect();
+    await session.guest.disconnect();
+    await session.server.stop();
+  });
+
+  // One room event can name every path a peer opened; the reads it starts are bounded, and the
+  // rest wait their turn rather than going to the disk together.
+  const paths = Array.from({ length: 10 }, (_, index) => `src/file${index}.rs`);
+  await Promise.all(paths.map((path) => session.guest.open(path)));
+  await waitFor('the first reads to start', () => editor.reads.length > 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(
+    editor.inFlight <= MAX_CONCURRENT_GRANTED_READS,
+    `${editor.inFlight} reads were in flight at once`,
+  );
+
+  await waitFor(
+    'every path to be read and seeded',
+    () => {
+      editor.letAll();
+      return paths.every((path) => session.host.text(path) === `${path}\n`);
+    },
+    { describe: () => ({ reads: editor.reads }) },
+  );
+  assert.equal(new Set(editor.reads).size, paths.length, 'a path was not read, or read twice');
+  assert.ok(
+    editor.mostInFlight <= MAX_CONCURRENT_GRANTED_READS,
+    `${editor.mostInFlight} reads were in flight at once`,
   );
 });
