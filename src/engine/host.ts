@@ -411,7 +411,7 @@ export class HostProducer {
     if (frame === undefined) {
       return undefined;
     }
-    this.commitSeries(issued);
+    this.commitSeries(issued, clock);
     const state: RoomState = { issued, listing, peers };
     this.lastState = state;
     this.lastFrame = frame;
@@ -467,9 +467,14 @@ export class HostProducer {
     return Math.max(this.issued, this.verified) + 1;
   }
 
-  private commitSeries(issued: number): void {
+  /**
+   * `clock` is the publication's own, and a save records it: the renewal-window batching in
+   * {@link flushFrames} measures from the last write of any kind. A closing has no clock of its
+   * own and keeps the last one, which is harmless because nothing is published after it.
+   */
+  private commitSeries(issued: number, clock?: number): void {
     this.issued = issued;
-    this.save(this.savedAt);
+    this.save(clock ?? this.savedAt);
   }
 
   private save(clock: number | undefined): void {

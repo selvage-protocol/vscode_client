@@ -327,12 +327,39 @@ test('a host writes its moving frame count at least once a renewal interval', as
   const store = new MemoryStore();
   const { peer } = await hostHosting(['README.md'], {}, store);
   peer.takeOutbound();
-  await peer.tick(0);
+  // The mint state's own write opened the window at 0, so the count it could not yet carry — the
+  // state and its handshake — is written on the first tick a window later.
+  await peer.tick(RENEW_MS);
   assert.equal(store.saved?.frames, 2, 'the mint state and its handshake, written on the tick');
-  await peer.deliver(1, await announce(now.peer, 1, 'guest'));
-  await peer.tick(RENEW_MS + 1);
+  await peer.deliver(RENEW_MS + 1, await announce(now.peer, 1, 'guest'));
+  await peer.tick(3 * RENEW_MS);
   assert.ok((store.saved?.frames ?? 0) >= 3, 'the delivered announcement is in the saved count');
   assert.equal(store.saved?.issued, peer.issued, 'written beside `issued`');
+});
+
+test('a state published after a flush counts as a write for the renewal window', async () => {
+  const store = new MemoryStore();
+  let saves = 0;
+  const save = store.save.bind(store);
+  store.save = (persisted: PersistedHost): void => {
+    saves += 1;
+    save(persisted);
+  };
+  const now = await room();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  await peer.tick(RENEW_MS);
+  // An announcement commits a key, so the host publishes a fresh state, and that write carries
+  // the count at its own clock: a frame that moves the count right after it waits for the next
+  // window rather than being written on the next tick.
+  await peer.seatJoined(2 * RENEW_MS, 'p-alice');
+  await peer.deliver(2 * RENEW_MS, await announce(now.peer, 1, 'guest'));
+  const afterState = saves;
+  await peer.deliver(2 * RENEW_MS + 1, new Uint8Array([1, 2, 3]));
+  await peer.tick(2 * RENEW_MS + 2);
+  assert.equal(saves, afterState, 'no frame-only write inside the window the state opened');
+  await peer.tick(3 * RENEW_MS);
+  assert.equal(saves, afterState + 1, 'and one once it has passed');
 });
 
 test('a host store written before the frame count existed still loads', async () => {
@@ -341,7 +368,7 @@ test('a host store written before the frame count existed still loads', async ()
   store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 3 };
   const { peer } = await hostHosting(['README.md'], {}, store);
   assert.equal(peer.issued, 4, 'the `issued` series continues');
-  await peer.tick(0);
+  await peer.tick(RENEW_MS);
   assert.equal(store.saved?.frames, 2, 'and the count starts where a mint would');
 });
 
