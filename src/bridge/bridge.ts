@@ -165,6 +165,13 @@ export const DEFAULT_RECONCILE_SETTLE_MS = 100;
 /** How many times a refused change is worked out again before the refusal is reported. */
 export const DEFAULT_MAX_APPLY_ATTEMPTS = 3;
 
+/**
+ * How many files a host reads at once for paths the room asked for. The room's open-document
+ * set is the reference server's to bound (1024 paths, `PROTOCOL.md` §12), and one event can name
+ * all of them; each read is a walk and up to `MAX_GRANT_FILE_BYTES` off the disk.
+ */
+export const MAX_CONCURRENT_GRANTED_READS = 4;
+
 export interface BridgeOptions {
   engine: Engine;
   host: EditorHost;
@@ -219,6 +226,9 @@ export class SessionBridge {
    * because that set is a peer's word and a peer can churn it.
    */
   private readonly requested = new Set<string>();
+  /** Reads of paths the room asked for, waiting their turn (`pumpReads`). */
+  private readonly readQueue: Array<() => Promise<void>> = [];
+  private readsInFlight = 0;
   /** Documents a guest has opened whose room text has not arrived yet. See `documentOpened`. */
   private readonly unarrived = new Set<string>();
   /** The paths this client holds open on the server, as opposed to asked it to open. */
@@ -503,6 +513,7 @@ export class SessionBridge {
 
   dispose(): void {
     this.disposed = true;
+    this.readQueue.length = 0;
     for (const stop of this.stops) {
       stop();
     }
@@ -636,8 +647,8 @@ export class SessionBridge {
         });
       }
     };
-    for (const path of fresh) {
-      void this.host
+    const readOne = (path: string): Promise<void> =>
+      this.host
         .readGrantedFile(path)
         .then((read) => {
           if (read.kind === 'refused') {
@@ -671,6 +682,37 @@ export class SessionBridge {
           );
           report();
         });
+    for (const path of fresh) {
+      // A path the room closed while this read waited is not read at all: it is asked for
+      // again if it comes back, which is the rule `requested` already keeps.
+      this.readQueue.push(() => {
+        if (this.requested.has(path)) {
+          return readOne(path);
+        }
+        report();
+        return Promise.resolve();
+      });
+    }
+    this.pumpReads();
+  }
+
+  /**
+   * Starts queued reads while fewer than `MAX_CONCURRENT_GRANTED_READS` are in flight. The bound
+   * is the bridge's and not one event's: the room's word decides how many paths are asked for,
+   * one event per open as often as one event for many, and each read walks the path and reads up
+   * to the file bound off this disk.
+   */
+  private pumpReads(): void {
+    while (this.readsInFlight < MAX_CONCURRENT_GRANTED_READS && !this.disposed) {
+      const read = this.readQueue.shift();
+      if (read === undefined) {
+        return;
+      }
+      this.readsInFlight += 1;
+      void read().finally(() => {
+        this.readsInFlight -= 1;
+        this.pumpReads();
+      });
     }
   }
 

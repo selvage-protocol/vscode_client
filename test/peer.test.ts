@@ -1043,6 +1043,34 @@ test('each mutation removes the rule it names, and an unknown one is refused', a
   assert.equal(unknown.mutationName, undefined);
 });
 
+/**
+ * A live connection turns the per-frame record off (`relay.ts` does): the record is one entry per
+ * frame for the life of the session, and a sender of refused frames grows it at will. The
+ * decision each frame gets, and the count of frames, are the same with or without it.
+ */
+test('a session that records no frames decides them the same and keeps nothing per frame', async () => {
+  const now = await room();
+  const peer = await session({ recordFrames: false });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  for (let index = 0; index < 50; index += 1) {
+    assert.deepEqual(await peer.deliver(1 + index, Uint8Array.from([1, 2, 3])), {
+      status: 'dropped',
+      reason: 'bad_envelope',
+    });
+  }
+  assert.deepEqual(await peer.deliver(100, await closing(now.host, 2)), {
+    status: 'ignored',
+    kind: 2,
+  });
+  assert.equal(peer.frameCount, 51);
+  assert.equal(peer.droppedFrames.length, 0);
+  assert.equal(peer.ignoredFrames.length, 0);
+  assert.equal(peer.appliedFrames.length, 0);
+  assert.equal(peer.end, undefined);
+});
+
 test('a frame that is not an envelope is refused without ending the session', async () => {
   const peer = await session();
   await peer.tick(0);

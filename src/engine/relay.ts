@@ -30,7 +30,7 @@ import type { HostStore } from './host.ts';
 import { encodeKey, mintSessionKey } from './sealed.ts';
 import type { FrameCrypto } from './crypto.ts';
 import { webCrypto } from './crypto-web.ts';
-import { openSocket } from './transport.ts';
+import { MAX_INBOUND_MESSAGE_BYTES, openSocket } from './transport.ts';
 import type { OpenSocket, WebSocketFactory, WebSocketLike } from './transport.ts';
 import { ProtocolError } from './errors.ts';
 import { DEFAULT_RECONNECT, attemptsForGrace } from './reconnect.ts';
@@ -483,6 +483,8 @@ export class RelaySession {
       crypto: this.crypto,
       keepalive,
       ...(this.awarenessId === undefined ? {} : { awarenessClientId: this.awarenessId }),
+      // A live connection keeps no per-frame record: it would grow for the life of the session.
+      recordFrames: false,
     });
     if (session === undefined) {
       throw new Error('the session could not be built from the invite');
@@ -1020,6 +1022,15 @@ export class RelaySession {
   }
 
   private enqueue(frame: QueuedFrame): void {
+    if (this.inbox.length >= MAX_INBOX_FRAMES) {
+      // The socket delivers faster than the session verifies, and the queue is this client's
+      // own memory (§2.1: a client bounds what it holds). Past the bound the connection is
+      // dropped the way a transport bound drops it: what is queued goes, and the close is an
+      // ordinary drop, which a guest re-seats from (§9.1) and a host ends on.
+      this.inbox.length = 0;
+      this.socket?.close(1008, 'inbound queue full');
+      return;
+    }
     this.inbox.push(frame);
     void this.drain();
   }
@@ -1291,8 +1302,16 @@ function awarenessClientId(crypto: FrameCrypto): number {
   return (((bytes[0] ?? 0) << 24) | ((bytes[1] ?? 0) << 16) | ((bytes[2] ?? 0) << 8) | (bytes[3] ?? 0)) >>> 0;
 }
 
+/**
+ * The most frames a relay queues ahead of its session. Each frame is verified and opened in
+ * turn, asynchronously, so a sender faster than that builds a queue; a conforming server's own
+ * outbound queue is a few dozen frames (`PROTOCOL.md` §12), so this is far past any room that
+ * is keeping up, and only a flood reaches it.
+ */
+export const MAX_INBOX_FRAMES = 4096;
+
 function defaultFactory(url: string): WebSocketLike {
-  return new WebSocket(url) as unknown as WebSocketLike;
+  return new WebSocket(url, { maxPayload: MAX_INBOUND_MESSAGE_BYTES }) as unknown as WebSocketLike;
 }
 
 /**

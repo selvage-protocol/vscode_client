@@ -360,6 +360,15 @@ export interface PeerOptions {
    * a state and a session without it cannot; a session with neither cannot be the host.
    */
   host?: HostOptions;
+  /**
+   * Whether the session keeps a record of every frame it applied, dropped or ignored
+   * (`appliedFrames`, `droppedFrames`, `ignoredFrames`): §13.11's observables, which the
+   * corpus subject and the tests read. On by default for them. A live connection turns it off,
+   * because the record is one entry per frame for the life of the session, every keystroke and
+   * caret move of every peer, and a peer or a server sending frames that are refused grows it
+   * as fast as it likes (§2.1: a client bounds what it holds). `frameCount` is kept either way.
+   */
+  recordFrames?: boolean;
 }
 
 /**
@@ -422,6 +431,8 @@ export class PeerSession {
   private readonly applied: AppliedFrame[] = [];
   private readonly dropped: DroppedFrame[] = [];
   private readonly ignored: number[] = [];
+  /** See {@link PeerOptions.recordFrames}. */
+  private readonly recordFrames: boolean;
   private ending: Ending | undefined;
   private mutation: PeerMutation | HostMutation | undefined;
   /**
@@ -474,6 +485,7 @@ export class PeerSession {
     this.frameKey = frameKeyBytes;
     this.session = session;
     this.declaredRole = options.declaredRole;
+    this.recordFrames = options.recordFrames ?? true;
     this.renew = options.keepalive.awareness_renew_ms;
     this.expire = options.keepalive.awareness_expire_ms;
     this.seat = options.seat;
@@ -821,11 +833,15 @@ export class PeerSession {
     if (this.ignores(verdict)) {
       this.reader.issued = issued;
       this.reader.ended = ended;
-      this.ignored.push(index);
+      if (this.recordFrames) {
+        this.ignored.push(index);
+      }
       return { status: 'ignored', kind };
     }
     await this.fold(clock, verdict);
-    this.applied.push({ frame: index, kind });
+    if (this.recordFrames) {
+      this.applied.push({ frame: index, kind });
+    }
     return { status: 'applied', kind };
   }
 
@@ -1257,7 +1273,9 @@ export class PeerSession {
     // Every refusal carries the step that refused it; one without a reason would be a bug in
     // the byte layer and not a decision to report.
     const named = reason ?? 'bad_envelope';
-    this.dropped.push({ frame, reason: named });
+    if (this.recordFrames) {
+      this.dropped.push({ frame, reason: named });
+    }
     return { status: 'dropped', reason: named };
   }
 

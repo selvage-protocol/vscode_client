@@ -29,7 +29,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Every command works in a window you have not trusted. What waits for trust is the resume a `.selvage-mirror.json` marker asks for at activation, because a file named like the marker in a folder is enough to start this extension there."
+      "description": "Every command works in a window you have not trusted. What waits for trust is the resume a `.selvage-mirror.json` marker asks for at activation, because a file named like the marker in a folder is enough to start this extension there. A window opened on the extension's own room folder, under its storage, resumes without trust, so a guest can keep the room in Restricted Mode."
     }
   },
   "activationEvents": [

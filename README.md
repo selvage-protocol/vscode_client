@@ -194,13 +194,22 @@ one event loop. There is no worker, no native module and no second process.
 - Leaving deletes the mirror from the window. A document the room holds stays open and readable
   when the listing stops naming it, because a hold is released with `doc.close` and not by the
   listing.
-- The resume a marker asks for waits for a trusted window. A folder can start this extension with
-  nothing but a `.selvage-mirror.json` in it, and VS Code does not condition a `workspaceContains`
-  activation on workspace trust, which is the only way back in after the reload that puts the
-  room's folder in the window. In an untrusted window the extension starts, registers its commands
-  and stops there; the triage a marker asks for runs once you trust the workspace. Every command
-  is your own act and works in a window you have not trusted, which is why the manifest claims
-  `limited` untrusted support.
+- The resume a marker asks for waits for a trusted window, except in the room's own folder. A
+  folder can start this extension with nothing but a `.selvage-mirror.json` in it, and VS Code
+  does not condition a `workspaceContains` activation on workspace trust, which is the only way
+  back in after the reload that puts the room's folder in the window. In an untrusted window the
+  extension starts, registers its commands and stops there; the triage a marker asks for runs once
+  you trust the workspace. The exception is a window opened on a mirror under this extension's own
+  storage, which no repository can put there: that is the join's own reload, and it lands without
+  trust. You do not need to trust the room's folder to join, and leaving it in Restricted Mode is
+  the safer choice, because the room's files are its host's. Every command is your own act and
+  works in a window you have not trusted, which is why the manifest claims `limited` untrusted
+  support.
+- A guest does not take the room's workspace configuration. Anything under a `.vscode` directory
+  and any `.code-workspace` file is left out of the mirror and never shared from it, because the
+  mirror is the window's workspace folder and VS Code would apply those files (settings, tasks,
+  launch configurations) rather than just show them. The host's own copies are unaffected, and the
+  guest is told once per session which ones were left out.
 - A name drawn over the text can break. `selvage.cursorLabel: "floating"` writes declarations into
   a field documented as one CSS declaration, which is undocumented editor behaviour: it can change
   in a release with no change to the API, and nothing in the suite can see a pixel. It covers the

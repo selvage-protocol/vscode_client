@@ -204,6 +204,21 @@ test('credential stores and private keys are never part of the grant', () => {
     'certs/server.pem',
     'certs/chain.pem',
     'certs/server.key',
+    '.netrc',
+    'home/_netrc',
+    '.git-credentials',
+    '.pgpass',
+    'public/.htpasswd',
+    '.ssh/config',
+    '.ssh/known_hosts',
+    'home/.ssh/authorized_keys',
+    '.gnupg/pubring.kbx',
+    'certs/client.p12',
+    'certs/client.pfx',
+    'android/release.keystore',
+    'server/truststore.jks',
+    'infra/terraform.tfstate',
+    'infra/terraform.tfstate.backup',
   ]) {
     assert.equal(isGrantedPath(secret), false, `${secret} must not be listed`);
   }
@@ -211,7 +226,15 @@ test('credential stores and private keys are never part of the grant', () => {
   // The key prefixes match broadly on purpose: a copied key with a suffix is still a
   // key, and the cost of leaving out a notes file is not a secret in the room.
   assert.equal(isGrantedPath('src/id_rsa_notes.md'), false);
-  for (const ordinary of ['mykey.txt', 'pem.pem.pem.bak', 'monkey.txt']) {
+  for (const ordinary of [
+    'mykey.txt',
+    'pem.pem.pem.bak',
+    'monkey.txt',
+    'docs/ssh.md',
+    'infra/main.tf',
+    'netrc.md',
+    'src/keystore.ts',
+  ]) {
     assert.equal(isGrantedPath(ordinary), true, `${ordinary} should be part of the grant`);
   }
 });

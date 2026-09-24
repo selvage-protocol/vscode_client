@@ -85,6 +85,8 @@ const SENTENCES = [
   // The room's shape on disk: what the listing could not keep in step, and what is not
   // part of the room at all.
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
+  // VS Code's alone: the Neovim mirror is not a folder the editor applies settings from.
+  '`Selvage: the room\'s workspace settings (${}) are not put in this window, because VS Code would apply them rather than just show them.`',
   '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
   '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
   // What the room's own reports say. The host-detached and host-reclaimed sentences are

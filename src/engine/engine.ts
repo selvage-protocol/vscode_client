@@ -59,7 +59,7 @@ import {
   encodeSyncStep1,
   encodeUpdate,
 } from './sync.ts';
-import { openSocket } from './transport.ts';
+import { MAX_INBOUND_MESSAGE_BYTES, openSocket } from './transport.ts';
 import type {
   OpenSocket,
   WebSocketFactory,
@@ -82,6 +82,11 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * yjs update can allocate or do. Refusal is drop-and-continue, never fail: an over-bound
  * frame is ignored and the session goes on with the grant, documents and replica it holds,
  * stale rather than ended, because ending it would hand any sender a kill switch.
+ *
+ * The default socket never delivers such a frame: it is dialled with this same bound as its
+ * `maxPayload` (`MAX_INBOUND_MESSAGE_BYTES`), so an oversized message ends the connection
+ * before it is buffered, as §2.1's transport bound does. This check is what an injected
+ * socket factory still meets.
  */
 const MAX_INBOUND_TEXT_BYTES = 16 * 1024 * 1024;
 
@@ -98,7 +103,7 @@ const REMOTE_ORIGIN = Symbol('selvage:remote');
 const EXPIRY_ORIGIN = Symbol('selvage:expiry');
 
 const defaultFactory: WebSocketFactory = (url) =>
-  new WebSocket(url) as unknown as WebSocketLike;
+  new WebSocket(url, { maxPayload: MAX_INBOUND_MESSAGE_BYTES }) as unknown as WebSocketLike;
 
 /**
  * The awareness clock this client runs: renew every `renewMs`, forget a remote state
