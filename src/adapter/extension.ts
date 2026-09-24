@@ -1934,8 +1934,10 @@ export class Session {
     if (applied.withheld.length > 0 && !this.saidWithheld) {
       this.saidWithheld = true;
       const first = applied.withheld[0] ?? '';
+      const rest = applied.withheld.length - 1;
+      const named = rest > 0 ? `${first} and ${rest} more` : first;
       void vscode.window.showInformationMessage(
-        `Selvage: the room's workspace settings (${first}${applied.withheld.length > 1 ? ` and ${applied.withheld.length - 1} more` : ''}) are not put in this window, because VS Code would apply them rather than just show them.`,
+        `Selvage: the room's workspace settings (${named}) are not put in this window, because VS Code would apply them rather than just show them.`,
       );
     }
     if (applied.refused.length > 0) {
