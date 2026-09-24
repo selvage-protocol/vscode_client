@@ -244,7 +244,12 @@ function stubRoom(initial: string): {
   let text = initial;
   const listeners = new Set<EngineEventListener>();
   const engine = {
-    session: () => ({ role: 'guest' }),
+    session: () => ({
+      role: 'guest',
+      // The bridge reads this to leave this window's own awareness out of the cursors it
+      // draws (`SessionBridge.cursors`), so a double without it is one a draw cannot use.
+      peer: { peer_id: 'p-stub', display_name: '', role: 'guest' },
+    }),
     text: () => text,
     has: () => true,
     open: () => Promise.resolve(),

@@ -569,14 +569,17 @@ test('a window switch paints no banner on any editor', async (t) => {
 test('a peer caret already in the room paints on open, with no local move', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
   // Ada's caret arrives while this window holds nothing for PATH_B: the presence frame is
-  // received, but a caret whose anchors cannot resolve against an empty replica is dropped.
+  // received, and a caret whose anchors cannot resolve against an empty replica is never
+  // drawn — nothing is stored, and resolution happens where a draw does.
   seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
   await waitFor('the guest to see Ada in the peer document', () =>
     guestRows(seat_).some((row) => row.description === PATH_B) ? true : false,
   );
 
-  // The document opens and the editor becomes visible in the same turn, before the room's text
-  // can cross the socket. No selection event follows: this window never moves.
+  // The document opens and the editor becomes visible in the same turn. Whether the room's text
+  // crossed the socket before that turn or after it is a race, and the caret is drawn either
+  // way: the frame that brings the text is the one that makes this caret resolvable. No
+  // selection event follows: this window never moves.
   const holder = { text: TEXT_B };
   const document = guestDocument(seat_, PATH_B, holder);
   const editor = guestEditor(document);

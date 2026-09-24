@@ -891,6 +891,13 @@ export class SessionBridge {
     if (this.pending.delete(path)) {
       this.reconcile(path);
     }
+    // What the guarded draw in `onEngineEvent` held back: the buffer now holds what the
+    // replica holds, so a caret that could not be placed while the apply was in flight is
+    // drawn against text it fits in. A reconcile just above may have issued another apply,
+    // which is the same reason to wait again.
+    if (!this.inFlight.has(path)) {
+      this.host.renderCursors(this.cursors());
+    }
   }
 
   /**
@@ -1028,6 +1035,15 @@ export class SessionBridge {
           this.arrive(event.path);
         } else {
           this.reconcile(event.path);
+        }
+        // A cursor needs the replica's text to resolve against, so the frame that brings that
+        // text is a frame to draw on: a caret that arrived before its document — or before
+        // this window opened it — has nothing else to repaint it, since the presence naming
+        // it is long past and the editor was already visible. Not with an apply in flight:
+        // the buffer is behind the replica until it lands, and the offsets are converted
+        // against that buffer.
+        if (!this.inFlight.has(event.path)) {
+          this.host.renderCursors(this.cursors());
         }
         break;
       }
