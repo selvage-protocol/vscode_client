@@ -952,7 +952,7 @@ export class PeerSession {
    *
    * §7.1 obliges a host to publish a state on it — which is how the joiner learns the listing
    * and the roles without asking — and asks any peer that holds a verified state to re-send
-   * that state unchanged, so a joiner's state arrives while the host is away. §13.7 has a
+   * that state unchanged while the host is away, so a joiner's state arrives without it. §13.7 has a
    * holder re-announce its holds on the same event.
    */
   seatJoined(clock: number, seat: string): Promise<void> {
@@ -965,7 +965,15 @@ export class PeerSession {
         await this.publishState(clock, 'roster');
         return;
       }
-      if (this.heldStateFrame !== undefined) {
+      // §7.1: the re-send is for a room whose host is away — a joiner the host cannot answer, or
+      // a returning host that lost its `issued`. While the seat the `host` entry labels is seated,
+      // the host's own fresh state answers this join, and a copy from every peer would put the
+      // whole listing on every connection once per seated peer.
+      const hostSeat = this.hostSeat();
+      if (
+        this.heldStateFrame !== undefined &&
+        (hostSeat === undefined || !this.roster.has(hostSeat))
+      ) {
         this.republish(this.heldStateFrame);
       }
     });

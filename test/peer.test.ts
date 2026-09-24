@@ -825,6 +825,35 @@ test('a seat joining makes the held set due again, and one leaving loses its hol
   assert.deepEqual((await publishedFrame(out[1] as Uint8Array)).payload, { holds: ['README.md'] });
 });
 
+test('a state is re-sent on a join only while the host is away', async () => {
+  const now = await room();
+  const peer = await session({ roster: ['p-host'] });
+  await peer.tick(0);
+  const held = await state(now.host, 1, [
+    [now.peer, 'host', 'p-host'],
+    [now.ours, 'guest', 'p-self'],
+  ]);
+  await peer.deliver(1, held);
+  await peer.tick(2);
+  peer.takeOutbound();
+
+  // §7.1: the host is seated, so its own fresh state answers the join and this peer's copy
+  // would be one more whole listing on every connection.
+  const kinds = async (): Promise<number[]> =>
+    Promise.all(peer.takeOutbound().map(async (bytes) => (await publishedFrame(bytes as Uint8Array)).kind));
+  await peer.seatJoined(3, 'p-new');
+  await peer.tick(3);
+  assert.deepEqual(await kinds(), [], 'no state goes back while the host is seated');
+
+  // The host leaves and comes back on a new seat: its `host` entry labels a seat the roster
+  // has lost, which is the returning host the re-send is for.
+  await peer.seatLeft(4, 'p-host');
+  await peer.seatJoined(5, 'p-host-again');
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'the held state goes back');
+  assert.deepEqual([...(out[0] as Uint8Array)], [...held], 'unchanged');
+});
+
 test('a peer that leaves loses its holds at once, and a seat the roster never knew does not', async () => {
   const now = await room();
   const peer = await session({ roster: ['p-other'] });
