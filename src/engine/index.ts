@@ -28,6 +28,7 @@ export type {
   PersistedHost,
 } from './host.ts';
 export {
+  FRAME_BUDGET,
   MISSING_FRAGMENT,
   PEER_MUTATIONS,
   PeerSession,

@@ -21,6 +21,7 @@ import {
   PEER_MUTATIONS,
   PeerSession,
   endingReason,
+  FRAME_BUDGET,
   parseInvite,
 } from '../src/engine/peer.ts';
 import type { PeerOptions } from '../src/engine/peer.ts';
@@ -825,6 +826,35 @@ test('a seat joining makes the held set due again, and one leaving loses its hol
   assert.deepEqual((await publishedFrame(out[1] as Uint8Array)).payload, { holds: ['README.md'] });
 });
 
+test('a state is re-sent on a join only while the host is away', async () => {
+  const now = await room();
+  const peer = await session({ roster: ['p-host'] });
+  await peer.tick(0);
+  const held = await state(now.host, 1, [
+    [now.peer, 'host', 'p-host'],
+    [now.ours, 'guest', 'p-self'],
+  ]);
+  await peer.deliver(1, held);
+  await peer.tick(2);
+  peer.takeOutbound();
+
+  // §7.1: the host is seated, so its own fresh state answers the join and this peer's copy
+  // would be one more whole listing on every connection.
+  const kinds = async (): Promise<number[]> =>
+    Promise.all(peer.takeOutbound().map(async (bytes) => (await publishedFrame(bytes as Uint8Array)).kind));
+  await peer.seatJoined(3, 'p-new');
+  await peer.tick(3);
+  assert.deepEqual(await kinds(), [], 'no state goes back while the host is seated');
+
+  // The host leaves and comes back on a new seat: its `host` entry labels a seat the roster
+  // has lost, which is the returning host the re-send is for.
+  await peer.seatLeft(4, 'p-host');
+  await peer.seatJoined(5, 'p-host-again');
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'the held state goes back');
+  assert.deepEqual([...(out[0] as Uint8Array)], [...held], 'unchanged');
+});
+
 test('a peer that leaves loses its holds at once, and a seat the roster never knew does not', async () => {
   const now = await room();
   const peer = await session({ roster: ['p-other'] });
@@ -898,6 +928,28 @@ test('a state that names no host arms nothing, and the two windows run in sequen
   assert.equal(later.end, undefined, 'the host-away window started where the state was applied');
   await later.tick(2 * EXPIRE_MS - 100);
   assert.equal(later.end, 'host-away');
+});
+
+// --- CANONICAL.md §6.1, the frame budget ------------------------------------------
+
+test('a session that reaches the frame budget seals nothing more and ends', async () => {
+  const now = await room();
+  const peer = await session({ frameBudget: 2 });
+  await peer.tick(0);
+  const first = peer.takeOutbound();
+  assert.equal(first.length, 1, 'the announcement is the first frame the room counts');
+
+  // The state is the second: the budget is spent, so the handshake it would answer with is not
+  // sealed, and the next tick ends the session and says why.
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  assert.equal(peer.takeOutbound().length, 0, 'nothing is sealed past the budget');
+  await peer.tick(2);
+  assert.equal(peer.end, 'frame-budget');
+  assert.match(endingReason('frame-budget'), /new room/);
+  peer.open('README.md');
+  await peer.tick(3 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 0, 'and nothing after it');
+  assert.equal(FRAME_BUDGET, 2 ** 31, 'half of the 2^32 bound on one key with random nonces');
 });
 
 // --- the invite -----------------------------------------------------------------

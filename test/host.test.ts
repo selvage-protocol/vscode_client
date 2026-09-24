@@ -291,6 +291,21 @@ test('a path §5 refuses, and one over the bound, are dropped rather than writte
   assert.deepEqual(peer.listing, ['b/ok.md'], '§13.3 drops the path and applies the rest');
 });
 
+// --- CANONICAL.md §6.1, the frame budget ------------------------------------------
+
+test('a host that reaches the frame budget publishes its closing and ends', async () => {
+  const now = await room();
+  const { peer } = await hostHosting(['README.md'], { frameBudget: 3 });
+  assert.equal(peer.takeOutbound().length, 2, 'the mint state and its handshake are counted');
+  await peer.deliver(1, await announce(now.peer, 1, 'guest'));
+  await peer.tick(2);
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'one frame past the budget, and it is the closing');
+  const frame = await opened(out[0] as Uint8Array);
+  assert.equal(frame.envelope.kind, 2);
+  assert.equal(peer.end, 'frame-budget');
+});
+
 // --- the roster -------------------------------------------------------------------
 
 test('a peer.joined and a peer.left each publish, and a departed seat leaves the statement', async () => {

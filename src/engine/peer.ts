@@ -242,8 +242,15 @@ function takeKey(
 
 // --- what a session says about itself -------------------------------------------
 
-/** The three endings a session reaches on its own (§13.10). */
-export type Ending = 'closing' | 'host-away' | 'no-state';
+/** The four endings a session reaches on its own (§13.10). */
+export type Ending = 'closing' | 'host-away' | 'no-state' | 'frame-budget';
+
+/**
+ * `CANONICAL.md` §6.1's frame budget: half of SP 800-38D's 2³² bound on one key with random
+ * nonces, which is the room's and not one sender's, so that a client that missed frames the relay
+ * dropped still stops well short of it.
+ */
+export const FRAME_BUDGET = 2 ** 31;
 
 /** The words a client says when it ends a session, which §13.10 requires it to say. */
 export function endingReason(ending: Ending): string {
@@ -252,6 +259,8 @@ export function endingReason(ending: Ending): string {
       return 'the room closed';
     case 'host-away':
       return 'the host has been away past its window';
+    case 'frame-budget':
+      return "the room has sealed as many frames as its key allows; start a new room";
     default:
       return 'no state arrived within the no-state window';
   }
@@ -369,6 +378,11 @@ export interface PeerOptions {
    * as fast as it likes (§2.1: a client bounds what it holds). `frameCount` is kept either way.
    */
   recordFrames?: boolean;
+  /**
+   * The room's frame budget (`CANONICAL.md` §6.1), {@link FRAME_BUDGET} when left out. **A test
+   * seam**: a live session has no reason to set it, and a smaller one only ends a room sooner.
+   */
+  frameBudget?: number;
 }
 
 /**
@@ -428,6 +442,12 @@ export class PeerSession {
   private published = 0;
   private handshake = 0;
   private frames = 0;
+  /**
+   * `CANONICAL.md` §6.1's count: every binary frame this session was delivered and every frame it
+   * sealed, across reconnects, because the frame key it is counted against outlives a socket.
+   */
+  private roomFrames = 0;
+  private readonly frameBudget: number;
   private readonly applied: AppliedFrame[] = [];
   private readonly dropped: DroppedFrame[] = [];
   private readonly ignored: number[] = [];
@@ -486,6 +506,7 @@ export class PeerSession {
     this.session = session;
     this.declaredRole = options.declaredRole;
     this.recordFrames = options.recordFrames ?? true;
+    this.frameBudget = options.frameBudget ?? FRAME_BUDGET;
     this.renew = options.keepalive.awareness_renew_ms;
     this.expire = options.keepalive.awareness_expire_ms;
     this.seat = options.seat;
@@ -850,6 +871,7 @@ export class PeerSession {
   private async deliverOne(clock: number, frame: Uint8Array): Promise<Outcome> {
     this.clockOfLastMove = clock;
     this.frames += 1;
+    this.roomFrames += 1;
     const index = this.frames - 1;
     // A closing folds into the receiver the moment it verifies, and §13.10 ignores one handed
     // to a client holding no state. The two values it moved are put back, because `issued` is
@@ -903,6 +925,9 @@ export class PeerSession {
     if (this.ending !== undefined) {
       return;
     }
+    if (await this.budgetSpent()) {
+      return;
+    }
     if (this.windowPassed(clock)) {
       return;
     }
@@ -952,7 +977,7 @@ export class PeerSession {
    *
    * §7.1 obliges a host to publish a state on it — which is how the joiner learns the listing
    * and the roles without asking — and asks any peer that holds a verified state to re-send
-   * that state unchanged, so a joiner's state arrives while the host is away. §13.7 has a
+   * that state unchanged while the host is away, so a joiner's state arrives without it. §13.7 has a
    * holder re-announce its holds on the same event.
    */
   seatJoined(clock: number, seat: string): Promise<void> {
@@ -965,7 +990,15 @@ export class PeerSession {
         await this.publishState(clock, 'roster');
         return;
       }
-      if (this.heldStateFrame !== undefined) {
+      // §7.1: the re-send is for a room whose host is away — a joiner the host cannot answer, or
+      // a returning host that lost its `issued`. While the seat the `host` entry labels is seated,
+      // the host's own fresh state answers this join, and a copy from every peer would put the
+      // whole listing on every connection once per seated peer.
+      const hostSeat = this.hostSeat();
+      if (
+        this.heldStateFrame !== undefined &&
+        (hostSeat === undefined || !this.roster.has(hostSeat))
+      ) {
         this.republish(this.heldStateFrame);
       }
     });
@@ -1070,6 +1103,7 @@ export class PeerSession {
         this.fault ??= this.host?.failure ?? 'the closing could not be sealed';
         return false;
       }
+      this.roomFrames += 1;
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
@@ -1569,10 +1603,16 @@ export class PeerSession {
     if (host === undefined) {
       return;
     }
+    if (this.roomFrames >= this.frameBudget) {
+      return;
+    }
     const publication = await host.publish(clock, reason);
     this.fault ??= host.failure;
     if (publication === undefined) {
       return;
+    }
+    if (publication.fresh) {
+      this.roomFrames += 1;
     }
     this.outbound.push(publication.frame);
     this.published += 1;
@@ -1685,6 +1725,25 @@ export class PeerSession {
     }
   }
 
+  /**
+   * `CANONICAL.md` §6.1's frame budget: once the room's count reaches it, nothing more is sealed
+   * under the frame key. A host publishes its one closing first — the frame that ends the room for
+   * every peer holding its state — and every session, the host's included, ends and says why.
+   */
+  private async budgetSpent(): Promise<boolean> {
+    if (this.roomFrames < this.frameBudget) {
+      return false;
+    }
+    const publication = await this.host?.closing();
+    if (publication !== undefined) {
+      this.outbound.push(publication.frame);
+      this.published += 1;
+      this.publishedClosings.push(publication.issued);
+    }
+    this.ending = 'frame-budget';
+    return true;
+  }
+
   /** §13.3's no-state window and §13.8's host-away window, which run in sequence. */
   private windowPassed(clock: number): boolean {
     if (
@@ -1751,7 +1810,7 @@ export class PeerSession {
    * own check of the same rule.
    */
   private async publish(what: Publication, plaintext: Uint8Array): Promise<void> {
-    if (this.ending !== undefined) {
+    if (this.ending !== undefined || this.roomFrames >= this.frameBudget) {
       return;
     }
     this.counter += 1;
@@ -1763,6 +1822,7 @@ export class PeerSession {
       this.fault = `a ${what} frame could not be sealed`;
       return;
     }
+    this.roomFrames += 1;
     this.outbound.push(bytes);
     if (what === 'sync') {
       this.handshake += 1;
