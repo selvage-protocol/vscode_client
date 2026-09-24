@@ -333,12 +333,22 @@ test('a guest that reached the room over ws:// hands that link on', async (t) =>
 
 test('a guest’s status bar hands the invite on too', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
-  const item = await waitFor('the status bar to be drawn', () =>
-    bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage') ?? false,
-  );
   // The bar is the one Selvage surface a window always has, so what it says is pinned here:
   // the side of the room the person is on, and how many people are in it. The guest sees the
-  // host, so the count is plural.
+  // host, so the count is plural. The side is the applied state's word and arrives after the
+  // join — §13.4 gives this connection no role until a state commits its key, so the bar reads
+  // "waiting for the host" until then — which is why the wait is for the settled text and not
+  // for the moment the item exists.
+  const item = await waitFor(
+    'the guest’s bar to name the side of the room it is on',
+    () => {
+      const bar = bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage');
+      return bar !== undefined && String(bar.text).startsWith('$(radio-tower) Selvage: guest ')
+        ? bar
+        : false;
+    },
+    { describe: () => bundle.stub.registered.statusBarItems.map((entry) => String(entry.text)) },
+  );
   assert.equal(String(item.text), '$(radio-tower) Selvage: guest — 2 people in the room');
   assert.equal(
     item.command,

@@ -227,17 +227,21 @@ async function openHeld(
     },
     { describe: () => ({ decorated: editor.decorated.length }) },
   );
-  // The alternation ends on whichever offset drew: two ordered broadcasts ending at the
-  // seated offset, then a fresh draw there, is what makes the caret that offset for what
-  // follows rather than whichever one the draw above saw.
+  // The alternation ends on whichever offset it last published, which is not always the seated
+  // one, and a repeat of the value already out is not a change at all: `setAwareness` drops an
+  // identical state, so nothing goes on the wire and nothing is drawn for it. What follows is
+  // therefore the pair of moves that leaves `hostAt` both published and drawn, starting from the
+  // other offset only when the alternation did not already end on the seated one.
   const seen = editor.decorated.length;
+  if (at === hostAt) {
+    seat_.host.setSelection(path, { anchor: hostAt + 1, head: hostAt + 1 });
+    await waitFor(`the host caret to move to ${hostAt + 1} in ${path}`, () =>
+      editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt + 1)) ? true : false,
+    );
+  }
+  const settledFrom = editor.decorated.length;
   // One move per frame: an awareness state is sealed before it is sent and a later move replaces
   // the one before it, so two selections in one tick are one frame carrying the last position.
-  seat_.host.setSelection(path, { anchor: hostAt + 1, head: hostAt + 1 });
-  await waitFor(`the host caret to move to ${hostAt + 1} in ${path}`, () =>
-    editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt + 1)) ? true : false,
-  );
-  const settledFrom = editor.decorated.length;
   seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
   await waitFor(`the host caret to settle at ${hostAt} in ${path}`, () =>
     editor.decorated.slice(settledFrom).some((args) => hasCaretAt(args, hostAt)) ? true : false,
