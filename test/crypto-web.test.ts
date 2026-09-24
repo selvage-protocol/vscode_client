@@ -119,3 +119,91 @@ test('more keys than the seam keeps imported still seal and verify', async () =>
     assert.equal(await authentic(webCrypto, ROOM, envelope, signer.public), true);
   }
 });
+
+/**
+ * Counts `crypto.subtle.importKey` calls for one raw key's bytes while `work` runs, optionally
+ * refusing the first `refuse` of them, so the cache's reuse, eviction and retry are observable.
+ */
+async function importsOf(
+  bytes: Uint8Array,
+  work: () => Promise<void>,
+  refuse = 0,
+): Promise<number> {
+  const subtle = globalThis.crypto.subtle;
+  const original = subtle.importKey;
+  let count = 0;
+  let refused = 0;
+  subtle.importKey = function (this: SubtleCrypto, ...args: unknown[]) {
+    const data = args[1];
+    if (data instanceof ArrayBuffer && Buffer.from(data).equals(Buffer.from(bytes))) {
+      count += 1;
+      if (refused < refuse) {
+        refused += 1;
+        return Promise.reject(new DOMException('refused for the test', 'OperationError'));
+      }
+    }
+    return (original as (...rest: unknown[]) => Promise<CryptoKey>).apply(this, args);
+  } as typeof subtle.importKey;
+  try {
+    await work();
+  } finally {
+    subtle.importKey = original;
+  }
+  return count;
+}
+
+/** 32 bytes no other test in this file uses, so the module-wide cache starts cold for them. */
+function fresh(tag: number): Uint8Array {
+  const bytes = webCrypto.randomBytes(32);
+  bytes[0] = tag;
+  return bytes;
+}
+
+test('one key is imported once per use and reused after that', async () => {
+  const key = fresh(1);
+  const aad = new Uint8Array();
+  let sealedOnce: Uint8Array | undefined;
+  const sealImports = await importsOf(key, async () => {
+    for (let at = 0; at < 5; at += 1) {
+      sealedOnce = await webCrypto.aesGcmSeal(key, filled(12, at), utf8.encode('x'), aad);
+      assert.ok(sealedOnce !== undefined);
+    }
+  });
+  assert.equal(sealImports, 1, 'five seals under one key imported it more than once');
+  const openImports = await importsOf(key, async () => {
+    for (let at = 0; at < 5; at += 1) {
+      assert.ok((await webCrypto.aesGcmOpen(key, filled(12, 4), sealedOnce as Uint8Array, aad)) !== undefined);
+    }
+  });
+  assert.equal(openImports, 1, 'decrypting is its own use, imported once and then reused');
+});
+
+test('a refused import is not kept, and the next call imports again and succeeds', async () => {
+  const key = fresh(2);
+  const aad = new Uint8Array();
+  const imports = await importsOf(
+    key,
+    async () => {
+      assert.equal(await webCrypto.aesGcmSeal(key, filled(12, 0), utf8.encode('x'), aad), undefined);
+      assert.ok((await webCrypto.aesGcmSeal(key, filled(12, 1), utf8.encode('x'), aad)) !== undefined);
+      assert.ok((await webCrypto.aesGcmSeal(key, filled(12, 2), utf8.encode('x'), aad)) !== undefined);
+    },
+    1,
+  );
+  assert.equal(imports, 2, 'the refusal was cached, or the success was not');
+});
+
+test('a key pushed out by 256 newer ones is imported again when it is next used', async () => {
+  const key = fresh(3);
+  const aad = new Uint8Array();
+  const imports = await importsOf(key, async () => {
+    // Used twice while it is cached: one import between them.
+    assert.ok((await webCrypto.aesGcmSeal(key, filled(12, 0), utf8.encode('x'), aad)) !== undefined);
+    assert.ok((await webCrypto.aesGcmSeal(key, filled(12, 2), utf8.encode('x'), aad)) !== undefined);
+    for (let at = 0; at < 256; at += 1) {
+      assert.ok((await webCrypto.aesGcmSeal(fresh(4), filled(12, 0), utf8.encode('x'), aad)) !== undefined);
+    }
+    assert.ok((await webCrypto.aesGcmSeal(key, filled(12, 1), utf8.encode('x'), aad)) !== undefined);
+  });
+  assert.equal(imports, 2, 'an evicted key was not imported again, or was never evicted');
+});

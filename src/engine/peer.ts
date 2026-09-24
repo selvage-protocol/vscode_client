@@ -538,18 +538,23 @@ export class PeerSession {
   private readonly touched = new Set<string>();
 
   private noteTouched(transaction: Y.Transaction): void {
+    // A root type is a path's document. It is recorded whatever class it has now: content for a
+    // path this replica has not asked for yet arrives under a placeholder type, which becomes the
+    // path's `Y.Text` only when something reads it — and that swap is no transaction.
+    const roots = new Set<unknown>();
     for (const type of transaction.changed.keys()) {
-      // A root type is a path's document. It is recorded whatever class it has now: content for
-      // a path this replica has not asked for yet arrives under a placeholder type, which becomes
-      // the path's `Y.Text` only when something reads it — and that swap is no transaction.
-      if (type._item !== null) {
-        continue;
+      if (type._item === null) {
+        roots.add(type);
       }
-      for (const [name, shared] of this.doc.share) {
-        if (shared === type) {
-          this.touched.add(name);
-          break;
-        }
+    }
+    if (roots.size === 0) {
+      return;
+    }
+    // One pass over the documents, so a sync that changes many of them costs one walk and not
+    // one per changed document.
+    for (const [name, shared] of this.doc.share) {
+      if (roots.has(shared)) {
+        this.touched.add(name);
       }
     }
   }

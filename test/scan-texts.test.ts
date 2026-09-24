@@ -88,10 +88,20 @@ test('selvage/2: a frame reads only the documents it changed, and reports each c
   });
 
   // A caret move is an awareness-only content frame: no document is read for it.
+  // The facade emits `presenceChanged` from the same handler that ran the scan, after it: waiting
+  // on the event, rather than on the replica's awareness, is what makes the scan have happened.
+  let caretSeen = false;
+  const stopCaret = engine.on((event) => {
+    if (
+      event.type === 'presenceChanged' &&
+      event.presence.some((record) => record.state?.selection !== undefined)
+    ) {
+      caretSeen = true;
+    }
+  });
   host.setSelection(A, { anchor: 1, head: 3 });
-  await waitFor('the caret to arrive', () =>
-    engine.presence().some((record) => record.state?.selection !== undefined) ? true : false,
-  );
+  await waitFor('the caret to be reported', () => (caretSeen ? true : false));
+  stopCaret();
   assert.equal(reads.get(A) ?? 0, 0, 'a caret move read a document');
   assert.equal(reads.get(B) ?? 0, 0, 'a caret move read a document');
 
