@@ -57,6 +57,20 @@ export const MAX_LISTING_PATHS = 100_000;
 export const MAX_LISTING_BYTES = 4 * 1024 * 1024;
 
 /**
+ * `CANONICAL.md` §6.1's frame budget: half of SP 800-38D's 2³² bound on one key with random
+ * nonces, which is the room's and not one sender's, so that a client that missed frames the relay
+ * dropped still stops well short of it.
+ */
+export const FRAME_BUDGET = 2 ** 31;
+
+/**
+ * `CANONICAL.md` §6.1's absence charge: what every return of the host — a reconnect or a reload —
+ * costs its count, a fixed ceiling on the frames one absence can hide. 1024 returns spend the
+ * budget on charges alone.
+ */
+export const ABSENCE_CHARGE = 2 ** 21;
+
+/**
  * What §7.1 has a host keep together: the host key, its `issued` beside it, and the room's frame
  * count (`CANONICAL.md` §6.1).
  */
@@ -224,11 +238,13 @@ export class HostProducer {
       if (Number.isSafeInteger(persisted.issued) && persisted.issued > 0) {
         producer.issued = persisted.issued;
       }
+      // `CANONICAL.md` §6.1: a reload is a return, so it costs the absence charge; a record with no
+      // count cannot say what the room has sealed, so it reads as a spent budget and the room
+      // closes at the first tick.
       const frames = persisted.frames;
-      if (frames !== undefined && Number.isSafeInteger(frames) && frames > 0) {
-        producer.frames = frames;
-        producer.savedFrames = frames;
-      }
+      const known = frames !== undefined && Number.isSafeInteger(frames) && frames >= 0;
+      producer.frames = known ? frames + ABSENCE_CHARGE : FRAME_BUDGET;
+      producer.savedFrames = known ? frames : -1;
     }
     return producer;
   }

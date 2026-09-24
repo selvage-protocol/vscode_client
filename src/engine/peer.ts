@@ -36,7 +36,7 @@ import {
   seal,
 } from './sealed.ts';
 import type { DropReason, Committed, SessionKeypair, Verdict } from './sealed.ts';
-import { HOST_MUTATIONS, HostProducer } from './host.ts';
+import { ABSENCE_CHARGE, FRAME_BUDGET, HOST_MUTATIONS, HostProducer } from './host.ts';
 import type { HostMutation, HostOptions, HostPublication, HostReason } from './host.ts';
 import { applyFrame, encodeAwareness, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
@@ -245,12 +245,7 @@ function takeKey(
 /** The four endings a session reaches on its own (§13.10). */
 export type Ending = 'closing' | 'host-away' | 'no-state' | 'frame-budget';
 
-/**
- * `CANONICAL.md` §6.1's frame budget: half of SP 800-38D's 2³² bound on one key with random
- * nonces, which is the room's and not one sender's, so that a client that missed frames the relay
- * dropped still stops well short of it.
- */
-export const FRAME_BUDGET = 2 ** 31;
+export { ABSENCE_CHARGE, FRAME_BUDGET } from './host.ts';
 
 /** The words a client says when it ends a session, which §13.10 requires it to say. */
 export function endingReason(ending: Ending): string {
@@ -1066,6 +1061,13 @@ export class PeerSession {
       this.holdsAnnouncedAt = undefined;
       this.ending = undefined;
       this.fault = undefined;
+      // `CANONICAL.md` §6.1: a host's return costs its count the absence charge, because the
+      // frames sealed while it was away are ones it never saw.
+      if (this.host !== undefined) {
+        this.roomFrames += ABSENCE_CHARGE;
+        this.host.countFrames(this.roomFrames);
+        this.host.saveFrames();
+      }
     });
   }
 
