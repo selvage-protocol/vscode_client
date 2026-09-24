@@ -964,8 +964,15 @@ test('the setting is checked before it is sent, and the question asks for a shor
     'a'.repeat(33),
     'the box must start from the refused name so it can be shortened',
   );
+  // The seat is read off both ends: the room's own name proves the handshake carried it, and
+  // the notice proves the host command finished. A test that ends with the connect still in
+  // flight leaves a command that seats itself in whichever window is next, and the join there
+  // then reads a session it is already in.
   await waitFor('the host to be seated with the shorter name', () =>
-    server.displayNames().includes('Ada') ? true : false,
+    server.displayNames().includes('Ada') &&
+    bundle.stub.registered.information.some((message) => /is open/.test(message))
+      ? true
+      : false,
   );
   assert.deepEqual(server.displayNames(), ['Ada'], 'the refused setting reached the server');
 });
