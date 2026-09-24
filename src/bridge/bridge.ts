@@ -1029,6 +1029,11 @@ export class SessionBridge {
         } else {
           this.reconcile(event.path);
         }
+        // A cursor needs the replica's text to resolve against, so the frame that brings that
+        // text is a frame to draw on: a caret that arrived before its document — or before
+        // this window opened it — has nothing else to repaint it, since the presence naming
+        // it is long past and the editor was already visible.
+        this.host.renderCursors(this.cursors());
         break;
       }
       case 'documentsChanged': {
