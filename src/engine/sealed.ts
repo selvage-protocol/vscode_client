@@ -768,6 +768,14 @@ export class Reader {
   private readonly crypto: FrameCrypto;
   private readonly hostId: Uint8Array;
   /**
+   * {@link entries}' order and an index by key id, derived from one {@link committed} map and
+   * rebuilt when that map is replaced. Every frame asks which keys an id names, so sorting the
+   * room's keys per frame would cost a sort for every keystroke a peer sends.
+   */
+  private orderedFor: Map<string, Committed> | undefined;
+  private ordered: Committed[] = [];
+  private readonly byId = new Map<string, Committed[]>();
+  /**
    * The frame being read, so that a second call waits for the first.
    *
    * A read is several awaits long and moves a mark when it accepts, so two of them in flight
@@ -807,19 +815,39 @@ export class Reader {
    * receiver on the same bytes.
    */
   entries(): Committed[] {
-    return [...this.committed.values()].sort((left, right) =>
-      left.spelling < right.spelling ? -1 : left.spelling > right.spelling ? 1 : 0,
-    );
+    return [...this.order()];
   }
 
   /** The committed entries an 8-byte id names, in that same order. */
   byKeyId(id: string): Committed[] {
-    return this.entries().filter((entry) => entry.id === id);
+    this.order();
+    return [...(this.byId.get(id) ?? [])];
   }
 
   /** The canonical spelling of the key an id names, when an applied state names one. */
   spellingOf(id: string): string | undefined {
-    return this.entries().find((entry) => entry.id === id)?.spelling;
+    this.order();
+    return this.byId.get(id)?.[0]?.spelling;
+  }
+
+  /** The sorted entries of the current {@link committed} map, rebuilt only when it changed. */
+  private order(): readonly Committed[] {
+    if (this.orderedFor !== this.committed) {
+      this.ordered = [...this.committed.values()].sort((left, right) =>
+        left.spelling < right.spelling ? -1 : left.spelling > right.spelling ? 1 : 0,
+      );
+      this.byId.clear();
+      for (const entry of this.ordered) {
+        const named = this.byId.get(entry.id);
+        if (named === undefined) {
+          this.byId.set(entry.id, [entry]);
+        } else {
+          named.push(entry);
+        }
+      }
+      this.orderedFor = this.committed;
+    }
+    return this.ordered;
   }
 
   /**
@@ -862,7 +890,7 @@ export class Reader {
 
   /** The role this receiver's applied state gives a key, which is what a frame is read with. */
   roleOfKey(key: Uint8Array): string | undefined {
-    return this.entries().find((entry) => bytesEqual(entry.key, key))?.role;
+    return this.order().find((entry) => bytesEqual(entry.key, key))?.role;
   }
 
   private markOf(id: string): number {
@@ -1055,7 +1083,9 @@ export class Reader {
     ) {
       return refused('unauthorised_content', envelope);
     }
-    return await this.accept(envelope, hex(await keyId(this.crypto, sender)), plaintext, payload);
+    // The sender's id is the envelope's own: a candidate is only ever a key whose id is `id`
+    // (the host key when it is the host's id, or a committed key `byKeyId` found under it).
+    return await this.accept(envelope, id, plaintext, payload);
   }
 }
 

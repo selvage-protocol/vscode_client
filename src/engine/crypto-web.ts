@@ -77,12 +77,10 @@ export const webCrypto: FrameCrypto = {
     return subtle(async () => {
       // A public key is any 32 bytes, and the curve refuses some of them: a refusal is a
       // `false` here and never a throw, because a room state may name them (§13.2).
-      const key = await crypto.subtle.importKey(
-        'raw',
-        toBuffer(publicKey),
-        { name: 'Ed25519' },
-        false,
-        ['verify'],
+      const key = await imported('verify', publicKey, () =>
+        crypto.subtle.importKey('raw', toBuffer(publicKey), { name: 'Ed25519' }, false, [
+          'verify',
+        ]),
       );
       return crypto.subtle.verify('Ed25519', key, toBuffer(signature), toBuffer(message));
     }).then((verified) => verified ?? false);
@@ -154,6 +152,10 @@ async function subtle<T>(work: () => Promise<T>): Promise<T | undefined> {
  * ({@link ed25519PublicFromSeed}); nothing here exports it anywhere else.
  */
 function ed25519Private(seed: Uint8Array): Promise<CryptoKey> {
+  return imported('sign', seed, () => ed25519PrivateImport(seed));
+}
+
+function ed25519PrivateImport(seed: Uint8Array): Promise<CryptoKey> {
   const der = new Uint8Array(PKCS8_ED25519_PREFIX.length + seed.length);
   der.set(PKCS8_ED25519_PREFIX);
   der.set(seed, PKCS8_ED25519_PREFIX.length);
@@ -168,7 +170,59 @@ const PKCS8_ED25519_PREFIX = new Uint8Array([
 ]);
 
 function aesKey(key: Uint8Array, usage: 'encrypt' | 'decrypt'): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', toBuffer(key), { name: 'AES-GCM' }, false, [usage]);
+  return imported(usage, key, () =>
+    crypto.subtle.importKey('raw', toBuffer(key), { name: 'AES-GCM' }, false, [usage]),
+  );
+}
+
+/**
+ * The keys this seam has already imported, by use and by the bytes they were imported from.
+ *
+ * A session seals and opens every frame under one frame key, signs every frame with one
+ * session key and verifies each peer's frames against the few keys the room state commits, so
+ * without this each keystroke re-imported the same two or three keys. A `CryptoKey` is not
+ * extractable where the import said so, and the bytes it came from are the caller's and are
+ * held by the caller anyway; this holds nothing a session does not already hold.
+ *
+ * Bounded, oldest first out, because a room state may name any number of keys over a long
+ * session. An import the platform refuses is not kept, so a refusal is decided again next time
+ * exactly as it was the first.
+ */
+const KEY_CACHE_LIMIT = 256;
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
+function imported(
+  use: string,
+  bytes: Uint8Array,
+  importKey: () => Promise<CryptoKey>,
+): Promise<CryptoKey> {
+  const name = `${use}:${hexOf(bytes)}`;
+  const known = keyCache.get(name);
+  if (known !== undefined) {
+    return known;
+  }
+  const fresh = importKey();
+  keyCache.set(name, fresh);
+  fresh.catch(() => {
+    if (keyCache.get(name) === fresh) {
+      keyCache.delete(name);
+    }
+  });
+  if (keyCache.size > KEY_CACHE_LIMIT) {
+    const oldest = keyCache.keys().next().value;
+    if (oldest !== undefined) {
+      keyCache.delete(oldest);
+    }
+  }
+  return fresh;
+}
+
+function hexOf(bytes: Uint8Array): string {
+  let out = '';
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, '0');
+  }
+  return out;
 }
 
 /** The 32 bytes a base64url `x` member carries, which is WebCrypto's own encoding of a public key. */
