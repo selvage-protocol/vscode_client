@@ -21,6 +21,7 @@ import {
   PEER_MUTATIONS,
   PeerSession,
   endingReason,
+  FRAME_BUDGET,
   parseInvite,
 } from '../src/engine/peer.ts';
 import type { PeerOptions } from '../src/engine/peer.ts';
@@ -927,6 +928,28 @@ test('a state that names no host arms nothing, and the two windows run in sequen
   assert.equal(later.end, undefined, 'the host-away window started where the state was applied');
   await later.tick(2 * EXPIRE_MS - 100);
   assert.equal(later.end, 'host-away');
+});
+
+// --- CANONICAL.md §6.1, the frame budget ------------------------------------------
+
+test('a session that reaches the frame budget seals nothing more and ends', async () => {
+  const now = await room();
+  const peer = await session({ frameBudget: 2 });
+  await peer.tick(0);
+  const first = peer.takeOutbound();
+  assert.equal(first.length, 1, 'the announcement is the first frame the room counts');
+
+  // The state is the second: the budget is spent, so the handshake it would answer with is not
+  // sealed, and the next tick ends the session and says why.
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  assert.equal(peer.takeOutbound().length, 0, 'nothing is sealed past the budget');
+  await peer.tick(2);
+  assert.equal(peer.end, 'frame-budget');
+  assert.match(endingReason('frame-budget'), /new room/);
+  peer.open('README.md');
+  await peer.tick(3 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 0, 'and nothing after it');
+  assert.equal(FRAME_BUDGET, 2 ** 31, 'half of the 2^32 bound on one key with random nonces');
 });
 
 // --- the invite -----------------------------------------------------------------
