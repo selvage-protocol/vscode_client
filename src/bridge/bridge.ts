@@ -16,7 +16,7 @@
 import type { PeerInfo, Role } from '../engine/envelope.ts';
 import { isProtocolError } from '../engine/errors.ts';
 import type { EngineEvent, EngineEventListener } from '../engine/events.ts';
-import type { SessionInfo } from '../engine/engine.ts';
+import type { SessionInfo } from '../engine/session.ts';
 import type {
   AwarenessState,
   OffsetSelection,
@@ -55,7 +55,7 @@ export type GrantedRead =
   | { readonly kind: 'refused'; readonly cause: GrantRefusal };
 
 /**
- * The slice of `SelvageEngine` the bridge talks to. `SelvageEngine` satisfies it as it
+ * The slice of an engine the bridge talks to. `PeerEngine` satisfies it as it
  * stands — a test assigns the real class to it, so a drift is a compile error rather than
  * a surprise at run time — and a test can satisfy it with a stub.
  */

@@ -8,8 +8,8 @@
  *
  * There are exactly three places a name can come from, and all three check it: the
  * `selvage.displayName` setting, the question a host or join asks, and the value about to be
- * handed to `SelvageEngine.host`/`join` — which is the only thing that carries a name anywhere
- * (`PROTOCOL.md` §5).
+ * handed to the host or join the session is opened with — which is the only thing that carries a
+ * name anywhere (`PROTOCOL.md` §5).
  *
  * The counting is `String.prototype.length`, which *is* the number of UTF-16 code units.
  * `[...name].length` is the number of code points and is wrong here: an emoji would cost one

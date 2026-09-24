@@ -51,7 +51,7 @@ export const HOST_MUTATIONS = [
 
 export type HostMutation = (typeof HOST_MUTATIONS)[number];
 
-/** §13.3's second bound, at `selvage/1`'s own numbers: what this host will enumerate. */
+/** §13.3's second bound: what this host will enumerate. */
 export const MAX_LISTING_PATHS = 100_000;
 /** §13.3's third bound: the path bytes one listing may carry. */
 export const MAX_LISTING_BYTES = 4 * 1024 * 1024;

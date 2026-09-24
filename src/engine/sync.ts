@@ -3,7 +3,7 @@
  * messages with no count and no terminator, so a receiver reads until the frame ends.
  *
  * Message types 2 (auth) and 3 (awareness query) belong to y-protocols and are unused by
- * `selvage/1`: both are read and dropped. The query is dropped rather than answered because
+ * Selvage: both are read and dropped. The query is dropped rather than answered because
  * an answer costs a whole frame, and a frame is a byte stream with no count — so a frame of
  * query bytes drew one answer per byte, which an inbound bound on the frame does nothing to
  * bound. `MAX_REPLIES_PER_FRAME` caps what any one frame can draw, whatever it holds.
@@ -118,7 +118,7 @@ export function applyFrame(
         );
         break;
       }
-      // Unused by `selvage/1` and read and dropped here: see the header. Nothing is
+      // Unused by Selvage and read and dropped here: see the header. Nothing is
       // consumed for it — a query carries no payload — and nothing is written back.
       case MESSAGE_QUERY_AWARENESS: {
         break;

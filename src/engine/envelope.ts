@@ -1,14 +1,14 @@
 /**
- * The `selvage/1` session envelope: the JSON shapes, the name vocabulary and the
- * compatibility rules of `PROTOCOL.md` §4–§6, §10 and §11
+ * The session envelope: the JSON shapes, the name vocabulary and the refusal codes of
+ * `PROTOCOL.md` §4–§6 and §11
  * (https://github.com/selvage-protocol/specification).
  *
  * Unknown fields and unknown event names are ignored, so every shape here is
  * deliberately permissive: a peer that adds a field must never break this client.
  */
 
-/** Wire version carried in every session envelope. */
-export const WIRE_VERSION = 'selvage/1';
+/** The wire version every session envelope carries. */
+export const WIRE_VERSION = 'selvage/2';
 
 /** WebSocket endpoint path. */
 export const ENDPOINT_PATH = '/session';
@@ -19,15 +19,6 @@ export const META_PATH = '/meta';
 /** Capabilities this client believes it has. The server ignores ones it does not know. */
 export const CLIENT_CAPABILITIES: readonly string[] = ['y-protocols/1', 'awareness'];
 
-/** Client → server method names (§5). */
-export const method = {
-  sessionHello: 'session.hello',
-  rename: 'session.rename',
-  docOpen: 'doc.open',
-  docClose: 'doc.close',
-  docGrant: 'doc.grant',
-} as const;
-
 /** Server → client event names (§6). */
 export const event = {
   roomCreated: 'room.created',
@@ -35,11 +26,6 @@ export const event = {
   peerJoined: 'peer.joined',
   peerLeft: 'peer.left',
   peerRenamed: 'peer.renamed',
-  docOpened: 'doc.opened',
-  docClosed: 'doc.closed',
-  docGranted: 'doc.granted',
-  hostDetached: 'host.detached',
-  hostAttached: 'host.attached',
   roomGone: 'room.gone',
   sessionError: 'session.error',
 } as const;
@@ -50,7 +36,6 @@ export const code = {
   badMessage: 'bad_message',
   badParams: 'bad_params',
   helloRequired: 'hello_required',
-  unsupportedVersion: 'unsupported_version',
   roomUnknown: 'room_unknown',
   tokenInvalid: 'token_invalid',
   roomGone: 'room_gone',
@@ -66,7 +51,6 @@ export const close = {
   tokenInvalid: 4002,
   roomGone: 4003,
   hostPresent: 4004,
-  unsupportedVersion: 4005,
 } as const;
 
 /**
@@ -81,14 +65,12 @@ export const TERMINAL_CODES: readonly string[] = [
   code.roomUnknown,
   code.tokenInvalid,
   code.hostPresent,
-  code.unsupportedVersion,
   code.roomGone,
 ];
 
 /**
- * A participant's role. `selvage/1` has the first two — the server seats a connection as one of
- * them — and `selvage/2` adds `viewer`, which the room's state assigns and §13.9 reads: a viewer
- * edits its own screen and publishes none of it.
+ * A participant's role: `host` minted the room and signs its states, `guest` edits, and `viewer`
+ * edits its own screen and publishes none of it (§13.4, §13.9).
  */
 export type Role = 'host' | 'guest' | 'viewer';
 
@@ -132,14 +114,6 @@ export interface ErrorObject {
   message: string;
 }
 
-/** A client → server request (§4.1). */
-export interface ClientMessage {
-  v: string;
-  id: number;
-  method: string;
-  params?: unknown;
-}
-
 /** A server → client response or event (§4.2, §4.3). */
 export interface ServerMessage {
   v?: string;
@@ -148,48 +122,6 @@ export interface ServerMessage {
   params?: unknown;
   result?: unknown;
   error?: ErrorObject;
-}
-
-/** The reply to `session.hello` (§6.1, §6.2). */
-export interface SessionParams {
-  room_id: string;
-  token?: string;
-  self: PeerInfo;
-  peers?: PeerInfo[];
-  documents?: string[];
-  capabilities?: string[];
-  keepalive?: Partial<Keepalive>;
-}
-
-/** The result of `doc.open` / `doc.close` (§5). */
-export interface DocSet {
-  documents?: string[];
-}
-
-/** `doc.opened` / `doc.closed` params (§6). */
-export interface DocEvent {
-  peer_id: string;
-  path: string;
-  documents?: string[];
-}
-
-/** `session.rename` params (§5). */
-export interface RenameParams {
-  display_name: string;
-}
-
-/**
- * `doc.grant` / `doc.granted` params (§5, §6.3): the whole listing, replacing whatever the
- * room or this replica held. The order is the publisher's claim and is carried unchanged.
- */
-export interface GrantParams {
-  paths: string[];
-}
-
-/** `peer.renamed` params (§6): the peer whose name changed, and the name now in force. */
-export interface PeerRenamed {
-  peer_id: string;
-  display_name: string;
 }
 
 /** `GET /meta` response body (§2). */
@@ -207,60 +139,6 @@ export const DEFAULT_KEEPALIVE: Keepalive = {
   awareness_renew_ms: 15_000,
   awareness_expire_ms: 30_000,
 };
-
-/**
- * The wire version grammar §10 and `schema/negotiation.json` fix:
- * `selvage/` major [ "." minor ], with both numbers written as §2.4 does, so neither
- * carries a leading zero (CANONICAL.md §2.5).
- */
-const WIRE_VERSION_GRAMMAR = /^selvage\/(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?$/;
-
-/** Parses `selvage/<major>[.<minor>]`, with the minor defaulting to 0. */
-export function parseVersion(version: string): [number, number] | undefined {
-  const grammar = WIRE_VERSION_GRAMMAR.exec(version);
-  if (grammar === null) {
-    return undefined;
-  }
-  const major = grammar[1];
-  const minor = grammar[2];
-  return [Number(major), minor === undefined ? 0 : Number(minor)];
-}
-
-/**
- * True when `version` can be spoken with this implementation: same major, and while at
- * 0.x also the same minor (§10). A malformed version is never compatible.
- */
-export function isCompatible(version: string): boolean {
-  const parsed = parseVersion(version);
-  const ours = parseVersion(WIRE_VERSION);
-  if (parsed === undefined || ours === undefined) {
-    return false;
-  }
-  const [major, minor] = parsed;
-  const [ourMajor, ourMinor] = ours;
-  if (major !== ourMajor) {
-    return false;
-  }
-  return ourMajor !== 0 || minor === ourMinor;
-}
-
-/** The close code the server pairs with a fatal session error code. */
-export function closeCodeFor(codeName: string): number {
-  switch (codeName) {
-    case code.roomUnknown:
-      return close.roomUnknown;
-    case code.tokenInvalid:
-      return close.tokenInvalid;
-    case code.roomGone:
-      return close.roomGone;
-    case code.hostPresent:
-      return close.hostPresent;
-    case code.unsupportedVersion:
-      return close.unsupportedVersion;
-    default:
-      return close.protocolError;
-  }
-}
 
 /**
  * True when a refusal or close code means the session cannot be resumed. Every code in the
@@ -335,80 +213,4 @@ export function parseServerMessage(text: string): ServerMessage | undefined {
         }
       : undefined,
   };
-}
-
-/** A peer record, validated as far as the session layer depends on it. */
-export function parsePeer(value: unknown): PeerInfo | undefined {
-  const peerId = textField(value, 'peer_id');
-  const displayName = textField(value, 'display_name');
-  if (peerId === undefined || displayName === undefined) {
-    return undefined;
-  }
-  // A name past the protocol's bound is not a peer this client acts on: over-long names
-  // are how an unbounded string reaches every surface a name is drawn on.
-  if (displayName.length > MAX_DISPLAY_NAME_UNITS) {
-    return undefined;
-  }
-  const role = textField(value, 'role');
-  const awareness = numberField(value, 'awareness_client_id');
-  return {
-    peer_id: peerId,
-    display_name: displayName,
-    role: role === 'host' ? 'host' : 'guest',
-    ...(awareness === undefined
-      ? {}
-      : { awareness_client_id: Math.trunc(awareness) }),
-  };
-}
-
-/** A `peer.joined` / `host.attached` params object, with or without its `peer` key. */
-export function parsePeerEvent(params: unknown): PeerInfo | undefined {
-  if (params === undefined) {
-    return undefined;
-  }
-  const wrapped = isRecord(params) ? params.peer : undefined;
-  return parsePeer(wrapped ?? params);
-}
-
-/**
- * A `peer.renamed` params object (§6). The minimal pair is the whole event, so both fields
- * are required: a frame missing either is not a rename this client acts on.
- */
-export function parsePeerRenamed(params: unknown): PeerRenamed | undefined {
-  const peerId = textField(params, 'peer_id');
-  const displayName = textField(params, 'display_name');
-  if (peerId === undefined || displayName === undefined) {
-    return undefined;
-  }
-  if (displayName.length > MAX_DISPLAY_NAME_UNITS) {
-    return undefined;
-  }
-  return { peer_id: peerId, display_name: displayName };
-}
-
-/** `session.hello` params for this connection. */
-export function helloParams(input: {
-  displayName: string;
-  role?: Role;
-  awarenessClientId: number;
-  capabilities?: readonly string[];
-  client?: string;
-}): Record<string, unknown> {
-  return {
-    display_name: input.displayName,
-    ...(input.role === undefined ? {} : { role: input.role }),
-    awareness_client_id: input.awarenessClientId,
-    capabilities: [...(input.capabilities ?? CLIENT_CAPABILITIES)],
-    ...(input.client === undefined ? {} : { client: input.client }),
-  };
-}
-
-/** `session.rename` params: the name this connection is changing to (§5). */
-export function renameParams(input: { displayName: string }): RenameParams {
-  return { display_name: input.displayName };
-}
-
-/** `doc.grant` params: the listing this host is publishing (§5). */
-export function grantParams(input: { paths: string[] }): GrantParams {
-  return { paths: [...input.paths] };
 }

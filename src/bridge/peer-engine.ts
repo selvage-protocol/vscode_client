@@ -11,18 +11,15 @@
  * Neovim, to a page and to an extension host.
  *
  * **What it is not.** It is not a socket (that is `engine/relay.ts`) and it is not an adapter
- * (`nvim_client`'s companion, `web_client`'s page, `vscode_client`'s extension host). It is
- * also not a version-1 engine: a client that has one leaves it where it is and points this at a
- * relay only when it is talking to a `selvage/2` room.
+ * (`nvim_client`'s companion, `web_client`'s page, `vscode_client`'s extension host).
  *
- * **The room's open set.** `selvage/1`'s server kept the set of documents a room had open and
- * told every client about it. `selvage/2`'s server keeps membership only, so the set here is
+ * **The room's open set.** The server keeps membership only, so the set here is
  * §13.7's: the paths this connection holds together with the paths every peer is held to — the
  * documents somebody has open, which is what the adapter's own words are about.
  */
 
 import type { PeerInfo, Role } from '../engine/envelope.ts';
-import type { SessionInfo } from '../engine/engine.ts';
+import type { SessionInfo } from '../engine/session.ts';
 import type { EngineEvent, EngineEventListener } from '../engine/events.ts';
 import { endingReason } from '../engine/peer.ts';
 import type { AwarenessState, OffsetSelection, Presence, Selection } from '../engine/presence.ts';
@@ -365,6 +362,12 @@ export class PeerEngine implements Engine {
         this.refresh();
         return;
       }
+      case 'holds': {
+        // §13.7: a peer's held set is part of the room's open-document set, so the set moving is
+        // a `documentsChanged` this facade owes its adapter.
+        this.refresh();
+        return;
+      }
       case 'failed': {
         this.emit({ type: 'sessionError', code: event.code, message: event.reason });
         return;
@@ -468,7 +471,7 @@ export class PeerEngine implements Engine {
 
   private emitEnd(ending: string): void {
     if (ending === 'room-gone') {
-      // The relay's own: the socket ended and no peer said why, which is what `selvage/1`'s
+      // The relay's own: the socket ended and no peer said why, which is what the relay's
       // `disconnected` says.
       this.emit({ type: 'disconnected' });
       return;

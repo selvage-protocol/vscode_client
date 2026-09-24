@@ -1,12 +1,10 @@
 /**
- * The bounded reconnect policy both wire versions share (`PROTOCOL.md` §9.1).
+ * The bounded reconnect policy (`PROTOCOL.md` §9.1).
  *
  * §9.1 asks for the *shape* and not the numbers: a retry **MUST** be bounded, giving up **MUST**
  * be observable, a refusal **MUST NOT** be retried, and a client that knows the room's grace
- * **SHOULD** keep retrying at least until that window has passed. Both engines keep that shape,
- * and both size the attempt budget from the advertised grace the same way; the version-1 engine
- * (`engine.ts`) and the version-2 relay (`relay.ts`) read the same policy from here so the two
- * cannot drift.
+ * **SHOULD** keep retrying at least until that window has passed. The relay (`relay.ts`) reads
+ * this policy, and sizes the attempt budget from the advertised grace.
  */
 
 /** Bounded reconnect (spec §9.1): a dropped socket is re-helloed, under a new peer identity. */
