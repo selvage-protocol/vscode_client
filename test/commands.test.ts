@@ -1038,6 +1038,44 @@ test('the peers command lists the room in the colours the carets are drawn in', 
   assert.ok(swatch.includes(colour), `the list drew ${swatch}, not the caret colour ${colour}`);
 });
 
+test('a room a window asked for is given back when that window has gone', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle, storage } = activated(t);
+
+  bundle.stub.configure({ wireVersion: 'selvage/1' });
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  // The command has been handed over and nothing else: the folder walk and the dial are both
+  // ahead of it, so this window is gone before the room it asked for is built. A window that
+  // comes after is a different one, and it never asked for this room.
+  bundle.deactivate();
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+
+  // The seat is nobody's, so the server sees its occupant leave rather than holding a room no
+  // window is in. The test above is the one this holds for: there, the room was adopted by the
+  // window that came after, and its own join was then refused over a session it was never in.
+  await waitFor('the orphaned room to be given back', () =>
+    server.acceptedConnections > 0 && server.displayNames().length === 0 ? true : false,
+  );
+  // And the window that is here now is not in it: that session is what the next join would
+  // otherwise be refused over.
+  bundle.stub.reset();
+  await bundle.stub.commands.executeCommand('selvage.peers');
+  const outside = await waitFor('the warning', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('session')) ?? false,
+  );
+  assert.equal(outside, 'Selvage: join a session first.');
+});
+
 test('joining again asks before leaving the room this window is in', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
 

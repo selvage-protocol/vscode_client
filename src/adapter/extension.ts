@@ -127,6 +127,16 @@ let current: Session | undefined;
 let deactivated = false;
 
 /**
+ * How many windows this extension host has been through: `activate` and `deactivate` each
+ * move it on, so a command that was asked in one window can tell whether the window it is
+ * in is still that one. `deactivated` cannot answer that: the next `activate` clears it, so
+ * a room whose handshake outlived its window would be adopted by the window that came after
+ * — one that never asked for it, and that already has the session the next `join` is then
+ * refused over.
+ */
+let windowGeneration = 0;
+
+/**
  * Where this window mirrors rooms, from the activation context. Commands fail loudly
  * without it, which is unreachable in a real window — the editor always provides one —
  * and only a test activates with a context that has none.
@@ -165,6 +175,7 @@ const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
 
 export function activate(context: vscode.ExtensionContext): void {
+  windowGeneration += 1;
   deactivated = false;
   // A window the user typed a server into leaves it behind for the next one. The in-memory
   // value still wins: it is what this window was told most recently.
@@ -264,6 +275,7 @@ export function windowIsOwnMirror(storage: vscode.Uri): boolean {
 }
 
 export function deactivate(): void {
+  windowGeneration += 1;
   deactivated = true;
   void current?.dispose();
   current = undefined;
@@ -2556,6 +2568,10 @@ async function host(
   args?: HostArgs,
   context?: vscode.ExtensionContext,
 ): Promise<void> {
+  // The window this command was asked in, kept for the moment the room is ready to be adopted
+  // into one: everything between here and there is a folder walk and a handshake, and both
+  // outlive a window that is closed while it waits.
+  const asked = windowGeneration;
   const inSession = current;
   if (inSession !== undefined) {
     if (inSession.role() === 'host') {
@@ -2661,9 +2677,18 @@ async function host(
     }
     return;
   }
-  current = new Session(engine, {
+  const session = new Session(engine, {
     listing: minted,
   });
+  if (windowGeneration !== asked) {
+    // The window that asked for this room is gone. The seat is nobody's, and it is given back
+    // through the same teardown a live session gets rather than adopted: a window that came
+    // after never asked for it, and taking it would leave the room connected and unowned
+    // while the next join is refused over a session this window is not in.
+    void session.dispose();
+    return;
+  }
+  current = session;
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();
@@ -2823,6 +2848,9 @@ async function joinGuestRoom(options: {
   if (deactivated) {
     return;
   }
+  // The window this join was asked in: the dial below is a handshake, and a window can be
+  // closed while it waits, so the seat is adopted only by the window that asked for it.
+  const asked = windowGeneration;
   // The fragment is read off the link before anything else is: `§5.1`'s room key and host key
   // travel there and nowhere else, and a client that cannot read them cannot join the room at
   // all. The wire URL is built from the link's server, and the fragment is put back on it here
@@ -2926,10 +2954,11 @@ async function joinGuestRoom(options: {
     mirror: live,
     invite: options.invite,
   });
-  if (deactivated) {
-    // The window went away while the join was in flight. The seat is nobody's: it is given
-    // back through the same teardown a live session gets, rather than left connected and
-    // unowned by a window that will never dispose it.
+  if (windowGeneration !== asked) {
+    // The window that asked for this room is gone — a window that came after is a different
+    // one, whatever the flag says. The seat is nobody's: it is given back through the same
+    // teardown a live session gets, rather than left connected and unowned by a window that
+    // never asked for it.
     void session.dispose();
     return;
   }
