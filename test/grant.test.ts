@@ -217,6 +217,7 @@ test('credential stores and private keys are never part of the grant', () => {
     'certs/client.pfx',
     'android/release.keystore',
     'server/truststore.jks',
+    'keys/deploy.ppk',
     'infra/terraform.tfstate',
     'infra/terraform.tfstate.backup',
   ]) {
@@ -234,6 +235,7 @@ test('credential stores and private keys are never part of the grant', () => {
     'infra/main.tf',
     'netrc.md',
     'src/keystore.ts',
+    'docs/ppk.md',
   ]) {
     assert.equal(isGrantedPath(ordinary), true, `${ordinary} should be part of the grant`);
   }
