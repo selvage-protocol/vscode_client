@@ -218,7 +218,11 @@ export class RelaySession {
 
   /** The awareness client id this connection announced, which its session publishes under. */
   private awarenessId: number | undefined;
-  /** The display name this connection seated with, which the room's own reply never names. */
+  /**
+   * The name the room has for this connection: the one its `session.hello` seated it under, and
+   * every `peer.renamed` the room has since announced for this seat. A re-hello carries it, so a
+   * rename survives the socket (`PROTOCOL.md` §5, §9.1).
+   */
   private ownName = '';
   /** The next `id` a text request carries: the hello is 1, and a rename follows it. */
   private requestId = 1;
@@ -752,9 +756,11 @@ export class RelaySession {
   }
 
   /**
-   * Changes this connection's display name (`PROTOCOL.md` §5). The server answers the mover and
-   * the rest of the room with `peer.renamed`; every other client's roster follows that event,
-   * and a seat the room does not list — this connection's own — has nothing to re-label.
+   * Changes this connection's display name (`PROTOCOL.md` §5). The server announces the new name
+   * to the whole room as `peer.renamed`, the mover included: a roster follows that event, and
+   * this connection's {@link ownName} does too, so what the room calls this seat and what a
+   * re-hello carries agree. Nothing is adopted on the strength of the send alone, because a
+   * rename the server refuses changes no name (`§11`'s `bad_params`).
    */
   async rename(displayName: string): Promise<void> {
     const socket = this.socket;
@@ -1115,6 +1121,11 @@ export class RelaySession {
           this.peerList = this.peerList.map((peer) =>
             peer.peer_id === peerId ? { ...peer, display_name: name } : peer,
           );
+          // The room names this seat itself: the event reaches the mover like every other peer
+          // (§5), and a rename belongs to the connection, so a reconnect has to carry it.
+          if (peerId === this.info?.seat) {
+            this.ownName = name;
+          }
         }
         break;
       }

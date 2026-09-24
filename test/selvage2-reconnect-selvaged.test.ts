@@ -116,3 +116,86 @@ test('selvage/2: a guest a real server drops reconnects and keeps editing', asyn
   );
   assert.ok(atHost.includes('guest: '));
 });
+
+test('selvage/2: a guest that renamed re-hellos to a real server under the name it set', async (t) => {
+  const server = await RealServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const host = await RelaySession.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing: () => [PATH],
+    keepalive: KEEPALIVE,
+  });
+  t.after(() => {
+    host.disconnect();
+  });
+  const invite = host.invite();
+  assert.ok(invite !== undefined);
+
+  const raw: WebSocket[] = [];
+  const guest = await RelaySession.join({
+    invite,
+    displayName: 'Bob',
+    keepalive: KEEPALIVE,
+    reconnect: FAST,
+    webSocketFactory: (url) => {
+      const socket = new WebSocket(url);
+      raw.push(socket);
+      return socket as unknown as WebSocketLike;
+    },
+  });
+  t.after(() => {
+    guest.disconnect();
+  });
+  await waitFor("the guest to apply the host's state", () => guest.listing().length > 0);
+  const firstSeat = guest.sessionInfo().seat;
+
+  await guest.rename('Bobby');
+  await waitFor('the host to see the rename', () =>
+    host.peers().some((peer) => peer.peer_id === firstSeat && peer.display_name === 'Bobby')
+      ? true
+      : false,
+  );
+  // A peer that joins after the rename is what makes this deterministic: the room's frames
+  // arrive in order on the guest's socket, so seeing the joiner is proof the mover's own
+  // `peer.renamed` was applied before the socket is cut below.
+  const third = await RelaySession.join({
+    invite,
+    displayName: 'Cy',
+    keepalive: KEEPALIVE,
+    reconnect: false,
+  });
+  t.after(() => {
+    third.disconnect();
+  });
+  await waitFor('the renamed guest to see the peer that joined after it', () =>
+    guest.peers().some((peer) => peer.display_name === 'Cy') ? true : false,
+  );
+
+  const dialsBefore = raw.length;
+  raw[raw.length - 1]?.terminate();
+  const seat = await waitFor(
+    'the guest to be seated again',
+    () => {
+      const now = guest.sessionInfo().seat;
+      return now !== firstSeat ? now : false;
+    },
+    { timeoutMs: 15_000 },
+  );
+  assert.notEqual(seat, firstSeat, 'the reconnect is a new peer (§9.1)');
+  assert.ok(raw.length > dialsBefore, 'the reconnect opened a new socket');
+
+  // What the re-hello carried, as the room itself recorded it (`PROTOCOL.md` §5, §9.1).
+  const atHost = await waitFor(
+    'the host to see the re-seated guest',
+    () => host.peers().find((peer) => peer.peer_id === seat) ?? false,
+    { timeoutMs: 15_000, describe: () => host.peers() },
+  );
+  assert.equal(
+    atHost.display_name,
+    'Bobby',
+    'the re-seat reintroduced the name the session was seated under',
+  );
+});

@@ -112,6 +112,63 @@ test('selvage/2: a dropped guest keeps its replica and reports the retry, never 
   assert.equal(guest.text(PATH), SEED, 'the replica was dropped with the socket');
 });
 
+test('selvage/2: a guest that renamed re-hellos under the name it set, not the one it was seated with', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { host, guest } = await pair(server);
+  t.after(() => {
+    host.disconnect();
+    guest.disconnect();
+  });
+  await waitFor("the guest to apply the host's state", () => guest.listing().length > 0);
+  const firstSeat = guest.sessionInfo().seat;
+
+  await guest.rename('Bobby');
+  await waitFor('the room to record the rename', () =>
+    server.displayNames().includes('Bobby') ? true : false,
+  );
+
+  // §5: a rename is the connection's and dies with it, and §9.1 says a client that renamed
+  // re-hellos with the current name. A peer that joins afterwards is what makes this
+  // deterministic: the room's frames arrive in order on one socket, so seeing the joiner is
+  // proof that the mover's own `peer.renamed` was applied before the drop below — a
+  // `terminate` sent the instant the server has recorded the rename can still discard it.
+  const invite = host.invite();
+  assert.ok(invite !== undefined, 'the host is handed a link to send');
+  const third = await RelaySession.join({
+    invite,
+    displayName: 'Cy',
+    keepalive: KEEPALIVE,
+    reconnect: false,
+  });
+  t.after(() => {
+    third.disconnect();
+  });
+  await waitFor('the renamed guest to see the peer that joined after it', () =>
+    guest.peers().some((peer) => peer.display_name === 'Cy') ? true : false,
+  );
+
+  server.drop('Bobby');
+  const seat = await waitFor(
+    'the guest to be seated again',
+    () => {
+      const now = guest.sessionInfo().seat;
+      return now !== firstSeat ? now : false;
+    },
+    { timeoutMs: 15_000 },
+  );
+  assert.notEqual(seat, firstSeat);
+  assert.deepEqual(
+    server.displayNames(),
+    ['Ada', 'Bobby', 'Cy'],
+    'the re-seat reintroduced the name the session was seated under',
+  );
+  // The same name on this side: the room's own row for this seat is what an adapter shows.
+  assert.equal(guest.selfInfo().display_name, 'Bobby');
+});
+
 test('selvage/2: a terminal refusal on the reconnect is not retried', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
