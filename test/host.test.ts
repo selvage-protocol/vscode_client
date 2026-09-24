@@ -10,7 +10,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { nodeCrypto } from '../src/node/crypto.ts';
-import { HOST_MUTATIONS, MAX_PATH_BYTES } from '../src/engine/index.ts';
+import { ABSENCE_CHARGE, HOST_MUTATIONS, MAX_PATH_BYTES } from '../src/engine/index.ts';
 import { PeerSession } from '../src/engine/peer.ts';
 import type { PeerOptions } from '../src/engine/peer.ts';
 import type { HostStore, PersistedHost } from '../src/engine/host.ts';
@@ -76,7 +76,11 @@ class MemoryStore implements HostStore {
   }
 
   save(persisted: PersistedHost): void {
-    this.saved = { hostSeed: Uint8Array.from(persisted.hostSeed), issued: persisted.issued };
+    this.saved = {
+      hostSeed: Uint8Array.from(persisted.hostSeed),
+      issued: persisted.issued,
+      ...(persisted.frames === undefined ? {} : { frames: persisted.frames }),
+    };
   }
 }
 
@@ -304,6 +308,111 @@ test('a host that reaches the frame budget publishes its closing and ends', asyn
   const frame = await opened(out[0] as Uint8Array);
   assert.equal(frame.envelope.kind, 2);
   assert.equal(peer.end, 'frame-budget');
+});
+
+test('a host continues the frame count it saved, with the absence charge a reload costs', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 5, frames: 10 };
+  // CANONICAL.md §6.1: the host's count is the room's, so a reload continues it rather than
+  // starting at 0, and a reload is a return, so it costs the absence charge.
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  assert.equal(peer.takeOutbound().length, 2, 'the state and its handshake');
+  await peer.tick(RENEW_MS);
+  assert.equal(store.saved?.frames, 10 + ABSENCE_CHARGE + 2);
+});
+
+test('a host that reaches the budget from its saved count ends there', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 5, frames: 10 };
+  const { peer } = await hostHosting(['README.md'], { frameBudget: ABSENCE_CHARGE + 12 }, store);
+  assert.equal(peer.takeOutbound().length, 2);
+  await peer.tick(1);
+  assert.equal(peer.end, 'frame-budget', 'from the saved count and the charge, not from zero');
+});
+
+test('a host that re-seats pays the absence charge', async () => {
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  await peer.reseat('p-host-again', ['p-host-again'], 0);
+  assert.equal(store.saved?.frames, 2 + ABSENCE_CHARGE, 'written at once, with the charge');
+});
+
+test('a host writes its moving frame count at least once a renewal interval', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  // The mint state's own write opened the window at 0, so the count it could not yet carry — the
+  // state and its handshake — is written on the first tick a window later.
+  await peer.tick(RENEW_MS);
+  assert.equal(store.saved?.frames, 2, 'the mint state and its handshake, written on the tick');
+  await peer.deliver(RENEW_MS + 1, await announce(now.peer, 1, 'guest'));
+  await peer.tick(3 * RENEW_MS);
+  assert.ok((store.saved?.frames ?? 0) >= 3, 'the delivered announcement is in the saved count');
+  assert.equal(store.saved?.issued, peer.issued, 'written beside `issued`');
+});
+
+test('a state published after a flush counts as a write for the renewal window', async () => {
+  const store = new MemoryStore();
+  let saves = 0;
+  const save = store.save.bind(store);
+  store.save = (persisted: PersistedHost): void => {
+    saves += 1;
+    save(persisted);
+  };
+  const now = await room();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  await peer.tick(RENEW_MS);
+  // An announcement commits a key, so the host publishes a fresh state, and that write carries
+  // the count at its own clock: a frame that moves the count right after it waits for the next
+  // window rather than being written on the next tick.
+  await peer.seatJoined(2 * RENEW_MS, 'p-alice');
+  await peer.deliver(2 * RENEW_MS, await announce(now.peer, 1, 'guest'));
+  const afterState = saves;
+  await peer.deliver(2 * RENEW_MS + 1, new Uint8Array([1, 2, 3]));
+  await peer.tick(2 * RENEW_MS + 2);
+  assert.equal(saves, afterState, 'no frame-only write inside the window the state opened');
+  await peer.tick(3 * RENEW_MS);
+  assert.equal(saves, afterState + 1, 'and one once it has passed');
+});
+
+test('a host that closes its room saves the count with the closing in it', async () => {
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  assert.equal(await peer.closeRoom(), true);
+  // The mint state, its handshake and the closing: a reload continues from the frame that ended
+  // the room, with no tick left to write it on.
+  assert.equal(store.saved?.frames, 3);
+});
+
+test('a host that reaches the frame budget saves the count with its closing in it', async () => {
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], { frameBudget: 2 }, store);
+  peer.takeOutbound();
+  await peer.tick(1);
+  assert.equal(peer.end, 'frame-budget');
+  assert.equal(store.saved?.frames, 3, 'the budget, and the closing sealed at it');
+});
+
+test('a host store written before the frame count existed reads as a spent budget', async () => {
+  const now = await room();
+  const store = new MemoryStore();
+  store.saved = { hostSeed: Uint8Array.from(now.host.seed), issued: 3 };
+  // CANONICAL.md §6.1: a record with no count cannot say what the room has sealed, so the host
+  // publishes its closing at the first tick and ends rather than continue the room from 0.
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  assert.equal(peer.takeOutbound().length, 0, 'nothing sealed past a spent budget');
+  await peer.tick(1);
+  assert.equal(peer.end, 'frame-budget');
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'the closing');
+  assert.equal((await opened(out[0] as Uint8Array)).envelope.kind, 2);
+  assert.equal(store.saved?.issued, 4, 'the closing is above the `issued` the record carried');
 });
 
 // --- the roster -------------------------------------------------------------------

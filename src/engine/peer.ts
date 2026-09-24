@@ -36,7 +36,7 @@ import {
   seal,
 } from './sealed.ts';
 import type { DropReason, Committed, SessionKeypair, Verdict } from './sealed.ts';
-import { HOST_MUTATIONS, HostProducer } from './host.ts';
+import { ABSENCE_CHARGE, FRAME_BUDGET, HOST_MUTATIONS, HostProducer } from './host.ts';
 import type { HostMutation, HostOptions, HostPublication, HostReason } from './host.ts';
 import { applyFrame, encodeAwareness, encodeSyncStep1, encodeUpdate } from './sync.ts';
 import { percentDecode } from './urls.ts';
@@ -245,12 +245,7 @@ function takeKey(
 /** The four endings a session reaches on its own (§13.10). */
 export type Ending = 'closing' | 'host-away' | 'no-state' | 'frame-budget';
 
-/**
- * `CANONICAL.md` §6.1's frame budget: half of SP 800-38D's 2³² bound on one key with random
- * nonces, which is the room's and not one sender's, so that a client that missed frames the relay
- * dropped still stops well short of it.
- */
-export const FRAME_BUDGET = 2 ** 31;
+export { ABSENCE_CHARGE, FRAME_BUDGET } from './host.ts';
 
 /** The words a client says when it ends a session, which §13.10 requires it to say. */
 export function endingReason(ending: Ending): string {
@@ -513,6 +508,8 @@ export class PeerSession {
     this.roster = new Set(options.roster ?? []);
     this.reader = reader;
     this.host = host;
+    // `CANONICAL.md` §6.1: the host's count is the room's, so a host continues the one it saved.
+    this.roomFrames = host?.roomFrames ?? 0;
     if (host !== undefined) {
       host.seated(options.seat ?? '', session.public);
       if (options.seat !== undefined) {
@@ -871,7 +868,7 @@ export class PeerSession {
   private async deliverOne(clock: number, frame: Uint8Array): Promise<Outcome> {
     this.clockOfLastMove = clock;
     this.frames += 1;
-    this.roomFrames += 1;
+    this.countFrame();
     const index = this.frames - 1;
     // A closing folds into the receiver the moment it verifies, and §13.10 ignores one handed
     // to a client holding no state. The two values it moved are put back, because `issued` is
@@ -920,6 +917,7 @@ export class PeerSession {
 
   private async tickOne(clock: number): Promise<void> {
     this.clockOfLastMove = clock;
+    this.host?.flushFrames(clock);
     this.expireLeases(clock);
     this.refreshHostAway(clock, false);
     if (this.ending !== undefined) {
@@ -1063,6 +1061,13 @@ export class PeerSession {
       this.holdsAnnouncedAt = undefined;
       this.ending = undefined;
       this.fault = undefined;
+      // `CANONICAL.md` §6.1: a host's return costs its count the absence charge, because the
+      // frames sealed while it was away are ones it never saw.
+      if (this.host !== undefined) {
+        this.roomFrames += ABSENCE_CHARGE;
+        this.host.countFrames(this.roomFrames);
+        this.host.saveFrames();
+      }
     });
   }
 
@@ -1103,7 +1108,8 @@ export class PeerSession {
         this.fault ??= this.host?.failure ?? 'the closing could not be sealed';
         return false;
       }
-      this.roomFrames += 1;
+      this.countFrame();
+      this.host?.saveFrames();
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
@@ -1612,7 +1618,7 @@ export class PeerSession {
       return;
     }
     if (publication.fresh) {
-      this.roomFrames += 1;
+      this.countFrame();
     }
     this.outbound.push(publication.frame);
     this.published += 1;
@@ -1725,6 +1731,12 @@ export class PeerSession {
     }
   }
 
+  /** One more frame against the room's count, handed to the host's producer to persist. */
+  private countFrame(): void {
+    this.roomFrames += 1;
+    this.host?.countFrames(this.roomFrames);
+  }
+
   /**
    * `CANONICAL.md` §6.1's frame budget: once the room's count reaches it, nothing more is sealed
    * under the frame key. A host publishes its one closing first — the frame that ends the room for
@@ -1736,10 +1748,13 @@ export class PeerSession {
     }
     const publication = await this.host?.closing();
     if (publication !== undefined) {
+      this.countFrame();
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
     }
+    // The session ends here, so the count is written now rather than on a tick that will not come.
+    this.host?.saveFrames();
     this.ending = 'frame-budget';
     return true;
   }
@@ -1822,7 +1837,7 @@ export class PeerSession {
       this.fault = `a ${what} frame could not be sealed`;
       return;
     }
-    this.roomFrames += 1;
+    this.countFrame();
     this.outbound.push(bytes);
     if (what === 'sync') {
       this.handshake += 1;
