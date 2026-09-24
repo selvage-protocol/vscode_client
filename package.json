@@ -208,7 +208,7 @@
       "properties": {
         "selvage.serverUrl": {
           "type": "string",
-          "description": "The WebSocket address to host on. Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
+          "description": "The server address to host on: in full, or a domain on its own (a domain alone means the secure server). Set it and hosting never asks. A ws:// address given to the command outranks it, and it outranks the last server used. The Selvage: Change the server command reports which address is in force."
         },
         "selvage.displayName": {
           "type": "string",

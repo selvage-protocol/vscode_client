@@ -84,7 +84,7 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `selvage.serverUrl` | unset | The WebSocket address to host on, given in full or as a bare host (which means `wss://<host>`). Setting it means hosting never asks, and it outranks the last server used. |
+| `selvage.serverUrl` | unset | The server address to host on: in full, or a domain on its own — a domain alone is enough, because it means the secure server, `wss://<host>`. Setting it means hosting never asks, and it outranks the last server used. |
 | `selvage.displayName` | unset | The name other participants see. A change while a session is live renames this connection at once. |
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |
@@ -93,7 +93,8 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
 silently, so hosting asks only in a window that has neither, and that one question starts from the
-demo server `ws://100.64.0.3:8080`. A host that reused the last server names it in the room-open
+demo server `selvage-demo.dontblameme.dev` — a domain on its own, which the one completion reads as
+`wss://selvage-demo.dontblameme.dev`. A host that reused the last server names it in the room-open
 notice, with a `Change the server` button that asks the same question again for the next host. A
 host on the setting or on an explicit address gets no such button; that address is changed where
 it was set.

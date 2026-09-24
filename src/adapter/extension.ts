@@ -157,12 +157,16 @@ let lastDisplayName: string | undefined;
 const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 
 /**
- * The server a window hosts on when nothing was set or remembered: the Pi demo from
- * `ai_notes/docs/runbook-pi-demo.md`. An overridable prefill, never a commitment — the
- * one question an answerless window asks starts from it, and explicit arguments and the
- * `selvage.serverUrl` setting always win — so moving the demo is this one line.
+ * The server a window hosts on when nothing was set or remembered: the public demo, whose
+ * live state is `ai_notes/docs/runbook-prod-demo.md`. The value is a bare domain on purpose —
+ * it is what a person would type, and what they read in the setting and the README — and
+ * `normaliseServerUrl` is what makes it a connection: a bare domain means the secure server,
+ * `wss://selvage-demo.dontblameme.dev`, on the port TLS uses. An overridable prefill, never a
+ * commitment — the one question an answerless window asks starts from it, and explicit
+ * arguments and the `selvage.serverUrl` setting always win — so moving the demo is this one
+ * line.
  */
-const DEFAULT_SERVER_URL = 'ws://100.64.0.3:8080';
+const DEFAULT_SERVER_URL = 'selvage-demo.dontblameme.dev';
 
 export function activate(context: vscode.ExtensionContext): void {
   deactivated = false;
