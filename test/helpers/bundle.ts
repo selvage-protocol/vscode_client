@@ -209,6 +209,19 @@ export function testStoragePath(t: { after(callback: () => void): void }): strin
   return dir;
 }
 
+/**
+ * The entries the join's own room directory holds under `storagePath`, or why there are
+ * none: a join mints the mirror before it stages the reload, so an empty answer is the
+ * join never having got that far.
+ */
+function roomEntries(storagePath: string, room: string): unknown {
+  try {
+    return readdirSync(join(storagePath, 'rooms', room));
+  } catch {
+    return 'no room directory yet';
+  }
+}
+
 /** The one window directory a join minted for `room` under a storage path. */
 export function mirrorWindowDir(storagePath: string, room: string): string {
   // Room ids are server-minted `[A-Za-z0-9_-]` and sanitise to themselves.
@@ -242,6 +255,22 @@ export async function landStashedJoin(
       bundle.stub.registered.executed.some((call) => call.id === 'vscode.openFolder')
         ? true
         : false,
+    {
+      // A join that never stages its reload is invisible without this: the command is
+      // detached, so a refusal, a failure to mint the mirror and a join that never
+      // started all look alike from the test. These readings tell them apart — where the
+      // join got to, what it was told, and whether the room's directory was ever minted.
+      describe: () => ({
+        executed: bundle.stub.registered.executed.map((call) => call.id),
+        errors: bundle.stub.registered.errors,
+        warnings: bundle.stub.registered.warnings,
+        progress: bundle.stub.registered.progress.map((entry) => entry.title),
+        settled: bundle.stub.registered.information.some((message) =>
+          message.includes('joined the room'),
+        ),
+        mirror: roomEntries(storagePath, roomId),
+      }),
+    },
   );
   const root = mirrorWindowDir(storagePath, roomId);
   const reloads = bundle.stub.registered.executed.filter((call) => call.id === 'vscode.openFolder');
