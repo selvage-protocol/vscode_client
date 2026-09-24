@@ -2677,18 +2677,17 @@ async function host(
     }
     return;
   }
-  const session = new Session(engine, {
-    listing: minted,
-  });
   if (windowGeneration !== asked) {
-    // The window that asked for this room is gone. The seat is nobody's, and it is given back
-    // through the same teardown a live session gets rather than adopted: a window that came
-    // after never asked for it, and taking it would leave the room connected and unowned
-    // while the next join is refused over a session this window is not in.
-    void session.dispose();
+    // The window that asked for this room is gone, and a room it asked for is not the window
+    // that came after's to take. The seat is given back by the one call a session's teardown
+    // would have made for it, rather than by building that session: a teardown clears the
+    // follow the window that came after may be in, and this command is not in that window.
+    void engine.disconnect();
     return;
   }
-  current = session;
+  current = new Session(engine, {
+    listing: minted,
+  });
   // The seat's own reports predate the session's listener, and an empty room sends no
   // later ones — without this the view keeps whatever the window showed before.
   refreshParticipants();
@@ -2737,6 +2736,10 @@ export interface JoinArgs {
 }
 
 async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise<void> {
+  // The window this command was asked in, carried as far as the mirror it stages and the seat
+  // it takes: the questions below are awaits, and a window can be gone — and another in its
+  // place — before either happens.
+  const asked = windowGeneration;
   const inSession = current;
   if (inSession !== undefined) {
     const leave = 'Leave and join';
@@ -2810,7 +2813,7 @@ async function join(args?: JoinArgs, context?: vscode.ExtensionContext): Promise
   // Every question this command asks has been answered, so the join is committed: the room this
   // window was in is left now rather than when the person said they would leave.
   inSession?.dispose();
-  await joinGuestRoom({ invite, displayName });
+  await joinGuestRoom({ invite, displayName, generation: asked });
 }
 
 /**
@@ -2843,14 +2846,13 @@ export function sessionAddress(wire: string): string {
 async function joinGuestRoom(options: {
   invite: string;
   displayName: string;
+  /** The window the join was asked in, read at that command's own entry rather than here. */
+  generation: number;
   resume?: Mirror;
 }): Promise<void> {
-  if (deactivated) {
+  if (deactivated || windowGeneration !== options.generation) {
     return;
   }
-  // The window this join was asked in: the dial below is a handshake, and a window can be
-  // closed while it waits, so the seat is adopted only by the window that asked for it.
-  const asked = windowGeneration;
   // The fragment is read off the link before anything else is: `§5.1`'s room key and host key
   // travel there and nowhere else, and a client that cannot read them cannot join the room at
   // all. The wire URL is built from the link's server, and the fragment is put back on it here
@@ -2939,8 +2941,13 @@ async function joinGuestRoom(options: {
       () => joinRoom({ invite, displayName: options.displayName, client: CLIENT }),
     );
   } catch (error) {
-    // A failed join leaves no room-shaped window behind: the folder goes, and the
+    // A stale join leaves the window alone: the folder and the directory below are the window
+    // that came after's, and taking them out from under it is a reload nobody asked for. This
+    // window's own failure does leave no room-shaped window behind: the folder goes, and the
     // directory with it — removing the only folder reloads the window to empty.
+    if (deactivated || windowGeneration !== options.generation) {
+      return;
+    }
     removeRoomFolder(live);
     live.remove();
     const why = connectRefusal(
@@ -2950,19 +2957,18 @@ async function joinGuestRoom(options: {
     void vscode.window.showErrorMessage(`Selvage: could not join the session. ${why}`);
     return;
   }
-  const session = new Session(engine, {
+  if (deactivated || windowGeneration !== options.generation) {
+    // The window that asked for this room is gone, and the seat is the one thing this join
+    // still holds. It is given back by the one call a session's teardown would have made for
+    // it, rather than by building that session: a teardown clears the follow the window that
+    // came after may be in, and removes a mirror that window may already hold.
+    void engine.disconnect();
+    return;
+  }
+  current = new Session(engine, {
     mirror: live,
     invite: options.invite,
   });
-  if (windowGeneration !== asked) {
-    // The window that asked for this room is gone — a window that came after is a different
-    // one, whatever the flag says. The seat is nobody's: it is given back through the same
-    // teardown a live session gets, rather than left connected and unowned by a window that
-    // never asked for it.
-    void session.dispose();
-    return;
-  }
-  current = session;
   // As above: the seat's reports predate the listener, so the view is told directly.
   refreshParticipants();
   await roomSettled(engine);
@@ -3026,12 +3032,15 @@ async function triageMirrors(
         continue;
       }
       // The name stashed with the invite answers without asking: falling back to
-      // the setting and the question only when the marker predates the stash.
+      // the setting and the question only when the marker predates the stash. The window is
+      // read before the question, because the question is the one wait here a person answers
+      // and the window that asks can be gone by the time they do.
+      const asked = windowGeneration;
       const displayName = await resolveDisplayName(stored.displayName, context);
       if (displayName === undefined || current !== undefined || deactivated) {
         return;
       }
-      await joinGuestRoom({ invite: stored.invite, displayName, resume: mirror });
+      await joinGuestRoom({ invite: stored.invite, displayName, generation: asked, resume: mirror });
       return;
     }
     // A live owner's directory is never this window's to clear — not beside the

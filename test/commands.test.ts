@@ -1076,6 +1076,41 @@ test('a room a window asked for is given back when that window has gone', async 
   assert.equal(outside, 'Selvage: join a session first.');
 });
 
+/**
+ * A window can be closed on a command while it is still asking its own questions, and the join
+ * is the one command with a question on either side of the mirror: an invite the box answers
+ * and a name, with the folder question between them. The window that asked is read at the
+ * command's entry, not after the last answer, or the join that finishes would be the window
+ * that came after's and would stage that window's whole reload onto a mirror nobody asked for.
+ */
+test('a join the window has gone out of stages no reload', async (t) => {
+  const { invite, roomId } = await room(t, ['workspace/README.md']);
+  const { bundle, storage } = activated(t);
+
+  // The invite arrives by argument and the name is answered from the box, so the join is still
+  // ahead of the folder question — and of the mirror — when this window goes.
+  bundle.stub.registered.inputReply = 'Bob';
+  bundle.stub.registered.warningReply = 'Join';
+  await bundle.stub.commands.executeCommand('selvage.join', { invite });
+  bundle.deactivate();
+  bundle.activate({
+    subscriptions: [],
+    globalState: bundle.stub.globalState,
+    globalStorageUri: bundle.stub.Uri.file(storage),
+  });
+
+  // The window that is here now joins for itself, and its landing is what says the join the
+  // last window left standing has had every turn it has: one window in the room's directory is
+  // one join, so a second one is a join that staged a room for a window that had gone.
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  const root = await landStashedJoin(bundle, storage, roomId, 'Bob');
+  assert.equal(
+    mirrorWindowDir(storage, roomId),
+    root,
+    'the join the last window left standing staged a room of its own',
+  );
+});
+
 test('joining again asks before leaving the room this window is in', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
 
