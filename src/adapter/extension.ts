@@ -527,13 +527,13 @@ export class Session {
   private listingWindowOpen = false;
   /**
    * The moment the room closes if the host does not return, taken from the grace
-   * `host.detached` carried. A deadline rather than a duration, because the status bar shows
+   * `hostDetached` carried. A deadline rather than a duration, because the status bar shows
    * a clock that ticks: the number captured when the host left would read 30s for ever.
    */
   private detachedDeadline: number | undefined;
   /** Recomputes the countdown while the host is away; cleared with the deadline. */
   private detachedTimer: ReturnType<typeof setInterval> | undefined;
-  /** The host's name as last seen in membership: `host.detached` names only the grace. */
+  /** The host's name as last seen in membership: `hostDetached` names only the grace. */
   private hostName = '';
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
@@ -1720,7 +1720,7 @@ export class Session {
     return peerName(display, peerId);
   }
 
-  /** Remembers the host's name while it is present: `host.detached` carries only the grace. */
+  /** Remembers the host's name while it is present: `hostDetached` carries only the grace. */
   private rememberHost(): void {
     const host = this.peers.find((peer) => peer.role === 'host');
     if (host !== undefined) {

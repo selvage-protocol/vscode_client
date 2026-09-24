@@ -1287,7 +1287,6 @@ test('a host jump to a path it does not share is refused without opening', async
   t.after(() => {
     bundle.deactivate();
   });
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

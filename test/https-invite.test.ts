@@ -98,10 +98,6 @@ async function copiedInvite(
   bundle: LoadedExtension,
   server: FakeServer,
 ): Promise<{ link: string; roomId: string }> {
-  // A room in this suite is a version-1 one: a hosting client takes its version from what the
-  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
-  // `selvage/1` says so.
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -216,7 +212,6 @@ test('a remembered non-default server survives host-leave-host into the copied l
     await server.stop();
   });
   const { bundle } = activated(t);
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -235,7 +230,6 @@ test('a remembered non-default server survives host-leave-host into the copied l
   // host; the remembered address lives in the module, not in the cleared memento, and
   // the reply is cleared with it so a question could only stall the host.
   bundle.stub.reset();
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', { displayName: 'Ada' });
   await waitFor('the second host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
