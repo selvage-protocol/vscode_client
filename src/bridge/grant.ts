@@ -82,14 +82,28 @@ export const GRANT_EXCLUDED_DIRS: readonly string[] = [
 /**
  * File names that are never part of the grant: per-user secrets beside `.env`. Matched
  * against the leaf segment only (see `isGrantedPath`), folding case like the directories.
+ * Beside the package-registry tokens: the machine logins curl, git and ftp read (`.netrc`,
+ * Windows' `_netrc`), git's stored credentials, PostgreSQL's password file and an Apache
+ * password file. None of them is a file a project needs another person to see.
  */
-const GRANT_EXCLUDED_FILES: readonly string[] = ['.envrc', '.npmrc', '.pypirc'];
+const GRANT_EXCLUDED_FILES: readonly string[] = [
+  '.envrc',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  '_netrc',
+  '.git-credentials',
+  '.pgpass',
+  '.htpasswd',
+];
 
 /**
- * Directory names whose whole tree is never part of the grant: credential stores.
+ * Directory names whose whole tree is never part of the grant: credential stores. `.ssh` and
+ * `.gnupg` go whole, not only their key files: `config`, `known_hosts`, `authorized_keys` and
+ * a keyring say which machines and people this host trusts, which is not the project's to share.
  * A directory list, so it governs every segment; folding case like the directories above.
  */
-const GRANT_SECRET_DIRS: readonly string[] = ['.aws'];
+const GRANT_SECRET_DIRS: readonly string[] = ['.aws', '.ssh', '.gnupg'];
 
 /** File-name prefixes of private keys, matched against the leaf segment only. */
 const GRANT_SECRET_KEY_PREFIXES: readonly string[] = [
@@ -102,8 +116,20 @@ const GRANT_SECRET_KEY_PREFIXES: readonly string[] = [
 /**
  * File-name suffixes of private keys, matched against the leaf segment only.
  * Errs toward secrecy: a public `id_rsa.pub` is left out with the private key beside it.
+ * PKCS#12 bundles (`.p12`, `.pfx`) and Java keystores (`.jks`, `.keystore`) carry a private
+ * key the same way. A local Terraform state (`.tfstate` and its `.tfstate.backup`) holds every
+ * secret the configuration it describes was given, in plain text.
  */
-const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = ['.pem', '.key'];
+const GRANT_SECRET_KEY_SUFFIXES: readonly string[] = [
+  '.pem',
+  '.key',
+  '.p12',
+  '.pfx',
+  '.jks',
+  '.keystore',
+  '.tfstate',
+  '.tfstate.backup',
+];
 
 /**
  * File-name suffixes of formats a room cannot carry: an archive or compressed stream, an
