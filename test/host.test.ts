@@ -362,6 +362,25 @@ test('a state published after a flush counts as a write for the renewal window',
   assert.equal(saves, afterState + 1, 'and one once it has passed');
 });
 
+test('a host that closes its room saves the count with the closing in it', async () => {
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], {}, store);
+  peer.takeOutbound();
+  assert.equal(await peer.closeRoom(), true);
+  // The mint state, its handshake and the closing: a reload continues from the frame that ended
+  // the room, with no tick left to write it on.
+  assert.equal(store.saved?.frames, 3);
+});
+
+test('a host that reaches the frame budget saves the count with its closing in it', async () => {
+  const store = new MemoryStore();
+  const { peer } = await hostHosting(['README.md'], { frameBudget: 2 }, store);
+  peer.takeOutbound();
+  await peer.tick(1);
+  assert.equal(peer.end, 'frame-budget');
+  assert.equal(store.saved?.frames, 3, 'the budget, and the closing sealed at it');
+});
+
 test('a host store written before the frame count existed still loads', async () => {
   const now = await room();
   const store = new MemoryStore();

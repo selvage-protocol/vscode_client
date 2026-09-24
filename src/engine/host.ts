@@ -259,6 +259,16 @@ export class HostProducer {
   }
 
   /**
+   * Writes the count now, whatever the window: a session that is ending has no later tick to
+   * leave it to, and a reload must continue from the frame that ended it.
+   */
+  saveFrames(): void {
+    if (this.frames !== this.savedFrames) {
+      this.save(this.savedAt);
+    }
+  }
+
+  /**
    * `CANONICAL.md` §6.1: the count is written at least once every `awareness_renew_ms` while it
    * moves, so a host that dies loses at most one renewal interval of it.
    */

@@ -1107,6 +1107,7 @@ export class PeerSession {
         return false;
       }
       this.countFrame();
+      this.host?.saveFrames();
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
@@ -1745,10 +1746,13 @@ export class PeerSession {
     }
     const publication = await this.host?.closing();
     if (publication !== undefined) {
+      this.countFrame();
       this.outbound.push(publication.frame);
       this.published += 1;
       this.publishedClosings.push(publication.issued);
     }
+    // The session ends here, so the count is written now rather than on a tick that will not come.
+    this.host?.saveFrames();
     this.ending = 'frame-budget';
     return true;
   }
