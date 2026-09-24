@@ -14,7 +14,7 @@ import type { TestContext } from 'node:test';
 
 import { MISSING_FRAGMENT, parseInvite } from '../src/engine/peer.ts';
 import { encodeKey } from '../src/engine/sealed.ts';
-import { RelaySession, wireInvite } from '../src/engine/relay.ts';
+import { MAX_INBOX_FRAMES, RelaySession, wireInvite } from '../src/engine/relay.ts';
 import type { RelayEvent } from '../src/engine/relay.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
 import { isTerminalCode } from '../src/engine/envelope.ts';
@@ -213,6 +213,38 @@ test('a fault on a seated session reaches a listener with its code', async (t) =
   assert.equal(failed.reason, 'the room is full');
   assert.equal(relay.failure, 'the room is full');
   assert.equal(isTerminalCode(failed.code), true, "a code in §11's reserved namespace is terminal");
+});
+
+/**
+ * The inbox is this client's own memory (§2.1): a server that delivers faster than the session
+ * verifies fills it, and past `MAX_INBOX_FRAMES` the connection is dropped as a transport bound
+ * drops it — the queue goes, and a guest reports the drop and re-seats (§9.1).
+ */
+test('a flood past the inbox bound drops the connection rather than queueing it', async (t) => {
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(seatReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+  const events: RelayEvent[] = [];
+  relay.on((event) => {
+    events.push(event);
+  });
+
+  const closesBefore = socket.closes;
+  // Delivered in one synchronous burst, so the session verifies none of them in between. The
+  // first is taken off the queue at once to be verified, so the bound is crossed one later.
+  for (let index = 0; index <= MAX_INBOX_FRAMES + 1; index += 1) {
+    socket.deliverBinary(Uint8Array.from([1, 2, 3]));
+  }
+  assert.equal(socket.closes, closesBefore + 1, 'the flood did not drop the connection');
+  await waitFor('the relay to report the drop', () =>
+    events.some((event) => event.type === 'reconnecting'),
+    { describe: () => events },
+  );
 });
 
 test('the fault’s code arrives in the bridge’s own event', async (t) => {
