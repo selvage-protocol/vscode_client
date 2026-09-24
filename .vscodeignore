@@ -5,7 +5,11 @@
 .worktrees/**
 .tmp/**
 .github/**
-node_modules/**
+# Any depth, not just the root: `node_modules/**` is anchored where a gitignore pattern with a
+# slash in it sits, so a dependency tree one directory down escapes it. That is how a 199 KB
+# package became 51 MB — the release workflow installs its two publishers into prefixes of
+# their own, and `.vscodeignore` ships what it is not told to drop.
+**/node_modules/**
 src/**
 test/**
 scripts/**
@@ -17,3 +21,8 @@ package-lock.json
 SPIKES.md
 *.tgz
 **/*.map
+# The two prefixes `release.yml` installs its publishers into (`vsce-publish`, `ovsx-publish`).
+# Their `node_modules` is covered above; these drop the rest of each prefix, so a `vsce package`
+# that runs while one exists carries neither. A third prefix in that workflow needs a line here.
+ovsx-publish/**
+vsce-publish/**

@@ -1,0 +1,171 @@
+name: retire-listing
+
+# Retires a Marketplace listing whose ID a release replaced, so that no published client is
+# left speaking the wire of the ID it was superseded by. The ID the extension publishes under
+# is `selvage-protocol.selvage`; `selvage-protocol.selvage-client` is the retired one, and it
+# is the only thing this workflow will delete.
+#
+# It runs by hand and only by hand: `workflow_dispatch` is the entire trigger, so no tag,
+# branch, pull request, schedule or release event can reach it, and nothing but a person
+# dispatching it starts a deletion. The `extension_id` input exists so that whoever dispatches
+# names what they are about to delete — the run's own record then says what was asked for —
+# and the comparison below is what makes the input safe: anything but the retired ID is
+# refused before a credential is fetched.
+#
+# `--azure-credential` is the same federated path the release workflow publishes with, so no
+# token is stored for this either: the job runs under the `marketplace` environment, whose name
+# is part of the OIDC subject the Microsoft Entra ID app registration is registered against,
+# and `vsce unpublish` exchanges the job's token for a credential the same way `vsce publish`
+# does. Because there is no terminal to answer `vsce`'s typed confirmation with, the two guards
+# — the input, and the replacement having to be live first — plus the environment are what
+# stand in for it, and `--force` skips the prompt rather than removing a check.
+#
+# Two jobs, for the reason the release workflow has two: `id-token: write` is held only by
+# `retire`, which installs nothing, and the one step that runs code from a registry —
+# installing `@vscode/vsce` — happens in `prepare`, which holds no write permission and no
+# `id-token: write`. The publisher crosses the boundary as an artifact, and `retire` only runs
+# the binary it downloaded.
+on:
+  workflow_dispatch:
+    inputs:
+      extension_id:
+        description: "The listing to retire (must be selvage-protocol.selvage-client)"
+        required: true
+
+concurrency:
+  group: retire-listing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Both are literals here rather than inputs: the ID to remove is fixed, and the ID that has
+  # to be live before it can be removed is a fact about the release, not a choice the person
+  # dispatching makes.
+  RETIRED_ID: selvage-protocol.selvage-client
+  REPLACEMENT_ID: selvage-protocol.selvage
+
+jobs:
+  prepare:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # The same publisher, resolved the same way and into the same kind of throwaway prefix as
+      # the release workflow's: the exact version `package-lock.json` pinned, so `unpublish`
+      # here and `publish` there cannot be two different `vsce` versions.
+      - name: install the extension publisher
+        run: |
+          vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
+          npm install --prefix vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsce-publish
+          path: vsce-publish
+          if-no-files-found: error
+
+  retire:
+    needs: prepare
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    # The environment names the OIDC subject the federated credential is registered against
+    # (`repo:selvage-protocol@328844633/vscode_client@1368869486:environment:marketplace`, read
+    # in the release workflow), so `azure/login` below succeeds only with it, and any required
+    # reviewers the owner adds there gate the deletion too.
+    environment: marketplace
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsce-publish
+          path: vsce-publish
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # First, before a credential is exchanged and before the gallery is asked anything.
+      # The input reaches this shell through `env`, not interpolated into `run:`, so a
+      # dispatched string can never become a command; the comparison is the whole check.
+      - name: refuse any ID but the retired one
+        env:
+          EXTENSION_ID: ${{ inputs.extension_id }}
+        run: |
+          if [ "$EXTENSION_ID" != "$RETIRED_ID" ]; then
+            printf 'refusing: %s is not the retired listing (%s)\n' "$EXTENSION_ID" "$RETIRED_ID" >&2
+            exit 1
+          fi
+          echo "retiring ${RETIRED_ID}"
+
+      # The replacement is retired only once it is live, and that is a check rather than an
+      # instruction someone remembers. `vsce show` answers `undefined` on stdout and exits 0 for
+      # an ID the gallery does not carry, so the refusal reads the payload rather than the exit
+      # code. It is asked of the Marketplace rather than of this checkout, because the
+      # Marketplace is where the replacement has to have arrived before the only listing that
+      # can be deleted is deleted.
+      - name: refuse while the replacement listing is not live
+        run: |
+          node ./vsce-publish/node_modules/@vscode/vsce/vsce show "$REPLACEMENT_ID" --json > replacement.json
+          node - <<'JS'
+          const fs = require("node:fs");
+          const want = process.env.REPLACEMENT_ID;
+          const [publisher, name] = want.split(".");
+          let shown;
+          try { shown = JSON.parse(fs.readFileSync("replacement.json", "utf8")); } catch { shown = undefined; }
+          const live = shown !== undefined
+            && shown.publisher?.publisherName === publisher
+            && shown.extensionName === name;
+          if (!live) {
+            console.error(`refusing: ${want} is not on the Marketplace yet, so ${process.env.RETIRED_ID} stays published`);
+            process.exit(1);
+          }
+          const versions = (shown.versions ?? []).map((v) => v.version).join(", ");
+          console.log(`${want} is live (${versions}); ${process.env.RETIRED_ID} can be retired`);
+          JS
+
+      # What is about to go, named from the gallery's own answer rather than from this file, and
+      # kept in a file so the line printed after the delete can name it too: once the listing is
+      # gone, asking again is the one thing that cannot be done.
+      - name: read the listing that is about to be removed
+        run: |
+          node ./vsce-publish/node_modules/@vscode/vsce/vsce show "$RETIRED_ID" --json > retired.json
+          node - <<'JS'
+          const fs = require("node:fs");
+          let shown;
+          try { shown = JSON.parse(fs.readFileSync("retired.json", "utf8")); } catch { shown = undefined; }
+          if (shown === undefined) {
+            console.error(`${process.env.RETIRED_ID} is not on the Marketplace; there is nothing to retire`);
+            process.exit(1);
+          }
+          const full = `${shown.publisher.publisherName}.${shown.extensionName}`;
+          const versions = (shown.versions ?? []).map((v) => v.version).join(", ");
+          console.log(`removing ${full}, which carries ${versions}`);
+          fs.writeFileSync("retired-summary.txt", `${full} (${versions})`);
+          JS
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: 0538596d-b7e5-4f25-979f-49c437e48820
+          tenant-id: eca3c161-254f-49bc-b981-b638ee9d0fa6
+          allow-no-subscriptions: true
+
+      # `vsce` prints the deletion itself; the line after it names the versions that went, read
+      # above while the listing was still there. No second query follows the delete: a gallery
+      # read straight afterwards can answer from a cache that has not caught up, which would
+      # turn a removal that happened into a red run that says it did not.
+      - name: unpublish the retired listing
+        run: |
+          node ./vsce-publish/node_modules/@vscode/vsce/vsce unpublish "$RETIRED_ID" --azure-credential --force
+          printf 'removed %s from the VS Code Marketplace; it carried %s\n' \
+            "$RETIRED_ID" "$(cat retired-summary.txt)"

@@ -24,6 +24,7 @@ const ROOT = resolve(here, '..');
 const ADAPTER = resolve(ROOT, 'src', 'adapter');
 
 interface Manifest {
+  version?: string;
   main?: string;
   engines?: { vscode?: string; node?: string };
   activationEvents?: string[];
@@ -83,6 +84,21 @@ test('every setting the manifest declares is one the adapter reads', () => {
       `no adapter module reads ${key}`,
     );
   }
+});
+
+test('the client identifier is the client name and the manifest version, never the wire version', () => {
+  // `session.hello`'s `client` is free-form diagnostics (`PROTOCOL.md` §5), and the reference
+  // client sends `selvage-client/<CARGO_PKG_VERSION>`. A diagnostic identity that names a version
+  // the artefact does not carry is a log line that lies, and this one went two releases without
+  // saying the extension's own version because nothing read it. `selvage/<major>` is the *wire*
+  // version identifier the envelope's `v` carries, so the name half must not be `selvage`.
+  const source = readFileSync(resolve(ADAPTER, 'extension.ts'), 'utf8');
+  const declared = /const CLIENT = '([^']+)'/.exec(source);
+  assert.ok(declared !== null, 'the adapter no longer declares CLIENT, so this test pins nothing');
+  const parts = /^([a-z][a-z0-9-]*[a-z0-9])\/(\d+\.\d+\.\d+)$/.exec(declared[1]);
+  assert.ok(parts !== null, `CLIENT is not a client name and a version: ${declared[1]}`);
+  assert.notEqual(parts[1], 'selvage', '`selvage/<version>` is the wire version identifier');
+  assert.equal(parts[2], manifest.version, `CLIENT ${declared[1]} does not name the manifest version`);
 });
 
 test('the cursor label draws no name unless the user opts in', () => {
