@@ -15,11 +15,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
-import { SelvageEngine } from '../src/engine/engine.ts';
+import { LiveSession } from './helpers/live-session.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
 import { baseOf } from './helpers/base.ts';
 import { peerColour } from '../src/bridge/cursors.ts';
-import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath } from './helpers/bundle.ts';
+import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
 import { options } from './helpers/session.ts';
@@ -34,7 +34,7 @@ interface Seat {
   bundle: LoadedExtension;
   storage: string;
   server: FakeServer;
-  host: SelvageEngine;
+  host: LiveSession;
   invite: string;
   roomId: string;
   hostId: string;
@@ -46,8 +46,8 @@ interface Seat {
 
 /** A room with text in every path, and the bundle joined to it as `Bob`. */
 async function seat(t: TestContext, texts: Record<string, string>): Promise<Seat> {
-  const server = await FakeServer.start();
-  const host = await SelvageEngine.host(
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  const host = await LiveSession.host(
     server.wsBase,
     'Ada',
     options({ baseUrl: server.wsBase, displayName: 'Ada', reconnect: false }),
@@ -105,8 +105,8 @@ async function peerIn(
   path: string,
   text: string,
   at: number,
-): Promise<SelvageEngine> {
-  const peer = await SelvageEngine.join(
+): Promise<LiveSession> {
+  const peer = await LiveSession.join(
     seat_.invite,
     name,
     options({ baseUrl: seat_.server.wsBase, displayName: name, reconnect: false }),
@@ -202,9 +202,12 @@ async function openHeld(
   bundle.stub.window.visibleTextEditors = [editor];
   // The open reports the document, which is what holds it in the room: the host seeing
   // the hold is the room settled around this window.
+  // The room's listing is what makes the path openable: a mirror file the listing does not name
+  // is not shared, so the wait is for the listing to have arrived, not for a turn.
+  await waitForMirrorFiles(seat_.storage, seat_.roomId, [path]);
   bundle.stub.fire('openTextDocument', document);
   await waitFor(`the room to hold ${path} open`, () =>
-    seat_.host.documents().includes(path) ? true : false,
+    seat_.host.peerDocuments().includes(path) ? true : false,
   );
   // A first frame the guest drops — presence racing the peers it names, the text its
   // anchors resolve against — never comes again on its own, and an identical repeat
@@ -228,10 +231,16 @@ async function openHeld(
   // seated offset, then a fresh draw there, is what makes the caret that offset for what
   // follows rather than whichever one the draw above saw.
   const seen = editor.decorated.length;
+  // One move per frame: an awareness state is sealed before it is sent and a later move replaces
+  // the one before it, so two selections in one tick are one frame carrying the last position.
   seat_.host.setSelection(path, { anchor: hostAt + 1, head: hostAt + 1 });
+  await waitFor(`the host caret to move to ${hostAt + 1} in ${path}`, () =>
+    editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt + 1)) ? true : false,
+  );
+  const settledFrom = editor.decorated.length;
   seat_.host.setSelection(path, { anchor: hostAt, head: hostAt });
   await waitFor(`the host caret to settle at ${hostAt} in ${path}`, () =>
-    editor.decorated.slice(seen).some((args) => hasCaretAt(args, hostAt)) ? true : false,
+    editor.decorated.slice(settledFrom).some((args) => hasCaretAt(args, hostAt)) ? true : false,
   );
   return editor;
 }
@@ -874,7 +883,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
   await openHeld(seat_, PATH_A, holder, 5);
   // `Nora` joins and publishes no document: a fresh seat publishes an empty presence, which
   // names her with no path, and the picker row says so.
-  const nora = await SelvageEngine.join(
+  const nora = await LiveSession.join(
     seat_.invite,
     'Nora',
     options({ baseUrl: seat_.server.wsBase, displayName: 'Nora', reconnect: false }),
@@ -920,7 +929,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
 test('a host jumps to a peer through its own working copy', async (t) => {
   // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through rather than a bare join.
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -932,10 +941,6 @@ test('a host jumps to a peer through its own working copy', async (t) => {
   });
   const FILE_TEXT = 'hello room\n';
   bundle.stub.put('notes.txt', FILE_TEXT);
-  // A room in this suite is a version-1 one: a hosting client takes its version from what the
-  // server's `/meta` says it seats unless `selvage.wireVersion` pins it, so a window that means
-  // `selvage/1` says so.
-  bundle.stub.configure({ wireVersion: 'selvage/1' });
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -950,12 +955,14 @@ test('a host jumps to a peer through its own working copy', async (t) => {
     { describe: () => bundle.stub.registered.clipboard },
   );
   const page = new URL(invite);
+  // `§5.1`: the room's two keys travel in the fragment of the link the host handed on, so the
+  // peer joins with that link's own wire form and its fragment, not with the query alone.
   const wire = sessionUrl(
     baseOf(page.searchParams.get('server') ?? server.wsBase),
     page.searchParams.get('room') ?? '',
     page.searchParams.get('token') ?? '',
-  );
-  const guest = await SelvageEngine.join(
+  ) + page.hash;
+  const guest = await LiveSession.join(
     wire,
     'Cara',
     options({ baseUrl: server.wsBase, displayName: 'Cara', reconnect: false }),
@@ -1188,7 +1195,7 @@ test('following a peer in no document pends until they enter one', async (t) => 
   // `Nora` joins and publishes no document: a programmatic follow names her by id, past the
   // picker that would refuse its own row, and pends on the next frame rather than refusing a
   // peer whose update may be one frame away.
-  const nora = await SelvageEngine.join(
+  const nora = await LiveSession.join(
     seat_.invite,
     'Nora',
     options({ baseUrl: seat_.server.wsBase, displayName: 'Nora', reconnect: false }),
@@ -1263,7 +1270,7 @@ test('a host jump to a path it does not share is refused without opening', async
   // the check a read on a peer's behalf goes through. A path the grant deliberately leaves
   // out — here `.env`, which no listing ever names — fails that check, with the same sentence
   // a deleted path reports, and opens nothing.
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
@@ -1288,12 +1295,14 @@ test('a host jump to a path it does not share is refused without opening', async
     { describe: () => bundle.stub.registered.clipboard },
   );
   const page = new URL(invite);
+  // `§5.1`: the room's two keys travel in the fragment of the link the host handed on, so the
+  // peer joins with that link's own wire form and its fragment, not with the query alone.
   const wire = sessionUrl(
     baseOf(page.searchParams.get('server') ?? server.wsBase),
     page.searchParams.get('room') ?? '',
     page.searchParams.get('token') ?? '',
-  );
-  const guest = await SelvageEngine.join(
+  ) + page.hash;
+  const guest = await LiveSession.join(
     wire,
     'Cara',
     options({ baseUrl: server.wsBase, displayName: 'Cara', reconnect: false }),
@@ -1337,7 +1346,7 @@ test('a guest follow to a peer-named path outside the grant is refused without o
   const holder = { text: TEXT_A };
   await openHeld(seat_, PATH_A, holder, 5);
 
-  const mallory = await SelvageEngine.join(
+  const mallory = await LiveSession.join(
     seat_.invite,
     'Mallory',
     options({ baseUrl: seat_.server.wsBase, displayName: 'Mallory', reconnect: false }),

@@ -190,9 +190,14 @@ test('CopyInvite copies exactly the page link, never the wire address', async (t
   const parsed = new URL(link);
   const token = parsed.searchParams.get('token');
   assert.ok(token !== null && token !== '', `the link carries no token: ${link}`);
-  assert.equal(
+  // §5.1: the page link is the wire link over the scheme a browser speaks, and the room's two
+  // keys ride in its fragment — a host that copied the query alone would hand on a room nobody
+  // could join.
+  assert.match(
     link,
-    `${pageOf(server)}/?room=${roomId}&token=${token}`,
+    new RegExp(
+      `^${pageOf(server).replace(/[.?*+^$[\]\\(){}|]/g, '\\$&')}/\\?room=${roomId}&token=${token}#k=[A-Za-z0-9_-]{43}&h=[A-Za-z0-9_-]{43}$`,
+    ),
     'the clipboard holds anything but the one page link',
   );
   assert.ok(!link.includes('ws://'), 'the wire address reached the clipboard');
@@ -285,7 +290,9 @@ test('a ws:// invite still joins, for a room whose server serves no page', async
   const wireRoom = new URL(link).searchParams.get('room');
   assert.ok(wireRoom !== null && wireRoom !== '', `the copied link names no room: ${link}`);
   await guest.bundle.stub.commands.executeCommand('selvage.join', {
-    invite: `${wire}/session?room=${wireRoom}&token=${new URL(link).searchParams.get('token')}`,
+    // The wire form of the same invite, with `§5.1`'s fragment: a room's keys are what a join
+    // cannot do without, whichever address the link was written on.
+    invite: `${wire}/session?room=${wireRoom}&token=${new URL(link).searchParams.get('token')}${new URL(link).hash}`,
     displayName: 'Bob',
   });
   await landStashedJoin(guest.bundle, guest.storage, wireRoom, 'Bob');

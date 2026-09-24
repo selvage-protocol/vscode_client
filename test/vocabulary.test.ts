@@ -114,10 +114,6 @@ const SENTENCES = [
   '`Selvage: connecting to ${}…`',
   // Joining: the wait, the refusals, and the landing.
   '`Selvage: could not host on ${}. ${}`',
-  // Which wire version this window hosts at: what the server's `/meta` says it seats, the client
-  // refusing on its own where that is no `selvage/2` rather than minting a room the server reads.
-  '`Selvage: ${} does not seat selvage/2, the encrypted wire — its /meta offers ${} — so a room hosted there would be one the server can read.`',
-  '`Selvage: the wire version is pinned to ${}, and ${} does not seat it — its /meta offers ${} — so hosting there is refused rather than fallen back from.`',
   '`Selvage: the room is open, but the invite link could not be copied (${}).`',
   "'Selvage: the room is open, but this connection holds no invite link to send.'",
   '`Selvage: the room is open on ${}. Send this link to your friend — it is on the clipboard.`',

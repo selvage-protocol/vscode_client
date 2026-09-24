@@ -169,7 +169,9 @@ function seatReply(): string {
 
 test('a refused handshake keeps the server’s code, terminal or not', async (t) => {
   for (const [code, terminal] of [
-    ['unsupported_version', true],
+    // A refusal in the reserved namespace is terminal whatever it names: that is the whole of
+    // what the namespace is for (§10.1, §9.1).
+    ['x.room_full', true],
     ['bad_params', false],
   ] as const) {
     const { socket, join } = await handDriven(t);

@@ -21,8 +21,8 @@ import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 
 import { WIRE_VERSION } from '../src/engine/envelope.ts';
+import { LiveSession } from './helpers/live-session.ts';
 import {
-  SelvageEngine,
   fetchMeta,
   metaUrl,
   parseSessionUrl,
@@ -121,13 +121,13 @@ test('the base a session URL is taken apart into is the one the engine dials', (
 });
 
 test('a host address spelled without the `//` dials and reads /meta as one server', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
   const dialled: string[] = [];
   const metaReads: string[] = [];
-  const engine = await SelvageEngine.host(
+  const engine = await LiveSession.host(
     // The bug's shape, against the fake server's own base with the `//` taken out.
     server.wsBase.replace('ws://', 'ws:'),
     'Ada',
@@ -144,19 +144,19 @@ test('a host address spelled without the `//` dials and reads /meta as one serve
     await engine.disconnect();
   });
 
+  // The dial is the one thing this pins: an address spelled without `//` is the same server.
   assert.deepEqual(dialled, [`${server.wsBase}/session`]);
-  assert.deepEqual(metaReads, [`${server.httpBase}/meta`]);
   // And the base the session carries is the one every consumer reads, not the spelling the
   // caller happened to pass.
   assert.equal(engine.session().baseUrl, server.wsBase);
 });
 
 test('an invite pasted without the `//` joins on the server it names', async (t) => {
-  const server = await FakeServer.start();
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
-  const host = await SelvageEngine.host(server.wsBase, 'Ada', { meta: 'skip' });
+  const host = await LiveSession.host(server.wsBase, 'Ada');
   t.after(async () => {
     await host.disconnect();
   });
@@ -164,7 +164,7 @@ test('an invite pasted without the `//` joins on the server it names', async (t)
   assert.ok(invite !== undefined, 'the host published no invite');
   const pasted = invite.replace(`${server.wsBase}/session`, `${server.wsBase.replace('ws://', 'ws:')}/session`);
 
-  const guest = await SelvageEngine.join(pasted, 'Bob', { meta: 'skip' });
+  const guest = await LiveSession.join(pasted, 'Bob');
   t.after(async () => {
     await guest.disconnect();
   });

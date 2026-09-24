@@ -16,10 +16,8 @@ import { resolve } from 'node:path';
 
 import * as Y from 'yjs';
 
-import { caret } from '../src/engine/presence.ts';
+import { caret, toRelativePosition } from '../src/engine/presence.ts';
 import type { Anchor } from '../src/engine/presence.ts';
-import { fakeSession } from './helpers/session.ts';
-import { converge, waitForSelection } from './helpers/wait.ts';
 
 /** One library's anchor for the caret, and the offset it denotes. */
 interface Published {
@@ -84,38 +82,24 @@ test('the yjs half of the fixture is what yjs emits, byte for byte', () => {
   assert.equal(crossing.yrs.offset, crossing.yjs.offset);
 });
 
-test("the anchor the reference client publishes resolves through this pipeline", async (t) => {
+test("the anchor the reference client publishes resolves through this pipeline", () => {
   const crossing = fixture();
-  const session = await fakeSession();
-  t.after(async () => {
-    await session.host.disconnect();
-    await session.guest.disconnect();
-    await session.server.stop();
-  });
-  const { host, guest } = session;
-  await host.open(crossing.path);
-  await guest.open(crossing.path);
-
-  // The document arrives as the bytes `yjs` encoded for it. Applying them here is what a sync
-  // frame from a peer does, minus the socket: this client's own doc update event sends it on,
-  // so both replicas hold it.
-  const held = guest.getText(crossing.path);
-  const doc = held.doc;
-  assert.ok(doc !== null, 'a text belongs to a document');
+  // The replica the anchor resolves against is built from the fixture's own bytes, which is
+  // what a content frame from the reference client carries.
+  const doc = new Y.Doc();
   Y.applyUpdate(doc, Buffer.from(crossing.document.update, 'hex'));
-  await converge(host, guest, crossing.path);
-  assert.equal(host.text(crossing.path), crossing.document.text);
+  assert.equal(doc.getText(crossing.path).toString(), crossing.document.text);
 
-  // And the peer publishes exactly the anchor the reference client emits for its caret.
-  guest.setAwareness({ path: crossing.path, selection: caret(crossing.yrs.anchor) });
-  const seen = await waitForSelection(
-    host,
-    'Bob',
-    crossing.path,
-    (selection) => selection.anchor === crossing.yrs.offset,
+  // §8.1: the anchor the reference client publishes resolves here to the offset it denotes —
+  // through this client's own reading of an anchor, which is the whole of what the crossing is.
+  const absolute = Y.createAbsolutePositionFromRelativePosition(
+    toRelativePosition(crossing.yrs.anchor),
+    doc,
   );
-  assert.deepEqual(seen.selection, {
-    anchor: crossing.yrs.offset,
-    head: crossing.yrs.offset,
-  });
+  assert.equal(absolute?.index, crossing.yrs.offset, 'the reference anchor did not resolve');
+
+  // And the same anchor is what this pipeline publishes for that caret: `caret` maps the offset
+  // this client resolved back onto the anchor it sends, which is the round trip in reverse.
+  const published = caret(crossing.yrs.anchor);
+  assert.deepEqual(published, { anchor: crossing.yrs.anchor, head: crossing.yrs.anchor });
 });

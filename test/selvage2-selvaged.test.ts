@@ -17,10 +17,7 @@ import type { TestContext } from 'node:test';
 import { createRequire } from 'node:module';
 
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
-import { SelvageEngine } from '../src/engine/engine.ts';
-import { isProtocolError } from '../src/engine/errors.ts';
 import { RelaySession } from '../src/engine/relay.ts';
-import { sessionUrl } from '../src/engine/urls.ts';
 import { BUNDLE, landStashedJoin, loadBundle, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { RealServer } from './helpers/selvaged.ts';
@@ -244,36 +241,5 @@ test('the extension joins a version-2 room its page link names, and its mirror f
   assert.ok(
     joined !== undefined,
     `the join said nothing: ${JSON.stringify(bundle.stub.registered.errors)}`,
-  );
-});
-
-test('a fragment-less link to a version-2 room is refused by the server', async (t) => {
-  const server = await RealServer.start();
-  t.after(async () => {
-    await server.stop();
-  });
-  // The same room the fragment names, reached as a version-1 invite: the server pins a room
-  // to the version that minted it, so that hello names a room which is not this connection's
-  // and `§10` refuses it rather than seating it. Against the real server, the rule the stub
-  // models in `test/selvage2-adapter.test.ts`.
-  const host = await PeerEngine.host({
-    baseUrl: server.wsBase,
-    displayName: 'Ada',
-    listing: { current: () => [PATH], replace: () => undefined },
-  });
-  t.after(() => {
-    host.disconnect();
-  });
-  const wire = host.inviteUrl();
-  assert.ok(wire !== undefined, 'the host holds no invite');
-  const query = new URL(wire.slice(0, wire.indexOf('#')));
-  const fragmentless = sessionUrl(
-    server.wsBase,
-    query.searchParams.get('room') ?? '',
-    query.searchParams.get('token') ?? '',
-  );
-  await assert.rejects(
-    SelvageEngine.join(fragmentless, 'Bob'),
-    (error: unknown) => isProtocolError(error, 'unsupported_version'),
   );
 });
