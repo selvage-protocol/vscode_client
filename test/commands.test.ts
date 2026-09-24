@@ -699,6 +699,48 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
   );
 });
 
+test('a refused address costs a guest no session', async (t) => {
+  // The address that reproduces the defect: the page invite a host copies, whose query is the
+  // room and its token and whose fragment the room key. It is refused before the question that
+  // gives the guest's room up, so a paste by mistake costs nothing at all.
+  const { bundle, server } = await guest(t, ['workspace/README.md']);
+  const before = server.acceptedConnections;
+  const invite = 'https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY';
+  bundle.stub.reset();
+  bundle.stub.registered.warningReply = 'Leave and host';
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: invite,
+    displayName: 'Ada again',
+  });
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message: string) =>
+      message.includes('invite link, not a server address'),
+    ) ?? false,
+  );
+  assert.equal(
+    said,
+    'Selvage: that is an invite link, not a server address. Paste the address the server printed when it started, not the link you send to your guest.',
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.some((message: string) =>
+      message.includes('leaving it first'),
+    ),
+    false,
+    'a refused address was still asked about giving the room up',
+  );
+  assert.equal(server.acceptedConnections, before, 'a refused address opened a connection');
+  // The guest is still in the room: its own invite is still there to copy.
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  assert.equal(
+    bundle.stub.registered.warnings.some((message: string) =>
+      message.includes('there is no invite link'),
+    ),
+    false,
+    'the guest session was given up for an address that was refused',
+  );
+  assert.match(String(bundle.stub.registered.clipboard), /^(wss?|https?):\/\//);
+});
+
 test('joining while hosting asks before ending the room', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {

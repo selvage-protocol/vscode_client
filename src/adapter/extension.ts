@@ -2561,25 +2561,36 @@ async function host(
   context?: vscode.ExtensionContext,
 ): Promise<void> {
   const inSession = current;
-  if (inSession !== undefined) {
-    if (inSession.role() === 'host') {
-      // Hosting again is reaching for the invite, not asking for a second room.
-      const reach = await reachForInvite();
-      if (reach.outcome === 'copied') {
-        void vscode.window.showInformationMessage(
-          `Selvage: you are already hosting this session; the invite link is on the clipboard.`,
-        );
-      } else if (reach.outcome === 'refused') {
-        void vscode.window.showWarningMessage(
-          `Selvage: you are already hosting this session, but the invite link could not be copied (${reach.why}).`,
-        );
-      } else {
-        void vscode.window.showWarningMessage(
-          'Selvage: you are already hosting this session, but this connection holds no invite link to send.',
-        );
-      }
+  if (inSession !== undefined && inSession.role() === 'host') {
+    // Hosting again is reaching for the invite, not asking for a second room.
+    const reach = await reachForInvite();
+    if (reach.outcome === 'copied') {
+      void vscode.window.showInformationMessage(
+        `Selvage: you are already hosting this session; the invite link is on the clipboard.`,
+      );
+    } else if (reach.outcome === 'refused') {
+      void vscode.window.showWarningMessage(
+        `Selvage: you are already hosting this session, but the invite link could not be copied (${reach.why}).`,
+      );
+    } else {
+      void vscode.window.showWarningMessage(
+        'Selvage: you are already hosting this session, but this connection holds no invite link to send.',
+      );
+    }
+    return;
+  }
+  // An address the caller named is checked before a live session is given up for it: an invite
+  // link is not a server address, and a refusal must not cost the room this window is in.
+  const given =
+    args?.serverUrl === undefined ? undefined : normaliseServerUrl(args.serverUrl);
+  if (given !== undefined && given !== '') {
+    const refusedGiven = serverAddressRefusal(given);
+    if (refusedGiven !== undefined) {
+      void vscode.window.showErrorMessage(`Selvage: ${refusedGiven}`);
       return;
     }
+  }
+  if (inSession !== undefined) {
     // A guest cannot host without leaving the room it is in, and leaving is the user's call.
     const leave = 'Leave and host';
     const choice = await vscode.window.showWarningMessage(
@@ -2603,8 +2614,6 @@ async function host(
     );
     return;
   }
-  const given =
-    args?.serverUrl === undefined ? undefined : normaliseServerUrl(args.serverUrl);
   const resolved = given === undefined || given === '' ? await resolveServerUrl() : undefined;
   const baseUrl = resolved?.url ?? given;
   // Only a silently reused address earns the offer to change it: an argument names its
