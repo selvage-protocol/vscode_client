@@ -39,6 +39,12 @@ test('selvage/2: a frame reads only the documents it changed, and reports each c
   await waitFor("the guest to apply the host's state", () =>
     engine.grantedPaths().length > 0 ? true : false,
   );
+  // The guest holds both documents before the host types, as an adapter does once it opens
+  // them. A path nobody on this side has read arrives as a Yjs placeholder that becomes its
+  // `Y.Text` only when first read, with no frame to scan it on if the room is then quiet: that is
+  // the replica's shape and not this scan's, and it is not what this test is about.
+  engine.text(A);
+  engine.text(B);
   const changed: string[] = [];
   engine.on((event) => {
     if (event.type === 'documentChanged') {

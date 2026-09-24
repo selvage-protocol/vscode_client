@@ -539,15 +539,15 @@ export class PeerSession {
 
   private noteTouched(transaction: Y.Transaction): void {
     for (const type of transaction.changed.keys()) {
-      // A root `Y.Text` is a path's document; nothing else in this document is one.
+      // A root type is a path's document. It is recorded whatever class it has now: content for
+      // a path this replica has not asked for yet arrives under a placeholder type, which becomes
+      // the path's `Y.Text` only when something reads it — and that swap is no transaction.
       if (type._item !== null) {
         continue;
       }
       for (const [name, shared] of this.doc.share) {
         if (shared === type) {
-          if (shared instanceof Y.Text) {
-            this.touched.add(name);
-          }
+          this.touched.add(name);
           break;
         }
       }
