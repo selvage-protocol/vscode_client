@@ -62,9 +62,24 @@ export type GrantedRead =
 export interface Engine {
   session(): SessionInfo;
   text(path: string): string;
+  /**
+   * Whether the room has sent a document for this path: the ask was answered.
+   *
+   * It is not whether the text is non-empty. A document a peer published for a file that is
+   * genuinely empty is here with no text in it, and this is what tells that from a path nothing
+   * has arrived for — `text` answers `''` for both, and neither a listing nor a hold is
+   * evidence that a document arrived. Silence and an answer are the two states a reader has to
+   * be able to tell apart, and none of what this adapter reads back may create a document: a
+   * read that did would make the room's silence look like the room's answer.
+   */
   has(path: string): boolean;
   open(path: string): Promise<void>;
   close(path: string): Promise<void>;
+  /**
+   * One local insertion. Into a path this engine holds no document for, an empty text
+   * **publishes the document** — the room's way of saying that a path exists and its text is
+   * empty — and any other text is an edit to the document that text makes.
+   */
   insert(path: string, index: number, text: string): void;
   delete(path: string, index: number, length: number): void;
   setSelection(path: string, selection: OffsetSelection): void;
@@ -573,10 +588,11 @@ export class SessionBridge {
     if (this.engine.has(path)) {
       return false;
     }
-    const incoming = toCrdt(bufferText);
-    if (incoming !== '') {
-      this.engine.insert(path, 0, incoming);
-    }
+    // An empty working copy is published as the empty document it is rather than passed over:
+    // an opened file is this window's statement that the room has it, and a path left
+    // unpublished for being empty is one nobody can ever read — `seedRequested` skips a path
+    // this window already holds open, so this is the only publication such a path gets.
+    this.engine.insert(path, 0, toCrdt(bufferText));
     return false;
   }
 
@@ -668,10 +684,10 @@ export class SessionBridge {
             if (refusal !== undefined) {
               refusals.push(`could not share ${path}: ${refusal}; nothing was shared for it`);
             } else if (!this.engine.has(path)) {
-              const incoming = toCrdt(text);
-              if (incoming !== '') {
-                this.engine.insert(path, 0, incoming);
-              }
+              // Whatever the read produced, the empty file included: the room is owed the fact
+              // that the path exists and its text is empty, and an answer that is never sent is
+              // a path a guest reads as silence for the rest of the session.
+              this.engine.insert(path, 0, toCrdt(text));
             }
           }
           report();

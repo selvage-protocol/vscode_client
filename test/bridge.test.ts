@@ -1011,6 +1011,45 @@ test('a host refuses a requested path whose read outgrew the size a session will
   assert.equal(session.host.text(OTHER), '');
 });
 
+test('a host publishes an empty granted file the room asked for', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  // A file that is there and empty. The room is owed the fact: `has` is how a reader tells
+  // "this path exists and its text is empty" from "nothing has arrived", and a path nobody
+  // publishes can only ever read as the second. Every holder of the invite holds the room,
+  // so the guest is the one that learns it.
+  host.editor.disk.set(OTHER, '');
+
+  guest.editor.open(OTHER, '');
+  guest.bridge.documentOpened(OTHER);
+
+  await waitFor('the empty document to reach the guest', () => session.guest.has(OTHER));
+  assert.equal(session.host.has(OTHER), true, 'the host answered with nothing at all');
+  assert.equal(session.guest.text(OTHER), '', 'an empty file arrived with text in it');
+  // The room's answer and the room's silence stay different facts: a path no peer answered
+  // for is one this replica holds no document for.
+  assert.equal(session.guest.has('src/nobody-asked.rs'), false);
+  assert.deepEqual(
+    host.editor.reportsOf('sessionError'),
+    [],
+    'an empty file the room may carry was refused',
+  );
+});
+
+test('a host that already holds an empty file open publishes it too', async (t) => {
+  const { session, host, guest } = await twoWindows(t);
+  // The host opened the file itself, and `seedRequested` skips a path this window already
+  // holds open: this publication is the only one such a path gets, so a host that said
+  // nothing here would leave the room unable to answer for it for the whole session.
+  host.editor.open(OTHER, '');
+  host.bridge.documentOpened(OTHER);
+
+  await waitFor('the room to offer the path', () =>
+    guest.editor.reportsOf('documents').some((report) => report.documents.includes(OTHER)),
+  );
+  await waitFor('the empty document to reach the guest', () => session.guest.has(OTHER));
+  assert.equal(guest.editor.reportsOf('sessionError').length, 0);
+});
+
 test('a guest never reads its working copy for the room', async (t) => {
   const { session, host, guest } = await twoWindows(t);
   guest.editor.disk.set(OTHER, 'a guest copy that must never be shared\n');
