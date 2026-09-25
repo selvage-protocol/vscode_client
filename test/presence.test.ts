@@ -2,7 +2,7 @@
  * The anchor shape `PROTOCOL.md` §8.1
  * (https://github.com/selvage-protocol/specification) freezes, read at the parser: what a receiver
  * accepts, what it normalises, and what leaves it with no selection at all. Resolution
- * against a replica is the engine's half, in `engine.test.ts`.
+ * against a replica is the engine's half, in `test/peer-adapter.test.ts`.
  */
 
 import { test } from 'node:test';
