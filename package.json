@@ -1,7 +1,7 @@
 {
   "name": "selvage",
   "displayName": "Selvage",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Live collaborative editing over the Selvage session protocol",
   "license": "MIT OR Apache-2.0",
   "publisher": "selvage-protocol",
