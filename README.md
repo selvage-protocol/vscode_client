@@ -253,6 +253,26 @@ listeners; `documents.ts` decides which documents are shared; `mirror.ts` is the
 disk; `decorations.ts`, `labels.ts` and `gutter.ts` draw a peer; `display-name.ts` holds the
 protocol's bound on a name and the question that asks for one.
 
+### The listing icon
+
+`package.json`'s `icon` is `images/icon.png`, and the Marketplace and Open VSX show that file in
+the listing. It is the owner's opaque 800×800 export — the `svp` wordmark on its own field —
+averaged whole to 256×256 with no colour change, so the wordmark sits where the owner put it
+rather than filling the canvas edge to edge. The icon it replaces was a centred 580×580 crop of
+the same export, which cut the owner's field away. `scripts/make-icon.mjs` is the producer:
+
+```console
+$ node scripts/make-icon.mjs ~/pictures/profile_pictures/profile_picture_svp_800_800.png
+$ node scripts/make-icon.mjs ~/pictures/profile_pictures/profile_picture_svp_800_800.png --check
+```
+
+The export is not vendored here: the manifest needs the 256 px icon and nothing else, so the
+script takes the path as its argument, or from `SELVAGE_ICON_EXPORT`. The same bytes are in the
+sibling `site` checkout as `app/opengraph-image.png` (sha256 `9bf1980d…`). `--check` re-derives
+the icon in memory and fails when the committed pixels are not that derivation, so it is the pin
+to run after the export changes; it is not part of `scripts/ci-local.sh`, which has no export to
+read.
+
 ### `selvage/2` in the engine
 
 The engine speaks the sealed wire end to end: one version, one code path. A host that can mint
