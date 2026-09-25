@@ -32,9 +32,11 @@ jobs:
 
       - run: npm run typecheck
 
-      # The four server-backed tests in `test/selvaged.test.ts` need a built `selvaged` from the
-      # sibling `reference_server` repository, which this workflow does not check out, so CI runs
-      # the server-free suite. Run `npm test` locally, with a server built, for the real thing.
+      # The four suites that need a built `selvaged` from the sibling `reference_server`
+      # repository — `test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
+      # `test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — which this
+      # workflow does not check out, so CI runs the server-free suite. Run `npm test` locally,
+      # with a server built, for the real thing.
       # A shared runner is slower than a developer's machine; the suite's waits poll conditions
       # that do hold, and this only makes the deadline generous enough not to race the load.
       - run: npm run test:fast
