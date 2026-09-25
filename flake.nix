@@ -72,10 +72,11 @@
         {
           typecheck = mkSuite "vscode-client-typecheck" [ "npm run typecheck" ];
 
-          # The server-free half. The four tests in `test/selvaged.test.ts` are not here:
-          # they need a `selvaged` from the sibling `reference_server` checkout, which a
-          # sandboxed build cannot see, and `test/interop.test.ts` needs that checkout and an
-          # `interop_peer` built from it for the same reason. `SELVAGE_SELVAGED` and
+          # The server-free half. The four suites that need a built `selvaged` from the sibling
+          # `reference_server` checkout are not here — `test/relay-selvaged.test.ts`,
+          # `test/selvage2-selvaged.test.ts`, `test/selvage2-reconnect-selvaged.test.ts` and
+          # `test/interop-v2.test.ts` — because a sandboxed build cannot see that checkout, and
+          # the interop suite needs an `interop_peer` from it as well. `SELVAGE_SELVAGED` and
           # `SELVAGE_INTEROP_PEER` are the seams for those.
           fast = mkSuite "vscode-client-test-fast" [ "npm run test:fast" ];
         }

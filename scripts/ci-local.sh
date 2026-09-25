@@ -12,12 +12,14 @@
 # mistakes statically; the workflow has no actionlint step of its own, so that one is local-only
 # and needs `nix`.
 #
-# CI runs the server-free suite only: the four tests in `test/selvaged.test.ts` need a built
-# `selvaged` from the sibling `reference_server` checkout, which the workflow does not have.
-# `test/interop.test.ts` needs that checkout too, and `interop_peer` built from it
-# (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one),
-# so it is not here either: `npm test` and `npm run test:interop` run both, with a server
-# built. CI pins Node 22.18.0; this uses whatever `node` is on PATH.
+# CI runs the server-free suite only: the four suites that need a built `selvaged` from the
+# sibling `reference_server` checkout — `test/relay-selvaged.test.ts`,
+# `test/selvage2-selvaged.test.ts`, `test/selvage2-reconnect-selvaged.test.ts` and
+# `test/interop-v2.test.ts` — are not in `npm run test:fast`, and nothing here builds that server.
+# The interop suite needs an `interop_peer` from that checkout as well
+# (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one).
+# `npm test` runs every suite and `npm run test:interop` runs the interop one, both with a
+# server built. CI pins Node 22.18.0; this uses whatever `node` is on PATH.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
