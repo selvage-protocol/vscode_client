@@ -114,9 +114,10 @@ jobs:
 
       - run: npm run typecheck
 
-      # Same suite ci.yml runs: the four server-backed tests in test/selvaged.test.ts need
-      # a built `selvaged` from the sibling reference_server repository, which this
-      # workflow does not check out.
+      # Same suite ci.yml runs: the four suites that need a built `selvaged` —
+      # `test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
+      # `test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — are not in
+      # `test:fast`, and this workflow does not check out the sibling `reference_server`.
       - run: npm run test:fast
         env:
           SELVAGE_WAIT_MS: "30000"

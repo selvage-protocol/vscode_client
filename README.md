@@ -403,20 +403,21 @@ $ scripts/ci-local.sh all              # actionlint over the workflows, then the
 `scripts/ci-local.sh all` is the gate before a push and runs the same commands as
 `.github/workflows/ci.yml`. `all` is `lint` plus `client`: `lint` needs `nix`; `client` is
 `npm ci`, `typecheck`, `build` and `test:fast`. CI runs the server-free suite only, because the
-four tests in `test/selvaged.test.ts` need a built `selvaged` from the sibling `reference_server`
-checkout, which the workflow does not have. `test:peer-corpus` needs the sibling `specification`
+four suites that need a built `selvaged` from the sibling `reference_server` checkout —
+`test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
+`test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — are not in it, and the
+workflow does not have that checkout. `test:peer-corpus` needs the sibling `specification`
 checkout for the same reason, and `SELVAGE_SPECIFICATION` names another one; `npm test` runs it
-along with `test/interop.test.ts` and `test/interop-v2.test.ts`, which need the sibling
-`reference_server` and an `interop_peer` built from it — the version-2 file needs one that
-speaks `selvage/2`, which is `SELVAGE_INTEROP_PEER`'s other use.
+along with `test/interop-v2.test.ts`, which needs the sibling `reference_server` and an
+`interop_peer` built from it that speaks `selvage/2` (`SELVAGE_INTEROP_PEER` names one).
 
 ```console
 $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
 ```
 
-`test:selvaged` finds that binary at `../reference_server/target/{debug,release}/selvaged`, or
-wherever `SELVAGE_SELVAGED` points. A missing binary fails the test, which prints the command that
-builds it. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server` runs its
+`test:relay-selvaged` and `test:selvage2` find that binary at
+`../reference_server/target/{debug,release}/selvaged`, or wherever `SELVAGE_SELVAGED` points. A
+missing binary fails the test, which prints the command that builds it. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server` runs its
 command with the current directory, hence the `cd`. That flake's shellHook installs Rust git hooks
 into this checkout; they are harmless and ignored, and CI does not use them. `nix flake check`
 runs the server-free half in a sandbox, where a check cannot build a sibling checkout.

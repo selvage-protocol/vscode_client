@@ -239,7 +239,7 @@ test('half a character the second text holds is carried, and nothing claims othe
   // The one shape the invariant cannot cover, stated rather than left to be discovered: `to`
   // holds a lone surrogate, so any change that gets the buffer there carries it. No editor
   // here produces such a text, and a peer's cannot cross the wire — the y-protocols encoder
-  // has no encoding for half a character and writes U+FFFD instead (`test/engine.test.ts`).
+  // has no encoding for half a character and writes U+FFFD instead (`test/bridge.test.ts`).
   const change = diff('ab\n', 'a\ud83db\n');
   assert.deepEqual(change, { start: 1, end: 1, text: '\ud83d' });
   assert.equal(applyChange('ab\n', change), 'a\ud83db\n');

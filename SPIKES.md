@@ -150,7 +150,8 @@ to the adapter, which is where it belongs:
 - **CRDT → buffer**: the engine observes each open document's `Y.Text` individually and emits
   `documentChanged { path }` only for changes that did not come from the adapter's own
   transaction (`LOCAL_ORIGIN`). A cursor move does not emit it at all — an awareness frame is
-  not text (`test/engine.test.ts`, *"only the document that changed is reported"*).
+  not text (`test/scan-texts.test.ts`, *"a frame reads only the documents it changed, and reports
+  each change"*).
 - **buffer → CRDT**: an adapter must not use a bare flag. It compares the buffer's text with
   `engine.text(path)` before writing, and keeps a debounced reconcile as the backstop for the
   case the comparison cannot see (a divergence introduced by another extension). This is the
@@ -228,11 +229,10 @@ statement about document content (an extension note, not a new field).
   the transport tried to read every frame as text and treat binary as a fallback; `ws` hands
   a binary frame over as a `Buffer`, which decodes as UTF-8 perfectly well, so every
   y-protocols frame was silently misrouted and documents never synced. The engine's tests
-  caught it on the first run (`test/engine.test.ts`, convergence).
+  caught it on the first run (`test/peer-adapter.test.ts`, convergence).
 - **Reconnection is a new connection, and a host has to carry its room into it.** A host
   learns the room id and token from the `room.created` reply, not from its connect options,
   so a reconnecting host that reuses its options **mints a second empty room**. Spec §9.1
   describes the reclaim path as "the same path an ordinary join takes"; it is only the same
   path if the engine remembers the room and token it was seated with, which `SelvageEngine`
-  now does (`test/reconnect.test.ts`, *"a host that dropped reclaims its room rather than
-  minting a second one"*).
+  now does.
