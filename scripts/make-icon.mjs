@@ -16,7 +16,9 @@
  *
  * Standard library only. The derivation is an exact area average — each destination pixel is the
  * mean of the source rectangle it covers, premultiplied by alpha — so it is a function of the
- * bytes and needs neither a floating-point path nor an installed ImageMagick.
+ * bytes and needs neither a floating-point path nor an installed ImageMagick. The source's own
+ * colour-space chunks (`gAMA`, `cHRM`, `sRGB`, `iCCP`) travel with the pixels; the owner's export
+ * carries none, so the icon declares nothing and a viewer reads it as sRGB.
  *
  *     node scripts/make-icon.mjs <export.png>            # rewrite images/icon.png
  *     node scripts/make-icon.mjs <export.png> --check    # derive in memory; fail when it differs
@@ -36,6 +38,17 @@ const SIZE = 256;
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+/**
+ * The colour-space chunks, in the order the PNG specification puts them after `IHDR`.
+ *
+ * They travel with the pixels: an export that declares a gamma or a chromaticity is written back
+ * with the same declaration, so "no colour change" is true of how a colour-managed viewer reads
+ * the file and not only of the sample values. The owner's export carries none of them, and the
+ * icon's predecessor carried ImageMagick's `cHRM`; either way this file's declaration is the
+ * source's rather than one this script invents.
+ */
+const COLOUR_CHUNKS = ['cHRM', 'gAMA', 'iCCP', 'sRGB'];
+
 /** A PNG this script cannot read: only the two colour types ImageMagick writes for this export. */
 class PngError extends Error {}
 
@@ -47,6 +60,7 @@ function decodePng(bytes, path) {
   let width = 0;
   let height = 0;
   let bpp = 0;
+  const colour = [];
   const parts = [];
   for (let at = 8; at < bytes.length; ) {
     const length = bytes.readUInt32BE(at);
@@ -68,6 +82,8 @@ function decodePng(bytes, path) {
       bpp = colour === 6 ? 4 : 3;
     } else if (kind === 'IDAT') {
       parts.push(body);
+    } else if (COLOUR_CHUNKS.includes(kind)) {
+      colour.push({ kind, body: Buffer.from(body) });
     } else if (kind === 'IEND') {
       break;
     }
@@ -108,7 +124,8 @@ function decodePng(bytes, path) {
     }
     at += stride;
   }
-  if (bpp === 4) return { width, height, rgba: flat };
+  colour.sort((a, b) => COLOUR_CHUNKS.indexOf(a.kind) - COLOUR_CHUNKS.indexOf(b.kind));
+  if (bpp === 4) return { width, height, rgba: flat, colour };
   const rgba = Buffer.alloc(width * height * 4);
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     rgba[pixel * 4] = flat[pixel * bpp];
@@ -116,7 +133,7 @@ function decodePng(bytes, path) {
     rgba[pixel * 4 + 2] = flat[pixel * bpp + 2];
     rgba[pixel * 4 + 3] = 0xff;
   }
-  return { width, height, rgba };
+  return { width, height, rgba, colour };
 }
 
 /** The whole frame as a `SIZE`×`SIZE` RGBA raster: each pixel the mean of the box it covers. */
@@ -211,7 +228,7 @@ function filterRow(kind, line, above, bpp) {
  * The row filter is chosen per line by the sum of the filtered bytes read as signed — the
  * heuristic the format's own documentation suggests — so the mostly flat field compresses well.
  */
-function encodePng(rgba) {
+function encodePng(rgba, colour) {
   const stride = SIZE * 4;
   const raw = Buffer.alloc((stride + 1) * SIZE);
   let at = 0;
@@ -239,6 +256,7 @@ function encodePng(rgba) {
   return Buffer.concat([
     PNG_MAGIC,
     chunk('IHDR', header),
+    ...colour.map(({ kind, body }) => chunk(kind, body)),
     chunk('IDAT', deflateSync(raw, { level: 9 })),
     chunk('IEND', Buffer.alloc(0)),
   ]);
@@ -265,13 +283,13 @@ function main(argv) {
   }
   const path = sourcePath(argv);
   const source = readFileSync(path);
-  const { width, height, rgba } = decodePng(source, path);
+  const { width, height, rgba, colour } = decodePng(source, path);
   if (width !== height) {
     console.error(`make-icon: ${path} is ${width}×${height}; the export is square, and averaging a field that is not would distort it`);
     return 2;
   }
   const raster = areaAverage(rgba, width, height);
-  const derived = encodePng(raster);
+  const derived = encodePng(raster, colour);
   const digest = createHash('sha256').update(source).digest('hex');
   if (argv.includes('--check')) {
     const committed = decodePng(readFileSync(ICON), ICON);
@@ -294,6 +312,17 @@ function main(argv) {
       console.error(
         `make-icon: worst at pixel ${Math.floor(worst / 4) % SIZE},${Math.floor(worst / 4 / SIZE)} ` +
           `channel ${worst % 4}: committed ${committed.rgba[worst]}, derived ${raster[worst]}`,
+      );
+      return 1;
+    }
+    // The pixels are the claim, but a colour-managed viewer reads the declaration beside them, so
+    // it has to be the derivation's too.
+    const declared = (list) =>
+      list.map(({ kind, body }) => `${kind}:${body.toString('base64')}`).join(' ');
+    if (declared(committed.colour) !== declared(colour)) {
+      console.error(
+        `make-icon: ${ICON} declares [${declared(committed.colour)}] where the export's ` +
+          `derivation declares [${declared(colour)}]`,
       );
       return 1;
     }
