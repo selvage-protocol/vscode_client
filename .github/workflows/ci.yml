@@ -35,8 +35,10 @@ jobs:
       # The four suites that need a built `selvaged` from the sibling `reference_server`
       # repository — `test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
       # `test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — which this
-      # workflow does not check out, so CI runs the server-free suite. Run `npm test` locally,
-      # with a server built, for the real thing.
+      # workflow does not check out, so CI runs the server-free suite. Run `npm test` locally for
+      # the real thing, with a server built and an `interop_peer` beside it for the interop suite
+      # (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at
+      # one).
       # A shared runner is slower than a developer's machine; the suite's waits poll conditions
       # that do hold, and this only makes the deadline generous enough not to race the load.
       - run: npm run test:fast
