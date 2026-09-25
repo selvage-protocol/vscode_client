@@ -141,6 +141,23 @@ export const DEFAULT_KEEPALIVE: Keepalive = {
 };
 
 /**
+ * What a client adds to one renewal window when it waits for the room's answer.
+ *
+ * The window is not this number and is not assumed: §7.1 lets a host fold the answer to an
+ * announcement it has already answered inside a window and publish it at that window's end, and
+ * a peer whose key no state commits yet can publish nothing at all — its holds included, and a
+ * hold is how an ask is made — so an ask can wait a whole `awareness_renew_ms`, read from the
+ * session (`Keepalive`), before the peer that owes the answer even hears it. Past the window,
+ * what is left to allow for is the host's own read of its working copy, the content frame and
+ * its application here.
+ *
+ * The number is a **chosen** allowance, not a measurement: nothing bounds those three, and a
+ * client that needs a bounded wait has to pick one. A client waits
+ * `awareness_renew_ms + ANSWER_SETTLE_MS`.
+ */
+export const ANSWER_SETTLE_MS = 5_000;
+
+/**
  * True when a refusal or close code means the session cannot be resumed. Every code in the
  * reserved `x.` namespace is terminal, known or not, exactly as the Rust reference client
  * treats it: the namespace exists so an implementation can refuse without teaching every

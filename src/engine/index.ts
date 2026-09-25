@@ -76,6 +76,7 @@ export type {
 export { caret } from './presence.ts';
 export { ProtocolError, isProtocolError } from './errors.ts';
 export {
+  ANSWER_SETTLE_MS,
   CLIENT_CAPABILITIES,
   DEFAULT_KEEPALIVE,
   MAX_DISPLAY_NAME_UNITS,

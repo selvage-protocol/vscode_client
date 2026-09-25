@@ -66,6 +66,20 @@ export function unrefTimer(timer: unknown): void {
 const LOCAL_ORIGIN = Symbol('selvage/local');
 const APPLIED_ORIGIN = Symbol('selvage/applied');
 
+/**
+ * The one character a document published with no text at all is named by.
+ *
+ * A path is a document here, and a `Y.Text` with nothing in it is a document no update
+ * carries: a root type is named by the items under it, and `yjs` writes no struct at all for
+ * one that has none. That is the whole of why a room could not say a file is empty — the empty
+ * document never left the peer holding it. The type is therefore named by one character inserted
+ * and removed inside the one transaction `insert` runs: its struct is what the encoding writes,
+ * and it travels with no text in it, because the item is deleted before the update is taken and
+ * this replica runs `yjs`'s default garbage collection, which replaces a deleted item's content
+ * with its length. What a peer applies is the name, and no text.
+ */
+const EMPTY_DOCUMENT_MARK = 'x';
+
 // --- the invite -----------------------------------------------------------------
 
 /** An invite as `PROTOCOL.md` §5.1 writes one, and §13.1's first step reads it. */
@@ -798,12 +812,13 @@ export class PeerSession {
   }
 
   /**
-   * Whether this replica has received anything at all for a path (§13.5): text the room sent,
-   * or text this window wrote into the document. A path this window only *read* — an empty
-   * buffer drawn from the room's listing — has received nothing, and an adapter that could not
-   * tell the two apart would treat the read as the room's own publication: a guest would stop
-   * holding a listed path nothing has arrived for, and a host that had read its replica would
-   * refuse to seed its working copy over it.
+   * Whether a document for this path is here (§13.5): one the room sent — an empty one
+   * included, which is what a file that is genuinely empty is answered with, so that a reader
+   * can tell it from a path nothing has arrived for — or one this window wrote into. A path
+   * this window only *read* — an empty buffer drawn from the room's listing — has none, and an
+   * adapter that could not tell that apart from an answer would treat the read as the room's
+   * own publication: a guest would stop holding a listed path nothing has arrived for, and a
+   * host that had read its replica would refuse to seed its working copy over it.
    */
   has(path: string): boolean {
     return this.doc.share.has(path);
@@ -1195,14 +1210,25 @@ export class PeerSession {
    *
    * Returns whether anything went out: §13.5 and §13.9 have a `viewer` keep its edit and not
    * send it, and §13.1's step 4 has any peer keep it until a state commits its key.
+   *
+   * An empty text into a path this replica holds no document for **publishes the document** —
+   * the room's only way of saying that a path exists and its text is empty — and an empty text
+   * into one that is here is the edit it always was, which changes nothing. The path is named
+   * by {@link EMPTY_DOCUMENT_MARK}.
    */
   insert(path: string, index: number, text: string): Promise<boolean> {
+    const publishing = text === '' && !this.doc.share.has(path);
     const update = this.editLocally(path, (handle) => {
       // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
       // at the end. A client any caller can silently mis-edit is not one a decision vector can
       // drive, so it is refused.
       if (index < 0 || index > handle.length) {
         throw new Error(`there is no offset ${index} in ${JSON.stringify(path)}`);
+      }
+      if (publishing) {
+        handle.insert(0, EMPTY_DOCUMENT_MARK);
+        handle.delete(0, EMPTY_DOCUMENT_MARK.length);
+        return;
       }
       handle.insert(index, text);
     });
