@@ -1612,8 +1612,9 @@ export class Session {
     const path = record.state?.path;
     // No path yet is not a refusal: the record may predate the publish, and the next frame
     // tells a stale one from a peer in no document. The palette refuses its own rows, where
-    // the row says as much; a programmatic landing waits instead.
-    if (path === undefined) {
+    // the row says as much; a programmatic landing waits instead. A path the room dropped is
+    // no document here either, however long the peer stays in theirs.
+    if (path === undefined || this.dropped.has(path)) {
       return 'waiting';
     }
     const editor = await this.openRoomPath(path);
