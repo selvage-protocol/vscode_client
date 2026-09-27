@@ -16,6 +16,10 @@
  * The copy is taken with `cpSync`, so it carries no history and the test needs no `git`; what it
  * compares is the copy's own file set before and after the run, hashed, so a script that starts
  * editing a fourth file fails here rather than in someone's release.
+ *
+ * Every case that asserts a version seeds the one it starts from (`seedVersion`) rather than
+ * inheriting the version this checkout carries: the suite holds at 0.5.1, at 0.5.2 and at any
+ * version after them, and a release can therefore run it on the tree its own bump has just written.
  */
 
 import { test } from 'node:test';
@@ -125,24 +129,75 @@ function seedManifest(copy: string, version: string): void {
   assert.equal(versionOf(copy), version, "the copy's manifest was not seeded");
 }
 
-/** The lockfile's second copy of the manifest version, in the root package entry `packages.""`. */
-function lockPackageVersion(lock: string): string | undefined {
+/**
+ * The line the lockfile's `packages.""` entry carries its version on, walked the way the script
+ * walks it: to the empty key under `packages`, never to the first line at that indentation, which
+ * can belong to a dependency.
+ */
+function lockPackageLine(lines: string[]): number | undefined {
   let packages = false;
   let root = false;
-  for (const line of lock.split('\n')) {
+  for (let i = 0; i < lines.length; i += 1) {
     if (!packages) {
-      if (line === '  "packages": {') packages = true;
+      if (lines[i] === '  "packages": {') packages = true;
       continue;
     }
     if (!root) {
-      if (line === '    "": {') root = true;
+      if (lines[i] === '    "": {') root = true;
       continue;
     }
-    const match = /^      "version": "([^"]*)",$/.exec(line);
-    if (match) return match[1];
-    if (line === '    },') return undefined;
+    if (/^      "version": "[^"]*",$/.test(lines[i])) return i;
+    if (lines[i] === '    },') return undefined;
   }
   return undefined;
+}
+
+/** The lockfile's second copy of the manifest version, in the root package entry `packages.""`. */
+function lockPackageVersion(lock: string): string | undefined {
+  const lines = lock.split('\n');
+  const line = lockPackageLine(lines);
+  return line === undefined ? undefined : /^      "version": "([^"]*)",$/.exec(lines[line])?.[1];
+}
+
+/**
+ * Put a version into every file that carries one, so a case starts from the version it names
+ * instead of the one this checkout happens to carry. The suite then holds at 0.5.1, at 0.5.2 and at
+ * every version after them, which is what lets a release run it on the tree its own bump wrote.
+ */
+function seedVersion(copy: string, version: string): void {
+  seedManifest(copy, version);
+
+  const lockPath = join(copy, 'package-lock.json');
+  const lock = readFileSync(lockPath, 'utf8').split('\n');
+  const rootLine = lock.findIndex((line) => /^  "version": "[^"]*",$/.test(line));
+  assert.notEqual(rootLine, -1, 'the copy carries no top-level version in package-lock.json');
+  const packageLine = lockPackageLine(lock);
+  assert.ok(packageLine !== undefined, 'the copy carries no version in packages.""');
+  lock[rootLine] = `  "version": "${version}",`;
+  lock[packageLine] = `      "version": "${version}",`;
+  writeFileSync(lockPath, lock.join('\n'));
+
+  const adapterPath = join(copy, 'src', 'adapter', 'extension.ts');
+  const adapter = readFileSync(adapterPath, 'utf8');
+  assert.match(adapter, /^const CLIENT = 'selvage-vscode\/[^']*';$/m, 'the copy carries no CLIENT string');
+  writeFileSync(
+    adapterPath,
+    adapter.replace(
+      /^const CLIENT = 'selvage-vscode\/[^']*';$/m,
+      `const CLIENT = 'selvage-vscode/${version}';`,
+    ),
+  );
+
+  assert.deepEqual(
+    carriedVersions(copy),
+    {
+      'package.json': version,
+      'package-lock.json': version,
+      'package-lock.json:packages.""': version,
+      'src/adapter/extension.ts': version,
+    },
+    'the copy was not seeded',
+  );
 }
 
 /** The version each spot the script owns carries, under the key that carries it. */
@@ -246,7 +301,7 @@ test('each bump word moves the version the manifest carries, and lands every fil
   for (const { from, word, to } of BUMPS) {
     const copy = freshCopy(`word-${word}-${from}`);
     try {
-      seedManifest(copy, from);
+      seedVersion(copy, from);
       const before = tree(copy);
       const run = runIn(copy, [word]);
       assert.equal(run.status, 0, `${from} + ${word} failed:\n${run.output}`);
@@ -275,6 +330,7 @@ test('each bump word moves the version the manifest carries, and lands every fil
 test('--dry-run writes nothing and prints the version the write mode does', () => {
   const copy = freshCopy('dry-run');
   try {
+    seedVersion(copy, '0.5.1');
     const before = tree(copy);
     const dry = runIn(copy, ['patch', '--dry-run']);
     assert.equal(dry.status, 0, `the dry run failed:\n${dry.output}`);
@@ -304,6 +360,8 @@ test('--dry-run writes nothing and prints the version the write mode does', () =
 test('a bump writes exactly the files that carry the version, and nothing else', () => {
   const copy = freshCopy('bump');
   try {
+    seedVersion(copy, '0.5.1');
+    const was = new Map(CARRIES_THE_VERSION.map((file) => [file, readFileSync(join(copy, file), 'utf8')]));
     const before = tree(copy);
     const run = runIn(copy, ['patch']);
     assert.equal(run.status, 0, `the bump failed:\n${run.output}`);
@@ -327,11 +385,13 @@ test('a bump writes exactly the files that carry the version, and nothing else',
     const adapter = readFileSync(join(copy, 'src', 'adapter', 'extension.ts'), 'utf8');
     assert.match(adapter, /^const CLIENT = 'selvage-vscode\/0\.5\.2';$/m);
 
-    // The strongest form of "and nothing else": put the old version back in the copy's file and
-    // the result is this repository's own file, byte for byte.
+    // The strongest form of "and nothing else": the copy's own file before the run, with the
+    // version string moved, is the whole of the file after it.
     for (const file of CARRIES_THE_VERSION) {
-      const written = readFileSync(join(copy, file), 'utf8').split('0.5.2').join('0.5.1');
-      assert.equal(written, readFileSync(join(ROOT, file), 'utf8'), `${file} changed beyond the version string`);
+      const original = was.get(file);
+      assert.ok(original !== undefined, `${file} was not read before the run`);
+      const written = readFileSync(join(copy, file), 'utf8');
+      assert.equal(written, original.split('0.5.1').join('0.5.2'), `${file} changed beyond the version string`);
     }
 
     for (const file of CARRIES_THE_VERSION) {
@@ -379,6 +439,7 @@ test('a tree whose files disagree is brought to the next version, and every file
 test('a spot already at the next version is left alone while a laggard is written and named', () => {
   const copy = freshCopy('lagging');
   try {
+    seedVersion(copy, '0.5.1');
     // `patch` from 0.5.1 lands on 0.5.2; the adapter is put there by hand, so only the manifest
     // and the lockfile have to move. The lockfile is the laggard and must be named.
     const adapterPath = join(copy, 'src', 'adapter', 'extension.ts');
@@ -406,6 +467,7 @@ test('a spot already at the next version is left alone while a laggard is writte
 test('a tree whose shape has moved is refused before anything is written', () => {
   const copy = freshCopy('shape-moved');
   try {
+    seedVersion(copy, '0.5.1');
     // Remove the lockfile's `packages.""` version, which the script locates last; the manifest is
     // already located and would be written first by a script that wrote as it went.
     const lockPath = join(copy, 'package-lock.json');
@@ -450,6 +512,7 @@ function withADependencyFirst(lockfile: string, current: string): string {
 test("the lockfile's root entry is written, not the first version line", () => {
   const copy = freshCopy('packages-root');
   try {
+    seedVersion(copy, '0.5.1');
     const lockPath = join(copy, 'package-lock.json');
     const arranged = withADependencyFirst(readFileSync(lockPath, 'utf8'), '0.5.1');
     writeFileSync(lockPath, arranged);
