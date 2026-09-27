@@ -101,3 +101,20 @@ test('a shared roster name takes the last four characters of each peer id', () =
   assert.equal(rosterLabel(pair[0], pair), 'guest-one · 1111');
   assert.equal(rosterLabel(pair[1], pair), 'guest-one · 2222');
 });
+
+test('a shared roster name whose peer ids end alike reads further back until the rows differ', () => {
+  const room = [
+    { displayName: 'Ada', peerId: 'p-a1234' },
+    { displayName: 'Ada', peerId: 'p-b1234' },
+    { displayName: 'Ada', peerId: 'p-9999' },
+  ];
+  assert.equal(rosterLabel(room[0], room), 'Ada · a1234');
+  assert.equal(rosterLabel(room[1], room), 'Ada · b1234');
+  assert.equal(rosterLabel(room[2], room), 'Ada · 9999', 'a tail nobody shares grew anyway');
+  // One id that is the other's whole tail still gives two different rows.
+  const nested = [
+    { displayName: 'Bo', peerId: 'p-1234' },
+    { displayName: 'Bo', peerId: 'xp-1234' },
+  ];
+  assert.notEqual(rosterLabel(nested[0], nested), rosterLabel(nested[1], nested));
+});
