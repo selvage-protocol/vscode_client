@@ -2239,7 +2239,7 @@ test('a wire invite is refused when the engine would not dial it as pasted', asy
   // A base the engine dials as pasted is an invite whatever it resolves to: a host that
   // is not there fails at the dial, in the sentence that says to check the server, the
   // way `ws://127.0.0.1:1/session?…` does in the join below. Refusing it would refuse
-  // every hostname that carries no port — `ws://lumi-raspberrypi/session?…` behind a
+  // every hostname that carries no port — `ws://selvage.example/session?…` behind a
   // reverse proxy is a room the page default does not name.
   assert.equal(
     validate('ws://name/session?room=r&token=t'),
