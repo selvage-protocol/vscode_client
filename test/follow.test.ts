@@ -1240,6 +1240,50 @@ test('following a peer in no document pends until they enter one', async (t) => 
   assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Nora');
 });
 
+test('a follow does not reopen a path the host deleted, and lands when they move on', async (t) => {
+  // The peer stays in a file the host has taken out of the room, and the follow is pointed at
+  // whatever their presence says. Without the dropped check the path is opened again on every
+  // frame — `could not open` each time — although the room holds no such file any more.
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
+  const holder = { text: TEXT_A };
+  const editorA = await openHeld(seat_, PATH_A, holder, 5);
+  const editorB = await openHeld(seat_, PATH_B, { text: TEXT_B }, 1);
+  await seat_.host.grant([PATH_B]);
+  await waitFor('the guest to release the deleted path', () =>
+    seat_.bundle.stub.registered.warnings.some((message) =>
+      message.includes(`${PATH_A} is no longer in the room`),
+    ),
+  );
+  const openedBefore = seat_.bundle.stub.registered.opened.length;
+  const errorsBefore = seat_.bundle.stub.registered.errors.length;
+
+  // The peer's presence names the deleted path while their own tab is still open on it: a
+  // frame the follow has nothing to do with, rather than a refusal and a reopening.
+  seat_.host.setSelection(PATH_A, { anchor: 6, head: 6 });
+  await waitFor('the deleted frame to reach the guest', () =>
+    guestRows(seat_).some((row) => row.description === PATH_A) ? true : false,
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', {
+    peerId: seat_.hostId,
+  });
+
+  // Their move to a file the room still holds is the next frame, and the one the follow lands
+  // on: the pend over the deleted path ended rather than refusing the follow.
+  seat_.host.setSelection(PATH_B, { anchor: 3, head: 3 });
+  await waitFor(`the follow to land in ${PATH_B}`, () => caretOf(editorB) === 3);
+  assert.deepEqual(
+    seat_.bundle.stub.registered.opened.slice(openedBefore),
+    [],
+    'a path the room dropped was opened again',
+  );
+  assert.equal(
+    seat_.bundle.stub.registered.errors.length,
+    errorsBefore,
+    'the deleted path was reported as an open that failed',
+  );
+  assert.notEqual(caretOf(editorA), 6, 'the deleted document was landed in');
+});
+
 test('an unknown peer id falls through to the pick', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
