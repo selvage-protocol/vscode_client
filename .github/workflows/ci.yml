@@ -23,6 +23,25 @@ jobs:
         with:
           persist-credentials: false
 
+      # The guard around a workflow's `dry_run` input (`scripts/check_dry_run_gating.py`):
+      # `release.yml` declares one, its plan step carries `inputs.dry_run == true` and every step
+      # and job after it carries the same test negated, which is the whole of what keeps a
+      # rehearsal from cutting a release. `actionlint` cannot see a condition that is *missing*
+      # from a step, so nothing else reads that. This runs the guard's own suite and then the
+      # guard over the workflows here; `scripts/ci-local.sh client` builds the same two files as
+      # the flake check `dry-run-gating`, whose Python supplies the PyYAML pinned below.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+
+      - name: install the guard's dependency
+        run: python3 -m pip install pyyaml==6.0.3
+
+      - name: the release workflow's dry_run gating
+        run: |
+          python3 -B scripts/test_check_dry_run_gating.py
+          python3 -B scripts/check_dry_run_gating.py .github/workflows
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.18.0"

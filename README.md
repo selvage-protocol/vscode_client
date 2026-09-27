@@ -421,8 +421,10 @@ $ scripts/ci-local.sh all              # actionlint over the workflows, then the
 ```
 
 `scripts/ci-local.sh all` is the gate before a push and runs the same commands as
-`.github/workflows/ci.yml`. `all` is `lint` plus `client`: `lint` needs `nix`; `client` is
-`npm ci`, `typecheck`, `build` and `test:fast`. CI runs the server-free suite only, because the
+`.github/workflows/ci.yml`. `all` is `lint` plus `client`: `lint` needs `nix`; `client` is the
+`dry_run` gating check — the flake check `dry-run-gating`, which reads `.github/workflows` back
+and refuses a workflow whose plan step is followed by a step that a dry run would still run —
+then `npm ci`, `typecheck`, `build` and `test:fast`. CI runs the server-free suite only, because the
 four suites that need a built `selvaged` from the sibling `reference_server` checkout —
 `test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
 `test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — are not in it, and the
@@ -440,7 +442,8 @@ $ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo buil
 missing binary fails the test, which prints the command that builds it. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server` runs its
 command with the current directory, hence the `cd`. That flake's shellHook installs Rust git hooks
 into this checkout; they are harmless and ignored, and CI does not use them. `nix flake check`
-runs the server-free half in a sandbox, where a check cannot build a sibling checkout.
+runs the server-free half in a sandbox, where a check cannot build a sibling checkout, and
+`dry-run-gating`, which reads `.github/workflows` and neither node's tree nor a sibling.
 
 The suite runs against a fake `selvaged` (`test/helpers/fake-server.ts`) for the faults the real
 server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta` naming a
