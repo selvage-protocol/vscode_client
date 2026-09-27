@@ -61,3 +61,7 @@ export {
 } from './grant.ts';
 export { PeerEngine } from './peer-engine.ts';
 export type { PeerEngineOptions } from './peer-engine.ts';
+export { SEAT_LIMIT, SEAT_PALETTE, seatColours } from './seats.ts';
+export type { Seat } from './seats.ts';
+export { rosterLabel } from './names.ts';
+export type { NamedPeer } from './names.ts';
