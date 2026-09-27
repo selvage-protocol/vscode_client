@@ -89,6 +89,9 @@ const SENTENCES = [
   '`Selvage: the room\'s workspace settings (${}) are not put in this window, because VS Code would apply them rather than just show them.`',
   '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
   '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
+  // A document open on a path the host deleted or moved out of the room.
+  '`Selvage: ${} is no longer in the room, so it was closed.`',
+  '`Selvage: ${} is no longer in the room; your unsaved copy is kept but no longer shared.`',
   // What the room's own reports say. The host-detached and host-reclaimed sentences are
   // full sentences shown without the wrapper; they are pinned by `PLAIN_SENTENCES` below.
   '`Selvage: the room is gone (${}).`',
