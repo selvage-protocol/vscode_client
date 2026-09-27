@@ -2423,20 +2423,21 @@ export class Session {
         break;
       }
       case 'disconnected': {
-        // A guest reaches this only when §9.1's bounded retry gave up, and the mirror is then
-        // the only copy of what it wrote, so it stays — the treatment a room that closed under
-        // it already gets. A host has no resume (no host store), so its drop ends the session
-        // and says that rather than a retry that will not happen.
+        // A guest reaches this only when §9.1's bounded retry gave up, and this is that end: the
+        // session is over, so the mirror goes with it — the directory is a cache of the room, and
+        // the room is not this window's any more. `roomGone` is the one ending that keeps it,
+        // because the room dying under the guest is what leaves the mirror the only copy of what
+        // they did in it. A host has no resume (no host store), so its drop ends the session and
+        // says that rather than a retry that will not happen.
         if (this.mirror !== undefined) {
           void vscode.window.showWarningMessage(
             'Selvage: the connection ended and the session is over; it could not be re-established.',
           );
-          this.dispose({ keepMirror: true });
-          break;
+        } else {
+          void vscode.window.showWarningMessage(
+            'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
+          );
         }
-        void vscode.window.showWarningMessage(
-          'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
-        );
         this.dispose();
         break;
       }
