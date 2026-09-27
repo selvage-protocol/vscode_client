@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -127,7 +127,8 @@ test('the version the tree already carries is a no-op', () => {
     const run = runIn(copy, [versionOf(copy)]);
     assert.equal(run.status, 0, `bumping to the version present failed:\n${run.output}`);
     assert.deepEqual(changed(before, tree(copy)), [], 'the tree moved');
-    assert.match(run.stdout, /already/, 'the run did not say the version was already there');
+    assert.match(run.stdout, /already at/, 'the run did not report the version as already there');
+    assert.doesNotMatch(run.stdout, /wrote|lagged/, 'a tree that agrees was reported as needing a write');
   } finally {
     rmSync(copy, { recursive: true, force: true });
   }
@@ -170,6 +171,91 @@ test('a bump writes exactly the files that carry the version', () => {
     for (const file of CARRIES_THE_VERSION) {
       assert.ok(run.stdout.includes(file), `the run did not name ${file} among the files it wrote`);
     }
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
+test('a tree whose files disagree is repaired, not reported as already there', () => {
+  const copy = freshCopy('lagging');
+  try {
+    // The manifest moved by hand and the files held to it left behind — the shape of the 0.5.1
+    // defect one file over, which must not be reported as a tree that already carries the version.
+    const manifest = join(copy, 'package.json');
+    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace(versionOf(copy), BUMPED_TO));
+    assert.equal(versionOf(copy), BUMPED_TO, 'the copy\'s manifest was not moved');
+
+    const before = tree(copy);
+    const run = runIn(copy, [BUMPED_TO]);
+    assert.equal(run.status, 0, `the repair failed:\n${run.output}`);
+    assert.deepEqual(
+      changed(before, tree(copy)),
+      ['package-lock.json', 'src/adapter/extension.ts'],
+      `the repair did not write exactly the files that lagged:\n${run.output}`,
+    );
+    assert.match(run.stdout, /lagged/, 'the run did not say which files had lagged');
+
+    // With the tree agreeing, the same version is the no-op it should be.
+    const agreed = tree(copy);
+    const again = runIn(copy, [BUMPED_TO]);
+    assert.equal(again.status, 0, `the second run failed:\n${again.output}`);
+    assert.deepEqual(changed(agreed, tree(copy)), [], 'the second run moved the tree');
+    assert.match(again.stdout, /already at/, 'the second run did not report the tree as at the version');
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
+
+/**
+ * A lockfile whose first `version` line belongs to a dependency instead of the root package entry
+ * — legal JSON that npm does not write, arranged so a script that takes the first line at that
+ * indentation can be told apart from one that walks `packages` for the empty key.
+ */
+function withADependencyFirst(lockfile: string, current: string): string {
+  const marker = '  "packages": {\n';
+  assert.ok(lockfile.includes(marker), 'the copy carries no `packages` block');
+  const decoy = [
+    '    "node_modules/a-decoy": {',
+    '      "version": "9.9.9",',
+    '      "resolved": "https://example.invalid/a-decoy",',
+    '      "integrity": "sha512-a-decoy"',
+    '    },',
+    '',
+  ].join('\n');
+  const arranged = lockfile.replace(marker, marker + decoy);
+  const decoyAt = arranged.indexOf('      "version": "9.9.9",');
+  const rootAt = arranged.indexOf(`      "version": "${current}",`);
+  assert.ok(decoyAt !== -1 && decoyAt < rootAt, 'the decoy does not precede the root package entry');
+  return arranged;
+}
+
+test("the lockfile's root entry is written, not the first version line", () => {
+  const copy = freshCopy('packages-root');
+  try {
+    const current = versionOf(copy);
+    const manifest = join(copy, 'package.json');
+    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace(current, BUMPED_TO));
+    assert.equal(versionOf(copy), BUMPED_TO, 'the copy\'s manifest was not moved');
+
+    const lockPath = join(copy, 'package-lock.json');
+    const arranged = withADependencyFirst(readFileSync(lockPath, 'utf8'), current);
+    writeFileSync(lockPath, arranged);
+
+    const before = tree(copy);
+    const run = runIn(copy, [BUMPED_TO]);
+    assert.equal(run.status, 0, `the bump failed:\n${run.output}`);
+    assert.deepEqual(
+      changed(before, tree(copy)),
+      ['package-lock.json', 'src/adapter/extension.ts'],
+      `the bump did not write exactly the files that lagged:\n${run.output}`,
+    );
+
+    // The root entry's own lines moved and nothing else in the file did: the dependency's version
+    // above them is untouched.
+    const after = readFileSync(lockPath, 'utf8');
+    assert.equal(after, arranged.split(current).join(BUMPED_TO), 'the lockfile changed beyond its own version');
+    assert.match(after, /^      "version": "9\.9\.9",$/m, "a dependency's version was written");
   } finally {
     rmSync(copy, { recursive: true, force: true });
   }
