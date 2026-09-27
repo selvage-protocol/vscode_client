@@ -14,36 +14,47 @@ name: release
 # gave it, and either can fail while the other has already published.
 #
 # The owner triggers a release from this workflow. `workflow_dispatch` (with a required
-# `version` input, no default) is the manual button; pushing a tag `v*` runs the same job
-# for a release cut by hand. Either way the job is idempotent: the manifest version is
-# asserted first, a manual re-run at a version whose tag already exists moves that tag to
-# this run's commit rather than refusing (a tag push still requires an exact match, since
-# there the pushed ref is the commit), and an existing release has its `.vsix` asset
-# refreshed rather than a second release. A pull request runs ci.yml instead and can never
-# publish or release.
-# `version` has no default (unlike the sibling repositories' release workflows): the number a
-# release cuts is named deliberately, and everything the run asserts, tags and publishes
-# follows from it.
+# `bump` input naming `patch`, `minor` or `major`) is the manual button; pushing a tag `v*`
+# releases the version that tag names. A dispatch computes its own version: it refuses
+# unless the version `package.json` already carries is released as `v<version>` on the
+# remote, derives the next one with `scripts/bump-version.sh`, commits it to `main` and
+# releases that commit. Requiring the manifest version to be released is what makes a second
+# click safe: a bump that has been pushed without its tag refuses loudly instead of
+# computing the version after it and releasing a number nobody chose.
+# A tag that already exists is accepted only when it names the commit this run releases —
+# nothing here moves a tag — and an existing release has its `.vsix` asset refreshed rather
+# than a second release. A pull request runs ci.yml instead and can never publish or release.
+# `bump` carries no default, and this file carries no version string at all: the version
+# `package.json` holds is the release, and `scripts/bump-version.sh` is the one thing that
+# moves every copy of it.
 #
 # `package.json:4` carries the version the run asserts against.
 #
-# Two jobs, not one: `contents: write` and `id-token: write` are held only by `publish`,
-# which installs nothing. `npm ci`, the build, the test suite and the standalone install of
-# `@vscode/vsce` — every step that runs code from a registry — happen in `build`, which
-# holds neither permission. A compromised install script there cannot reach the OIDC-token
-# request endpoint or push a tag; the `.vsix` and both installed publishers cross the
-# boundary as artifacts, and `publish` only runs the `vsce` and `ovsx` binaries it
+# Three jobs, not two: `bump` holds `contents: write` for the one push it makes to `main`,
+# and it runs the gate `ci.yml` runs before that push, because a commit pushed with this
+# workflow's own `GITHUB_TOKEN` starts no workflow run: a bump pull request would carry no
+# checks at all. `id-token: write` is held only by `publish`, which installs nothing, so an
+# install script that misbehaves in `bump` can push this repository's history but cannot mint
+# the Marketplace credential — the one identity only this workflow can use. `npm ci`, the
+# build, the test suite and the standalone install of `@vscode/vsce` also run in `build`,
+# which holds neither permission; the `.vsix` and both installed publishers cross into
+# `publish` as artifacts, and `publish` only runs the `vsce` and `ovsx` binaries it
 # downloaded, never `npm install` or `npm ci`. `publish` also runs under the `marketplace`
 # GitHub environment, so the credential exchanges (and any required reviewers the owner adds
 # there) gate on every trigger shape, tag push and manual dispatch alike.
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version, without the leading v (must match package.json; the tag v<version> is created)"
+      bump:
+        description: "Which component to bump: scripts/bump-version.sh moves the version package.json carries, and the release is cut at the result"
         required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
       dry_run:
-        description: "Assert the version, run the suite and package the extension without tagging, releasing or publishing"
+        description: "Refuse if the manifest version is not released, print the version this bump would cut, and stop: nothing is bumped, committed, tagged, released or published"
         required: false
         default: false
         type: boolean
@@ -65,16 +76,154 @@ permissions:
   contents: read
 
 jobs:
+  # A dispatch computes its own version here: it refuses unless the version `package.json` carries
+  # is already released, derives the next one, runs the gate `ci.yml` runs against the bumped tree,
+  # and commits and pushes the result to `main`. The gate is before the push because a commit
+  # pushed with this workflow's own `GITHUB_TOKEN` starts no workflow run, so the commit that
+  # reaches `main` gets its checks here or nowhere.
+  #
+  # That push is why this job holds `contents: write`. `id-token: write` stays with `publish`, so
+  # the `npm ci` below cannot reach the Marketplace federation.
+  #
+  # On a tag push there is nothing to compute — the tag names the version and `build` reads it from
+  # there — so every step here is skipped and the job reports green having done nothing.
+  bump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.target.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          node-version: "22.18.0"
+          cache: npm
+
+      # The version the manifest carries has to be released before the next one is computed from
+      # it. A run that pushed its bump and died before `publish` created the tag leaves exactly
+      # that state, and a second click there must refuse: computing from an unreleased manifest
+      # releases the version after a number nobody has released. The tag reads are anonymous, and
+      # the token stays out of `.git/config` until the step that needs it.
+      - name: refuse unless the manifest version is released
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          current=$(node -p "require('./package.json').version")
+          remote=$(git ls-remote --tags origin "refs/tags/v${current}")
+          if [ -z "$remote" ]; then
+            cat >&2 <<EOF
+          refusing: package.json carries ${current}, and there is no tag v${current} on the remote.
+          That version was bumped but never released, and computing the next version from it would
+          release the version after a number nobody has released. Push the tag at the commit that
+          carries it (git push origin v${current}) and let this workflow release it, or put the
+          manifest back to the version last released, then dispatch again.
+          EOF
+            exit 1
+          fi
+          echo "package.json ${current} is released as tag v${current}"
+
+      # `scripts/bump-version.sh --dry-run` names the files it would write and prints the version it
+      # would write as the last line of stdout — the one line this run takes its tag, its Release
+      # and its commit subject from. The word is the dispatch input, applied to whatever the
+      # manifest carries now.
+      - name: derive the version this bump cuts
+        if: github.event_name == 'workflow_dispatch'
+        id: target
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          report=$(scripts/bump-version.sh "$BUMP" --dry-run)
+          printf '%s\n' "$report"
+          target=$(printf '%s\n' "$report" | tail -n1)
+          remote=$(git ls-remote --tags origin "refs/tags/v${target}")
+          if [ -n "$remote" ]; then
+            cat >&2 <<EOF
+          refusing: tag v${target} already exists on the remote, so this bump would cut a version
+          that is already released. The manifest is behind its own tags: bump from the version the
+          last release carries, then dispatch again.
+          EOF
+            exit 1
+          fi
+          echo "version=${target}" >> "$GITHUB_OUTPUT"
+
+      - name: stop before changing anything on a dry run
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        env:
+          BUMP: ${{ inputs.bump }}
+          TARGET: ${{ steps.target.outputs.version }}
+        run: |
+          cat <<EOF
+          dry_run: nothing was bumped, gated, committed, pushed, tagged, released or published.
+          This dispatch would have:
+            - run scripts/bump-version.sh ${BUMP}, setting every version in the tree to ${TARGET}
+            - run the gate ci.yml runs: npm ci, npm run typecheck, npm run build, npm run test:fast
+            - committed that as DontBlameMe <dontblameme@noreply.codeberg.org> with the subject
+              "chore(bump): release ${TARGET}", and pushed it to main
+            - tagged v${TARGET}, created its GitHub Release, and published the .vsix to the VS Code
+              Marketplace and to Open VSX
+          EOF
+
+      - name: bump the version
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: scripts/bump-version.sh "$BUMP"
+
+      # The gate `.github/workflows/ci.yml` runs, which `scripts/ci-local.sh client` mirrors, and it
+      # runs on the bumped tree before the commit exists: a commit pushed with this workflow's own
+      # `GITHUB_TOKEN` starts no run, so this is the only check that commit will ever have.
+      - name: the gate CI runs
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        env:
+          SELVAGE_WAIT_MS: "30000"
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          npm run test:fast
+
+      # The one push this workflow makes to `main`, and the reason this job holds `contents: write`.
+      # A bump pull request would carry no checks at all — an event created with this workflow's own
+      # `GITHUB_TOKEN` starts no run — so the gate above runs here instead. The commit's identity is
+      # the one every other commit in this repository has.
+      - name: commit and push the bump
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.target.outputs.version }}
+        run: |
+          git config user.name "DontBlameMe"
+          git config user.email "dontblameme@noreply.codeberg.org"
+          git commit -a -m "chore(bump): release ${TARGET}"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: bump
+    if: inputs.dry_run != true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
       vsix: ${{ steps.package.outputs.vsix }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A dispatch packages the commit `bump` pushed to `main`, which is not the commit the
+          # dispatch named; a tag push packages the tagged commit, and on that path `bump` leaves
+          # its output empty so this falls back to the event's own ref.
+          ref: ${{ needs.bump.outputs.sha || github.ref }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -83,27 +232,34 @@ jobs:
 
       - run: npm ci
 
-      # The release version comes from the dispatch input, or from the tag name on a tag
-      # push. It passes through `env` rather than a workflow expression inside `run:`, and
-      # anything that is not exactly X.Y.Z (all-digit components, no suffix) stops the job
-      # before anything is asserted, tagged or released.
+      # The release version comes from `bump` on a dispatch and from the tag name on a tag push,
+      # and with it the commit this run releases: the bump commit on a dispatch, the tagged commit
+      # otherwise. Both pass through `env` rather than a workflow expression inside `run:`, and
+      # anything that is not exactly X.Y.Z (all-digit components, no suffix) stops the job before
+      # anything is asserted, tagged or released.
       - name: resolve the release version
         id: version
         env:
-          DISPATCH_VERSION: ${{ inputs.version }}
+          BUMPED_VERSION: ${{ needs.bump.outputs.version }}
+          BUMPED_SHA: ${{ needs.bump.outputs.sha }}
         run: |
-          if [ -n "$DISPATCH_VERSION" ]; then
-            version="$DISPATCH_VERSION"
+          if [ -n "$BUMPED_VERSION" ]; then
+            version="$BUMPED_VERSION"
+            commit="$BUMPED_SHA"
           else
             version="${GITHUB_REF_NAME#v}"
+            commit="${GITHUB_SHA}"
           fi
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             printf 'refusing: %s is not a release version\n' "$version" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
-      # The manifest version is the release version: refuse to tag or package anything else.
+      # The manifest version is the release version: refuse to tag or package anything else. On a
+      # dispatch the tree here is the commit `bump` pushed, so this also holds that job's version
+      # output to the manifest it just wrote.
       - name: assert the manifest version matches
         run: |
           pkg=$(node -p "require('./package.json').version")
@@ -139,8 +295,9 @@ jobs:
 
       # The commit this `.vsix` was packaged from, read from the checkout that built it rather
       # than from `$GITHUB_SHA`, so `publish` can compare the two. The pair is what makes "the
-      # tag and the package name the same commit" a check instead of an argument: adding a
-      # `ref:` to the checkout above would be caught there rather than publish silently.
+      # tag and the package name the same commit" a check instead of an argument: the checkout
+      # above carries the `ref` a dispatch needs, and a `ref` naming a different commit is caught
+      # there rather than publish silently.
       - name: record the commit the package was built from
         run: git rev-parse HEAD > packaged-commit.txt
 
@@ -205,14 +362,17 @@ jobs:
       id-token: write
     env:
       RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
       VSIX: ${{ needs.build.outputs.vsix }}
     steps:
       # Not persisted: this job's git commands authenticate with an explicit token scoped to
       # the one step that pushes, rather than a credential left in `.git/config` for every
-      # step in the job to find.
+      # step in the job to find. The commit to tag is the one `build` packaged from, which is the
+      # commit `bump` pushed on a dispatch and the tagged commit on a tag push.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -254,36 +414,36 @@ jobs:
       - name: verify the Open VSX publisher is present
         run: node ./ovsx-publish/node_modules/ovsx/bin/ovsx --version
 
-      # The `.vsix` this job is about to hand to two registries came from `build` in this run,
-      # and the tag is about to be created or moved to `$GITHUB_SHA`. Both facts are asserted
-      # rather than assumed: the commit `build` packaged from is read out of its artifact and
-      # compared with this job's checkout and with the run's own sha. A mismatch stops the job
-      # before the tag is touched and before anything is published, so a package built from a
-      # different commit than the tag names is a red run and not a silent release.
-      - name: verify the package came from this run's commit
+      # The `.vsix` this job is about to hand to two registries came from `build` in this run, and
+      # the tag is about to be created at `RELEASE_COMMIT`. Both facts are asserted rather than
+      # assumed: the commit `build` packaged from is read out of its artifact and compared with this
+      # job's checkout and with the commit this run releases. A mismatch stops the job before the
+      # tag is touched and before anything is published, so a package built from a different commit
+      # than the tag names is a red run and not a silent release. `RELEASE_COMMIT` stands where the
+      # run's own sha used to: a dispatch releases the commit its bump produced, and that is not the
+      # commit the dispatch named.
+      - name: verify the package came from the commit this run releases
         run: |
           packaged=$(cat packaged-commit.txt)
           checked_out=$(git rev-parse HEAD)
-          if [ "$packaged" != "$checked_out" ] || [ "$checked_out" != "$GITHUB_SHA" ]; then
-            printf 'refusing: the .vsix was packaged from %s, this job checked out %s, this run is %s\n' \
-              "$packaged" "$checked_out" "$GITHUB_SHA" >&2
+          if [ "$packaged" != "$checked_out" ] || [ "$checked_out" != "$RELEASE_COMMIT" ]; then
+            printf 'refusing: the .vsix was packaged from %s, this job checked out %s, this run releases %s\n' \
+              "$packaged" "$checked_out" "$RELEASE_COMMIT" >&2
             exit 1
           fi
-          echo "the .vsix was packaged from ${packaged}, which is this run's commit"
+          echo "the .vsix was packaged from ${packaged}, which is the commit this run releases"
 
-      # Tags are resolved against `origin`, not local refs: the checkout may not have
-      # fetched them. An existing tag must point at this run's commit; anything else is
-      # someone else's release and stops the job — except a manual re-run of the same
-      # version, which is exactly what retrying a failed publish looks like and is expected
-      # to land on a different commit once the workflow itself needed a fix. There the tag is
-      # moved to this run's commit rather than left behind: the Release's `.vsix` asset is
-      # about to be refreshed from this commit regardless, and a tag pointing elsewhere while
-      # the asset it names came from somewhere else is the inconsistency, not the move. An
-      # annotated tag's own ref resolves to the tag object, not the commit it names, so both
-      # the plain ref and its peeled `^{}` form are queried and the peeled (commit) sha is
-      # preferred when present. A push that is rejected because another run created the same
-      # tag a moment earlier is not itself a failure: the tag is re-queried and accepted if it
-      # now names this run's commit, and only anything else fails the job.
+      # Tags are resolved against `origin`, not local refs: the checkout may not have fetched
+      # them. An existing tag must name the commit this run releases; anything else is someone
+      # else's release and stops the job. A version whose tag already exists at that commit is the
+      # shape a tag push arrives in, and is accepted. No branch here moves a tag: a dispatch derives
+      # its version from the manifest, so the version after a released one is a new number, and
+      # there is no re-run at a named version left for a move to serve. An annotated tag's own ref
+      # resolves to the tag object, not the commit it names, so both the plain ref and its peeled
+      # `^{}` form are queried and the peeled (commit) sha is preferred when present. A push that is
+      # rejected because another run created the same tag a moment earlier is not itself a failure:
+      # the tag is re-queried and accepted if it now names the commit this run releases, and only
+      # anything else fails the job.
       - name: create and push the tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -302,15 +462,9 @@ jobs:
           if [ -n "$remote_refs" ]; then
             remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
             echo "tag v${RELEASE_VERSION} already exists at ${remote_sha}"
-            if [ "$remote_sha" != "$GITHUB_SHA" ]; then
-              if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-                echo "manual re-run of an existing version; moving the tag from ${remote_sha} to ${GITHUB_SHA}"
-                git tag -f -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
-                git push --force origin "v${RELEASE_VERSION}"
-              else
-                printf 'refusing: tag v%s points at %s, not this run\n' "$RELEASE_VERSION" "$remote_sha" >&2
-                exit 1
-              fi
+            if [ "$remote_sha" != "$RELEASE_COMMIT" ]; then
+              printf 'refusing: tag v%s points at %s, not the commit this run releases\n' "$RELEASE_VERSION" "$remote_sha" >&2
+              exit 1
             fi
           fi
 

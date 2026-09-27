@@ -477,3 +477,74 @@ test("the lockfile's root entry is written, not the first version line", () => {
     rmSync(copy, { recursive: true, force: true });
   }
 });
+
+/**
+ * The release workflow's `inputs:` block under `on.workflow_dispatch`: the input names it declares,
+ * in order. This repository's dependency set carries no YAML parser, so the block is taken by
+ * indentation; the caller checks that it read inputs before reading them.
+ */
+function workflowInputs(workflow: string): string[] {
+  const lines = workflow.split('\n');
+  const start = lines.indexOf('    inputs:');
+  assert.notEqual(start, -1, 'no `inputs:` under `on.workflow_dispatch`');
+  const body = lines.slice(start + 1);
+  const end = body.findIndex((line) => /^ {0,4}\S/.test(line));
+  const block = end === -1 ? body : body.slice(0, end);
+  return block.filter((line) => /^ {6}\S/.test(line)).map((line) => line.trim().replace(/:$/, ''));
+}
+
+/** One input's own block from that list, up to the next input at the same indentation. */
+function inputBlock(workflow: string, name: string): string {
+  const lines = workflow.split('\n');
+  const start = lines.indexOf(`      ${name}:`);
+  assert.notEqual(start, -1, `no \`${name}\` input under \`on.workflow_dispatch.inputs\``);
+  const body = lines.slice(start + 1);
+  const end = body.findIndex((line) => /^ {6}\S/.test(line));
+  return (end === -1 ? body : body.slice(0, end)).join('\n');
+}
+
+test('the release workflow takes the bump word and carries no version of its own', () => {
+  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+  assert.deepEqual(
+    workflowInputs(workflow),
+    ['bump', 'dry_run'],
+    'the release workflow takes inputs other than the bump word and dry_run',
+  );
+  const input = inputBlock(workflow, 'bump');
+  assert.match(input, /^\s*description:/m, 'the block read is not a workflow input');
+  assert.match(
+    input,
+    /^\s*required:\s*true\s*$/m,
+    'the bump input is not required, so a dispatch could reach the workflow without naming one',
+  );
+  assert.match(
+    input,
+    /^\s*type:\s*choice\s*$/m,
+    'the bump input is not a choice, so a dispatch could name something that is not a bump word',
+  );
+  const options = (input.match(/^\s*-\s*(\S+)\s*$/gm) ?? []).map((line) => line.trim().slice(2));
+  assert.deepEqual(
+    options,
+    ['patch', 'minor', 'major'],
+    'the bump input does not offer exactly patch, minor and major, in that order',
+  );
+  assert.doesNotMatch(
+    input,
+    /^\s*default:/m,
+    'the bump input carries a default: which component a release moves would be decided here',
+  );
+});
+
+test('the release workflow creates the tag and never moves one', () => {
+  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+  assert.match(
+    workflow,
+    /git push origin "v\$\{RELEASE_VERSION\}"/,
+    'the tag push this test is about is not in the file it read',
+  );
+  assert.doesNotMatch(
+    workflow,
+    /git tag -f|git push --force/,
+    'the workflow moves a tag: a version whose tag is at another commit has to fail the run, since the version a dispatch computes is a new one',
+  );
+});
