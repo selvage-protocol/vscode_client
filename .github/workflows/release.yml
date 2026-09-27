@@ -107,6 +107,21 @@ jobs:
           node-version: "22.18.0"
           cache: npm
 
+      # A bump is a commit on `main` and nothing else. The push below is not forced, so a dispatch
+      # from a ref that is behind `main` is refused by the remote; this refuses the other direction,
+      # a ref that is ahead of it, where the push would land a tree nobody merged.
+      - name: refuse unless this run is bumping main
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            cat >&2 <<EOF
+          refusing: this dispatch is at ${GITHUB_REF}, and a bump is a commit on main. A dispatch
+          at another ref would build the bump on a tree nobody merged; dispatch this workflow at
+          main, the default branch.
+          EOF
+            exit 1
+          fi
+
       # The version the manifest carries has to be released before the next one is computed from
       # it. A run that pushed its bump and died before `publish` created the tag leaves exactly
       # that state, and a second click there must refuse: computing from an unreleased manifest
