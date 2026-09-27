@@ -106,12 +106,13 @@ export function hostBackSentence(name: string): string {
 }
 
 /**
- * The window as words, rounded to the whole second the countdown starts on, so the two readings of
- * one window cannot disagree: a server that advertises `29 999 ms` reads `30s` in the countdown and
- * `30 seconds` in the sentence.
+ * The window as words, read the way `disconnectingReading` starts the countdown on it, so the two
+ * readings of one window cannot disagree. Under a minute the countdown rounds up to the whole
+ * second, so a server that advertises `29 999 ms` reads `30s` there and `30 seconds` here. From a
+ * minute up it reads `graceWording`'s unit rounded down, so `119 999 ms` is `1 minute` in both.
  */
 function windowWords(graceMs: number): string {
-  return graceWording(Math.ceil(graceMs / 1000) * 1000);
+  return graceMs >= 60_000 ? graceWording(graceMs) : graceWording(Math.ceil(graceMs / 1000) * 1000);
 }
 
 // -- a follow that ended --------------------------------------------------------------------------

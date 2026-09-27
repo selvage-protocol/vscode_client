@@ -93,6 +93,17 @@ test('the host-away sentence says the window once, rounded to the second the cou
   assert.equal(disconnectingReading(29_999, 29_999), '30s');
 });
 
+test('from a minute up, the host-away sentence names the window the countdown starts on', () => {
+  for (const grace of [60_000, 119_999, 120_000, 3_599_999, 3_600_000]) {
+    assert.equal(
+      hostAwaySentence('Jo', grace),
+      `Jo left the session. The room disconnects in ${disconnectingReading(grace, grace)}.`,
+      `a ${grace} ms window reads one way in the sentence and another in the countdown`,
+    );
+  }
+  assert.equal(hostAwaySentence('Jo', 119_999), 'Jo left the session. The room disconnects in 1 minute.');
+});
+
 test('a dropped socket says it is reconnecting', () => {
   assert.equal(RECONNECTING_NOTE, 'Connection dropped. Reconnecting…');
 });
