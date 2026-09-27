@@ -822,7 +822,7 @@ test('a document that refuses every apply says so once per episode', async (t) =
 
 // --- the two endings a socket close can be, and what each takes -----------------
 
-test('a version-2 guest whose bounded retry gave up keeps its mirror', (t) => {
+test('a version-2 guest whose bounded retry gave up takes its mirror with it', (t) => {
   const window = viewerSession(t);
   // §9.1's retry is visible while it runs; the bar is the surface that shows it.
   window.fire({ type: 'reconnecting' });
@@ -834,8 +834,8 @@ test('a version-2 guest whose bounded retry gave up keeps its mirror', (t) => {
   window.fire({ type: 'disconnected' });
   assert.equal(
     window.mirrorRemoved(),
-    0,
-    "a version-2 guest's mirror is the only copy of its work and was removed",
+    1,
+    'the session is over, and the mirror is a cache of a room this window is no longer in',
   );
   assert.deepEqual(
     window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
