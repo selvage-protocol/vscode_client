@@ -523,6 +523,23 @@ export class Session {
    */
   private listedNow = new Set<string>();
   private listedBefore = new Set<string>();
+  /**
+   * The listing the mirror was last shaped from: what a path leaving the room is read against.
+   * Not `listedBefore`, which moves on every report, while a burst of reports is applied once.
+   */
+  private appliedListing: ReadonlySet<string> | undefined;
+  /**
+   * Paths this window had open when an applied listing dropped them. Another peer may still
+   * hold one, which keeps it in the room's open set, but a path that left the listing is offered
+   * to no one (`§13.3`), so it stays out of `offered()` until a listing names it again. Bounded
+   * by what this window had open.
+   */
+  private readonly dropped = new Set<string>();
+  /**
+   * The documents with unsaved changes a dropped path left open, by path: never shared again
+   * while open, and their mirror file stays until they close.
+   */
+  private readonly kept = new Map<string, vscode.TextDocument>();
   /** A listing whose application is still owed at the end of the current window. */
   private pendingListing: readonly string[] | undefined;
   /** The window one listing application per burst is spread over. */
@@ -796,12 +813,15 @@ export class Session {
   }
 
   /**
-   * What the room offers: its grant, unioned with the documents it holds open. The union is
-   * what a tree, a picker and a guest's file system all read, so a server that has no grant
-   * still shows everything the room knows.
+   * What the room offers: its grant, unioned with the documents it holds open, less those
+   * `dropped` names. The union is what a tree, a picker and a guest's file system all read, so
+   * a server that has no grant still shows everything the room knows.
    */
   offered(): string[] {
-    return grantUnion(this.granted, this.documents);
+    return grantUnion(
+      this.granted,
+      this.documents.filter((path) => !this.dropped.has(path)),
+    );
   }
 
   /**
@@ -1836,7 +1856,8 @@ export class Session {
 
   /** Whether a document of this window still holds `path`: what keeps a removed file. */
   private held(path: string): boolean {
-    return this.editor.text(path) !== undefined;
+    const kept = this.kept.get(path);
+    return this.editor.text(path) !== undefined || (kept !== undefined && !kept.isClosed);
   }
 
   /**
@@ -1883,6 +1904,9 @@ export class Session {
     }
     if (!this.listingWindowOpen && paths.length > 0) {
       this.listingWindowOpen = true;
+      // An empty listing waiting on this window is superseded: applied at its end, it would
+      // take back what this one just put in place.
+      this.pendingListing = undefined;
       this.applyListing(paths);
     } else {
       this.pendingListing = paths;
@@ -1902,8 +1926,9 @@ export class Session {
   }
 
   /**
-   * Fills the mirror's shape from a listing: new paths materialise empty, files that
-   * left it are removed unless a document of this window still holds them, and what
+   * Fills the mirror's shape from a listing: new paths materialise empty, a document of
+   * this window open on a path that left it is ended (`dropDocuments`), files that left it
+   * are removed unless a document of this window still holds them, and what
    * could not be mirrored is said out loud rather than left missing in silence. Runs
    * on every grant report and once for the listing the join already carried — state
    * syncs without an event, so the report alone would miss what was there at seating.
@@ -1911,6 +1936,15 @@ export class Session {
   private applyListing(paths: readonly string[]): void {
     if (this.mirror === undefined) {
       return;
+    }
+    const listed = new Set(paths);
+    const before = this.appliedListing;
+    this.appliedListing = listed;
+    for (const path of listed) {
+      this.dropped.delete(path);
+    }
+    if (before !== undefined) {
+      this.dropDocuments([...before].filter((path) => !listed.has(path)));
     }
     const applied = this.mirror.republish(paths, (path) => this.held(path));
     // Workspace configuration is left out on purpose, not for want of a disk, so it is said
@@ -1932,7 +1966,52 @@ export class Session {
     }
   }
 
+  /**
+   * Ends this window's share of each path among `gone` that it has open: the host deleted or
+   * moved the file, and a document of one would otherwise go on being typed into and offered
+   * with nothing behind it. The hold is released here, not through the tab closing, because
+   * the editor does not promise when, or whether, a closed tab closes its document. A document
+   * with unsaved changes keeps its tab, since closing it would ask to save or discard what the
+   * person typed; it stops being shared all the same.
+   */
+  private dropDocuments(gone: readonly string[]): void {
+    const closing = new Set<string>();
+    for (const path of gone) {
+      const document = this.editor.document(path);
+      if (document === undefined) {
+        continue;
+      }
+      this.dropped.add(path);
+      this.close(document);
+      if (document.isDirty) {
+        this.kept.set(path, document);
+        void vscode.window.showWarningMessage(
+          `Selvage: ${path} is no longer in the room; your unsaved copy is kept but no longer shared.`,
+        );
+      } else {
+        closing.add(document.uri.toString());
+        void vscode.window.showWarningMessage(
+          `Selvage: ${path} is no longer in the room, so it was closed.`,
+        );
+      }
+    }
+    const tabs = (vscode.window.tabGroups?.all ?? [])
+      .flatMap((group) => group.tabs)
+      .filter((tab) => {
+        const uri = (tab.input as { uri?: vscode.Uri } | undefined)?.uri;
+        return uri !== undefined && closing.has(uri.toString());
+      });
+    if (tabs.length > 0) {
+      void vscode.window.tabGroups?.close(tabs);
+    }
+  }
+
   private open(document: vscode.TextDocument): void {
+    // A copy kept when its path left the room was said to be no longer shared, and a listing
+    // naming the path again does not make its unsaved text the room's.
+    if ([...this.kept.values()].includes(document)) {
+      return;
+    }
     const path = this.editor.register(document);
     if (path === undefined) {
       return;
@@ -1943,7 +2022,8 @@ export class Session {
     // unlisted path here is always a real file worth naming.)
     if (this.role() !== 'host' && this.mirror !== undefined && !this.offered().includes(path)) {
       this.editor.forget(document.uri);
-      if (this.noteUnlisted(this.unlistedOpened, path)) {
+      // A path the room dropped was said once, as it went.
+      if (!this.dropped.has(path) && this.noteUnlisted(this.unlistedOpened, path)) {
         void vscode.window.showWarningMessage(
           `Selvage: ${path} is not part of the room, so it is not shared. Save it outside the room's folder to keep it.`,
         );
@@ -1979,6 +2059,11 @@ export class Session {
   }
 
   private close(document: vscode.TextDocument): void {
+    for (const [kept, open] of this.kept) {
+      if (open === document) {
+        this.kept.delete(kept);
+      }
+    }
     const path = this.editor.forget(document.uri);
     if (path !== undefined) {
       this.refusedPutBacks.delete(path);

@@ -133,6 +133,16 @@ reloads the window onto that directory, replacing whatever tree was there, and l
 again. `Selvage: Download a file from the room` is how content that nobody has opened yet arrives
 in it, and how a whole project is published to the other side.
 
+A file the host deletes or moves out of the folder leaves the room for a guest too. A guest
+document open on it closes, its hold is released and its file goes from the directory, with
+`<path> is no longer in the room, so it was closed`. A document with unsaved changes keeps its
+tab and its file instead of asking to save or discard them, but it stops being shared:
+`<path> is no longer in the room; your unsaved copy is kept but no longer shared`. Either way the
+path is not offered again until a listing names it, even while another participant still has it
+open. A listing that names nothing, which a dropped connection can produce for a moment, closes
+nothing: it waits one listing window and yields to the listing that follows. A host keeps its own
+tab.
+
 In the editor a peer is a coloured caret, a selection fill, a tick in the overview ruler, and
 their initials on a badge in the gutter and on the Explorer row of the file they are in. A peer's
 colour comes from their id, so both clients paint the same person the same way, and
@@ -193,9 +203,7 @@ one event loop. There is no worker, no native module and no second process.
 - A document the room holds without listing it has no file here, so it cannot be opened the way
   the Neovim client opens it. A save to a path the room does not list is written, since the editor
   cannot refuse a save, and reported afterwards; the Neovim client refuses it upfront.
-- Leaving deletes the mirror from the window. A document the room holds stays open and readable
-  when the listing stops naming it, because a hold is released with `doc.close` and not by the
-  listing.
+- Leaving deletes the mirror from the window.
 - The resume a marker asks for waits for a trusted window, except in the room's own folder. A
   folder can start this extension with nothing but a `.selvage-mirror.json` in it, and VS Code
   does not condition a `workspaceContains` activation on workspace trust, which is the only way

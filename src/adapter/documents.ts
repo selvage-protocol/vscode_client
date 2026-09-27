@@ -163,6 +163,11 @@ export class WorkspaceEditor implements EditorHost {
     return this.paths.get(document.uri.toString());
   }
 
+  /** The document shared under `path`, if one is. */
+  document(path: string): vscode.TextDocument | undefined {
+    return this.documents.get(path);
+  }
+
   /** Stops sharing a document. Returns its room path, or `undefined` if it was never shared. */
   forget(uri: vscode.Uri): string | undefined {
     const path = this.paths.get(uri.toString());

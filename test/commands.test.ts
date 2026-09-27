@@ -1438,61 +1438,190 @@ test('a no-arg open with one document reveals it instead of drawing a one-row pi
   assert.equal(bundle.stub.registered.quickPicks.length, 0, 'one row was drawn for one document');
 });
 
-test('a document open when its path leaves the listing keeps its file and its hold', async (t) => {
-  const { host, invite, roomId } = await room(t, ['doomed.txt']);
-  host.insert('doomed.txt', 0, 'held text\n');
-  await host.grant(['doomed.txt', 'gone.txt']);
+/** The interval one listing window spans, from `extension.ts`. */
+const LISTING_WINDOW_MS = 250;
+
+/** The sentence a document said when its path left the room and it was closed. */
+function closedNotice(path: string): string {
+  return `Selvage: ${path} is no longer in the room, so it was closed.`;
+}
+
+/** The sentence a document said when its path left the room with unsaved changes. */
+function keptNotice(path: string): string {
+  return `Selvage: ${path} is no longer in the room; your unsaved copy is kept but no longer shared.`;
+}
+
+/** Every warning that says a path left the room, whichever way its document went. */
+function leftRoomNotices(bundle: LoadedExtension): string[] {
+  return bundle.stub.registered.warnings.filter((message) =>
+    message.includes('is no longer in the room'),
+  );
+}
+
+/**
+ * A guest seated on a room whose host holds and lists `paths`, with `open` opened in the guest
+ * the way the editor reports a document: a tab on it, the document in the window, and the hold
+ * the open takes on the room. `dirty` is the document's unsaved state.
+ */
+async function guestHolding(
+  t: TestContext,
+  paths: string[],
+  open: string[],
+  dirty = false,
+): Promise<{
+  host: LiveSession;
+  bundle: LoadedExtension;
+  storage: string;
+  roomId: string;
+  tabs: Map<string, unknown>;
+}> {
+  const { host, invite, roomId } = await room(t, paths);
   const { bundle, storage } = activated(t);
-  // The room's text is applied to the holder, as the editor's own model would apply it.
-  // Set after the landing: the reload clears what the stub recorded, and what fills
-  // the holder is the open below, not the landing.
-  const holder = { text: '' };
-  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob'});
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
   await landStashedJoin(bundle, storage, roomId, 'Bob');
-  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
-    const changes = (edit as { edits: Array<{ text: string }> }).edits;
-    for (const change of changes) {
-      holder.text += change.text;
-    }
-    return true;
-  };
-  await waitForMirrorFiles(storage, roomId, ['doomed.txt', 'gone.txt']);
-  // The guest opens the granted path the way the editor reports one: the hold the open
-  // takes is what keeps the file past the listing, and the room's text arrives through it.
+  await waitForMirrorFiles(storage, roomId, paths);
+  const tabs = new Map<string, unknown>();
+  for (const path of open) {
+    const document = { ...mirrorDocument(bundle, storage, roomId, path, { text: '' }), isDirty: dirty };
+    const tab = { input: { uri: bundle.stub.Uri.parse(mirrorFileUri(storage, roomId, path)) } };
+    bundle.stub.registered.textDocuments.push(document);
+    bundle.stub.window.tabGroups.all.push({ tabs: [tab] });
+    bundle.stub.fire('openTextDocument', document);
+    tabs.set(path, tab);
+  }
+  await waitFor('the guest holds to reach the room', () =>
+    open.every((path) => host.peerDocuments().includes(path)) ? true : false,
+  );
+  return { host, bundle, storage, roomId, tabs };
+}
+
+test('a directory the host deletes closes, releases and stops offering every document in it', async (t) => {
+  const { host, bundle, storage, roomId, tabs } = await guestHolding(
+    t,
+    ['notes/a.md', 'notes/b.md', 'keep.md'],
+    ['notes/a.md', 'notes/b.md', 'keep.md'],
+  );
+
+  // The host deletes `notes/`: one listing, without either path under it. The host itself
+  // still holds both, so the room's open set keeps them.
+  await host.grant(['keep.md']);
+  await waitFor('the guest holds on the deleted files to be released', () =>
+    host.peerDocuments().join() === 'keep.md' ? true : false,
+  );
+  await waitForMirrorGone(storage, roomId, ['notes/a.md', 'notes/b.md']);
+  const closed = bundle.stub.registered.closedTabs.flat();
+  assert.ok(closed.includes(tabs.get('notes/a.md')), 'the tab on notes/a.md stayed open');
+  assert.ok(closed.includes(tabs.get('notes/b.md')), 'the tab on notes/b.md stayed open');
+  assert.ok(!closed.includes(tabs.get('keep.md')), 'a document still in the room was closed');
+  assert.deepEqual(
+    leftRoomNotices(bundle).sort(),
+    [closedNotice('notes/a.md'), closedNotice('notes/b.md')],
+  );
+
+  // The room still holds both (the host has them open), and neither is offered: opening one
+  // by name is the refusal a path that left the listing gets.
+  assert.ok(host.documents().includes('notes/a.md'), 'the host no longer holds the path');
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'notes/a.md' });
+  const refusal = await waitFor('the dropped path to be refused', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('notes/a.md')) ?? false,
+  );
+  assert.match(refusal, /could not open notes\/a\.md from the room: the host no longer shares/);
+  assert.equal(leftRoomNotices(bundle).length, 2, 'a kicked path was said more than once');
+  // The closed documents are still in the window, as an editor keeps them a while after their
+  // tabs close. The next listing re-reads every document in the window, and these are not
+  // refused out loud a second time.
+  await host.grant(['keep.md', 'marker.md']);
+  await waitForMirrorFiles(storage, roomId, ['marker.md']);
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('not part of the room')),
+    false,
+    'a kicked path was refused as unlisted after it was said',
+  );
+});
+
+test('a document with unsaved changes stays open when its path leaves the room, unshared', async (t) => {
+  const { host, bundle, storage, roomId, tabs } = await guestHolding(
+    t,
+    ['doomed.txt', 'other.txt'],
+    ['doomed.txt'],
+    true,
+  );
+
+  await host.grant(['other.txt']);
+  await waitFor('the guest hold on the deleted file to be released', () =>
+    host.peerDocuments().includes('doomed.txt') ? false : true,
+  );
+  assert.deepEqual(leftRoomNotices(bundle), [keptNotice('doomed.txt')]);
+  assert.ok(
+    !bundle.stub.registered.closedTabs.flat().includes(tabs.get('doomed.txt')),
+    'the tab with unsaved changes was closed',
+  );
+  assert.ok(
+    existsSync(join(mirrorWindowDir(storage, roomId), 'doomed.txt')),
+    'the file under the unsaved copy was removed with the listing',
+  );
+
+  // A later listing names the path again. The kept copy is still open and still not the
+  // room's: it is not shared by the listing coming back, and its file is still on disk.
+  await host.grant(['other.txt', 'doomed.txt', 'marker.md']);
+  await waitForMirrorFiles(storage, roomId, ['marker.md']);
+  // An open the room does see, after the relisting: once its hold has arrived, a hold the
+  // relisting took on the kept copy would have arrived before it.
+  bundle.stub.fire('openTextDocument', mirrorDocument(bundle, storage, roomId, 'marker.md', { text: '' }));
+  await waitFor('the hold on the later open to reach the room', () =>
+    host.peerDocuments().includes('marker.md') ? true : false,
+  );
+  assert.equal(host.peerDocuments().includes('doomed.txt'), false, 'the kept copy was shared again');
+  assert.deepEqual(leftRoomNotices(bundle), [keptNotice('doomed.txt')]);
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('not part of the room')),
+    false,
+    'the kept copy was refused out loud again',
+  );
+});
+
+test('a listing that names nothing for a moment closes no document', async (t) => {
+  const { host, bundle, storage, roomId, tabs } = await guestHolding(t, ['doomed.txt'], ['doomed.txt']);
+  // Waited out so the burst below opens a window of its own rather than joining one: a window
+  // is a timer, and the leading empty listing is the case the window exists for.
+  await new Promise((resolve) => setTimeout(resolve, LISTING_WINDOW_MS * 2));
+
+  // The re-seat's burst: the empty listing the socket's death emits, then the room's own.
+  // Awaited one after the other, so the empty one is published rather than replaced before
+  // its state is sealed; the second follows well inside the window the first one opened.
+  await host.grant([]);
+  await host.grant(['doomed.txt', 'marker.md']);
+  await waitForMirrorFiles(storage, roomId, ['marker.md']);
+  // The window the empty listing opened ends on a timer: waited out, so an empty listing still
+  // pending at its end would have been applied by now.
+  await new Promise((resolve) => setTimeout(resolve, LISTING_WINDOW_MS * 2));
+  assert.deepEqual(leftRoomNotices(bundle), [], 'a transient empty listing kicked the document');
+  assert.ok(
+    !bundle.stub.registered.closedTabs.flat().includes(tabs.get('doomed.txt')),
+    'a transient empty listing closed the tab',
+  );
+  assert.ok(host.peerDocuments().includes('doomed.txt'), 'a transient empty listing released the hold');
+});
+
+test('a path the room drops is offered again once a listing names it', async (t) => {
+  const { host, bundle, storage, roomId } = await guestHolding(t, ['doomed.txt', 'other.txt'], ['doomed.txt']);
+  await host.grant(['other.txt']);
+  await waitFor('the kick to be said', () => (leftRoomNotices(bundle).length > 0 ? true : false));
+
+  // The host puts the file back: the next listing names it, and opening it is an open again.
+  await host.grant(['other.txt', 'doomed.txt']);
+  await waitForMirrorFiles(storage, roomId, ['doomed.txt']);
+  bundle.stub.registered.opened.length = 0;
   await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'doomed.txt' });
   const uri = mirrorFileUri(storage, roomId, 'doomed.txt');
-  await waitFor('the granted path to open', () =>
+  await waitFor('the path to open again', () =>
     bundle.stub.registered.opened.includes(uri) ? true : false,
   );
-  bundle.stub.fire('openTextDocument', {
-    uri: bundle.stub.Uri.parse(uri),
-    eol: 1,
-    isDirty: false,
-    getText: () => holder.text,
-    positionAt: (offset: number) => offset,
-    offsetAt: (position: number) => position,
-    save: () => Promise.resolve(true),
-  });
-  await waitFor('the hold to reach the room', () =>
-    host.documents().includes('doomed.txt') ? true : false,
+  bundle.stub.fire('openTextDocument', mirrorDocument(bundle, storage, roomId, 'doomed.txt', { text: '' }));
+  await waitFor('the hold to be taken again', () =>
+    host.peerDocuments().includes('doomed.txt') ? true : false,
   );
-  await waitFor('the room text to arrive', () => (holder.text === 'held text\n' ? true : false));
-
-  // The host takes both paths out of the listing while the guest holds one open: the held
-  // file stays, with its text and its hold, and the unheld one goes with the republish.
-  await host.grant([]);
-  await waitForMirrorGone(storage, roomId, ['gone.txt']);
-  assert.equal(
-    existsSync(join(mirrorWindowDir(storage, roomId), 'doomed.txt')),
-    true,
-    'a held file was removed with the listing',
-  );
-  assert.equal(holder.text, 'held text\n', 'the held document lost its text');
-  assert.equal(
-    host.documents().includes('doomed.txt'),
-    true,
-    'the hold on the path was released with the listing',
-  );
+  assert.deepEqual(leftRoomNotices(bundle), [closedNotice('doomed.txt')]);
 });
 
 test('the status tooltip names the session but never the room id or the invite token', async (t) => {
