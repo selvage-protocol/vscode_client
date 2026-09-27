@@ -2430,12 +2430,12 @@ export class Session {
         // they did in it. A host has no resume (no host store), so its drop ends the session and
         // says that rather than a retry that will not happen.
         if (this.mirror !== undefined) {
-          void vscode.window.showWarningMessage(
+          void vscode.window.showErrorMessage(
             'Selvage: the connection ended and the session is over; it could not be re-established.',
           );
         } else {
-          void vscode.window.showWarningMessage(
-            'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
+          void vscode.window.showErrorMessage(
+            'Selvage: the connection ended and the session is over; this client cannot resume a hosting session, so it will not reconnect.',
           );
         }
         this.dispose();

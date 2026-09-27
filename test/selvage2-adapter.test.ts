@@ -837,21 +837,23 @@ test('a version-2 guest whose bounded retry gave up takes its mirror with it', (
     1,
     'the session is over, and the mirror is a cache of a room this window is no longer in',
   );
+  // The two give-up sentences are the ones Neovim notifies at `ERROR`, so they are errors here
+  // rather than warnings, and a warning would leave them out of this list.
   assert.deepEqual(
-    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    window.bundle.stub.registered.errors.filter((message) => message.includes('the session is over')),
     ['Selvage: the connection ended and the session is over; it could not be re-established.'],
   );
 });
 
-test('a version-2 session with no mirror says its wire cannot resume a hosting session', (t) => {
-  // A `selvage/2` host holds no mirror, and this wire has no host resume, so its drop is the end
-  // of the session and is said as that rather than as a retry that never happened.
+test('a version-2 session with no mirror says it cannot resume a hosting session', (t) => {
+  // A `selvage/2` host holds no mirror, and this client has no host resume, so its drop is the
+  // end of the session and is said as that rather than as a retry that never happened.
   const window = viewerSession(t, undefined, undefined, { mirror: false });
   window.fire({ type: 'disconnected' });
   assert.deepEqual(
-    window.bundle.stub.registered.warnings.filter((message) => message.includes('the session is over')),
+    window.bundle.stub.registered.errors.filter((message) => message.includes('the session is over')),
     [
-      'Selvage: the connection ended and the session is over; this wire cannot resume a hosting session yet, so it will not reconnect.',
+      'Selvage: the connection ended and the session is over; this client cannot resume a hosting session, so it will not reconnect.',
     ],
   );
 });
