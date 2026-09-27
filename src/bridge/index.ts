@@ -61,3 +61,31 @@ export {
 } from './grant.ts';
 export { PeerEngine } from './peer-engine.ts';
 export type { PeerEngineOptions } from './peer-engine.ts';
+export { SEAT_LIMIT, SEAT_PALETTE, seatColours } from './seats.ts';
+export type { Seat } from './seats.ts';
+export { rosterLabel } from './names.ts';
+export type { NamedPeer } from './names.ts';
+export {
+  COPIED_LABEL,
+  COPIED_STAND_MS,
+  COPY_INVITE_LABEL,
+  HOST_LEAVE_QUESTION,
+  LEAVE_ASKING_LABEL,
+  LEAVE_CANCEL_LABEL,
+  LEAVE_HOST_LABEL,
+  RECONNECTING_NOTE,
+  SESSION_ENDED_MESSAGE,
+  SHARED_SESSION_IDENTITY,
+  disconnectingReading,
+  followEndedByFileGone,
+  followEndedByLeaving,
+  followEndedByMoving,
+  followEndedByTyping,
+  graceWording,
+  guestIdentity,
+  hostAwaySentence,
+  hostBackSentence,
+  hostLeftSentence,
+  hostingIdentity,
+  roomGoneSentence,
+} from './words.ts';
