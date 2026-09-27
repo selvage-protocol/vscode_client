@@ -192,6 +192,41 @@ test('a word that is not a bump is refused, with the tree unchanged', () => {
   }
 });
 
+test('a component too large to increment is refused, with the tree unchanged', () => {
+  const copy = freshCopy('overflow');
+  try {
+    // 19 digits or more wraps the shell's signed 64-bit arithmetic; the largest component that
+    // still increments is 18 nines.
+    const tooLarge: Array<{ from: string; word: string }> = [
+      { from: '1.2.9223372036854775807', word: 'patch' },
+      { from: '1.2.9999999999999999999', word: 'patch' },
+      { from: '1.9999999999999999999.2', word: 'minor' },
+      { from: '9223372036854775807.0.0', word: 'major' },
+    ];
+    for (const { from, word } of tooLarge) {
+      seedManifest(copy, from);
+      const before = tree(copy);
+      for (const args of [[word], [word, '--dry-run']]) {
+        const run = runIn(copy, args);
+        assert.notEqual(run.status, 0, `${from} + ${args.join(' ')} was accepted:\n${run.output}`);
+        assert.notEqual(run.stderr, '', `${from} + ${args.join(' ')} was refused without saying why`);
+        assert.deepEqual(changed(before, tree(copy)), [], `${from} + ${args.join(' ')} moved the tree`);
+      }
+    }
+
+    seedManifest(copy, '1.2.999999999999999999');
+    const run = runIn(copy, ['patch']);
+    assert.equal(run.status, 0, `the boundary bump failed:\n${run.output}`);
+    assert.equal(
+      lastLine(run.stdout),
+      '1.2.1000000000000000000',
+      `the boundary did not land where expected:\n${run.output}`,
+    );
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
 /**
  * Each bump word, applied to the version the manifest carries, including the carries a digit
  * boundary makes: `0.5.9` + `patch` is `0.5.10`, and `9.99.99` + `major` is `10.0.0`.

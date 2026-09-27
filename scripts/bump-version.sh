@@ -81,17 +81,31 @@ fi
 major=${BASH_REMATCH[1]}
 minor=${BASH_REMATCH[2]}
 patch=${BASH_REMATCH[3]}
+
+# The shell's arithmetic is signed 64-bit, so a component of 19 digits or more can wrap when it is
+# incremented — `9223372036854775807 + 1` is negative — and the version printed and written would
+# not be the one the word names. Only the component the word moves can overflow; the ones below it
+# are reset rather than incremented.
+too_large() {
+  printf 'refusing: %s carries a component too large to bump\n' "$current" >&2
+  exit 1
+}
 case "$word" in
   major)
+    [ "${#major}" -le 18 ] || too_large
     major=$((major + 1))
     minor=0
     patch=0
     ;;
   minor)
+    [ "${#minor}" -le 18 ] || too_large
     minor=$((minor + 1))
     patch=0
     ;;
-  patch) patch=$((patch + 1)) ;;
+  patch)
+    [ "${#patch}" -le 18 ] || too_large
+    patch=$((patch + 1))
+    ;;
 esac
 new="$major.$minor.$patch"
 
