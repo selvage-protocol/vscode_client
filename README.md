@@ -151,8 +151,9 @@ roster is a `Selvage: Participants` view beside the Explorer: one row per peer, 
 follow on the row, and clicking a peer lands where they are.
 
 Following keeps landing where a peer is as they move, until something ends it; going to someone
-lands there once. The status bar carries the session and the room, copies the invite when it is
-selected, and holds the follow with the control that stops it. A document the room changes is
+lands there once. The status bar carries the session and the room, opens the people list when it
+is selected, has its own control that copies the invite, and holds the follow with the control
+that stops it. A document the room changes is
 saved once the room settles, because the host's working copy is the room's truth.
 
 ## Commands
@@ -173,8 +174,8 @@ completing command there.
 | `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
 | `Selvage: Download a file from the room` | Hold one listed path, or a directory of them, in the room so every peer receives it, filling the mirror. Refused while hosting: your files are already on your disk. |
 | `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A session the server gave no invite to says so, and a clipboard the editor refuses says why. A host copies the page its own server serves, carrying the room and its token, so one address decides both the page a guest opens and the socket they join on. A guest hands on the link it joined by, as it stood; the invite is the permission, so the token it joined with is the guest's to pass on. |
-| `Selvage: Leave the session` | Leave the session. Leaving as the host ends the room for everyone after the server's grace period. |
-| `Selvage: List the room's participants` | List everyone else in the room, with each one's colour, name, role and the document they are in. Drawn as a quick pick with a coloured dot per row, because `QuickPickItem.iconPath` is the only field an editor renders a colour from. |
+| `Selvage: Leave the session` | Leave the session. Leaving as the host asks first, then ends the room for everyone at once. |
+| `Selvage: List the room's participants` | List everyone in the room, with each one's colour, name, role and the document they are in. A row opens that person's menu: Go to and Follow or Stop following for someone else, Rename for yourself. Drawn as a quick pick with a coloured face per row, because `QuickPickItem.iconPath` is the only field an editor renders a colour from. |
 | `Selvage: Go to a participant` | Land where a participant is: their document, their caret. A document this window does not hold opens through the room first. |
 | `Selvage: Follow a participant` | Keep landing where a participant is as they move, until something stops it. The status bar shows who is followed in their caret colour and stops the follow when selected; a local edit of a shared document ends it, and a remote one does not. |
 | `Selvage: Stop following` | Stop following. Says so when no one is followed. |
