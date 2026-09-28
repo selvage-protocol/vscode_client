@@ -1373,8 +1373,9 @@ export class Session {
   }
 
   /**
-   * Everyone in the room, seated: the host, this window, then the others. Read at the moment it
-   * is asked for, so a row is as fresh as the presence behind it.
+   * Everyone in the room, seated: this window, then the others in the room's order, each in the
+   * colour of their seat. Read at the moment it is asked for, so a row is as fresh as the presence
+   * behind it.
    */
   people(): Person[] {
     const paths = new Map<string, string>();
@@ -1923,7 +1924,7 @@ export class Session {
       item.command = 'selvage.stopFollowing';
       this.followStatus = item;
     }
-    this.followStatus.text = `$(person) Selvage: following ${this.followingName}`;
+    this.followStatus.text = `$(eye) Following ${this.followingName}`;
     // The foreground is the peer's marker colour: the mapping the caret wears, so the
     // indicator and the caret cannot disagree. The background is the editor's own warning
     // colour, which paints the whole item and lifts it out of the strip of session-state
@@ -3287,9 +3288,9 @@ function removeRoomFolder(mirror: Mirror): void {
 /**
  * The window's own triage at activation: a reload onto a mirror, or a crash that left
  * one. A marker with a pending invite finishes the join it was stashed for; a marker
- * with no invite and no session is a cache with no room — the directory goes, the folder
- * goes with it, and one sentence says what went. A live sibling's directory, and anything
- * without a marker of ours, is untouched.
+ * with no invite and no session is a cache with no room, so the directory and its folder go
+ * without a word. A live sibling's directory, and anything without a marker of ours, is
+ * untouched.
  */
 async function triageMirrors(
   storage: vscode.Uri,
@@ -3334,12 +3335,10 @@ async function triageMirrors(
     if (processAlive(readMarker(mirror.root)?.pid ?? 0)) {
       continue;
     }
-    // Stale: restored onto it with no session, or owned by nobody anywhere.
+    // Stale: restored onto it with no session, or owned by nobody anywhere. Clearing it says
+    // nothing, as the Neovim client's prune does: the room is gone, and nothing asked for it.
     removeRoomFolder(mirror);
     mirror.remove();
-    void vscode.window.showWarningMessage(
-      `Selvage: cleaned up the files left by the last session.`,
-    );
   }
 }
 

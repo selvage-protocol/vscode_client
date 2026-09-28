@@ -337,6 +337,7 @@ interface SeatRow {
   tooltip: string;
   contextValue: string;
   colour: string;
+  host: boolean;
 }
 
 /** The roster's pure halves, read off the built bundle. */
@@ -356,7 +357,10 @@ function roster(): {
   };
 }
 
-test('the roster lists the host, then you, then the others, each in their seat colour', () => {
+test('the roster lists you, then the others in the room\u2019s order, each in their seat colour', () => {
+  // The web page draws its bar this way (`roomPeople`, `visibleFaces`), and seats the colours
+  // apart from it: the host first, then you, then the others. So the host is drawn last here and
+  // still wears the first colour and the crown.
   const { seatPeople, personRows } = roster();
   const bob: SeatMember = { peerId: 'p-bob', displayName: 'Bob', role: 'guest' };
   const others: SeatMember[] = [
@@ -364,18 +368,34 @@ test('the roster lists the host, then you, then the others, each in their seat c
     { peerId: 'p-dee', displayName: 'Dee', role: 'guest' },
     { peerId: 'p-ada', displayName: 'Ada', role: 'host', path: 'src/a.rs' },
   ];
-  const rows = personRows(seatPeople(bob, others), 'p-cy');
+  const people = seatPeople(bob, others) as Array<{ peerId: string; colourId: string }>;
+  const rows = personRows(people, 'p-cy');
   assert.deepEqual(
     rows.map((row) => [row.label, row.description, row.contextValue, row.colour]),
     [
-      ['Ada', 'Host · in src/a.rs', 'selvageParticipant', SEAT_PALETTE[0]],
       ['Bob', '(you)', 'selvageParticipantSelf', SEAT_PALETTE[1]],
       ['Cy', 'following · in src/c.rs', 'selvageParticipantFollowing', SEAT_PALETTE[2]],
       ['Dee', 'not in a file yet', 'selvageParticipantAway', SEAT_PALETTE[3]],
+      ['Ada', 'Host · in src/a.rs', 'selvageParticipant', SEAT_PALETTE[0]],
     ],
   );
-  assert.equal(rows[1]?.tooltip, 'Bob (you)');
-  assert.equal(rows[2]?.tooltip, 'Cy · in src/c.rs · Following Cy');
+  // A file badge takes the seat's theme colour, so its id follows the seat and not the row.
+  assert.deepEqual(
+    people.map((person) => [person.peerId, person.colourId]),
+    [
+      ['p-bob', 'selvage.seat.2'],
+      ['p-cy', 'selvage.seat.3'],
+      ['p-dee', 'selvage.seat.4'],
+      ['p-ada', 'selvage.seat.1'],
+    ],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.host),
+    [false, false, false, true],
+    'the crown is not on the host',
+  );
+  assert.equal(rows[0]?.tooltip, 'Bob (you)');
+  assert.equal(rows[1]?.tooltip, 'Cy · in src/c.rs · Following Cy');
   for (const row of rows) {
     assert.ok(!row.label.includes('$('), `a row label carries an icon's source text: ${row.label}`);
   }
@@ -418,8 +438,8 @@ test('the view is empty outside a session, where the welcome stands', async (t) 
   assert.deepEqual(
     listed.map((node) => [node.label, node.description]),
     [
-      ['Ada', 'Host · not in a file yet'],
       ['Bob', '(you)'],
+      ['Ada', 'Host · not in a file yet'],
     ],
   );
 });
@@ -635,7 +655,7 @@ test('a rename updates the row in place, and a leave removes it without rebuildi
   await cy.disconnect();
   await waitFor('Cy to leave the view', () => {
     const current = viewNodes(seat_.bundle);
-    return current.map((node) => node.label).join() === 'Ada,Bob' ? true : false;
+    return current.map((node) => node.label).join() === 'Bob,Ada' ? true : false;
   });
   const remaining = viewNodes(seat_.bundle);
   assert.equal(remaining.find((node) => node.label === 'Ada'), adaBefore);

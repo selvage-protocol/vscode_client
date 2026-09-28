@@ -442,7 +442,7 @@ test('follow tracks the peer across caret moves and a document change', async (t
   seat_.bundle.stub.window.activeTextEditor = editorB;
   await waitFor('the follow to land in the peer document', () => caretOf(editorB) === 3);
   const item = followItem(seat_);
-  assert.equal(item?.text, '$(person) Selvage: following Ada');
+  assert.equal(item?.text, '$(eye) Following Ada');
 });
 
 test('stopping works by command and by the indicator, and with nothing to stop', async (t) => {
@@ -456,15 +456,22 @@ test('stopping works by command and by the indicator, and with nothing to stop',
   );
   const item = followItem(seat_);
   assert.ok(item !== undefined, 'no follow indicator while following');
-  assert.equal(item.text, '$(person) Selvage: following Ada');
+  assert.equal(item.text, '$(eye) Following Ada');
   // The indicator doubles as the stop control: selecting it runs the stop command.
   assert.equal(item.command, 'selvage.stopFollowing');
 
-  // By the indicator: what a click runs.
+  // By the indicator: what a click runs. It stops the follow and says nothing at any level.
+  const said = (): string[] => [
+    ...seat_.bundle.stub.registered.information,
+    ...seat_.bundle.stub.registered.warnings,
+    ...seat_.bundle.stub.registered.errors,
+  ].map(String);
+  const before = said();
   await seat_.bundle.stub.commands.executeCommand(item.command as string);
   await waitFor('the follow to stop', () =>
     followItem(seat_) === undefined ? true : false,
   );
+  assert.deepEqual(said(), before, 'stopping by the indicator said something');
 
   // By the command, and then with nothing left to stop.
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
@@ -787,14 +794,14 @@ test('the follow ends when the peer leaves, and the name re-labels while they st
     retryFollow();
     return false;
   });
-  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Cara');
+  assert.equal(followItem(seat_)?.text, '$(eye) Following Cara');
 
   // A rename re-labels the indicator rather than ending anything: the target is a peer id,
   // so only the name it is shown under changes. The leave sentence below then says the new
   // name, which proves the re-label stuck.
   await cara.rename('Cora');
   await waitFor('the indicator to re-label while the follow holds', () =>
-    followItem(seat_)?.text === '$(person) Selvage: following Cora' ? true : false,
+    followItem(seat_)?.text === '$(eye) Following Cora' ? true : false,
   );
 
   await cara.disconnect();
@@ -1237,7 +1244,7 @@ test('following a peer in no document pends until they enter one', async (t) => 
   await waitFor('the pending follow to begin', () =>
     followItem(seat_) !== undefined ? true : false,
   );
-  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Nora');
+  assert.equal(followItem(seat_)?.text, '$(eye) Following Nora');
 });
 
 test('a follow does not reopen a path the host deleted, and lands when they move on', async (t) => {
@@ -1356,7 +1363,7 @@ test('with one other person, go to and follow act without a picker', async (t) =
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
   assert.deepEqual(seat_.bundle.stub.registered.quickPicks, [], 'follow asked to choose between one person');
   await waitFor('the follow to begin', () => (followItem(seat_) !== undefined ? true : false));
-  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Ada');
+  assert.equal(followItem(seat_)?.text, '$(eye) Following Ada');
 });
 
 /** A live picker as the stub recorded it, answered by hand. */

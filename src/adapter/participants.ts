@@ -2,14 +2,15 @@
  * The Participants view: everyone in the room as the web's faces list them, and the peer file
  * badges.
  *
- * The people are seated the way the web page seats its bar: the host first, then this window,
- * then the others in the order the room lists them. The seat decides the colour (`seatColours`),
- * so a row, a caret, a gutter badge and a file badge all name the same person in one colour.
+ * The people are listed the way the web page draws its bar: this window first, then the others in
+ * the order the room lists them. The seat decides the colour (`seatColours`: the host first, then
+ * this window, then the others), so a row, a caret, a gutter badge and a file badge all name the
+ * same person in one colour.
  */
 
 import * as vscode from 'vscode';
 
-import { badgeFiles, initials, peerColour, peerColourId, peerName, rosterLabel, seatColours } from '../bridge/index.ts';
+import { SEAT_PALETTE, badgeFiles, initials, peerColour, peerColourId, peerName, rosterLabel, seatColours } from '../bridge/index.ts';
 import type { FileBadge, FilePresence } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 
@@ -41,28 +42,34 @@ export interface Person extends RoomMember {
 }
 
 /**
- * Seats the room: the host first, then this window, then the others in the room's order. Past
- * the seats, a person falls back to the colour their id hashes to.
+ * The room as the web page draws it: this window first, then the others in the room's order.
+ *
+ * The seats are counted differently: the host takes the first colour, then this window, then the
+ * others (`seatColours`), so the host is Mauve wherever it is drawn. Past the seats, a person falls
+ * back to the colour their id hashes to.
  */
 export function seatPeople(self: RoomMember, others: readonly RoomMember[]): Person[] {
   const everyone = [self, ...others.filter((other) => other.peerId !== self.peerId)];
-  const host = everyone.find((member) => member.role === 'host');
-  const ordered = host === undefined ? everyone : [host, ...everyone.filter((member) => member !== host)];
-  const colours = seatColours(ordered);
-  const named = ordered.map((member) => ({
+  const colours = seatColours(everyone);
+  const named = everyone.map((member) => ({
     peerId: member.peerId,
     displayName: peerName(member.displayName, member.peerId),
   }));
-  return ordered.map((member, index) => {
+  return everyone.map((member, index) => {
     const seat = colours.get(member.peerId);
     return {
       ...member,
       self: member.peerId === self.peerId,
       label: rosterLabel(named[index] ?? { peerId: member.peerId, displayName: member.peerId }, named),
       colour: seat ?? peerColour(member.peerId),
-      colourId: seat === undefined ? peerColourId(member.peerId) : `selvage.seat.${index + 1}`,
+      colourId: seat === undefined ? peerColourId(member.peerId) : seatColourId(seat),
     };
   });
+}
+
+/** The theme colour id a seat's colour is contributed under: `selvage.seat.<n>`, counted from 1. */
+function seatColourId(colour: string): string {
+  return `selvage.seat.${(SEAT_PALETTE as readonly string[]).indexOf(colour) + 1}`;
 }
 
 /** One row of the view and of the people picker. */

@@ -1301,25 +1301,24 @@ test('the peers command lists the room in the colours the carets are drawn in', 
   const row = await waitFor('the list to name the document the host is in', () => {
     void bundle.stub.commands.executeCommand('selvage.peers');
     const items = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[] | undefined;
-    const first = items?.[0];
-    return first?.description === 'Host · in workspace/README.md' ? first : false;
+    const host = items?.find((item) => item.label === 'Ada');
+    return host?.description === 'Host · in workspace/README.md' ? host : false;
   });
-  assert.equal(row.label, 'Ada');
   const rows = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[];
   assert.deepEqual(
     rows.map((entry) => [entry.label, entry.description]),
     [
-      ['Ada', 'Host · in workspace/README.md'],
       ['Bob', '(you)'],
+      ['Ada', 'Host · in workspace/README.md'],
     ],
-    'the list is not host first, then you',
+    'the list is not you first, then the room, as the web page draws it',
   );
 
   // The face is the host's seat colour, the one the caret is recoloured to: seat 1 is always the
-  // host's, mauve.
+  // host's, mauve, wherever the host is drawn.
   const face = faceOf(row);
   assert.ok(face.includes(SEAT_PALETTE[0]), `the host's face is not in seat 1's colour: ${face}`);
-  assert.ok(faceOf(rows[1] as PeerRow).includes(SEAT_PALETTE[1]), 'your face is not in seat 2');
+  assert.ok(faceOf(rows[0] as PeerRow).includes(SEAT_PALETTE[1]), 'your face is not in seat 2');
 });
 
 test('joining again asks before leaving the room this window is in', async (t) => {
@@ -3435,19 +3434,18 @@ test('activation clears a stale mirror and leaves a live sibling alone', async (
     globalState: bundle.stub.globalState,
     globalStorageUri: bundle.stub.Uri.file(storage),
   });
-  const said = await waitFor('the stale mirror to be reported', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('cleaned up the files')) ?? false,
-  );
-  assert.equal(
-    said,
-    `Selvage: cleaned up the files left by the last session.`,
-  );
-  assert.equal(existsSync(staleRoot), false, 'the stale mirror survived activation');
+  await waitFor('the stale mirror to be cleared', () => (existsSync(staleRoot) ? false : true));
   assert.equal(isFile(join(liveRoot, '.selvage-mirror.json')), true, 'a live sibling was cleared');
-  assert.equal(
-    bundle.stub.registered.warnings.filter((message) => message.includes('cleaned up the files')).length,
-    1,
-    'the live sibling earned its own sentence',
+  // A room that is gone leaves nothing to act on, so its cache goes without a word, as the Neovim
+  // client's prune does and the web page (which keeps no files) never has to.
+  assert.deepEqual(
+    [
+      ...bundle.stub.registered.information,
+      ...bundle.stub.registered.warnings,
+      ...bundle.stub.registered.errors,
+    ],
+    [],
+    'clearing a stale mirror said something',
   );
 });
 
@@ -3476,16 +3474,10 @@ test("activation leaves a live room's mirror alone, even in this window", async 
   t.after(() => {
     bundle.deactivate();
   });
-  await waitFor('the dead sibling to be reported', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('cleaned up the files')) ?? false,
-  );
+  await waitFor('the dead sibling to be cleared', () => (existsSync(deadRoot) ? false : true));
   assert.equal(existsSync(liveRoot), true, "a live room's mirror was cleared");
   assert.equal(bundle.stub.registered.folderCalls.length, 0, "a live room's folder was taken");
-  assert.equal(
-    bundle.stub.registered.warnings.filter((message) => message.includes('cleaned up the files')).length,
-    1,
-    'the live room earned its own sentence',
-  );
+  assert.deepEqual(bundle.stub.registered.warnings, [], "a live room's mirror was reported");
 });
 
 test('activation drops a mirror whose stashed invite cannot join, before asking for a name', async (t) => {
