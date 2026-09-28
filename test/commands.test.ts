@@ -1301,25 +1301,24 @@ test('the peers command lists the room in the colours the carets are drawn in', 
   const row = await waitFor('the list to name the document the host is in', () => {
     void bundle.stub.commands.executeCommand('selvage.peers');
     const items = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[] | undefined;
-    const first = items?.[0];
-    return first?.description === 'Host · in workspace/README.md' ? first : false;
+    const host = items?.find((item) => item.label === 'Ada');
+    return host?.description === 'Host · in workspace/README.md' ? host : false;
   });
-  assert.equal(row.label, 'Ada');
   const rows = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[];
   assert.deepEqual(
     rows.map((entry) => [entry.label, entry.description]),
     [
-      ['Ada', 'Host · in workspace/README.md'],
       ['Bob', '(you)'],
+      ['Ada', 'Host · in workspace/README.md'],
     ],
-    'the list is not host first, then you',
+    'the list is not you first, then the room, as the web page draws it',
   );
 
   // The face is the host's seat colour, the one the caret is recoloured to: seat 1 is always the
-  // host's, mauve.
+  // host's, mauve, wherever the host is drawn.
   const face = faceOf(row);
   assert.ok(face.includes(SEAT_PALETTE[0]), `the host's face is not in seat 1's colour: ${face}`);
-  assert.ok(faceOf(rows[1] as PeerRow).includes(SEAT_PALETTE[1]), 'your face is not in seat 2');
+  assert.ok(faceOf(rows[0] as PeerRow).includes(SEAT_PALETTE[1]), 'your face is not in seat 2');
 });
 
 test('joining again asks before leaving the room this window is in', async (t) => {

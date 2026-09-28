@@ -1373,8 +1373,9 @@ export class Session {
   }
 
   /**
-   * Everyone in the room, seated: the host, this window, then the others. Read at the moment it
-   * is asked for, so a row is as fresh as the presence behind it.
+   * Everyone in the room, seated: this window, then the others in the room's order, each in the
+   * colour of their seat. Read at the moment it is asked for, so a row is as fresh as the presence
+   * behind it.
    */
   people(): Person[] {
     const paths = new Map<string, string>();
