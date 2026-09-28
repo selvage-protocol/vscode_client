@@ -1391,6 +1391,21 @@ test('an open picker drops the row of someone who leaves', async (t) => {
   await going;
 });
 
+test('leaving closes a picker still open on the room', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false));
+  seat_.bundle.stub.registered.quickPickHold = true;
+  const going = seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
+  const pick = await waitFor('the picker', () =>
+    (seat_.bundle.stub.registered.quickPicks.at(-1) as { open: boolean } | undefined) ?? false,
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.leave');
+  assert.equal(pick.open, false, 'a picker offered people in a room this window left');
+  await going;
+});
+
 test('a host jump to a path it does not share is refused without opening', async (t) => {
   // A host holds no mirror documents: the peer path opens as the window's own file, through
   // the check a read on a peer's behalf goes through. A path the grant deliberately leaves

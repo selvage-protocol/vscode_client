@@ -583,7 +583,7 @@ export class Session {
   private readonly copyItem: vscode.StatusBarItem;
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   /** The open people pickers, each redrawn when the room's membership moves. */
-  private readonly pickers = new Set<() => void>();
+  private readonly pickers = new Map<() => void, () => void>();
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
   private finished = false;
@@ -1441,7 +1441,7 @@ export class Session {
           );
         }),
       ];
-      this.pickers.add(fill);
+      this.pickers.set(fill, () => pick.hide());
       fill();
       pick.show();
     });
@@ -1917,6 +1917,10 @@ export class Session {
       this.copiedTimer = undefined;
     }
     this.copyItem.dispose();
+    // A picker left open would offer people in a room this window has left.
+    for (const hide of [...this.pickers.values()]) {
+      hide();
+    }
     // The follow is session state: it goes with the session, with no sentence, the way the
     // caret drawing and the room's document set do.
     this.stopEngine();
@@ -2485,7 +2489,7 @@ export class Session {
         this.seat();
         this.refreshStatus();
         refreshParticipants();
-        for (const fill of [...this.pickers]) {
+        for (const fill of [...this.pickers.keys()]) {
           fill();
         }
         // The follow target is a peer id, so a rename only re-labels the indicator while a
