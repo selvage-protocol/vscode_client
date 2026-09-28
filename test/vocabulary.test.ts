@@ -150,9 +150,6 @@ const SENTENCES = [
   '`Selvage: the name others see is "${}".`',
   '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
   '`Selvage: display name set to "${}".`',
-  // The follow indicator, pinned with the codicon that leads it. The scan below reaches it
-  // through the same optional prefix a template carries (`sentencesIn`).
-  '`$(person) Selvage: following ${}`',
 ];
 
 /**
@@ -166,6 +163,8 @@ const PLAIN_SENTENCES = [
   '$(sync~spin) Reconnecting…',
   '$(warning) ${} · Disconnecting in ${}',
   '$(radio-tower) ${}',
+  // The follow indicator, in the words of the Neovim client's `Following <name>` chip.
+  '$(eye) Following ${}',
 ];
 
 /**

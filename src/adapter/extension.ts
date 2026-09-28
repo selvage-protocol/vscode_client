@@ -1923,7 +1923,7 @@ export class Session {
       item.command = 'selvage.stopFollowing';
       this.followStatus = item;
     }
-    this.followStatus.text = `$(person) Selvage: following ${this.followingName}`;
+    this.followStatus.text = `$(eye) Following ${this.followingName}`;
     // The foreground is the peer's marker colour: the mapping the caret wears, so the
     // indicator and the caret cannot disagree. The background is the editor's own warning
     // colour, which paints the whole item and lifts it out of the strip of session-state
