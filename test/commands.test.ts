@@ -31,6 +31,7 @@ import { FakeServer } from './helpers/fake-server.ts';
 import { waitFor } from './helpers/wait.ts';
 import { LiveSession } from './helpers/live-session.ts';
 import { parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
+import { endingReason } from '../src/engine/peer.ts';
 import { encodeKey } from '../src/engine/sealed.ts';
 import { baseOf } from './helpers/base.ts';
 import { SEAT_PALETTE } from '../src/bridge/index.ts';
@@ -913,6 +914,44 @@ test('a host is asked before leaving ends the room, and a guest is not', async (
   await other.stub.commands.executeCommand('selvage.leave');
   assert.deepEqual(other.stub.registered.warnings, [], 'a guest was asked before leaving');
   assert.deepEqual(other.stub.registered.information, ['Selvage: left the session.']);
+});
+
+test('a host that leaves ends the room for its guests at once', async (t) => {
+  // The host-away window is a minute here, so a guest that ends inside the wait below ended on
+  // the host's closing and not on the host's absence.
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 60_000 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await LiveSession.join(invite, 'Bob', { baseUrl: server.wsBase, reconnect: false });
+  t.after(async () => {
+    await guest.disconnect();
+  });
+  const endings: string[] = [];
+  guest.on((event) => {
+    if (event.type === 'roomGone') {
+      endings.push(event.reason);
+    }
+  });
+  await waitFor('the guest to be seated', () => (guest.appliedRole() === 'guest' ? true : false));
+
+  bundle.stub.reset();
+  bundle.stub.registered.warningReply = 'Leave anyway';
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  bundle.stub.registered.warningReply = undefined;
+  await waitFor('the guest to be told the room ended', () => (endings.length > 0 ? true : false));
+  assert.deepEqual(endings, [endingReason('closing')]);
+  await waitFor('the host to leave', () =>
+    bundle.stub.registered.information.includes('Selvage: left the session.') ? true : false,
+  );
+  // The host's own copy of its closing is not news to the host.
+  assert.deepEqual(bundle.stub.registered.warnings, ['Leaving ends the room for everyone and stops the invite link.']);
 });
 
 test('the invite control reads Copied after a copy, and then its own words again', async (t) => {

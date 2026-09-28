@@ -123,6 +123,9 @@ const GRANT_REFRESH_INTERVAL_MS = 250;
  */
 const FETCH_TIMEOUT_MS = 5000;
 
+/** How long a host's leave waits for its closing to go out, as the web's does. */
+const CLOSING_WAIT_MS = 1000;
+
 /**
  * The most paths one fetch holds at once. Every held path is a `doc.open` every peer
  * absorbs and a `Y.Text` every replica keeps, so a whole listing — or one directory of
@@ -359,6 +362,8 @@ export interface RoomEngine extends Engine {
   rename(displayName: string): Promise<void>;
   /** Publishes the whole listing this host shares (`§7.1`). */
   grant(paths: readonly string[]): Promise<void>;
+  /** A host's closing (`§7.1`), which ends the room for every guest at once. */
+  closeRoom?(): Promise<boolean>;
   disconnect(): Promise<void>;
 }
 
@@ -421,6 +426,7 @@ function roomEngine(engine: PeerEngine): RoomEngine {
     grantedPaths: () => engine.grantedPaths(),
     grant: (paths: readonly string[]) => engine.grant(paths),
     rename: (displayName: string) => engine.rename(displayName),
+    closeRoom: () => engine.closeRoom(),
     disconnect: () => engine.disconnect(),
     inviteUrl: () => engine.inviteUrl(),
     appliedRole: () => engine.appliedRole(),
@@ -819,6 +825,24 @@ export class Session {
     if (opensOnJoin()) {
       void openRoomDocument(this, path);
     }
+  }
+
+  /**
+   * A host's leave, the web's way: the closing goes out first (`§7.1`), so every guest is told at
+   * once that the room ended. It gets a second to go; the window leaves either way.
+   */
+  async closeRoom(): Promise<void> {
+    if (this.finished || this.engine.closeRoom === undefined) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.engine.closeRoom().catch(() => false),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, CLOSING_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   role(): Role {
@@ -3863,6 +3887,7 @@ async function leave(): Promise<void> {
     if (answer !== LEAVE_ASKING_LABEL || current !== session) {
       return;
     }
+    await session.closeRoom();
   }
   session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
