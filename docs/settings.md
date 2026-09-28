@@ -1,7 +1,6 @@
 # Settings
 
-The [settings table](../README.md) lists the five settings and their defaults. What follows is how
-the server address and the display name are resolved.
+The [settings table](../README.md) lists the five settings and their defaults.
 
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
