@@ -70,8 +70,7 @@ jobs:
           SELVAGE_WAIT_MS: "30000"
 
       # The runner has no nix, so the pinned release is installed here and `lychee` is taken from
-      # PATH, which is what `scripts/ci-local.sh links` does locally with a nix shell. The version
-      # and the checksum are the ones the release nixpkgs carries today.
+      # PATH, which is what `scripts/ci-local.sh links` does locally with a nix shell.
       - name: install lychee
         run: |
           curl -fsSL -o "$RUNNER_TEMP/lychee.tar.gz" \
