@@ -4,7 +4,12 @@ A VS Code extension for the [Selvage `selvage/2` session protocol](https://githu
 share a folder with someone and edit the same files at the same time. It is for two people
 working in one checkout, one of whom starts a `selvaged` to hold the room.
 
-## Get started
+Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
+fetch command, the participants view and follow behind it. CI runs the server-free suite; the
+suites that need a built `selvaged`, and the two-window end-to-end harness, run locally. The
+commands are in [checks](docs/checks.md).
+
+## Get it working
 
 You need:
 
@@ -33,25 +38,6 @@ $ npm ci --no-audit --no-fund          # 325 packages, ~180 MB
 $ npm run package                      # → selvage-<version>.vsix in the repo root
 $ code --install-extension selvage-<version>.vsix
 ```
-
-`.github/workflows/release.yml` packages the extension, attaches the `.vsix` to the GitHub Release
-and publishes it to the Marketplace and to Open VSX as `selvage-protocol.selvage`; the owner
-triggers a release from that workflow. `npm run package` runs `vsce package`, which runs the `npm run build`
-used everywhere else first, so the `.vsix` always carries a fresh `dist/extension.js`.
-`scripts/build.mjs` leaves only `vscode` external, so that one file bundles the engine, the bridge,
-`ws`, `yjs` and `y-protocols`; there is no `node_modules/` in the `.vsix`. `vsce package -o <path>`
-writes it somewhere other than the repo root.
-
-### Run it from a checkout
-
-```console
-$ code --extensionDevelopmentPath="$PWD" path/to/folder
-```
-
-Pressing `F5` does the same through `.vscode/launch.json`, which builds `dist/` first. That file
-has two configurations, `Selvage (first window)` and `Selvage (second window)`, each with its own
-`--user-data-dir` under `.tmp/`, because a session needs two windows that do not share state.
-Launch the first, then start the second from the same window you launched the first from.
 
 ### A first session
 
@@ -84,77 +70,14 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `selvage.serverUrl` | unset | The server address to host on: in full, or a domain on its own — a domain alone is enough, because it means the secure server, `wss://<host>`. Setting it means hosting never asks, and it outranks the last server used. |
+| `selvage.serverUrl` | unset | The server address to host on: in full, or a domain on its own, which is enough because it means the secure server, `wss://<host>`. Setting it means hosting never asks, and it outranks the last server used. |
 | `selvage.displayName` | unset | The name other participants see. A change while a session is live renames this connection at once. |
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |
 | `selvage.cursorLabel` | `"none"` | Whether a peer's name is drawn over the document at their caret: `none`, `floating` or `chip`. |
 
-The server is resolved in this order: an address given to the command programmatically (the
-palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
-silently, so hosting asks only in a window that has neither, and that one question starts from the
-demo server `selvage-demo.dontblameme.dev` — a domain on its own, which the one completion reads as
-`wss://selvage-demo.dontblameme.dev`. A host that reused the last server names it in the room-open
-notice, with a `Change the server` button that asks the same question again for the next host. A
-host on the setting or on an explicit address gets no such button; that address is changed where
-it was set.
-
-A server address is typed in the command's argument, the box's answer, the `selvage.serverUrl`
-setting, or a remembered address, and all four read it the same way: a bare host means the
-published shape, `wss://<host>`, because the room is dialled over TLS. The `/session` path every
-Selvage server answers belongs to the engine, which appends it to whatever base it is given, so a
-base that already ends in `/session` has that suffix removed before the engine appends its own;
-any other path is kept, because a server behind a prefix was named on purpose. An invite link is
-not a server address: its query and fragment are the room, its token and its key, so a link
-pasted wherever an address is asked for is refused and nothing is remembered.
-
-`Selvage: Change the server` reports the address the next host will use and offers the same box
-to change it, without hosting first. While `selvage.serverUrl` is configured that setting
-outranks the remembered address, so the command says so and changes nothing. Either way the write
-reaches the next host only, and never a room already open.
-
-A display name is resolved when a session starts, in this order: `selvage.displayName`, then the
-remembered answer, then a question pre-filled with the login name. It is bounded at 32 UTF-16 code
-units, so an emoji costs two, and a longer name is refused wherever it came from.
-`Selvage: Set the name other participants see` reports the name in force and changes it; the write
-goes to the global scope.
-
-## What it does
-
-The room is a folder on disk in both windows. A host shares the `file:` documents it has open
-under its workspace folder, and that folder is the grant: a guest can list it, open any of its
-files, and read one the host never opened, on request. The listing follows the host's folder, so a
-file a build, a branch switch or another terminal creates or removes reaches the room without
-anybody asking.
-
-A guest's window holds the room as a real directory under the extension's global storage, so the
-trees, search and language servers a person already runs work on the room's files. The join
-reloads the window onto that directory, replacing whatever tree was there, and leaving deletes it
-again. `Selvage: Download a file from the room` is how content that nobody has opened yet arrives
-in it, and how a whole project is published to the other side.
-
-A file the host deletes or moves out of the folder leaves the room for a guest too. A guest
-document open on it closes, its hold is released and its file goes from the directory, with
-`<path> is no longer in the room, so it was closed`. A document with unsaved changes keeps its
-tab and its file instead of asking to save or discard them, but it stops being shared:
-`<path> is no longer in the room; your unsaved copy is kept but no longer shared`. Either way the
-path is not offered again until a listing names it, even while another participant still has it
-open. A listing that names nothing, which a dropped connection can produce for a moment, closes
-nothing: it waits one listing window and yields to the listing that follows. A host keeps its own
-tab.
-
-In the editor a peer is a coloured caret, a selection fill, a tick in the overview ruler, and
-their initials on a badge in the gutter and on the Explorer row of the file they are in. A peer's
-colour comes from their id, so both clients paint the same person the same way, and
-`Selvage: List the room's participants` turns a colour back into a name and a role. The same
-roster is a `Selvage: Participants` view beside the Explorer: one row per peer, with go-to and
-follow on the row, and clicking a peer lands where they are.
-
-Following keeps landing where a peer is as they move, until something ends it; going to someone
-lands there once. The status bar carries the session and the room, opens the people list when it
-is selected, has its own control that copies the invite, and holds the follow with the control
-that stops it. A document the room changes is
-saved once the room settles, because the host's working copy is the room's truth.
+The order each setting is resolved in, and how a server address is read, is in
+[settings](docs/settings.md).
 
 ## Commands
 
@@ -180,294 +103,23 @@ completing command there.
 | `Selvage: Follow a participant` | Keep landing where a participant is as they move, until something stops it. The status bar shows who is followed in their caret colour and stops the follow when selected; a local edit of a shared document ends it, and a remote one does not. |
 | `Selvage: Stop following` | Stop following. Says so when no one is followed. |
 
-## What is not here
+## More
 
-The whole client runs in the extension host: the sync engine and the CRDT live next to the editor on
-one event loop. There is no worker, no native module and no second process.
-
-- Nothing is created, renamed or deleted on the wire (`PROTOCOL.md` §12), and a guest holds the
-  same right to edit as the host (§12.3). A window holds one session, and a host reads its own
-  filesystem only for a granted path a peer asked for.
-- There is no `y-websocket` provider, because Selvage has its own envelope, and no `terminal/1`.
-- There are no exclude globs. A host shares live the documents it has open, so what is on offer is
-  visible in its own window, and any other file under the shared folder a guest reaches is read on
-  request. A file a room asks for is checked before it is read, and only when the grant would
-  publish it and every directory on the way is a plain directory of the shared folder, never a
-  link out of it. The window between that check and the read is a stated residual:
-  `vscode.workspace.fs` exposes no `realpath`, so a link swapped in after the walk is read on the
-  peer's behalf.
-- A change made while the connection is down is not republished when it comes back. The room keeps
-  the listing it held across the host's disconnect grace and a re-seated host is sent it again, so
-  the two agree; the room learns of the change at the next filesystem event or not at all. A
-  folder the editor accepts a watcher for and then never delivers an event for has no error
-  channel, so it leaves the listing as of session start and nothing says so.
-- A document the room holds without listing it has no file here, so it cannot be opened the way
-  the Neovim client opens it. A save to a path the room does not list is written, since the editor
-  cannot refuse a save, and reported afterwards; the Neovim client refuses it upfront.
-- Leaving deletes the mirror from the window.
-- The resume a marker asks for waits for a trusted window, except in the room's own folder. A
-  folder can start this extension with nothing but a `.selvage-mirror.json` in it, and VS Code
-  does not condition a `workspaceContains` activation on workspace trust, which is the only way
-  back in after the reload that puts the room's folder in the window. In an untrusted window the
-  extension starts, registers its commands and stops there; the triage a marker asks for runs once
-  you trust the workspace. The exception is a window opened on a mirror under this extension's own
-  storage, which no repository can put there: that is the join's own reload, and it lands without
-  trust. You do not need to trust the room's folder to join, and leaving it in Restricted Mode is
-  the safer choice, because the room's files are its host's. Every command is your own act and
-  works in a window you have not trusted, which is why the manifest claims `limited` untrusted
-  support.
-- A guest does not take the room's workspace configuration. Anything under a `.vscode` directory
-  and any `.code-workspace` file is left out of the mirror and never shared from it, because the
-  mirror is the window's workspace folder and VS Code would apply those files (settings, tasks,
-  launch configurations) rather than just show them. The host's own copies are unaffected, and the
-  guest is told once per session which ones were left out.
-- A name drawn over the text can break. `selvage.cursorLabel: "floating"` writes declarations into
-  a field documented as one CSS declaration, which is undocumented editor behaviour: it can change
-  in a release with no change to the API, and nothing in the suite can see a pixel. It covers the
-  line above the caret and cannot leave the editor's top edge. `chip` uses documented decoration
-  fields only and covers the text it sits against. Either way a drawn name is clipped at 24 code
-  points, with the whole name still in the caret's hover.
-- One badge per row, which is the decoration API's limit. A file several peers are in answers with
-  their count and claims no colour; the hover names everyone.
-- Undo is shared. A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a peer's
-  edit; that change is published like any other and the room reconverges.
-- Format-on-save is published like any other change, so with peers running formatters a session
-  can echo (`SPIKES.md`, spike 3). Turn format-on-type off while collaborating.
-
-## How it is built
-
-| Layer | What it is | What it needs to be tested |
-|---|---|---|
-| `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame, peer session, host and socket wiring | a socket |
-| `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution, and the `selvage/2` session seen as an engine | a replica and an editor interface |
-| `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
-| `src/node/` | the Node half of the crypto seam the engine asks a caller for (HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto`) | nothing of its own |
-
-The first two layers never import `vscode`, and they are the copy the other two clients carry:
-`nvim_client/vendor/{engine,bridge}` and `web_client/src/{engine,bridge}` are taken from here and
-refreshed by each repository's own sync script (`nvim_client/scripts/sync-engine.sh`,
-`web_client`'s `npm run sync-engine`). A change to the wire or to the document policy belongs in
-this repository and reaches the others by copying. `test/boundary.test.ts` enforces the rule that
-no `vscode` import is allowed outside `src/adapter/`, along with three others: no undeclared
-dependency, every module of the editor-independent half reachable from a test, and every module
-in `src/adapter/` one that imports `vscode`.
-
-`connect()` is bounded by `handshakeTimeoutMs` (10 s by default), which covers both the upgrade
-and the handshake. `open()` and `close()` are bounded by `requestTimeoutMs` (10 s by default): a
-server can hold the socket up and never answer, and the caller then fails with
-`EngineClosedError`.
-
-`src/adapter/extension.ts` is `activate`, the twelve commands, the status bar and the window's
-listeners; `documents.ts` decides which documents are shared; `mirror.ts` is the room's mirror on
-disk; `decorations.ts`, `labels.ts` and `gutter.ts` draw a peer; `display-name.ts` holds the
-protocol's bound on a name and the question that asks for one.
-
-### The listing icon
-
-`package.json`'s `icon` is `images/icon.png`, and the Marketplace and Open VSX show that file in
-the listing. It is the owner's opaque 800×800 export — the `svp` wordmark on its own field —
-averaged whole to 256×256 with no colour change, so the wordmark sits where the owner put it
-rather than filling the canvas edge to edge. The icon it replaces was a centred 580×580 crop of
-the same export, which cut the owner's field away. `scripts/make-icon.mjs` is the producer:
-
-```console
-$ node scripts/make-icon.mjs ~/pictures/profile_pictures/profile_picture_svp_800_800.png
-$ node scripts/make-icon.mjs ~/pictures/profile_pictures/profile_picture_svp_800_800.png --check
-```
-
-The export is not vendored here: the manifest needs the 256 px icon and nothing else, so the
-script takes the path as its argument, or from `SELVAGE_ICON_EXPORT`. The same bytes are in the
-sibling `site` checkout as `app/opengraph-image.png` (sha256 `9bf1980d…`). `--check` re-derives
-the icon in memory and fails when the committed pixels are not that derivation, so it is the pin
-to run after the export changes; it is not part of `scripts/ci-local.sh`, which has no export to
-read.
-
-### `selvage/2` in the engine
-
-The engine speaks the sealed wire end to end: one version, one code path. A host that can mint
-does so — there is nothing to choose and nothing to fall back to — and a join speaks what its
-invite's fragment carries. The session layer's peer half is `peer.ts` and the host's is `host.ts`:
-
-| Module | What it is |
-|---|---|
-| `src/engine/crypto.ts` | the crypto seam a `selvage/2` frame needs — HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 — as an interface the caller supplies |
-| `src/engine/sealed.ts` | `CANONICAL.md` §6.1's bytes: the envelope's layout, the key schedule, the canonical key encoding, the four sealed payloads, and the ten-step read with the reason each step reports |
-| `src/engine/peer.ts` | `PROTOCOL.md` §13: the invite's fragment and its local refusal, the session keypair and its announcement, the order of operations at a join, verify-before-apply, attribution by the key that verified and the role the applied state gives it, a `viewer`'s content refused, the holds and their lease, the two windows that end a session, and §13.10's lifecycle |
-| `src/engine/host.ts` | `PROTOCOL.md` §7.1's producer half: the host key, the room state it seals and signs, the rule for each state that goes out — at mint, on a change to the listing or to `peers`, on every `peer.joined` and `peer.left`, on every announcement accepted — the publish-rate window, the seat label a newly committed key is given, and the `issued` series kept with the key |
-| `src/engine/crypto-web.ts` | that seam over WebCrypto (`globalThis.crypto`), which a page, Node and the extension host all have; it is the default a caller that supplies none gets |
-| `src/engine/relay.ts` | the socket wiring those four were written to be handed: `session.hello` at `selvage/2`, the seat from `room.created`/`room.joined`, the invite minted with its fragment, the session's clock on a timer of its own, and every frame the session produced written to the socket. It is in the engine because the three clients drive the same wiring — the socket and the crypto are both seams, and what is left is `PROTOCOL.md` §5's handshake, which is the same for a page, a companion and an extension host |
-| `src/bridge/peer-engine.ts` | `Engine` over a seated relay: the room's listing as the grant, §13.7's holds as the room's open set, §8's awareness in both directions, §13.8's host window as the adapter's own two events, and the §13.10 endings in the bridge's vocabulary |
-| `src/node/crypto.ts` | that seam over Node's `crypto`, which is what this client and the corpus subject use |
-
-Every rule in those three modules is `PROTOCOL.md` §13's, §7.1's or `CANONICAL.md` §6.1's, and each is
-pinned twice: `test/sealed.test.ts` and `test/peer.test.ts` build their own frames from constants
-and run without a sibling checkout, and `test/peer-corpus.test.ts` replays the peer corpus — it
-seals each frame vector's recipe with this engine's `seal` and checks the bytes against the
-vector's own `hex`, reads every frame through `Reader`, and drives the six decision vectors
-through a subject.
-
-That subject is `test/helpers/selvage-subject.ts`: the engine behind
-`specification/runner/subject.py`'s line protocol, so the corpus's own runner drives this client
-with
-
-```console
-$ python3 specification/runner/run_peer.py --subject "node test/helpers/selvage-subject.ts"
-```
-
-The crypto primitives are a seam and not an import because the engine is also the code the browser
-client drives, and a page has no `node:crypto` — nor a synchronous one, since WebCrypto is
-asynchronous. `src/node/` is outside the two directories the other clients copy for the same
-reason: it is the Node half.
-
-`test/host.test.ts` is §7.1's producer half on its own: every clock it passes in is a number and
-every frame it builds comes from constants, so it is about the rules rather than about how long a
-machine took. Each host guard is pinned twice over, by the rule's own test and by that test going
-red under the mutation that removes the guard (`HOST_MUTATIONS`), which is what `mutate` is for.
-
-**The editor surface, 2026-09-23.** The four methods the adapter needed are here, each a rule the
-version already states rather than a new decision: `remove`, the deletion half of `insert`
-(`§13.5`), without which the bridge's own `publish` silently dropped every deletion; a public
-**`setAwareness`/`setSelection`** that publishes a local awareness frame (`§8.1`, `§13.9`), with
-**`presence()`** to read every peer's anchors back against this replica (`§8.4`); the **role of
-this connection's own key** (`§13.4`), which is what tells a `viewer` its editor is read-only; and
-`resolveSelection`, `release(path)`, `has`, `rolesBySeat`, `namedHostSeat` and `hostAwayGraceMs`
-for the rest of what an adapter reads. `Role` names `viewer` now, because the state can assign it.
-
-Two decisions that surface changed with them, and both are the honest consequence of an
-asynchronous seam. **A local edit lands in the replica before `insert`/`remove` return their
-promise** — an adapter reads the replica back between two keystrokes, and one that had to wait for
-a seal would compute the same keystroke twice — so an offset outside the document is now thrown
-rather than rejected. And **an awareness state handed in is a frame a moment later**: `whenIdle()`
-is what a caller drains after, because otherwise a caret goes out at the next renewal window.
-
-### Sessions at `selvage/2`
-
-This window drives the sealed wire. What is left for the adapter is a listing and the role the
-room's state gives this connection. The socket wiring is `src/engine/relay.ts` and the adapter's
-vocabulary is `src/bridge/peer-engine.ts`; the crypto seam is the engine's default, WebCrypto,
-which the extension host has globally.
-
-What a person does:
-
-- **Host.** Nothing to set. The room is minted sealed, and its listing, its roles and its content
-  are sealed under the keys the invite's fragment carries. A `/meta` that cannot be read at all
-  decides nothing: the connection is attempted, and the handshake reports the truth. The address,
-  the folder and the invite are unchanged.
-- **Join.** Nothing: paste the link. The invite carries the room key and the host key on its
-  fragment, and a client that cannot read them cannot join the room at all; a link whose fragment
-  names one key and not the other is refused locally, by name of the missing one.
-- **Copy the invite.** Unchanged, and it now carries the fragment: the page link this window hands
-  on is the same room, token and two keys as the connection's own wire invite. The wire URL the
-  socket is handed never contains a `#`.
-- **Everything else** — the mirror, the grant tree, participants, follow and jump, the fetch
-  command, the save policy, the reconnect messaging — is the same code over the same bridge, so it
-  works in a version-2 room without being told which version it is in.
-
-**A viewer's documents are read-only.** A `selvage/2` room's state assigns roles (`§13.4`), and a
-connection seated as `viewer` gets the room's documents with their edits refused: `§13.9` has a
-viewer publish no content, so a buffer that accepted a keystroke would show text the room never
-receives. The editor has no per-document read-only flag an extension can set, so the edit is put
-back — the room's text returns and the attempt is said once, in the sentence both clients use.
-This client declares `guest` and has no command to ask for the other role: what a host does with
-the state is a later phase's, and a client that could ask to be a viewer would be inventing a
-request the protocol does not have.
-
-**The host key lives for the session.** A `§7.1` host signs its states with a key this window
-mints when it mints the room, and holds in memory: the key, and the `issued` series that goes
-with it, are gone when the session is. A returning host is what would keep them, and this client
-runs no resume (`§9.1`), so there is nothing to read back today — and a private signing seed is
-a secret, which is why the store that does land with a resume will be `context.secrets` and not
-the window's `globalState`. The engine's `HostStore` is the seam such a store is handed in
-through, and it stays open for a client that has a series to continue. §13.11's per-receiver caps
-are unimplemented, as they are in the reference client.
-
-What this slice does not do. The relay runs no resume: a dropped socket ends its session rather
-than re-helloing, so `§9.1`'s host return is not wired either.
-
-§7.1's **host-side corpus vectors** are not here — `test/host.test.ts` is what pins the producer,
-and the peer corpus still drives the receiver's half — and §13.11's per-receiver caps are not
-implemented (how many keys and marks §13.3 allows a client to keep, and how many paths and bytes
-of paths it will hold).
-
-Five things §7.1 and §13 leave open, each decided where it is read rather than filled in silently:
-
-- **The label a key gets when the roster names no free seat.** §7.1 obliges a host to commit every
-  announcement it accepts and forbids withholding one for want of a label, and it also says at most
-  one key per seat. An announcement that outruns its `peer.joined` is where the two meet: the roster
-  names only the host's own seat, the commitment is what the peer cannot do without, so the label is
-  the half that gives way — two keys carry that seat, and the key already there keeps its
-  commitment. `label()` and `commit()` state it.
-- **What the host's own session does after it publishes a closing.** §13.10 says what a receiver
-  does with one; §7.1 says only that a host that has left publishes nothing. Here the session that
-  published it ends the way a receiver's does — `ending = 'closing'`, and nothing more published
-  from it — because a room declared over is not one to write content into.
-- **What a `peer.joined` obliges of a host.** §7.1 has a host publish a state on one, and the
-  re-send of a state already held is stated as a *peer*'s rule. This host re-sends the state it
-  holds when nothing in its listing or its `peers` has changed; a joiner that holds none applies
-  it exactly as it applies a new edition, and every peer at that edition refuses it `stale_issued`.
-- **§7.1's *MUST NOT hold two host sessions for one room at a time*.** Nothing here enforces it
-  across processes: two connections that share a host key and a counter series publish one edition
-  twice, and §13.3's rule for two publications at one edition is what a receiver does with that.
-- **When a returning host writes above an edition it learned from a re-sent state.** §7.1's list of
-  obligations does not include applying a state, and §9.1's resume is a state published above the
-  room's. This host learns the room's edition from the state a peer re-sends it and writes above it
-  at its next state — the next change to its listing or its `peers`, the next seat, or the next
-  announcement it accepts — not on the state it just applied. It never re-sends the state it holds
-  over an edition it has verified, because every peer refuses a frame at or below the edition it
-  already carries.
-
-## Checks
-
-```console
-$ npm run build                        # → dist/extension.js
-$ npm run typecheck                    # tsc --noEmit, strict, erasableSyntaxOnly
-$ npm run test:fast                    # builds, then the server-free suite
-$ npm test                             # builds, then the same plus four against a real selvaged
-$ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged
-$ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
-$ npm run test:interop                 # interop with a real Rust client over the sealed wire
-$ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
-```
-
-`scripts/ci-local.sh all` is the gate before a push and runs the same commands as
-`.github/workflows/ci.yml`. `all` is `lint` plus `client`: `lint` needs `nix`; `client` is the
-`dry_run` gating check — the flake check `dry-run-gating`, which reads `.github/workflows` back
-and refuses a workflow whose plan step is followed by a step that a dry run would still run —
-then `npm ci`, `typecheck`, `build` and `test:fast`. CI runs the server-free suite only, because the
-four suites that need a built `selvaged` from the sibling `reference_server` checkout —
-`test/relay-selvaged.test.ts`, `test/selvage2-selvaged.test.ts`,
-`test/selvage2-reconnect-selvaged.test.ts` and `test/interop-v2.test.ts` — are not in it, and the
-workflow does not have that checkout. `test:peer-corpus` needs the sibling `specification`
-checkout for the same reason, and `SELVAGE_SPECIFICATION` names another one; `npm test` runs it
-along with `test/interop-v2.test.ts`, which needs the sibling `reference_server` and an
-`interop_peer` built from it that speaks `selvage/2` (`SELVAGE_INTEROP_PEER` names one).
-
-```console
-$ nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
-```
-
-`test:relay-selvaged` and `test:selvage2` find that binary at
-`../reference_server/target/{debug,release}/selvaged`, or wherever `SELVAGE_SELVAGED` points. A
-missing binary fails the test, which prints the command that builds it. `cargo` is not on the ambient `PATH`, and `nix develop ../reference_server` runs its
-command with the current directory, hence the `cd`. That flake's shellHook installs Rust git hooks
-into this checkout; they are harmless and ignored, and CI does not use them. `nix flake check`
-runs the server-free half in a sandbox, where a check cannot build a sibling checkout, and
-`dry-run-gating`, which reads `.github/workflows` and neither node's tree nor a sibling.
-
-The suite runs against a fake `selvaged` (`test/helpers/fake-server.ts`) for the faults the real
-server will not produce on demand (a dropped socket, a hostile `x.` event, `/meta` naming a
-version this client cannot speak). Waits are bounded polls of a real predicate that report the
-state they observed on failure (`test/helpers/wait.ts`). `test/manifest.test.ts` loads the built
-bundle and activates it against a stub `vscode`, which is how CI checks the manifest without an
-editor.
-
-`test/e2e/run.ts` builds the most: it starts a real `selvaged`, resolves a pinned VS Code build
-(`1.137.0` by default; set `SELVAGE_E2E_VSCODE_VERSION` to move it) and launches two real
-Extension Development Host processes, headless under Xvfb, one hosting and one joining by invite
-through a window reload, and asserts their documents converge. It has heavier prerequisites than
-everything else here (a network, Xvfb, an internet download the first time, and `nix` for the
-shared-library path a VS Code build downloaded outside `nix` needs on NixOS), so it is a manual
-verification step: run `scripts/e2e/run-two-instance.sh` from the repository root.
+- [Mirror and fetch](docs/mirror-and-fetch.md): what the room is, the mirror a guest holds, and
+  what happens when a file moves out of the folder or goes.
+- [Presence](docs/presence.md): a peer's caret, badge and colour, the participants view, and
+  following.
+- [Settings](docs/settings.md): how the server address and the display name are resolved.
+- [What is not here](docs/what-is-not-here.md): the limits this client ships with, and what it
+  leaves to the room.
+- [How it is built](docs/how-it-is-built.md): the four layers, the copy the other clients carry,
+  and the engine's `selvage/2` modules.
+- [Sessions at `selvage/2`](docs/sessions.md): host, join and copy-invite on the sealed wire, the
+  roles, and what the specification leaves open.
+- [Run it from a checkout](docs/running-from-a-checkout.md): launch the extension with two windows.
+- [Packaging and publishing](docs/packaging.md): the release workflow, `vsce package`, and the
+  listing icon.
+- [Checks](docs/checks.md): every suite, what CI runs, and the two-window end-to-end harness.
 
 ## Licence
 
