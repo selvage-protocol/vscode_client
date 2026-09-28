@@ -3452,9 +3452,9 @@ export function serverBaseOf(page: string): string {
  * The guest link for a room: the page the room's own server serves, carrying room and token,
  * with `§5.1`'s fragment on it when the room has one. The link *is* the server — its origin is
  * the address the guest dials — so it carries nothing else, and a room cannot be linked at a
- * page that dials another server. The shape is the page's own (`web_client/BROWSER_NOTES.md`,
- * `web_client/src/browser/share.ts`). Pure so tests pin it without an editor: `serverBase` is
- * the room's server, and the page is derived from it.
+ * page that dials another server. The shape is the page's own
+ * (`web_client/docs/where-the-server-comes-from.md`, `web_client/src/browser/share.ts`). Pure so
+ * tests pin it without an editor: `serverBase` is the room's server, and the page is derived from it.
  *
  * The fragment is the whole of what a `selvage/2` guest needs beyond the query: the room key
  * and the host's public key travel there and nowhere else, so a host that dropped it would be

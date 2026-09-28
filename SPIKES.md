@@ -1,6 +1,6 @@
 # Pre-adapter spikes
 
-The three experiments `docs/studies/vscode-plugin.md` §7 lists as *"the ones I would settle
+The three experiments `ai_notes/docs/studies/vscode-plugin.md` §7 lists as *"the ones I would settle
 before writing the adapter, because each one changes the wire shape or the module boundary
 if it fails"*. They are tests, not prose: `npm run test:spikes` runs them, and every number
 quoted below is a line that run prints.
@@ -62,7 +62,7 @@ at offset 0; Ada merges Bob's update and the caret is resolved again.
    (`~/.cargo/registry/src/*/yrs-0.27.4/src/doc.rs`), [`crates/client/src/engine.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/engine.rs)
    takes that default, and [`crates/client/src/presence.rs`](https://github.com/selvage-protocol/reference_server/blob/main/crates/client/src/presence.rs) renders the resulting
    `u32` as a selection — verified, and already recorded as finding **B** in
-   `docs/studies/awareness-and-reconnect.md`. On non-ASCII text the two clients therefore
+   `ai_notes/docs/studies/awareness-and-reconnect.md`. On non-ASCII text the two clients therefore
    name *different* positions for the same cursor: the opposite of what an earlier version
    of this spike asserted from "the Rust client carries `u32` offsets", which says nothing
    about the unit those integers are counted in. The engine's unit was never the open question —

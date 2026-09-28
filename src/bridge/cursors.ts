@@ -6,7 +6,7 @@
  * `DESIGN.md` §4.3 leaves colour to the client. Picking one locally is not the same as
  * picking one *arbitrarily*: a colour derived from the peer id is the same on every client
  * in the room, where one handed out in join order paints the same peer differently in two
- * windows (`docs/studies/vscode-plugin.md` §3).
+ * windows.
  */
 
 import type { Role } from '../engine/envelope.ts';
