@@ -1,0 +1,22 @@
+# `exclude` is the addresses lychee cannot read as live links from the machine running the check.
+# Nothing in it is a broken link: a broken one is fixed or removed instead.
+#
+# The check's scope is `README.md` and `docs/`, this repository's reader-facing front matter, so
+# that the gate is about the prose a reader is handed rather than about every Markdown file the
+# repository holds. `SPIKES.md` and the rest are deliberately outside it. Run it with
+#
+#   lychee --config lychee.toml --no-progress README.md docs
+#
+# which is what `scripts/ci-local.sh links` runs.
+exclude = [
+  # The shape a contact address takes. This check runs lychee without `--include-mail`, so a
+  # `mailto:` is skipped whether or not it is named here. No address is written in the prose
+  # today; naming the shape keeps one a link a person can write to when it appears.
+  "^mailto:",
+  # The shape of the address a `selvaged` on the reader's own machine prints, which the
+  # first-session step names as `ws://127.0.0.1:8080`. That one is inline code and not a link, so
+  # this entry is inert until someone links it; loopback answers on the reader's machine or
+  # nowhere, and a check that could only pass with that server already running would fail every
+  # time.
+  "^wss?://127\\.0\\.0\\.1",
+]

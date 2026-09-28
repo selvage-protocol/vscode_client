@@ -6,7 +6,8 @@
 #   scripts/ci-local.sh client   # the `checks` job: the release workflow's dry_run gating, typecheck,
 #                                # build, the server-free suite
 #   scripts/ci-local.sh lint     # actionlint over the workflow files
-#   scripts/ci-local.sh all      # lint + client
+#   scripts/ci-local.sh links    # lychee over README.md and docs/
+#   scripts/ci-local.sh all      # lint + client + links
 #
 # Keep this in step with the workflow — it runs the same commands, so that a red job is found
 # here rather than on a runner. `lint` catches unknown actions, bad expressions and shell
@@ -21,6 +22,10 @@
 # (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one).
 # `npm test` runs every suite and `npm run test:interop` runs the interop one, both with a
 # server built. CI pins Node 22.18.0; this uses whatever `node` is on PATH.
+#
+# `links` needs neither node nor nix: it takes `lychee` from PATH when there is one, which is how
+# the runner runs it, and else from a nix shell. What it checks and what it does not is
+# `lychee.toml`'s comment.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,6 +40,14 @@ mkdir -p "$TMPDIR"
 system=$(nix eval --raw --impure --expr builtins.currentSystem)
 
 say() { printf '\n=== %s ===\n' "$*"; }
+
+run_lychee() {
+  if command -v lychee >/dev/null 2>&1; then
+    lychee "$@"
+  else
+    nix shell nixpkgs#lychee -c lychee "$@"
+  fi
+}
 
 job_client() {
   # The guard around a workflow's `dry_run` input reads `.github/workflows`, so none of the suites
@@ -57,12 +70,20 @@ job_lint() {
   nix shell nixpkgs#actionlint -c actionlint
 }
 
+# `README.md` and `docs/` rather than every Markdown file here: this is the reader-facing front
+# matter, which is what the gate is about. `lychee.toml` carries the scope note and the excludes.
+job_links() {
+  say "links: lychee over README.md and docs/"
+  run_lychee --config lychee.toml --no-progress README.md docs
+}
+
 case "${1:-all}" in
   client) job_client ;;
   lint) job_lint ;;
-  all) job_lint && job_client ;;
+  links) job_links ;;
+  all) job_lint && job_client && job_links ;;
   *)
-    printf 'usage: %s [client|lint|all]\n' "$0" >&2
+    printf 'usage: %s [client|lint|links|all]\n' "$0" >&2
     exit 2
     ;;
 esac
