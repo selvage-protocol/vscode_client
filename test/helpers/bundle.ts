@@ -80,9 +80,15 @@ export interface EditorStub {
     information: string[];
     informationItems: unknown[][];
     warnings: string[];
+    /** What each warning offered beyond its sentence, `[options?, ...buttons]`. */
+    warningItems: unknown[][];
     errors: string[];
     errorItems: unknown[][];
     quickPicks: Array<{ items: unknown[]; options: unknown }>;
+    /** Keeps a live picker open after `show()`, for a test that watches its rows change. */
+    quickPickHold: boolean;
+    /** Every tree view reveal, as `{ viewId, element, options }`. */
+    reveals: Array<{ viewId: string; element: unknown; options: unknown }>;
     inputs: Array<Record<string, unknown>>;
     /** Every progress notice the extension showed, in order. */
     progress: Array<{ title?: string; location?: number }>;

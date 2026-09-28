@@ -22,6 +22,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 import { RelaySession } from '../src/engine/relay.ts';
+import { endingReason } from '../src/engine/peer.ts';
 import { baseOf } from './helpers/base.ts';
 import {
   BUNDLE,
@@ -829,7 +830,7 @@ test('a version-2 guest whose bounded retry gave up takes its mirror with it', (
   const bar = String(
     window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
   );
-  assert.match(bar, /reconnecting…/, 'the retry did not reach the status bar');
+  assert.equal(bar, '$(sync~spin) Reconnecting…', 'the retry did not reach the status bar');
 
   window.fire({ type: 'disconnected' });
   assert.equal(
@@ -843,6 +844,31 @@ test('a version-2 guest whose bounded retry gave up takes its mirror with it', (
     window.bundle.stub.registered.errors.filter((message) => message.includes('the session is over')),
     ['Selvage: the connection ended and the session is over; it could not be re-established.'],
   );
+});
+
+test('a host away counts down in the bar, and going and coming back are the web\'s sentences', (t) => {
+  const window = viewerSession(t);
+  const bar = (): { text: string; tooltip?: unknown } | undefined =>
+    window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage');
+  window.fire({ type: 'hostDetached', graceMs: 60_000 });
+  assert.match(String(bar()?.text), /^\$\(warning\) The host left the session · Disconnecting in \S/);
+  assert.equal(bar()?.tooltip, 'The host left the session. The room disconnects in 1 minute.');
+  assert.deepEqual(window.bundle.stub.registered.warnings, [
+    'The host left the session. The room disconnects in 1 minute.',
+  ]);
+
+  window.fire({ type: 'hostAttached', peer: { peer_id: 'p-ada', display_name: 'Ada', role: 'host' } });
+  assert.deepEqual(window.bundle.stub.registered.information.slice(-1), ['Ada is back. The session continues.']);
+  assert.equal(bar()?.text, '$(radio-tower) In Ada’s session');
+});
+
+test('a room gone is one warning, saying where the copy is kept', (t) => {
+  const window = viewerSession(t);
+  window.fire({ type: 'roomGone', reason: endingReason('closing') });
+  assert.deepEqual(window.bundle.stub.registered.warnings, [
+    'The host ended the session. Your copy is kept at /mirror.',
+  ]);
+  assert.equal(window.mirrorRemoved(), 0, 'the room closing took the only copy of the guest\'s work');
 });
 
 test('a version-2 session with no mirror says it cannot resume a hosting session', (t) => {
@@ -859,16 +885,13 @@ test('a version-2 session with no mirror says it cannot resume a hosting session
 });
 
 
-test('a version-2 window says it is waiting for the host rather than claiming guest', (t) => {
+test('a version-2 window with no role yet claims none in the status bar', (t) => {
   // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used
-  // to read that window as `guest` — a claim a version-2 peer cannot make yet.
+  // to read that window as `guest`, a claim a version-2 peer cannot make yet. The web's words for
+  // a session whose host it cannot name claim no role either.
   const window = viewerSession(t);
   const bar = String(
     window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
   );
-  assert.match(
-    bar,
-    /waiting for the host/,
-    `the window claimed a role the room has not given it: ${bar}`,
-  );
+  assert.equal(bar, '$(radio-tower) In a shared session', `the window claimed a role the room has not given it: ${bar}`);
 });

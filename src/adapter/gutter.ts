@@ -91,3 +91,43 @@ export function badgeDataUri(text: string, colour: string): string {
   const svg = badgeSvg(text, colour);
   return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
 }
+
+/** What a roster face shows beyond its initials and colour. */
+export interface AvatarMarks {
+  host?: boolean;
+  following?: boolean;
+}
+
+/**
+ * A roster face, as the web's faces draw one: the initials in bold dark type on the seat colour,
+ * the host ringed and crowned, and the followed face inside a dashed ring. Drawn at 32 units so
+ * the 16-pixel tree icon keeps the crown legible.
+ */
+export function avatarSvg(text: string, colour: string, marks: AvatarMarks = {}): string {
+  const radius = marks.following === true ? 11.5 : 13;
+  const ring =
+    marks.following === true
+      ? `<circle cx="16" cy="17" r="14.5" fill="none" stroke="${colour}" stroke-width="2" stroke-dasharray="4 3"/>`
+      : '';
+  const hostRing = marks.host === true ? ' stroke="#cdd6f4" stroke-width="2"' : '';
+  const crown =
+    marks.host === true
+      ? '<path d="M8 8.5 L9.5 1.5 L13 5 L16 0.5 L19 5 L22.5 1.5 L24 8.5 Z" fill="#f9e2af" ' +
+        'stroke="#11111b" stroke-width="1" stroke-linejoin="round"/>'
+      : '';
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">' +
+    ring +
+    `<circle cx="16" cy="17" r="${radius}" fill="${colour}"${hostRing}/>` +
+    '<text x="16" y="21.5" font-family="sans-serif" font-size="12" font-weight="bold" ' +
+    `text-anchor="middle" fill="#11111b">${escaped(text)}</text>` +
+    crown +
+    '</svg>'
+  );
+}
+
+/** The face as a data URI, base64 for the same reason the badge's is. */
+export function avatarDataUri(text: string, colour: string, marks: AvatarMarks = {}): string {
+  const svg = avatarSvg(text, colour, marks);
+  return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+}

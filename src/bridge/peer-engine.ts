@@ -313,6 +313,14 @@ export class PeerEngine implements Engine {
     return [...this.relay.listing()];
   }
 
+  /**
+   * A host's closing (`§7.1`): the statement that the room is over, which ends it for every guest
+   * at once rather than after the host-away window. False when this connection is not the host.
+   */
+  async closeRoom(): Promise<boolean> {
+    return await this.relay.closeRoom();
+  }
+
   /** Ends the connection. The socket closes, the clock stops and the session is released. */
   async disconnect(): Promise<void> {
     this.dispose();

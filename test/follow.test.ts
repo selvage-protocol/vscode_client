@@ -18,7 +18,7 @@ import type { TestContext } from 'node:test';
 import { LiveSession } from './helpers/live-session.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
 import { baseOf } from './helpers/base.ts';
-import { peerColour } from '../src/bridge/cursors.ts';
+import { SEAT_PALETTE } from '../src/bridge/seats.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
@@ -259,7 +259,7 @@ function caretOf(editor: FakeEditor): number | undefined {
 }
 
 /**
- * The guest's Participants rows, as the view drew them: the description is the file the peer
+ * The guest's Participants rows, as the view drew them: the description ends with the file the peer
  * says they are in, so a row naming "{path}" is proof the presence frame reached this window.
  */
 function guestRows(seat_: Seat): Array<{ peerId?: string; description?: string }> {
@@ -494,7 +494,8 @@ test('the indicator wears the peer colour, and no banner paints the document', a
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
   const editor = await openHeld(seat_, PATH_A, holder, 5);
-  const colour = peerColour(seat_.hostId);
+  // The host sits in seat 1, so its caret and the indicator are mauve.
+  const colour = SEAT_PALETTE[0];
 
   // No indicator before anything is followed: the status item is follow state, not chrome.
   assert.equal(followItem(seat_), undefined, 'a follow indicator is up with no follow');
@@ -505,7 +506,7 @@ test('the indicator wears the peer colour, and no banner paints the document', a
   );
   const item = followItem(seat_);
   assert.ok(item !== undefined, 'no follow indicator while following');
-  // The indicator's colour is the peer's marker colour: the mapping the caret wears.
+  // The indicator's colour is the seat colour the caret wears.
   assert.equal(item.color, colour);
   // The indicator doubles as the stop control: selecting it runs the stop command.
   assert.equal(item.command, 'selvage.stopFollowing');
@@ -573,7 +574,7 @@ test('a peer caret already in the room paints on open, with no local move', asyn
   // drawn — nothing is stored, and resolution happens where a draw does.
   seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
   await waitFor('the guest to see Ada in the peer document', () =>
-    guestRows(seat_).some((row) => row.description === PATH_B) ? true : false,
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_B}`) ? true : false,
   );
 
   // The document opens and the editor becomes visible in the same turn. Whether the room's text
@@ -641,7 +642,7 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   // sentence, which the indicator going down alone does not carry.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: stopped following Ada.',
+      (message) => message === 'Stopped following Ada because you started typing.',
     ),
     'the local edit ended the follow silently',
   );
@@ -671,7 +672,7 @@ test('a local cursor move stops the follow and says so', async (t) => {
   );
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Stopped following Ada — you moved.',
+      (message) => message === 'Stopped following Ada because you moved.',
     ),
     'the move ended the follow silently',
   );
@@ -741,12 +742,11 @@ test('going somewhere stops following first', async (t) => {
   await waitFor('the go-to to stop the follow', () =>
     followItem(seat_) === undefined ? true : false,
   );
-  // The navigation supersedes the follow the user did not ask to end, so it says so.
-  assert.ok(
-    seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: stopped following Ada.',
-    ),
-    'the go-to superseded the follow silently',
+  // The go-to is the person's own act, so the follow it ends goes without a sentence, as on the web.
+  assert.deepEqual(
+    seat_.bundle.stub.registered.information.filter((message) => /following/i.test(message)),
+    [],
+    'the go-to said it ended the follow',
   );
   const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(
@@ -799,8 +799,8 @@ test('the follow ends when the peer leaves, and the name re-labels while they st
 
   await cara.disconnect();
   await waitFor('the follow to end with the peer', () =>
-    seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: Cora left the room, so following stopped.',
+    seat_.bundle.stub.registered.information.some(
+      (message) => message === 'Cora left the room, so following stopped.',
     ),
   );
 });
@@ -835,12 +835,12 @@ test('two peers sharing a name are told apart in the picker', async (t) => {
   const labels = rows.map((row) => row.label).sort();
   assert.notEqual(labels[0], labels[1], 'two peers share one bare label');
   for (const row of rows) {
-    const fragment = /^Ada \((.+)\)$/.exec(row.label)?.[1];
+    const fragment = /^Ada · (.+)$/.exec(row.label)?.[1];
     assert.ok(fragment !== undefined, `${row.label} carries no disambiguator`);
-    assert.ok(row.peerId.startsWith(fragment), `${row.label} names no prefix of ${row.peerId}`);
+    assert.ok(row.peerId.endsWith(fragment), `${row.label} names no tail of ${row.peerId}`);
     const rival = rows.find((other_) => other_ !== row);
     assert.ok(
-      rival !== undefined && !rival.peerId.startsWith(fragment),
+      rival !== undefined && !rival.peerId.endsWith(fragment),
       `${row.label} does not tell the two apart`,
     );
   }
@@ -1261,7 +1261,7 @@ test('a follow does not reopen a path the host deleted, and lands when they move
   // frame the follow has nothing to do with, rather than a refusal and a reopening.
   seat_.host.setSelection(PATH_A, { anchor: 6, head: 6 });
   await waitFor('the deleted frame to reach the guest', () =>
-    guestRows(seat_).some((row) => row.description === PATH_A) ? true : false,
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', {
     peerId: seat_.hostId,
@@ -1282,6 +1282,29 @@ test('a follow does not reopen a path the host deleted, and lands when they move
     'the deleted path was reported as an open that failed',
   );
   assert.notEqual(caretOf(editorA), 6, 'the deleted document was landed in');
+});
+
+test('a follow ends when the file it landed in leaves the room', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const editorB = await openHeld(seat_, PATH_B, { text: TEXT_B }, 2);
+  editorB.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor(`the follow to land in ${PATH_B}`, () => (caretOf(editorB) === 2 ? true : false), {
+    describe: () => caretOf(editorB),
+  });
+
+  await seat_.host.grant([PATH_A]);
+  await waitFor(`the guest to release ${PATH_B}`, () =>
+    seat_.bundle.stub.registered.warnings.some((message) => message.includes(`${PATH_B} is no longer in the room`)),
+  );
+  // The host is still in the file the room no longer holds, and moves there: the follow has
+  // nowhere to take this window, so it ends and says why.
+  seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
+  await waitFor('the follow to end on the file', () =>
+    seat_.bundle.stub.registered.information.includes('Stopped following Ada because the file is gone.'),
+  );
+  assert.equal(followItem(seat_), undefined, 'the indicator outlived the follow');
 });
 
 test('an unknown peer id falls through to the pick', async (t) => {
@@ -1314,6 +1337,178 @@ test('an unknown peer id falls through to the pick', async (t) => {
   assert.equal(seat_.bundle.stub.registered.warnings.length, warningsBefore, 'the unknown id warned');
   assert.equal(seat_.bundle.stub.registered.errors.length, errorsBefore, 'the unknown id errored');
   assert.equal(seat_.bundle.stub.registered.shownEditors.length, shownBefore, 'the unknown id landed');
+});
+
+test('with one other person, go to and follow act without a picker', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const editor = await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await waitFor('Ada to list with their file known', () =>
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
+  );
+  editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
+  assert.deepEqual(seat_.bundle.stub.registered.quickPicks, [], 'go to asked to choose between one person');
+  await waitFor('the go to to land at the host caret', () => (caretOf(editor) === 5 ? true : false), {
+    describe: () => caretOf(editor),
+  });
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
+  assert.deepEqual(seat_.bundle.stub.registered.quickPicks, [], 'follow asked to choose between one person');
+  await waitFor('the follow to begin', () => (followItem(seat_) !== undefined ? true : false));
+  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Ada');
+});
+
+/** A live picker as the stub recorded it, answered by hand. */
+interface LivePick {
+  items: Array<{ label: string; peerId?: string; act?: string }>;
+  options: { title?: string; placeHolder?: string };
+  open: boolean;
+  accept(item: unknown): void;
+}
+
+/**
+ * Opens the people list, picks the row of `peerId`, and returns the menu that row opened. The
+ * list and the menu are both held open, so each is answered by the test.
+ */
+async function personMenuOf(seat_: Seat, peerId: string): Promise<LivePick> {
+  const picks = seat_.bundle.stub.registered.quickPicks as unknown as LivePick[];
+  const before = picks.length;
+  seat_.bundle.stub.registered.quickPickHold = true;
+  void seat_.bundle.stub.commands.executeCommand('selvage.peers');
+  const list = await waitFor('the people list', () => picks[before] ?? false);
+  assert.equal(list.options.placeHolder, 'Everyone in the room');
+  const row = list.items.find((item) => item.peerId === peerId);
+  assert.ok(row !== undefined, `the list has no row for ${peerId}`);
+  list.accept(row);
+  return await waitFor('the person menu', () => picks[before + 1] ?? false, {
+    describe: () => picks.slice(before).map((pick) => pick.options),
+  });
+}
+
+/** The menu's actions by their words, and the one that says `word`. */
+function actOf(menu: LivePick, word: string): unknown {
+  const item = menu.items.find((entry) => entry.label.endsWith(` ${word}`));
+  assert.ok(item !== undefined, `the menu offers no ${word}: ${JSON.stringify(menu.items.map((entry) => entry.label))}`);
+  return item;
+}
+
+test('a row of the people list opens that person menu, and its actions act', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const editor = await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await waitFor('Ada to list with their file known', () =>
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
+  );
+  editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+
+  const menu = await personMenuOf(seat_, seat_.hostId);
+  assert.equal(menu.options.title, 'Ada');
+  assert.equal(menu.options.placeHolder, `in ${PATH_A}`);
+  assert.deepEqual(
+    menu.items.map((item) => item.label),
+    ['$(go-to-file) Go to', '$(eye) Follow'],
+  );
+  menu.accept(actOf(menu, 'Go to'));
+  await waitFor('the go to to land at the host caret', () => (caretOf(editor) === 5 ? true : false), {
+    describe: () => caretOf(editor),
+  });
+
+  const again = await personMenuOf(seat_, seat_.hostId);
+  again.accept(actOf(again, 'Follow'));
+  await waitFor('the follow to begin', () => (followItem(seat_) !== undefined ? true : false));
+
+  const following = await personMenuOf(seat_, seat_.hostId);
+  assert.deepEqual(
+    following.items.map((item) => item.label),
+    ['$(go-to-file) Go to', '$(eye-closed) Stop following'],
+  );
+  following.accept(actOf(following, 'Stop following'));
+  await waitFor('the follow to end', () => (followItem(seat_) === undefined ? true : false));
+});
+
+test('your own row in the people list offers Rename', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const self = await waitFor('your own row', () =>
+    (guestRows(seat_) as Array<{ peerId?: string; description?: string }>).find((row) =>
+      (row.description ?? '').startsWith('(you)'),
+    ) ?? false,
+  );
+  const selfId = self.peerId as string;
+
+  const menu = await personMenuOf(seat_, selfId);
+  assert.equal(menu.options.title, 'Bob (you)');
+  assert.equal(menu.options.placeHolder, '');
+  assert.deepEqual(
+    menu.items.map((item) => item.label),
+    ['$(edit) Rename'],
+  );
+  seat_.bundle.stub.registered.inputReply = undefined;
+  menu.accept(actOf(menu, 'Rename'));
+  await waitFor('the rename to be asked for', () =>
+    seat_.bundle.stub.registered.executed.some(
+      (call) => call.id === 'selvage.displayName' && (call.args[0] as { peerId?: string } | undefined)?.peerId === selfId,
+    )
+      ? true
+      : false,
+  );
+});
+
+test('a person menu closes when that person leaves', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const cara = await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false));
+  const menu = await personMenuOf(seat_, cara.session().peer.peer_id);
+  assert.equal(menu.options.title, 'Cara');
+
+  await cara.disconnect();
+  await waitFor('the menu to close', () => (menu.open ? false : true));
+});
+
+test('an open picker drops the row of someone who leaves', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const cara = await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false), {
+    describe: () => guestRows(seat_),
+  });
+  seat_.bundle.stub.registered.quickPickHold = true;
+  const going = seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
+  type Pick = { items: Array<{ label: string }>; open: boolean; close(): void };
+  const pick = await waitFor('the picker', () =>
+    (seat_.bundle.stub.registered.quickPicks.at(-1) as Pick | undefined) ?? false,
+  );
+  assert.deepEqual(
+    pick.items.map((item) => item.label),
+    ['Ada', 'Cara'],
+  );
+
+  await cara.disconnect();
+  await waitFor('the picker to drop Cara', () => (pick.items.length === 1 ? true : false), {
+    describe: () => pick.items.map((item) => item.label),
+  });
+  assert.deepEqual(
+    pick.items.map((item) => item.label),
+    ['Ada'],
+  );
+  assert.equal(pick.open, true, 'the picker closed with somebody still to pick');
+  pick.close();
+  await going;
+});
+
+test('leaving closes a picker still open on the room', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false));
+  seat_.bundle.stub.registered.quickPickHold = true;
+  const going = seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
+  const pick = await waitFor('the picker', () =>
+    (seat_.bundle.stub.registered.quickPicks.at(-1) as { open: boolean } | undefined) ?? false,
+  );
+  await seat_.bundle.stub.commands.executeCommand('selvage.leave');
+  assert.equal(pick.open, false, 'a picker offered people in a room this window left');
+  await going;
 });
 
 test('a host jump to a path it does not share is refused without opening', async (t) => {
