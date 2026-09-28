@@ -19,6 +19,10 @@ scripts/**
 tsconfig.json
 package-lock.json
 SPIKES.md
+# The long-form detail behind `README.md`. `vsce` rewrites the README's relative links to GitHub
+# URLs when it builds the listing, so a reader of the page still reaches this tree, and an editor
+# installing the extension never reads it.
+docs/**
 *.tgz
 **/*.map
 # The two prefixes `release.yml` installs its publishers into (`vsce-publish`, `ovsx-publish`).
