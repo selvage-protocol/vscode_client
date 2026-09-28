@@ -19,6 +19,8 @@ import { avatarDataUri } from './gutter.ts';
 export const HOST_LABEL = 'Host';
 export const NO_PATH = 'not in a file yet';
 export const YOU_MARK = '(you)';
+/** The web's name for the list of everyone in the room. */
+export const EVERYONE_LABEL = 'Everyone in the room';
 
 /** Someone in the room, as the room names them. */
 export interface RoomMember {
@@ -85,6 +87,29 @@ export function whereLine(person: Pick<Person, 'self' | 'path'>): string {
     return '';
   }
   return person.path === undefined ? NO_PATH : `in ${person.path}`;
+}
+
+/** What a person's menu offers, and the web's word for each. */
+export type PersonAct = 'goTo' | 'follow' | 'stopFollowing' | 'rename';
+
+/**
+ * The actions of a person's menu, as the web draws them: Go to (for someone in a file) and
+ * Follow or Stop following for another person, Rename for yourself. The icons are the view's.
+ */
+export function personActs(row: Pick<PersonRow, 'self' | 'path' | 'following'>): Array<{ act: PersonAct; label: string }> {
+  if (row.self) {
+    return [{ act: 'rename', label: '$(edit) Rename' }];
+  }
+  const acts: Array<{ act: PersonAct; label: string }> = [];
+  if (row.path !== undefined) {
+    acts.push({ act: 'goTo', label: '$(go-to-file) Go to' });
+  }
+  acts.push(
+    row.following
+      ? { act: 'stopFollowing', label: '$(eye-closed) Stop following' }
+      : { act: 'follow', label: '$(eye) Follow' },
+  );
+  return acts;
 }
 
 export function personRows(people: readonly Person[], followingPeerId?: string): PersonRow[] {

@@ -1360,6 +1360,112 @@ test('with one other person, go to and follow act without a picker', async (t) =
   assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Ada');
 });
 
+/** A live picker as the stub recorded it, answered by hand. */
+interface LivePick {
+  items: Array<{ label: string; peerId?: string; act?: string }>;
+  options: { title?: string; placeHolder?: string };
+  open: boolean;
+  accept(item: unknown): void;
+}
+
+/**
+ * Opens the people list, picks the row of `peerId`, and returns the menu that row opened. The
+ * list and the menu are both held open, so each is answered by the test.
+ */
+async function personMenuOf(seat_: Seat, peerId: string): Promise<LivePick> {
+  const picks = seat_.bundle.stub.registered.quickPicks as unknown as LivePick[];
+  const before = picks.length;
+  seat_.bundle.stub.registered.quickPickHold = true;
+  void seat_.bundle.stub.commands.executeCommand('selvage.peers');
+  const list = await waitFor('the people list', () => picks[before] ?? false);
+  assert.equal(list.options.placeHolder, 'Everyone in the room');
+  const row = list.items.find((item) => item.peerId === peerId);
+  assert.ok(row !== undefined, `the list has no row for ${peerId}`);
+  list.accept(row);
+  return await waitFor('the person menu', () => picks[before + 1] ?? false, {
+    describe: () => picks.slice(before).map((pick) => pick.options),
+  });
+}
+
+/** The menu's actions by their words, and the one that says `word`. */
+function actOf(menu: LivePick, word: string): unknown {
+  const item = menu.items.find((entry) => entry.label.endsWith(` ${word}`));
+  assert.ok(item !== undefined, `the menu offers no ${word}: ${JSON.stringify(menu.items.map((entry) => entry.label))}`);
+  return item;
+}
+
+test('a row of the people list opens that person menu, and its actions act', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const editor = await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await waitFor('Ada to list with their file known', () =>
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
+  );
+  editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+
+  const menu = await personMenuOf(seat_, seat_.hostId);
+  assert.equal(menu.options.title, 'Ada');
+  assert.equal(menu.options.placeHolder, `in ${PATH_A}`);
+  assert.deepEqual(
+    menu.items.map((item) => item.label),
+    ['$(go-to-file) Go to', '$(eye) Follow'],
+  );
+  menu.accept(actOf(menu, 'Go to'));
+  await waitFor('the go to to land at the host caret', () => (caretOf(editor) === 5 ? true : false), {
+    describe: () => caretOf(editor),
+  });
+
+  const again = await personMenuOf(seat_, seat_.hostId);
+  again.accept(actOf(again, 'Follow'));
+  await waitFor('the follow to begin', () => (followItem(seat_) !== undefined ? true : false));
+
+  const following = await personMenuOf(seat_, seat_.hostId);
+  assert.deepEqual(
+    following.items.map((item) => item.label),
+    ['$(go-to-file) Go to', '$(eye-closed) Stop following'],
+  );
+  following.accept(actOf(following, 'Stop following'));
+  await waitFor('the follow to end', () => (followItem(seat_) === undefined ? true : false));
+});
+
+test('your own row in the people list offers Rename', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const self = await waitFor('your own row', () =>
+    (guestRows(seat_) as Array<{ peerId?: string; description?: string }>).find((row) =>
+      (row.description ?? '').startsWith('(you)'),
+    ) ?? false,
+  );
+  const selfId = self.peerId as string;
+
+  const menu = await personMenuOf(seat_, selfId);
+  assert.equal(menu.options.title, 'Bob (you)');
+  assert.equal(menu.options.placeHolder, '');
+  assert.deepEqual(
+    menu.items.map((item) => item.label),
+    ['$(edit) Rename'],
+  );
+  seat_.bundle.stub.registered.inputReply = undefined;
+  menu.accept(actOf(menu, 'Rename'));
+  await waitFor('the rename to be asked for', () =>
+    seat_.bundle.stub.registered.executed.some(
+      (call) => call.id === 'selvage.displayName' && (call.args[0] as { peerId?: string } | undefined)?.peerId === selfId,
+    )
+      ? true
+      : false,
+  );
+});
+
+test('a person menu closes when that person leaves', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const cara = await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false));
+  const menu = await personMenuOf(seat_, cara.session().peer.peer_id);
+  assert.equal(menu.options.title, 'Cara');
+
+  await cara.disconnect();
+  await waitFor('the menu to close', () => (menu.open ? false : true));
+});
+
 test('an open picker drops the row of someone who leaves', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);

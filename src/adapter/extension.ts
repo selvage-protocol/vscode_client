@@ -56,13 +56,17 @@ import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
 import type { Mirror } from './mirror.ts';
 import {
+  EVERYONE_LABEL,
   ParticipantsProvider,
   PeerFileDecorations,
+  YOU_MARK,
   avatar,
+  personActs,
   personRows,
   seatPeople,
+  whereLine,
 } from './participants.ts';
-import type { Person, PersonRow, RoomMember } from './participants.ts';
+import type { Person, PersonAct, PersonRow, RoomMember } from './participants.ts';
 
 export { personRows, seatPeople };
 
@@ -1470,6 +1474,46 @@ export class Session {
               ? undefined
               : { peerId: chosen.peerId, self: chosen.self, ...(chosen.path === undefined ? {} : { path: chosen.path }) },
           );
+        }),
+      ];
+      this.pickers.set(fill, () => pick.hide());
+      fill();
+      pick.show();
+    });
+  }
+
+  /**
+   * One person's menu, as a row of the web's `Everyone in the room` opens it: their name and
+   * where they are, over what can be done about them. It follows the room the way the list does,
+   * so a follow that ends while it is open flips its word, and it closes if they leave.
+   */
+  choosePersonAct(peerId: string): Promise<PersonAct | undefined> {
+    type Item = vscode.QuickPickItem & { act: PersonAct };
+    const pick = vscode.window.createQuickPick<Item>();
+    const fill = (): void => {
+      const row = personRows(this.people(), this.followingPeerId).find((candidate) => candidate.peerId === peerId);
+      if (row === undefined) {
+        pick.hide();
+        return;
+      }
+      pick.title = row.self ? `${row.label} ${YOU_MARK}` : row.label;
+      pick.placeholder = whereLine(row);
+      pick.items = personActs(row).map(({ act, label }) => ({ label, act }));
+    };
+    return new Promise((resolve) => {
+      let chosen: PersonAct | undefined;
+      const listeners = [
+        pick.onDidAccept(() => {
+          chosen = pick.selectedItems[0]?.act;
+          pick.hide();
+        }),
+        pick.onDidHide(() => {
+          this.pickers.delete(fill);
+          for (const listener of listeners) {
+            listener.dispose();
+          }
+          pick.dispose();
+          resolve(chosen);
         }),
       ];
       this.pickers.set(fill, () => pick.hide());
@@ -4153,7 +4197,8 @@ function revealParticipants(): void {
 
 /**
  * Lists everyone in the room as the Participants view does: each face in its seat colour, the
- * name, and where they are. This is where a caret's colour is turned back into a person.
+ * name, and where they are. This is where a caret's colour is turned back into a person. A row
+ * opens that person's menu, as a row of the web's list does.
  */
 async function listPeers(): Promise<void> {
   const session = current;
@@ -4161,9 +4206,30 @@ async function listPeers(): Promise<void> {
     void vscode.window.showWarningMessage('Selvage: join a session first.');
     return;
   }
-  await session.choosePerson(session.identity(), 'Everyone in the room, and where they are', () =>
+  const picked = await session.choosePerson(session.identity(), EVERYONE_LABEL, () =>
     session === current ? personRows(session.people(), session.followingId()) : [],
   );
+  if (picked === undefined || session !== current) {
+    return;
+  }
+  const act = await session.choosePersonAct(picked.peerId);
+  if (act === undefined || session !== current) {
+    return;
+  }
+  switch (act) {
+    case 'goTo':
+      await session.goTo(picked.peerId);
+      break;
+    case 'follow':
+      await session.follow(picked.peerId);
+      break;
+    case 'stopFollowing':
+      session.stopFollowing();
+      break;
+    case 'rename':
+      await vscode.commands.executeCommand('selvage.displayName', { peerId: picked.peerId });
+      break;
+  }
 }
 
 /** See `HostArgs`: the same programmatic seam for `selvage.goToParticipant`. */
