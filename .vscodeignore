@@ -23,6 +23,8 @@ SPIKES.md
 # URLs when it builds the listing, so a reader of the page still reaches this tree, and an editor
 # installing the extension never reads it.
 docs/**
+# The link check's own configuration, which the reader-facing prose is checked against in CI.
+lychee.toml
 *.tgz
 **/*.map
 # The two prefixes `release.yml` installs its publishers into (`vsce-publish`, `ovsx-publish`).
