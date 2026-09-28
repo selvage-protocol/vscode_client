@@ -6,8 +6,8 @@ working in one checkout, one of whom starts a `selvaged` to hold the room.
 
 Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
 fetch command, the participants view and follow behind it. CI runs the server-free suite; the
-suites that need a built `selvaged`, and the two-window end-to-end harness, run locally. The
-commands are in [checks](docs/checks.md).
+suites that need a built `selvaged`, and the two-window end-to-end harness, run locally.
+[Checks](docs/checks.md) lists every suite and the gate before a push.
 
 ## Get it working
 

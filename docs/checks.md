@@ -8,15 +8,16 @@ $ npm test                             # builds, then the same plus four against
 $ npm run test:relay-selvaged          # a selvage/2 host and guest over a real selvaged
 $ npm run test:peer-corpus             # the peer corpus, against this engine's own subject
 $ npm run test:interop                 # interop with a real Rust client over the sealed wire
-$ scripts/ci-local.sh all              # actionlint over the workflows, then the client job
+$ scripts/ci-local.sh all              # actionlint, then the client job and the link check
 ```
 
 `scripts/ci-local.sh all` is the gate before a push and runs the same commands as
 `.github/workflows/ci.yml`. `all` is `lint` plus `client` plus `links`: `lint` needs `nix`; `client`
 is the `dry_run` gating check (the flake check `dry-run-gating`, which reads `.github/workflows`
 back and refuses a workflow whose plan step is followed by a step that a dry run would still run),
-then `npm ci`, `typecheck`, `build` and `test:fast`. `links` is the link check over this
-repository's reader-facing prose, `README.md` and `docs/`:
+then `npm ci`, `typecheck`, `build` and `test:fast`. `links` runs `lychee` over this repository's
+reader-facing prose, `README.md` and `docs/`; `lychee.toml` carries the scope note and the
+addresses it cannot fetch:
 
 ```console
 $ scripts/ci-local.sh links

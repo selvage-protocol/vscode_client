@@ -2,11 +2,11 @@
 
 `.github/workflows/release.yml` packages the extension, attaches the `.vsix` to the GitHub Release
 and publishes it to the Marketplace and to Open VSX as `selvage-protocol.selvage`; the owner
-triggers a release from that workflow. `npm run package` runs `vsce package`, which runs the `npm run build`
-used everywhere else first, so the `.vsix` always carries a fresh `dist/extension.js`.
-`scripts/build.mjs` leaves only `vscode` external, so that one file bundles the engine, the bridge,
-`ws`, `yjs` and `y-protocols`; there is no `node_modules/` in the `.vsix`. `vsce package -o <path>`
-writes it somewhere other than the repo root.
+triggers a release from that workflow. `npm run package` runs `vsce package`, which runs the
+`npm run build` used everywhere else first, so the `.vsix` always carries a fresh
+`dist/extension.js`. `scripts/build.mjs` leaves only `vscode` external, so that one file bundles
+the engine, the bridge, `ws`, `yjs` and `y-protocols`; there is no `node_modules/` in the `.vsix`.
+`vsce package -o <path>` writes it somewhere other than the repo root.
 
 ## The listing icon
 
