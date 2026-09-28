@@ -106,7 +106,7 @@ export interface EditorStub {
     decorations: Array<{ options: Record<string, unknown>; handle: { options: Record<string, unknown>; disposed?: boolean } }>;
 
     /** Every status bar item the extension created, as the object it kept drawing into. */
-    statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string; color?: string }>;
+    statusBarItems: Array<{ text: string; tooltip?: string; command?: string; name: string; color?: string; disposed?: boolean }>;
     watcherFailure: string | undefined;
     informationReply: unknown;
     warningReply: unknown;

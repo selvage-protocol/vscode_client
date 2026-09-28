@@ -82,11 +82,12 @@ const SENTENCES = [
   '`Selvage: nothing to go to: ${}\'s caret does not resolve here.`',
   // The room's shape on disk: what the listing could not keep in step, and what is not
   // part of the room at all.
+  '`Selvage: one of the room\'s files could not be written to disk: ${}.`',
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
   // VS Code's alone: the Neovim mirror is not a folder the editor applies settings from.
   '`Selvage: the room\'s workspace settings (${}) are not put in this window, because VS Code would apply them rather than just show them.`',
-  '`Selvage: ${} is not part of the room, so it is not shared. Save it outside the room\'s folder to keep it.`',
-  '`Selvage: ${} is not part of the room, so this save was not shared. Copy it outside the room\'s folder to keep it.`',
+  '`Selvage: ${} is not in the room, so it is not shared. Save a copy outside the room\'s folder to keep it.`',
+  '`Selvage: ${} is not in the room, so this save was not shared. Save a copy outside the room\'s folder to keep it.`',
   // A document open on a path the host deleted or moved out of the room.
   '`Selvage: ${} is no longer in the room, so it was closed.`',
   '`Selvage: ${} is no longer in the room; your unsaved copy is kept but no longer shared.`',
@@ -127,9 +128,9 @@ const SENTENCES = [
   '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
   '`Selvage: could not join the session. ${}`',
   '`Selvage: cleaned up the files left by the last session; its invite link no longer works.`',
-  '`Selvage: joined the room; the room has no open documents yet.`',
-  '`Selvage: joined the room — opening ${}.`',
-  '`Selvage: joined the room — opening ${}; ${} more in the room.`',
+  '`Selvage: joined the room. No one has a file open yet.`',
+  '`Selvage: joined the room, opening ${}.`',
+  '`Selvage: joined the room, opening ${}. ${} open.`',
   '`Selvage: joined the room.`',
   // The invite, and the room's documents.
   "'Selvage: there is no invite link; host or join a room first.'",
@@ -140,7 +141,7 @@ const SENTENCES = [
   // `§13.4`'s third role (`§13.9`): the room's own word on this connection, said once, in the
   // words the Neovim client says it in.
   "'Selvage: you are a viewer in this room, so its documents are read-only.'",
-  "'Selvage: the room has no open documents yet.'",
+  "'Selvage: no one in the room has a file open yet.'",
   '`Selvage: no shared document matches "${}".`',
   // The display name, and the room's participants.
   "'Selvage: not in a session.'",
@@ -160,10 +161,14 @@ const SENTENCES = [
 const PLAIN_SENTENCES = [
   '${} Your copy is kept at ${}.',
   '$(sync~spin) Reconnecting…',
+  // The row while a host or join connects, in the Neovim row's words.
+  '$(sync~spin) Connecting…',
   '$(warning) ${} · Disconnecting in ${}',
   '$(radio-tower) ${}',
   // The follow indicator, in the words of the Neovim client's `Following <name>` chip.
   '$(eye) Following ${}',
+  // A rename the server refused, in the words of the Neovim client's `Companion.rename`.
+  'the server refused the display name "${}": ${}',
 ];
 
 /**
