@@ -954,6 +954,94 @@ test('a host that leaves ends the room for its guests at once', async (t) => {
   assert.deepEqual(bundle.stub.registered.warnings, ['Leaving ends the room for everyone and stops the invite link.']);
 });
 
+/**
+ * Holds every Ed25519 signature made after the call until the test ends, so a host's closing
+ * cannot be sealed and its leave waits out the whole second it gives the closing. What the room
+ * does inside that second is then the test's to stage.
+ */
+function holdSignatures(t: TestContext): { held: () => number } {
+  const subtle = globalThis.crypto.subtle;
+  const original = subtle.sign;
+  const waiting: Array<() => void> = [];
+  subtle.sign = function (this: SubtleCrypto, ...args: Parameters<SubtleCrypto['sign']>) {
+    return new Promise<void>((resolve) => {
+      waiting.push(resolve);
+    }).then(() => original.apply(this, args));
+  } as typeof subtle.sign;
+  t.after(() => {
+    subtle.sign = original;
+    for (const release of waiting.splice(0)) {
+      release();
+    }
+  });
+  return { held: () => waiting.length };
+}
+
+/** The leave's own second: what a host's closing is given before the window leaves anyway. */
+const CLOSING_WAIT_MS = 1000;
+
+test('a host whose connection ends while its closing goes out says only that it left', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 60_000 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await inviteOf(bundle);
+  const hold = holdSignatures(t);
+
+  bundle.stub.reset();
+  bundle.stub.registered.warningReply = 'Leave anyway';
+  void bundle.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the closing to be held', () => (hold.held() > 0 ? true : false));
+  // The socket goes inside the second the leave waits, which is what a host with no resume
+  // reads as the end of its session.
+  server.drop('Ada');
+  const said = () => ({
+    information: bundle.stub.registered.information,
+    warnings: bundle.stub.registered.warnings,
+    errors: bundle.stub.registered.errors,
+  });
+  await waitFor(
+    'the host to leave',
+    () => (bundle.stub.registered.information.includes('Selvage: left the session.') ? true : false),
+    { describe: said },
+  );
+  assert.deepEqual(bundle.stub.registered.errors, []);
+  assert.deepEqual(bundle.stub.registered.warnings, ['Leaving ends the room for everyone and stops the invite link.']);
+  assert.deepEqual(bundle.stub.registered.information, ['Selvage: left the session.']);
+});
+
+test('a second leave while the first closing goes out says nothing more', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 60_000 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await inviteOf(bundle);
+  const hold = holdSignatures(t);
+
+  bundle.stub.reset();
+  bundle.stub.registered.warningReply = 'Leave anyway';
+  void bundle.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the closing to be held', () => (hold.held() > 0 ? true : false));
+  void bundle.stub.commands.executeCommand('selvage.leave');
+  await waitFor('the second leave to be asked', () =>
+    bundle.stub.registered.warnings.length === 2 ? true : false,
+  );
+  // The second leave armed its own second when it was answered, so a timer armed now fires
+  // after it, and after whatever that leave went on to say.
+  await new Promise((resolve) => setTimeout(resolve, CLOSING_WAIT_MS));
+  assert.deepEqual(bundle.stub.registered.information, ['Selvage: left the session.']);
+});
+
 test('the invite control reads Copied after a copy, and then its own words again', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {

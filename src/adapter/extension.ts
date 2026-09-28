@@ -592,6 +592,12 @@ export class Session {
   private readonly pickers = new Map<() => void, () => void>();
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
+  /**
+   * A host's leave is waiting on its closing. The leave says the one sentence, so an ending the
+   * room reports meanwhile (the host's own copy of the closing, or the socket going) is dropped,
+   * the way the web disposes its binding before it closes.
+   */
+  private leaving = false;
   private finished = false;
   /** True while a guest's one auto-open is still owed; the room's first document spends it. */
   private autoOpen: boolean;
@@ -835,6 +841,7 @@ export class Session {
     if (this.finished || this.engine.closeRoom === undefined) {
       return;
     }
+    this.leaving = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       this.engine.closeRoom().catch(() => false),
@@ -2544,6 +2551,9 @@ export class Session {
         break;
       }
       case 'roomGone': {
+        if (this.leaving) {
+          break;
+        }
         // A guest's mirror is the only copy of what it wrote during the grace, so the room
         // closing does not take it: the directory stays and one sentence says where.
         if (this.mirror !== undefined) {
@@ -2587,6 +2597,9 @@ export class Session {
         break;
       }
       case 'disconnected': {
+        if (this.leaving) {
+          break;
+        }
         // A guest reaches this only when §9.1's bounded retry gave up, and this is that end: the
         // session is over, so the mirror goes with it — the directory is a cache of the room, and
         // the room is not this window's any more. `roomGone` is the one ending that keeps it,
@@ -3888,6 +3901,10 @@ async function leave(): Promise<void> {
       return;
     }
     await session.closeRoom();
+    // Another leave, or the extension going down, may have ended it while the closing went out.
+    if (current !== session) {
+      return;
+    }
   }
   session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
