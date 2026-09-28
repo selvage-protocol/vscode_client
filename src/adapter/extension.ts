@@ -1640,12 +1640,10 @@ export class Session {
    */
   async goTo(peerId: string): Promise<void> {
     // A deliberate navigation is the user's own act, the same class as typing: a follow
-    // would yank them back a moment later, so going somewhere stops following first, and
-    // says so — the stop is a side effect the user did not ask for.
+    // would yank them back a moment later, so going somewhere stops following first. It says
+    // nothing, as the web's does: the indicator going is the whole of it.
     if (this.followingPeerId !== undefined) {
-      const name = this.followingName;
       this.clearFollow();
-      void vscode.window.showInformationMessage(`Selvage: stopped following ${name}.`);
     }
     this.pendingGoTo = peerId;
     await this.retryGoTo();

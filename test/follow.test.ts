@@ -742,12 +742,11 @@ test('going somewhere stops following first', async (t) => {
   await waitFor('the go-to to stop the follow', () =>
     followItem(seat_) === undefined ? true : false,
   );
-  // The navigation supersedes the follow the user did not ask to end, so it says so.
-  assert.ok(
-    seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: stopped following Ada.',
-    ),
-    'the go-to superseded the follow silently',
+  // The go-to is the person's own act, so the follow it ends goes without a sentence, as on the web.
+  assert.deepEqual(
+    seat_.bundle.stub.registered.information.filter((message) => /following/i.test(message)),
+    [],
+    'the go-to said it ended the follow',
   );
   const uriB = seat_.roomFile( PATH_B);
   const editorB = await waitFor(

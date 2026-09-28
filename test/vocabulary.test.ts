@@ -77,7 +77,6 @@ const SENTENCES = [
   "'Selvage: no other participants yet.'",
   '`Selvage: nothing to go to: ${} is not in a document.`',
   '`Selvage: nothing to follow: ${} is not in a document.`',
-  '`Selvage: stopped following ${}.`',
   "'Selvage: not following anyone.'",
   '`Selvage: could not open ${} from the room: ${}`',
   '`Selvage: nothing to go to: ${}\'s caret does not resolve here.`',
