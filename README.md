@@ -70,7 +70,7 @@ Set `selvage.serverUrl` and `selvage.displayName` to stop being asked for them.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `selvage.serverUrl` | unset | The server address to host on: in full, or a domain on its own, which is enough because it means the secure server, `wss://<host>`. Setting it means hosting never asks, and it outranks the last server used. |
+| `selvage.serverUrl` | unset | The server address to host on: in full, or a domain on its own — a domain alone is enough, because it means the secure server, `wss://<host>`. Setting it means hosting never asks, and it outranks the last server used. |
 | `selvage.displayName` | unset | The name other participants see. A change while a session is live renames this connection at once. |
 | `selvage.autoSave` | `true` | Save a document the room changed, once the room has settled on it. |
 | `selvage.openOnJoin` | `true` | Put the room's first document in an editor for a guest. |

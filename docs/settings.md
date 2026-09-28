@@ -1,12 +1,12 @@
 # Settings
 
-The settings table in the README lists the five settings and their defaults. What follows is how
+The [settings table](../README.md) lists the five settings and their defaults. What follows is how
 the server address and the display name are resolved.
 
 The server is resolved in this order: an address given to the command programmatically (the
 palette takes none), then `selvage.serverUrl`, then the last server used. The first two answer
 silently, so hosting asks only in a window that has neither, and that one question starts from the
-demo server `selvage-demo.dontblameme.dev`, a domain on its own, which the one completion reads as
+demo server `selvage-demo.dontblameme.dev` — a domain on its own, which the one completion reads as
 `wss://selvage-demo.dontblameme.dev`. A host that reused the last server names it in the room-open
 notice, with a `Change the server` button that asks the same question again for the next host. A
 host on the setting or on an explicit address gets no such button; that address is changed where

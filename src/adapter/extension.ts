@@ -937,7 +937,7 @@ export class Session {
 
   /**
    * Fetches the room's content for listed paths: one path, or a directory of them —
-   * the `:SelvageFetch` twin (`nvim_client/README.md`). A fetch is a hold: every path
+   * the `:SelvageFetch` twin (`nvim_client/docs/mirror.md`). A fetch is a hold: every path
    * it names joins the room's open-document set, so every peer receives it, which is
    * said before it happens because afterwards is too late to choose. The wait itself
    * is `fetch`'s — the progress notice, the `leftListing` refusal, the still-empty

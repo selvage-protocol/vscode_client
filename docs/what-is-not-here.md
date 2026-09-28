@@ -50,4 +50,4 @@ one event loop. There is no worker, no native module and no second process.
 - Undo is shared. A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a peer's
   edit; that change is published like any other and the room reconverges.
 - Format-on-save is published like any other change, so with peers running formatters a session
-  can echo (`SPIKES.md`, spike 3). Turn format-on-type off while collaborating.
+  can echo ([`SPIKES.md`](../SPIKES.md), spike 3). Turn format-on-type off while collaborating.
