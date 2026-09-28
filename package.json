@@ -297,7 +297,8 @@
       "explorer": [
         {
           "id": "selvage.participants",
-          "name": "Selvage: Participants"
+          "name": "Selvage: Participants",
+          "visibility": "visible"
         }
       ]
     },

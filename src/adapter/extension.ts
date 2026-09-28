@@ -2601,7 +2601,7 @@ export class Session {
     if (this.detachedDeadline !== undefined) {
       const reading = disconnectingReading(this.detachedGraceMs, this.detachedDeadline - Date.now());
       this.status.text = `$(warning) ${hostLeftSentence(this.hostName)} · Disconnecting in ${reading}`;
-      this.status.tooltip = `${hostAwaySentence(this.hostName, this.detachedGraceMs)} Your local copy is kept when it closes.`;
+      this.status.tooltip = hostAwaySentence(this.hostName, this.detachedGraceMs);
       this.status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }

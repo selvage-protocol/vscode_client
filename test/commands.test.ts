@@ -861,6 +861,73 @@ test('leaving says so, and a window that is Not in a session is told that instea
   assert.equal(again, 'Selvage: not in a session.');
 });
 
+test('a host is asked before leaving ends the room, and a guest is not', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  await waitFor('the host room to open', () =>
+    bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
+  );
+  // Cancel, or a modal closed with Escape, is no answer: the room stands. The question is the
+  // web's without its last clause: VS Code saves the host's own files the way it always does, so
+  // no keystroke is left behind in the folder.
+  bundle.stub.registered.warningReply = undefined;
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  assert.deepEqual(bundle.stub.registered.warnings, [
+    'Leaving ends the room for everyone and stops the invite link.',
+  ]);
+  assert.deepEqual(bundle.stub.registered.warningItems, [[{ modal: true }, 'Leave anyway']]);
+  assert.equal(
+    bundle.stub.registered.information.includes('Selvage: left the session.'),
+    false,
+    'a leave nobody confirmed ended the room',
+  );
+  assert.equal(server.connectionCount, 1, 'a leave nobody confirmed closed the connection');
+
+  bundle.stub.registered.warningReply = 'Leave anyway';
+  await bundle.stub.commands.executeCommand('selvage.leave');
+  bundle.stub.registered.warningReply = undefined;
+  await waitFor('the host to leave', () =>
+    bundle.stub.registered.information.includes('Selvage: left the session.') ? true : false,
+  );
+
+  const { bundle: other } = await guest(t, ['workspace/README.md']);
+  other.stub.reset();
+  await other.stub.commands.executeCommand('selvage.leave');
+  assert.deepEqual(other.stub.registered.warnings, [], 'a guest was asked before leaving');
+  assert.deepEqual(other.stub.registered.information, ['Selvage: left the session.']);
+});
+
+test('the invite control reads Copied after a copy, and then its own words again', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const control = (): { text: string; command?: unknown } | undefined =>
+    bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage invite');
+  await waitFor('the invite control', () => (control()?.text === '$(link) Copy invite link' ? true : false), {
+    describe: () => control()?.text,
+  });
+  const copiedAt = Date.now();
+  await bundle.stub.commands.executeCommand('selvage.copyInvite');
+  await waitFor('the control to say the copy happened', () => (control()?.text === '$(check) Copied' ? true : false));
+  await waitFor('the control to read its own words again', () =>
+    control()?.text === '$(link) Copy invite link' ? true : false,
+  );
+  assert.ok(Date.now() - copiedAt >= 1700, 'Copied stood for less than the web\u2019s pill does');
+});
+
 test('a name set during a session is a live rename, told to the room', async (t) => {
   const { bundle, server } = await guest(t, ['workspace/README.md']);
 

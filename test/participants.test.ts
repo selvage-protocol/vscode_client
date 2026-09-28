@@ -424,6 +424,18 @@ test('the view is empty outside a session, where the welcome stands', async (t) 
   );
 });
 
+test('a session opens the view once, and leaves the focus in the editor', async (t) => {
+  const seat_ = await seat(t);
+  await waitFor('the room to list', () => (viewNodes(seat_.bundle).length === 2 ? true : false));
+  await peerIn(t, seat_, 'Cy', 5);
+  await waitFor('Cy to list', () => (viewNodes(seat_.bundle).length === 3 ? true : false));
+  const { reveals } = seat_.bundle.stub.registered;
+  assert.deepEqual(
+    reveals.map((entry) => [entry.viewId, entry.options]),
+    [['selvage.participants', { select: false, focus: false }]],
+  );
+});
+
 test('rows render on fabricated presence, naming the file each peer is in', async (t) => {
   const seat_ = await seat(t);
   await peerIn(t, seat_, 'Cy', 5);

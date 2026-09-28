@@ -1285,6 +1285,29 @@ test('a follow does not reopen a path the host deleted, and lands when they move
   assert.notEqual(caretOf(editorA), 6, 'the deleted document was landed in');
 });
 
+test('a follow ends when the file it landed in leaves the room', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A, [PATH_B]: TEXT_B });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const editorB = await openHeld(seat_, PATH_B, { text: TEXT_B }, 2);
+  editorB.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', { peerId: seat_.hostId });
+  await waitFor(`the follow to land in ${PATH_B}`, () => (caretOf(editorB) === 2 ? true : false), {
+    describe: () => caretOf(editorB),
+  });
+
+  await seat_.host.grant([PATH_A]);
+  await waitFor(`the guest to release ${PATH_B}`, () =>
+    seat_.bundle.stub.registered.warnings.some((message) => message.includes(`${PATH_B} is no longer in the room`)),
+  );
+  // The host is still in the file the room no longer holds, and moves there: the follow has
+  // nowhere to take this window, so it ends and says why.
+  seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
+  await waitFor('the follow to end on the file', () =>
+    seat_.bundle.stub.registered.information.includes('Stopped following Ada because the file is gone.'),
+  );
+  assert.equal(followItem(seat_), undefined, 'the indicator outlived the follow');
+});
+
 test('an unknown peer id falls through to the pick', async (t) => {
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
@@ -1315,6 +1338,57 @@ test('an unknown peer id falls through to the pick', async (t) => {
   assert.equal(seat_.bundle.stub.registered.warnings.length, warningsBefore, 'the unknown id warned');
   assert.equal(seat_.bundle.stub.registered.errors.length, errorsBefore, 'the unknown id errored');
   assert.equal(seat_.bundle.stub.registered.shownEditors.length, shownBefore, 'the unknown id landed');
+});
+
+test('with one other person, go to and follow act without a picker', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  const editor = await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  await waitFor('Ada to list with their file known', () =>
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
+  );
+  editor.selection = { anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } };
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
+  assert.deepEqual(seat_.bundle.stub.registered.quickPicks, [], 'go to asked to choose between one person');
+  await waitFor('the go to to land at the host caret', () => (caretOf(editor) === 5 ? true : false), {
+    describe: () => caretOf(editor),
+  });
+
+  await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant');
+  assert.deepEqual(seat_.bundle.stub.registered.quickPicks, [], 'follow asked to choose between one person');
+  await waitFor('the follow to begin', () => (followItem(seat_) !== undefined ? true : false));
+  assert.equal(followItem(seat_)?.text, '$(person) Selvage: following Ada');
+});
+
+test('an open picker drops the row of someone who leaves', async (t) => {
+  const seat_ = await seat(t, { [PATH_A]: TEXT_A });
+  await openHeld(seat_, PATH_A, { text: TEXT_A }, 5);
+  const cara = await peerIn(t, seat_, 'Cara', PATH_A, TEXT_A, 7);
+  await waitFor('Cara to list', () => (guestRows(seat_).length === 3 ? true : false), {
+    describe: () => guestRows(seat_),
+  });
+  seat_.bundle.stub.registered.quickPickHold = true;
+  const going = seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
+  type Pick = { items: Array<{ label: string }>; open: boolean; close(): void };
+  const pick = await waitFor('the picker', () =>
+    (seat_.bundle.stub.registered.quickPicks.at(-1) as Pick | undefined) ?? false,
+  );
+  assert.deepEqual(
+    pick.items.map((item) => item.label),
+    ['Ada', 'Cara'],
+  );
+
+  await cara.disconnect();
+  await waitFor('the picker to drop Cara', () => (pick.items.length === 1 ? true : false), {
+    describe: () => pick.items.map((item) => item.label),
+  });
+  assert.deepEqual(
+    pick.items.map((item) => item.label),
+    ['Ada'],
+  );
+  assert.equal(pick.open, true, 'the picker closed with somebody still to pick');
+  pick.close();
+  await going;
 });
 
 test('a host jump to a path it does not share is refused without opening', async (t) => {
