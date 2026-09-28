@@ -271,7 +271,7 @@ test('a pasted page link joins the room it names', async (t) => {
   const joined = second.bundle.stub.registered.information.find((message) =>
     message.includes('joined the room'),
   ) ?? false;
-  assert.equal(joined, `Selvage: joined the room; the room has no open documents yet.`);
+  assert.equal(joined, `Selvage: joined the room. No one has a file open yet.`);
 });
 
 test('a ws:// invite still joins, for a room whose server serves no page', async (t) => {

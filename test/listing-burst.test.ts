@@ -181,7 +181,7 @@ test('the name a listing dropped is remembered for one listing, not for ever', a
   await waitForMirrorFiles(storage, roomId, ['three.md']);
   await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'one.md' });
   const forgotten = await waitFor('the forgotten path to be refused', () =>
-    bundle.stub.registered.errors.find((message) => message.includes('one.md')) ?? false,
+    bundle.stub.registered.warnings.find((message) => message.includes('one.md')) ?? false,
   );
   assert.match(forgotten, /no shared document matches "one\.md"/);
 });
