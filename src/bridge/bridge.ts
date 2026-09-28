@@ -1,11 +1,10 @@
 /**
  * The bridge: the half of the editor adapter that knows nothing about an editor.
  *
- * `DESIGN.md` §6 splits a client into a sync engine and an editor adapter, and the study
- * (`docs/studies/vscode-plugin.md` §6) puts both in the extension host behind a module
- * seam. This is the seam's editor-independent half. It decides *what* has to happen to a
- * document — which bytes enter the replica, which change an editor must apply, when a
- * document is written — and the adapter decides *how*.
+ * `DESIGN.md` §6 splits a client into a sync engine and an editor adapter, and both halves live
+ * in the extension host behind a module seam. This is the seam's editor-independent half. It
+ * decides *what* has to happen to a document — which bytes enter the replica, which change an
+ * editor must apply, when a document is written — and the adapter decides *how*.
  *
  * The split is what keeps the part that imports `vscode` small enough to review by reading.
  * Everything below is a rule rather than a call into an editor: seeding, the echo

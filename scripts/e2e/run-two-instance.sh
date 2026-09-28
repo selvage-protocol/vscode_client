@@ -9,7 +9,7 @@
 # run, needs Xvfb to run it headless, needs `nix` for the shared-library path an
 # Electron binary built outside nix needs on NixOS, and needs a real network path to the
 # `selvaged` it starts itself. Run it manually to verify the MVP claim end to end; see
-# `README.md` for what it proves and its prerequisites.
+# `docs/checks.md` for what it proves and its prerequisites.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
