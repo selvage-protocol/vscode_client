@@ -219,7 +219,10 @@ test('a remembered non-default server survives host-leave-host into the copied l
   await waitFor('the first host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
   );
+  // A host's leave asks first; the answer is the one that leaves.
+  bundle.stub.registered.warningReply = 'Leave anyway';
   await bundle.stub.commands.executeCommand('selvage.leave');
+  bundle.stub.registered.warningReply = undefined;
   await waitFor('the leave to be said', () =>
     bundle.stub.registered.information.some((message) => message.includes('left the session'))
       ? true

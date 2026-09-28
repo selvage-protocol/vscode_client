@@ -18,7 +18,7 @@ import type { TestContext } from 'node:test';
 import { LiveSession } from './helpers/live-session.ts';
 import { sessionUrl } from '../src/engine/urls.ts';
 import { baseOf } from './helpers/base.ts';
-import { peerColour } from '../src/bridge/cursors.ts';
+import { SEAT_PALETTE } from '../src/bridge/seats.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { FakeServer } from './helpers/fake-server.ts';
@@ -259,7 +259,7 @@ function caretOf(editor: FakeEditor): number | undefined {
 }
 
 /**
- * The guest's Participants rows, as the view drew them: the description is the file the peer
+ * The guest's Participants rows, as the view drew them: the description ends with the file the peer
  * says they are in, so a row naming "{path}" is proof the presence frame reached this window.
  */
 function guestRows(seat_: Seat): Array<{ peerId?: string; description?: string }> {
@@ -494,7 +494,8 @@ test('the indicator wears the peer colour, and no banner paints the document', a
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
   const editor = await openHeld(seat_, PATH_A, holder, 5);
-  const colour = peerColour(seat_.hostId);
+  // The host sits in seat 1, so its caret and the indicator are mauve.
+  const colour = SEAT_PALETTE[0];
 
   // No indicator before anything is followed: the status item is follow state, not chrome.
   assert.equal(followItem(seat_), undefined, 'a follow indicator is up with no follow');
@@ -505,7 +506,7 @@ test('the indicator wears the peer colour, and no banner paints the document', a
   );
   const item = followItem(seat_);
   assert.ok(item !== undefined, 'no follow indicator while following');
-  // The indicator's colour is the peer's marker colour: the mapping the caret wears.
+  // The indicator's colour is the seat colour the caret wears.
   assert.equal(item.color, colour);
   // The indicator doubles as the stop control: selecting it runs the stop command.
   assert.equal(item.command, 'selvage.stopFollowing');
@@ -573,7 +574,7 @@ test('a peer caret already in the room paints on open, with no local move', asyn
   // drawn — nothing is stored, and resolution happens where a draw does.
   seat_.host.setSelection(PATH_B, { anchor: 4, head: 4 });
   await waitFor('the guest to see Ada in the peer document', () =>
-    guestRows(seat_).some((row) => row.description === PATH_B) ? true : false,
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_B}`) ? true : false,
   );
 
   // The document opens and the editor becomes visible in the same turn. Whether the room's text
@@ -641,7 +642,7 @@ test('a local edit ends the follow while a remote one does not', async (t) => {
   // sentence, which the indicator going down alone does not carry.
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Selvage: stopped following Ada.',
+      (message) => message === 'Stopped following Ada because you started typing.',
     ),
     'the local edit ended the follow silently',
   );
@@ -671,7 +672,7 @@ test('a local cursor move stops the follow and says so', async (t) => {
   );
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Stopped following Ada — you moved.',
+      (message) => message === 'Stopped following Ada because you moved.',
     ),
     'the move ended the follow silently',
   );
@@ -799,8 +800,8 @@ test('the follow ends when the peer leaves, and the name re-labels while they st
 
   await cara.disconnect();
   await waitFor('the follow to end with the peer', () =>
-    seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: Cora left the room, so following stopped.',
+    seat_.bundle.stub.registered.information.some(
+      (message) => message === 'Cora left the room, so following stopped.',
     ),
   );
 });
@@ -835,12 +836,12 @@ test('two peers sharing a name are told apart in the picker', async (t) => {
   const labels = rows.map((row) => row.label).sort();
   assert.notEqual(labels[0], labels[1], 'two peers share one bare label');
   for (const row of rows) {
-    const fragment = /^Ada \((.+)\)$/.exec(row.label)?.[1];
+    const fragment = /^Ada · (.+)$/.exec(row.label)?.[1];
     assert.ok(fragment !== undefined, `${row.label} carries no disambiguator`);
-    assert.ok(row.peerId.startsWith(fragment), `${row.label} names no prefix of ${row.peerId}`);
+    assert.ok(row.peerId.endsWith(fragment), `${row.label} names no tail of ${row.peerId}`);
     const rival = rows.find((other_) => other_ !== row);
     assert.ok(
-      rival !== undefined && !rival.peerId.startsWith(fragment),
+      rival !== undefined && !rival.peerId.endsWith(fragment),
       `${row.label} does not tell the two apart`,
     );
   }
@@ -1261,7 +1262,7 @@ test('a follow does not reopen a path the host deleted, and lands when they move
   // frame the follow has nothing to do with, rather than a refusal and a reopening.
   seat_.host.setSelection(PATH_A, { anchor: 6, head: 6 });
   await waitFor('the deleted frame to reach the guest', () =>
-    guestRows(seat_).some((row) => row.description === PATH_A) ? true : false,
+    guestRows(seat_).some((row) => row.description === `Host · in ${PATH_A}`) ? true : false,
   );
   await seat_.bundle.stub.commands.executeCommand('selvage.followParticipant', {
     peerId: seat_.hostId,

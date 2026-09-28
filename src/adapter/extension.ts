@@ -9,8 +9,33 @@
 
 import * as vscode from 'vscode';
 
-import { MAX_GRANT_PATH_BYTES, PeerEngine, SessionBridge, grantUnion, isGrantedPath, matchesReplica, participantLabel, peerColour, peerName, viewRows } from '../bridge/index.ts';
-import type { Engine, FilePeer, FilePresence, ParticipantEntry, Report } from '../bridge/index.ts';
+import {
+  COPIED_LABEL,
+  COPIED_STAND_MS,
+  COPY_INVITE_LABEL,
+  HOST_LEAVE_QUESTION,
+  LEAVE_ASKING_LABEL,
+  MAX_GRANT_PATH_BYTES,
+  PeerEngine,
+  SHARED_SESSION_IDENTITY,
+  SessionBridge,
+  disconnectingReading,
+  followEndedByFileGone,
+  followEndedByLeaving,
+  followEndedByMoving,
+  followEndedByTyping,
+  grantUnion,
+  guestIdentity,
+  hostAwaySentence,
+  hostBackSentence,
+  hostLeftSentence,
+  hostingIdentity,
+  isGrantedPath,
+  matchesReplica,
+  peerName,
+  roomGoneSentence,
+} from '../bridge/index.ts';
+import type { Engine, FilePeer, FilePresence, Report } from '../bridge/index.ts';
 import {
   code as errCode,
   isProtocolError,
@@ -33,11 +58,21 @@ import type { Mirror } from './mirror.ts';
 import {
   ParticipantsProvider,
   PeerFileDecorations,
-  resolveViewRows,
-  swatch,
+  avatar,
+  personRows,
+  seatPeople,
 } from './participants.ts';
+import type { Person, PersonRow, RoomMember } from './participants.ts';
 
-export { resolveViewRows };
+export { personRows, seatPeople };
+
+/**
+ * The question a host's leave asks: the web's, without its clause about the last keystrokes. That
+ * clause is true of a browser tab, whose folder is written behind the page. Here a host types into
+ * its own files, which VS Code saves the way it always does, and `selvage.autoSave` only writes
+ * what the room changed; leaving loses no keystroke, so the clause would warn of nothing.
+ */
+export const HOST_LEAVE_ASKING = `${HOST_LEAVE_QUESTION.slice(0, HOST_LEAVE_QUESTION.indexOf(', and your last'))}.`;
 import {
   MIRROR_MARKER,
   isWorkspaceConfigPath,
@@ -192,7 +227,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void fetchCommand(args);
     }),
     vscode.commands.registerCommand('selvage.leave', () => {
-      leave();
+      void leave();
     }),
     vscode.commands.registerCommand('selvage.displayName', (args?: DisplayNameArgs) => {
       void displayName(args, context);
@@ -215,10 +250,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   participantsView = new ParticipantsProvider();
   peerBadges = new PeerFileDecorations();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('selvage.participants', participantsView),
-    vscode.window.registerFileDecorationProvider(peerBadges),
-  );
+  participantsTree = vscode.window.createTreeView('selvage.participants', {
+    treeDataProvider: participantsView,
+  });
+  context.subscriptions.push(participantsTree, vscode.window.registerFileDecorationProvider(peerBadges));
   participantsSource = () => current?.participantsSnapshot();
   refreshParticipants();
   // A reload onto a mirror, or a crash that left one: the window's own triage runs
@@ -302,20 +337,6 @@ export function captionPath(path: string): string {
   return `${whole}\u2026`;
 }
 
-/**
- * One other participant, as the participant list needs them: who the room says they are, and
- * the colour their caret is drawn in. The colour is `peerColour`'s — the same value the caret
- * bar, the selection fill and the overview-ruler tick are built from — so a row in the list
- * and the caret in the document cannot disagree.
- */
-interface Participant {
-  peerId: string;
-  displayName: string;
-  role: Role;
-  colour: string;
-  /** The document the peer says it is in, when this client knows of one. */
-  path?: string;
-}
 /**
  * What a session drives: the bridge's own slice, plus the room facts an adapter reads and
  * the four things it hands in. {@link roomEngine} wraps the `PeerEngine` into this shape.
@@ -556,6 +577,13 @@ export class Session {
   private detachedTimer: ReturnType<typeof setInterval> | undefined;
   /** The host's name as last seen in membership: `hostDetached` names only the grace. */
   private hostName = '';
+  /** The host's grace, as the detach frame gave it: what the countdown is read against. */
+  private detachedGraceMs = 0;
+  /** The invite control, and the timer that turns its `Copied` back. */
+  private readonly copyItem: vscode.StatusBarItem;
+  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The open people pickers, each redrawn when the room's membership moves. */
+  private readonly pickers = new Set<() => void>();
   /** The socket dropped and the engine's bounded retry is running. */
   private reconnecting = false;
   private finished = false;
@@ -615,6 +643,8 @@ export class Session {
    * after it.
    */
   private expectedEcho: { editor: vscode.TextEditor; head: number } | undefined;
+  /** The room path the follow last landed in: the file whose going ends the follow. */
+  private followedPath: string | undefined;
   /** A go-to whose document has not arrived yet: re-resolved on every room event. */
   private pendingGoTo: string | undefined;
   /** Every landing stamps the cycle: a newer frame supersedes an older one still opening. */
@@ -666,9 +696,13 @@ export class Session {
     });
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
     this.status.name = 'Selvage';
-    // The bar is the copy control for either role: a guest holds the invite it joined by,
-    // which is the whole permission to be in the room, so it is the guest's to hand on.
-    this.status.command = 'selvage.copyInvite';
+    this.status.command = 'selvage.peers';
+    // The invite is its own control, as the web's pill is: a guest holds the link it joined by,
+    // which is the whole permission to be in the room, so it is the guest's to hand on too.
+    this.copyItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 88);
+    this.copyItem.name = 'Selvage invite';
+    this.copyItem.command = 'selvage.copyInvite';
+    this.copyItem.text = `$(link) ${COPY_INVITE_LABEL}`;
 
     // A document that was already open when the session started is shared too.
     for (const document of vscode.workspace.textDocuments) {
@@ -711,6 +745,10 @@ export class Session {
       }),
     );
     this.status.show();
+    if (this.invite() !== undefined) {
+      this.copyItem.show();
+    }
+    this.seat();
     this.refreshStatus();
     this.selection();
     // The room's shape is the host's to publish: the folder the invite names is the grant, read
@@ -1300,13 +1338,10 @@ export class Session {
   }
 
   /**
-   * The room's other participants, for the list. Read at the moment it is asked for rather
-   * than cached, so a row is as fresh as the presence behind it. A peer whose name the room
-   * left blank is shown by id, which is the rule the caret's own label follows
-   * (`cursors.ts`), and a peer with no document is still listed: its colour is derived from
-   * its id, so there is always a caret colour to look it up by.
+   * Everyone in the room, seated: the host, this window, then the others. Read at the moment it
+   * is asked for, so a row is as fresh as the presence behind it.
    */
-  participants(): Participant[] {
+  people(): Person[] {
     const paths = new Map<string, string>();
     for (const presence of this.engine.presence()) {
       const peer = presence.peer;
@@ -1315,31 +1350,114 @@ export class Session {
         paths.set(peer.peer_id, captionPath(path));
       }
     }
-    return this.engine.peers().map((peer) => ({
-      peerId: peer.peer_id,
-      displayName: peer.display_name,
-      role: peer.role,
-      colour: peerColour(peer.peer_id),
-      path: paths.get(peer.peer_id),
-    }));
+    const member = (peer: PeerInfo, role: Role): RoomMember => {
+      const path = paths.get(peer.peer_id);
+      return {
+        peerId: peer.peer_id,
+        displayName: peer.display_name,
+        role,
+        ...(path === undefined ? {} : { path }),
+      };
+    };
+    const self = this.engine.session().peer;
+    return seatPeople(
+      { ...member(self, this.role()), path: undefined },
+      this.engine.peers().map((peer) => member(peer, peer.role)),
+    );
+  }
+
+  /** The room's other people, for the pickers. */
+  participants(): Person[] {
+    return this.people().filter((person) => !person.self);
   }
 
   /**
-   * What the Participants view reads: membership with presence paths, file URIs for the
-   * badges, and the followed peer. Presence arrives between membership and caret, so a
-   * path here is the peer's latest word — exactly what the rows and badges show.
+   * What the Participants view reads: the seated people, file URIs for the badges, and the
+   * followed peer.
    */
   participantsSnapshot(): ParticipantsSnapshot {
     return {
-      entries: this.participants().map((peer) => ({
-        peerId: peer.peerId,
-        displayName: peer.displayName,
-        role: peer.role,
-        path: peer.path,
-      })),
+      people: this.people(),
       fileUriOf: (path) => this.roomFileUri(path)?.toString(),
       followingPeerId: this.followingPeerId,
     };
+  }
+
+  /** Hands the seat colours to the carets, and draws them again when a seat changed. */
+  private seat(): void {
+    const colours = new Map(this.people().map((person) => [person.peerId, person.colour] as const));
+    if (this.editor.setSeatColours(colours)) {
+      this.editor.renderCursors(this.bridge.cursors());
+    }
+  }
+
+  /**
+   * A people picker that follows the room: a row whose person leaves is dropped while it is
+   * open, and the picker closes when nobody is left to pick. `rowsOf` is read again on every
+   * membership change.
+   */
+  choosePerson(
+    title: string,
+    placeholder: string,
+    rowsOf: () => PersonRow[],
+  ): Promise<{ peerId: string; path?: string; self: boolean } | undefined> {
+    type Item = vscode.QuickPickItem & { peerId: string; path?: string; self: boolean };
+    const pick = vscode.window.createQuickPick<Item>();
+    pick.title = title;
+    pick.placeholder = placeholder;
+    pick.matchOnDescription = true;
+    const fill = (): void => {
+      const rows = rowsOf();
+      if (rows.length === 0) {
+        pick.hide();
+        return;
+      }
+      pick.items = rows.map((row) => ({
+        label: row.label,
+        description: row.description,
+        iconPath: avatar(row),
+        peerId: row.peerId,
+        self: row.self,
+        ...(row.path === undefined ? {} : { path: row.path }),
+      }));
+    };
+    return new Promise((resolve) => {
+      let chosen: Item | undefined;
+      const listeners = [
+        pick.onDidAccept(() => {
+          chosen = pick.selectedItems[0];
+          pick.hide();
+        }),
+        pick.onDidHide(() => {
+          this.pickers.delete(fill);
+          for (const listener of listeners) {
+            listener.dispose();
+          }
+          pick.dispose();
+          resolve(
+            chosen === undefined
+              ? undefined
+              : { peerId: chosen.peerId, self: chosen.self, ...(chosen.path === undefined ? {} : { path: chosen.path }) },
+          );
+        }),
+      ];
+      this.pickers.add(fill);
+      fill();
+      pick.show();
+    });
+  }
+
+  /** Flips the invite control to `Copied` for as long as the web's pill stands. */
+  showCopied(): void {
+    if (this.copiedTimer !== undefined) {
+      clearTimeout(this.copiedTimer);
+    }
+    this.copyItem.text = `$(check) ${COPIED_LABEL}`;
+    this.copyItem.show();
+    this.copiedTimer = setTimeout(() => {
+      this.copiedTimer = undefined;
+      this.copyItem.text = `$(link) ${COPY_INVITE_LABEL}`;
+    }, COPIED_STAND_MS);
   }
 
   /**
@@ -1417,22 +1535,14 @@ export class Session {
         return matches[0].peerId;
       }
     }
-    const picked = await vscode.window.showQuickPick(
-      participants.map((participant) => ({
-        label: participantLabel(participant, participants),
-        description: participant.role,
-        detail: participant.path ?? 'not in a file yet',
-        iconPath: swatch(participant.colour),
-        peerId: participant.peerId,
-        path: participant.path,
-      })),
-      {
-        title,
-        placeHolder: 'Pick a participant',
-        matchOnDescription: true,
-        matchOnDetail: true,
-      },
-    );
+    // With one other person there is nobody to choose between, so the command acts at once, as
+    // the web does from a face. A hint that named nobody still gets the rows.
+    const only = participants.length === 1 && peerIdHint === undefined && displayNameHint === undefined;
+    const picked = only
+      ? participants[0]
+      : await this.choosePerson(title, 'Pick a participant', () =>
+          personRows(this.participants(), this.followingPeerId),
+        );
     if (picked !== undefined && picked.path === undefined) {
       if (verb === 'go to') {
         void vscode.window.showWarningMessage(
@@ -1500,12 +1610,17 @@ export class Session {
       return;
     }
     this.followingPeerId = peerId;
+    this.followedPath = undefined;
     this.followingName = this.displayLabel(peerId);
     this.pendingGoTo = undefined;
     this.setFollowContext(true);
     this.showFollowStatus();
     refreshParticipants();
     await this.followTick();
+  }
+
+  followingId(): string | undefined {
+    return this.followingPeerId;
   }
 
   /** Stop following, or say there is nothing to stop: the indicator's command lands here. */
@@ -1592,7 +1707,7 @@ export class Session {
     peerId: string,
     mode: 'go' | 'follow',
     valid: () => boolean,
-  ): Promise<'landed' | 'waiting' | 'refused' | 'gone'> {
+  ): Promise<'landed' | 'waiting' | 'refused' | 'gone' | 'fileGone'> {
     const record = this.engine.presence().find((candidate) => candidate.peer?.peer_id === peerId);
     if (record === undefined) {
       if (this.peers.some((peer) => peer.peer_id === peerId)) {
@@ -1614,6 +1729,10 @@ export class Session {
     // tells a stale one from a peer in no document. The palette refuses its own rows, where
     // the row says as much; a programmatic landing waits instead. A path the room dropped is
     // no document here either, however long the peer stays in theirs.
+    // A follow that landed in a file the room has since dropped has nowhere left to be.
+    if (path !== undefined && mode === 'follow' && path === this.followedPath && this.dropped.has(path)) {
+      return 'fileGone';
+    }
     if (path === undefined || this.dropped.has(path)) {
       return 'waiting';
     }
@@ -1660,6 +1779,9 @@ export class Session {
     // than read outright as the person's move. Only the latest landing stands: an older
     // placement a newer one superseded never excuses a move afterwards.
     this.expectedEcho = { editor, head: resolved.head };
+    if (mode === 'follow') {
+      this.followedPath = path;
+    }
     this.scheduleSelection();
     return 'landed';
   }
@@ -1681,6 +1803,12 @@ export class Session {
       this.stopForLeftPeer();
       return;
     }
+    if (outcome === 'fileGone' && this.followingPeerId === peerId) {
+      const name = this.followingName;
+      this.clearFollow();
+      void vscode.window.showInformationMessage(followEndedByFileGone(name));
+      return;
+    }
   }
 
   private stopForLeftPeer(): void {
@@ -1689,7 +1817,7 @@ export class Session {
     }
     const name = this.followingName;
     this.clearFollow();
-    void vscode.window.showWarningMessage(`Selvage: ${name} left the room, so following stopped.`);
+    void vscode.window.showInformationMessage(followEndedByLeaving(name));
   }
 
   /**
@@ -1698,6 +1826,7 @@ export class Session {
    */
   private clearFollow(): void {
     this.followingPeerId = undefined;
+    this.followedPath = undefined;
     this.expectedEcho = undefined;
     this.setFollowContext(false);
     this.followStatus?.dispose();
@@ -1727,8 +1856,9 @@ export class Session {
     // colour, which paints the whole item and lifts it out of the strip of session-state
     // items it shares with the room's status — the nearest thing this editor has to the
     // Neovim client's full-width row.
-    if (this.followingPeerId !== undefined) {
-      this.followStatus.color = peerColour(this.followingPeerId);
+    const followed = this.people().find((person) => person.peerId === this.followingPeerId);
+    if (followed !== undefined) {
+      this.followStatus.color = followed.colour;
     }
     this.followStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     this.followStatus.tooltip = `Following ${this.followingName}; select to stop following`;
@@ -1760,7 +1890,8 @@ export class Session {
    */
   private armHostAway(graceMs: number): void {
     this.clearHostAway();
-    this.detachedDeadline = Date.now() + Math.max(0, graceMs);
+    this.detachedGraceMs = Math.max(0, graceMs);
+    this.detachedDeadline = Date.now() + this.detachedGraceMs;
     this.detachedTimer = setInterval(() => {
       this.refreshStatus();
     }, 1000);
@@ -1781,6 +1912,11 @@ export class Session {
     }
     this.finished = true;
     this.clearHostAway();
+    if (this.copiedTimer !== undefined) {
+      clearTimeout(this.copiedTimer);
+      this.copiedTimer = undefined;
+    }
+    this.copyItem.dispose();
     // The follow is session state: it goes with the session, with no sentence, the way the
     // caret drawing and the room's document set do.
     this.stopEngine();
@@ -2213,7 +2349,7 @@ export class Session {
     // document. An asked-for stop stays silent.
     const name = this.followingName;
     this.clearFollow();
-    void vscode.window.showInformationMessage(`Selvage: stopped following ${name}.`);
+    void vscode.window.showInformationMessage(followEndedByTyping(name));
   }
 
   /**
@@ -2234,7 +2370,7 @@ export class Session {
     }
     const name = this.followingName;
     this.clearFollow();
-    void vscode.window.showInformationMessage(`Stopped following ${name} — you moved.`);
+    void vscode.window.showInformationMessage(followEndedByMoving(name));
   }
 
   /**
@@ -2346,8 +2482,12 @@ export class Session {
         if (this.detachedDeadline !== undefined && report.peers.some((peer) => peer.role === 'host')) {
           this.clearHostAway();
         }
+        this.seat();
         this.refreshStatus();
         refreshParticipants();
+        for (const fill of [...this.pickers]) {
+          fill();
+        }
         // The follow target is a peer id, so a rename only re-labels the indicator while a
         // departure ends the follow: the peer is gone from membership and its awareness state
         // with it, so there is nothing left to land on.
@@ -2365,18 +2505,14 @@ export class Session {
       }
       case 'hostDetached': {
         this.armHostAway(report.graceMs);
-        void vscode.window.showWarningMessage(
-          `Host disconnected. ${this.hostName} left — if they return within ${seconds(report.graceMs)} the session continues, otherwise this room closes and your local copy is kept.`,
-        );
+        void vscode.window.showWarningMessage(hostAwaySentence(this.hostName, report.graceMs));
         break;
       }
       case 'hostAttached': {
         this.clearHostAway();
         this.hostName = peerName(report.peer.display_name, report.peer.peer_id);
         this.refreshStatus();
-        void vscode.window.showInformationMessage(
-          `${this.hostName} is back — the session continues.`,
-        );
+        void vscode.window.showInformationMessage(hostBackSentence(this.hostName));
         break;
       }
       case 'roomGone': {
@@ -2384,11 +2520,11 @@ export class Session {
         // closing does not take it: the directory stays and one sentence says where.
         if (this.mirror !== undefined) {
           void vscode.window.showWarningMessage(
-            `The room closed. Your copy is kept at ${this.mirror.root}.`,
+            `${roomGoneSentence(report.reason)} Your copy is kept at ${this.mirror.root}.`,
           );
           this.dispose({ keepMirror: true });
         } else {
-          void vscode.window.showWarningMessage(`Selvage: the room is gone (${report.reason}).`);
+          void vscode.window.showWarningMessage(roomGoneSentence(report.reason));
           this.dispose();
         }
         break;
@@ -2444,34 +2580,34 @@ export class Session {
     }
   }
 
+  /** What this session is called: the folder a host shares, or the host a guest is with. */
+  identity(): string {
+    if (this.role() === 'host') {
+      const folders = this.folders.map((folder) => folder.name).join(', ');
+      return folders === '' ? SHARED_SESSION_IDENTITY : hostingIdentity(folders);
+    }
+    return guestIdentity(this.hostName === '' ? undefined : this.hostName);
+  }
+
   private refreshStatus(): void {
     const shared = this.bridge.openDocuments();
     // The background belongs to the host-away alarm alone; every other state draws plain.
     this.status.backgroundColor = undefined;
     if (this.reconnecting) {
-      this.status.text = '$(sync~spin) Selvage: reconnecting…';
+      this.status.text = '$(sync~spin) Reconnecting…';
       this.status.tooltip = 'The connection dropped; trying to rejoin the room.';
       return;
     }
     if (this.detachedDeadline !== undefined) {
-      const remaining = Math.max(0, Math.ceil((this.detachedDeadline - Date.now()) / 1000));
-      this.status.text = `$(warning) Selvage: host away — room closes in ${remaining}s`;
-      this.status.tooltip = `The host is away; the room closes in ${remaining}s if they do not come back. Your local copy is kept when it closes.`;
+      const reading = disconnectingReading(this.detachedGraceMs, this.detachedDeadline - Date.now());
+      this.status.text = `$(warning) ${hostLeftSentence(this.hostName)} · Disconnecting in ${reading}`;
+      this.status.tooltip = `${hostAwaySentence(this.hostName, this.detachedGraceMs)} Your local copy is kept when it closes.`;
       this.status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }
-    // The bar is the one Selvage surface a window always has, so it says the two things a
-    // person asks of it: which side of the room they are on, and whether anyone else is here.
+    this.status.text = `$(radio-tower) ${this.identity()}`;
     // A viewer is a third side and not a guest: `§13.9` has it read the room and publish no
-    // content, and a bar reading `guest` would say it may edit.
-    const who = this.waitingForRole()
-      ? 'waiting for the host'
-      : this.role() === 'host'
-        ? 'hosting'
-        : this.role() === 'viewer'
-          ? 'view-only'
-          : 'guest';
-    this.status.text = `$(radio-tower) Selvage: ${who} — ${peopleInRoom(this.peers.length + 1)}`;
+    // content, and a tooltip reading `guest` would say it may edit.
     const side = this.waitingForRole()
       ? 'Waiting for the host in'
       : this.role() === 'host'
@@ -2485,11 +2621,6 @@ export class Session {
       `Documents the room offers: ${summarise(this.documents)}`,
       `Shared from this window: ${summarise(shared)}`,
     ];
-    if (this.invite() !== undefined) {
-      // The token stays out of the tooltip: a screenshot or screen-share of the status
-      // bar must not carry it. The bar itself copies the link when it is clicked.
-      lines.push('Invite link: click the status bar to copy it.');
-    }
     this.status.tooltip = lines.join('\n');
   }
 }
@@ -2499,14 +2630,6 @@ export class Session {
  * peer set are a stranger's input, and the tooltip is not where either is read in full.
  */
 const MAX_TOOLTIP_ENTRIES = 20;
-
-/**
- * How many people the room holds, said as a count a person reads rather than as a number
- * beside a word: the status bar carries the whole session at a glance.
- */
-function peopleInRoom(count: number): string {
-  return count === 1 ? '1 person in the room' : `${count} people in the room`;
-}
 
 /** At most `MAX_TOOLTIP_ENTRIES` names, however many the room holds. */
 function summarise(names: readonly string[]): string {
@@ -3608,6 +3731,7 @@ async function copyInvite(): Promise<void> {
     );
     return;
   }
+  current?.showCopied();
   void vscode.window.showInformationMessage('Selvage: the invite link is on the clipboard.');
 }
 
@@ -3720,13 +3844,23 @@ async function openRoomDocument(session: Session, path: string): Promise<void> {
   }
 }
 
-function leave(): void {
+/**
+ * A host's leave ends the room for everyone, so it asks first, in a modal the editor gives a
+ * Cancel of its own. A guest leaves at once.
+ */
+async function leave(): Promise<void> {
   const session = current;
   if (session === undefined) {
     void vscode.window.showWarningMessage('Selvage: not in a session.');
     return;
   }
-  void session.dispose();
+  if (session.role() === 'host') {
+    const answer = await vscode.window.showWarningMessage(HOST_LEAVE_ASKING, { modal: true }, LEAVE_ASKING_LABEL);
+    if (answer !== LEAVE_ASKING_LABEL || current !== session) {
+      return;
+    }
+  }
+  session.dispose();
   void vscode.window.showInformationMessage('Selvage: left the session.');
 }
 
@@ -3825,6 +3959,8 @@ async function resolveDisplayName(
 /** See `HostArgs`: the same programmatic seam for `selvage.displayName`. */
 export interface DisplayNameArgs {
   name?: string;
+  /** Set when the command comes from your own row: the rename goes straight to the question. */
+  peerId?: string;
 }
 
 /**
@@ -3845,14 +3981,16 @@ async function displayName(args?: DisplayNameArgs, context?: vscode.ExtensionCon
     return;
   }
   const currentName = nameInForce();
-  const reported =
-    currentName === undefined
-      ? 'Selvage: no display name is set yet.'
-      : `Selvage: the name others see is "${currentName}".`;
-  const change = 'Change the name';
-  const choice = await vscode.window.showInformationMessage(reported, change);
-  if (choice !== change) {
-    return;
+  if (args?.peerId === undefined) {
+    const reported =
+      currentName === undefined
+        ? 'Selvage: no display name is set yet.'
+        : `Selvage: the name others see is "${currentName}".`;
+    const change = 'Change the name';
+    const choice = await vscode.window.showInformationMessage(reported, change);
+    if (choice !== change) {
+      return;
+    }
   }
   const answer = await vscode.window.showInputBox(
     displayNameInput({
@@ -3897,6 +4035,9 @@ async function acceptDisplayName(raw: string, context?: vscode.ExtensionContext)
 /** What the view reads: the session, or `undefined` outside one. Set at activation. */
 let participantsView: ParticipantsProvider | undefined;
 let peerBadges: PeerFileDecorations | undefined;
+let participantsTree: vscode.TreeView<vscode.TreeItem> | undefined;
+/** Whether the view has been opened for the session in hand: once per session, never after. */
+let revealedFor: Session | undefined;
 let participantsSource: () => ParticipantsSnapshot | undefined = () => undefined;
 
 /**
@@ -3905,7 +4046,7 @@ let participantsSource: () => ParticipantsSnapshot | undefined = () => undefined
  * the session — and a test can read the same shape without one.
  */
 interface ParticipantsSnapshot {
-  entries: ParticipantEntry[];
+  people: Person[];
   fileUriOf(path: string): string | undefined;
   followingPeerId: string | undefined;
 }
@@ -3923,44 +4064,50 @@ function refreshParticipants(): void {
   }
   const snapshot = participantsSource();
   if (snapshot === undefined) {
-    view.refresh(resolveViewRows(viewRows(undefined)));
+    view.refresh([]);
     badges.refresh([]);
+    revealedFor = undefined;
     return;
   }
-  view.refresh(
-    resolveViewRows(
-      viewRows({ entries: snapshot.entries, followingPeerId: snapshot.followingPeerId }),
-    ),
-  );
+  view.refresh(personRows(snapshot.people, snapshot.followingPeerId));
+  revealParticipants();
   const byUri = new Map<string, FilePeer[]>();
-  for (const entry of snapshot.entries) {
-    if (entry.path === undefined) {
+  const colourIds = new Map<string, string>();
+  for (const person of snapshot.people) {
+    colourIds.set(person.peerId, person.colourId);
+    if (person.self || person.path === undefined) {
       continue;
     }
-    const uri = snapshot.fileUriOf(entry.path);
+    const uri = snapshot.fileUriOf(person.path);
     if (uri === undefined) {
       continue;
     }
     const peers = byUri.get(uri) ?? [];
-    // The label, not the bare name: the row's own disambiguation reaches the badge's hover, so
-    // two peers sharing a name are two in the hover as well as two rows.
-    peers.push({ peerId: entry.peerId, label: participantLabel(entry, snapshot.entries) });
+    peers.push({ peerId: person.peerId, label: person.label });
     byUri.set(uri, peers);
   }
   const files: FilePresence[] = [...byUri].map(([uri, peers]) => ({ uri, peers }));
-  badges.refresh(files);
+  badges.refresh(files, colourIds);
 }
 
 /**
- * Lists the room's other participants: each one's colour, name, role and document.
+ * Opens the Participants view once when a session starts. An extension's view in the Explorer
+ * starts collapsed whatever the manifest says, and revealing a row is what expands it; the row is
+ * not selected and the editor keeps the focus.
+ */
+function revealParticipants(): void {
+  const session = current;
+  const first = participantsView?.first();
+  if (session === undefined || revealedFor === session || first === undefined || participantsTree === undefined) {
+    return;
+  }
+  revealedFor = session;
+  void Promise.resolve(participantsTree.reveal(first, { select: false, focus: false })).catch(() => undefined);
+}
 
 /**
- * Lists the room's other participants: each one's colour, name, role and document.
- *
- * This is the lookup `:SelvagePeers` exists to be: a caret is a coloured bar with a name in
- * its hover, and the list is where a colour is turned back into a person. The list is every
- * peer the room names, including one in a document this window does not hold — a colour is
- * derived from a peer id, so it is known before the caret is drawn.
+ * Lists everyone in the room as the Participants view does: each face in its seat colour, the
+ * name, and where they are. This is where a caret's colour is turned back into a person.
  */
 async function listPeers(): Promise<void> {
   const session = current;
@@ -3968,24 +4115,8 @@ async function listPeers(): Promise<void> {
     void vscode.window.showWarningMessage('Selvage: join a session first.');
     return;
   }
-  const participants = session.participants();
-  if (participants.length === 0) {
-    void vscode.window.showWarningMessage('Selvage: no other participants yet.');
-    return;
-  }
-  await vscode.window.showQuickPick(
-    participants.map((participant) => ({
-      label: participant.displayName === '' ? participant.peerId : participant.displayName,
-      description: participant.role,
-      detail: participant.path ?? 'not in a file yet',
-      iconPath: swatch(participant.colour),
-    })),
-    {
-      title: `Selvage: who is in the room`,
-      placeHolder: 'Other participants, and each one\'s caret colour',
-      matchOnDescription: true,
-      matchOnDetail: true,
-    },
+  await session.choosePerson(session.identity(), 'Everyone in the room, and where they are', () =>
+    session === current ? personRows(session.people(), session.followingId()) : [],
   );
 }
 
@@ -4239,8 +4370,4 @@ function userName(): string {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function seconds(ms: number): string {
-  return `${Math.max(0, Math.round(ms / 1000))}s`;
 }

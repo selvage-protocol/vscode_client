@@ -38,44 +38,193 @@
   "contributes": {
     "colors": [
       {
+        "id": "selvage.seat.1",
+        "description": "Seat 1 of 13, the host's: their caret, face and file badge.",
+        "defaults": {
+          "light": "#cba6f7",
+          "dark": "#cba6f7",
+          "highContrast": "#cba6f7"
+        }
+      },
+      {
+        "id": "selvage.seat.2",
+        "description": "Seat 2 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#94e2d5",
+          "dark": "#94e2d5",
+          "highContrast": "#94e2d5"
+        }
+      },
+      {
+        "id": "selvage.seat.3",
+        "description": "Seat 3 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#f5e0dc",
+          "dark": "#f5e0dc",
+          "highContrast": "#f5e0dc"
+        }
+      },
+      {
+        "id": "selvage.seat.4",
+        "description": "Seat 4 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#f2cdcd",
+          "dark": "#f2cdcd",
+          "highContrast": "#f2cdcd"
+        }
+      },
+      {
+        "id": "selvage.seat.5",
+        "description": "Seat 5 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#f5c2e7",
+          "dark": "#f5c2e7",
+          "highContrast": "#f5c2e7"
+        }
+      },
+      {
+        "id": "selvage.seat.6",
+        "description": "Seat 6 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#f38ba8",
+          "dark": "#f38ba8",
+          "highContrast": "#f38ba8"
+        }
+      },
+      {
+        "id": "selvage.seat.7",
+        "description": "Seat 7 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#eba0ac",
+          "dark": "#eba0ac",
+          "highContrast": "#eba0ac"
+        }
+      },
+      {
+        "id": "selvage.seat.8",
+        "description": "Seat 8 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#fab387",
+          "dark": "#fab387",
+          "highContrast": "#fab387"
+        }
+      },
+      {
+        "id": "selvage.seat.9",
+        "description": "Seat 9 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#a6e3a1",
+          "dark": "#a6e3a1",
+          "highContrast": "#a6e3a1"
+        }
+      },
+      {
+        "id": "selvage.seat.10",
+        "description": "Seat 10 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#89dceb",
+          "dark": "#89dceb",
+          "highContrast": "#89dceb"
+        }
+      },
+      {
+        "id": "selvage.seat.11",
+        "description": "Seat 11 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#74c7ec",
+          "dark": "#74c7ec",
+          "highContrast": "#74c7ec"
+        }
+      },
+      {
+        "id": "selvage.seat.12",
+        "description": "Seat 12 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#89b4fa",
+          "dark": "#89b4fa",
+          "highContrast": "#89b4fa"
+        }
+      },
+      {
+        "id": "selvage.seat.13",
+        "description": "Seat 13 of 13: one person's caret, face and file badge.",
+        "defaults": {
+          "light": "#b4befe",
+          "dark": "#b4befe",
+          "highContrast": "#b4befe"
+        }
+      },
+      {
         "id": "selvage.peer.0",
         "description": "Peer colour 1 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#e06c75", "dark": "#e06c75", "highContrast": "#e06c75" }
+        "defaults": {
+          "light": "#e06c75",
+          "dark": "#e06c75",
+          "highContrast": "#e06c75"
+        }
       },
       {
         "id": "selvage.peer.1",
         "description": "Peer colour 2 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#e5c07b", "dark": "#e5c07b", "highContrast": "#e5c07b" }
+        "defaults": {
+          "light": "#e5c07b",
+          "dark": "#e5c07b",
+          "highContrast": "#e5c07b"
+        }
       },
       {
         "id": "selvage.peer.2",
         "description": "Peer colour 3 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#98c379", "dark": "#98c379", "highContrast": "#98c379" }
+        "defaults": {
+          "light": "#98c379",
+          "dark": "#98c379",
+          "highContrast": "#98c379"
+        }
       },
       {
         "id": "selvage.peer.3",
         "description": "Peer colour 4 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#56b6c2", "dark": "#56b6c2", "highContrast": "#56b6c2" }
+        "defaults": {
+          "light": "#56b6c2",
+          "dark": "#56b6c2",
+          "highContrast": "#56b6c2"
+        }
       },
       {
         "id": "selvage.peer.4",
         "description": "Peer colour 5 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#61afef", "dark": "#61afef", "highContrast": "#61afef" }
+        "defaults": {
+          "light": "#61afef",
+          "dark": "#61afef",
+          "highContrast": "#61afef"
+        }
       },
       {
         "id": "selvage.peer.5",
         "description": "Peer colour 6 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#c678dd", "dark": "#c678dd", "highContrast": "#c678dd" }
+        "defaults": {
+          "light": "#c678dd",
+          "dark": "#c678dd",
+          "highContrast": "#c678dd"
+        }
       },
       {
         "id": "selvage.peer.6",
         "description": "Peer colour 7 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#d19a66", "dark": "#d19a66", "highContrast": "#d19a66" }
+        "defaults": {
+          "light": "#d19a66",
+          "dark": "#d19a66",
+          "highContrast": "#d19a66"
+        }
       },
       {
         "id": "selvage.peer.7",
         "description": "Peer colour 8 of 8: one participant's caret, roster dot and file badge.",
-        "defaults": { "light": "#b48ead", "dark": "#b48ead", "highContrast": "#b48ead" }
+        "defaults": {
+          "light": "#b48ead",
+          "dark": "#b48ead",
+          "highContrast": "#b48ead"
+        }
       }
     ],
     "commands": [
@@ -112,7 +261,8 @@
       {
         "command": "selvage.displayName",
         "category": "Selvage",
-        "title": "Set the name other participants see"
+        "title": "Set the name other participants see",
+        "icon": "$(edit)"
       },
       {
         "command": "selvage.changeServer",
@@ -178,7 +328,7 @@
         },
         {
           "command": "selvage.followParticipant",
-          "when": "view == selvage.participants && viewItem == selvageParticipant",
+          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantAway)",
           "group": "inline@2"
         },
         {
@@ -187,19 +337,29 @@
           "group": "inline@3"
         },
         {
+          "command": "selvage.displayName",
+          "when": "view == selvage.participants && viewItem == selvageParticipantSelf",
+          "group": "inline@4"
+        },
+        {
           "command": "selvage.goToParticipant",
           "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)",
           "group": "1_selvage@1"
         },
         {
           "command": "selvage.followParticipant",
-          "when": "view == selvage.participants && viewItem == selvageParticipant",
+          "when": "view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantAway)",
           "group": "1_selvage@2"
         },
         {
           "command": "selvage.stopFollowing",
           "when": "view == selvage.participants && viewItem == selvageParticipantFollowing",
           "group": "1_selvage@3"
+        },
+        {
+          "command": "selvage.displayName",
+          "when": "view == selvage.participants && viewItem == selvageParticipantSelf",
+          "group": "1_selvage@4"
         }
       ]
     },

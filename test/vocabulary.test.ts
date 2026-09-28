@@ -81,7 +81,6 @@ const SENTENCES = [
   "'Selvage: not following anyone.'",
   '`Selvage: could not open ${} from the room: ${}`',
   '`Selvage: nothing to go to: ${}\'s caret does not resolve here.`',
-  '`Selvage: ${} left the room, so following stopped.`',
   // The room's shape on disk: what the listing could not keep in step, and what is not
   // part of the room at all.
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
@@ -92,9 +91,8 @@ const SENTENCES = [
   // A document open on a path the host deleted or moved out of the room.
   '`Selvage: ${} is no longer in the room, so it was closed.`',
   '`Selvage: ${} is no longer in the room; your unsaved copy is kept but no longer shared.`',
-  // What the room's own reports say. The host-detached and host-reclaimed sentences are
-  // full sentences shown without the wrapper; they are pinned by `PLAIN_SENTENCES` below.
-  '`Selvage: the room is gone (${}).`',
+  // What the room's own reports say. The host-away, host-back and room-gone sentences are the
+  // web's, written once in the bridge; `BRIDGE_WORDS` below pins that the adapter says them.
   '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',
   '`Selvage: ${} was out of step with the room; the room\'s copy has been put back.`',
   '`Selvage: could not save ${}; the file on disk is behind the room.`',
@@ -154,16 +152,9 @@ const SENTENCES = [
   '`Selvage: the name others see is "${}".`',
   '`Selvage: could not write the "selvage.displayName" setting, so the name was not changed (${}).`',
   '`Selvage: display name set to "${}".`',
-  '`Selvage: who is in the room`',
-  // The status bar: the one Selvage surface a window always has, so its fragments are pinned
-  // here with the codicon that leads them. The scan below reaches them through the same
-  // optional prefix a template carries (`sentencesIn`).
-  "'$(sync~spin) Selvage: reconnecting…'",
-  '`$(warning) Selvage: host away — room closes in ${}s`',
-  '`$(radio-tower) Selvage: ${} — ${}`',
+  // The follow indicator, pinned with the codicon that leads it. The scan below reaches it
+  // through the same optional prefix a template carries (`sentencesIn`).
   '`$(person) Selvage: following ${}`',
-  // The empty room's one row: the invitation to copy the link.
-  '`Selvage: you\'re the only one here — copy the invite link.`',
 ];
 
 /**
@@ -173,10 +164,34 @@ const SENTENCES = [
  * the wrapped literals.
  */
 const PLAIN_SENTENCES = [
-  'Stopped following ${} — you moved.',
-  'Host disconnected. ${} left — if they return within ${} the session continues, otherwise this room closes and your local copy is kept.',
-  '${} is back — the session continues.',
-  'The room closed. Your copy is kept at ${}.',
+  '${} Your copy is kept at ${}.',
+  '$(sync~spin) Reconnecting…',
+  '$(warning) ${} · Disconnecting in ${}',
+  '$(radio-tower) ${}',
+];
+
+/**
+ * The words the web page says, which the bridge writes once for both editors. The adapter shows
+ * them by calling the bridge, so what is pinned is the call rather than a copy of the words.
+ */
+const BRIDGE_WORDS = [
+  'COPIED_LABEL',
+  'COPY_INVITE_LABEL',
+  'HOST_LEAVE_QUESTION',
+  'LEAVE_ASKING_LABEL',
+  'disconnectingReading(',
+  'followEndedByFileGone(',
+  'followEndedByLeaving(',
+  'followEndedByMoving(',
+  'followEndedByTyping(',
+  'guestIdentity(',
+  'hostAwaySentence(',
+  'hostBackSentence(',
+  'hostLeftSentence(',
+  'hostingIdentity(',
+  'roomGoneSentence(',
+  'rosterLabel(',
+  'seatColours(',
 ];
 
 /**
@@ -376,6 +391,28 @@ test('the full sentences shown without a wrapper are the shared ones', () => {
     .join('\n');
   const missing = PLAIN_SENTENCES.filter((sentence) => !containsPlainSentence(source, sentence));
   assert.deepEqual(missing, [], 'a shared sentence is not written in the adapter as agreed');
+});
+
+test('the web\'s words reach a user through the bridge that writes them', () => {
+  const code = stripComments(
+    readdirSync(ADAPTER)
+      .filter((entry) => entry.endsWith('.ts'))
+      .map((name) => readFileSync(resolve(ADAPTER, name), 'utf8'))
+      .join('\n'),
+  );
+  const uses = (word: string): boolean =>
+    word.endsWith('(')
+      ? new RegExp(`(?<![\\w.])${word.slice(0, -1)}\\(`).test(code.replace(/^import[^;]*;/gms, ''))
+      : new RegExp(`(?<![\\w.])${word}\\b`).test(code.replace(/^import[^;]*;/gms, ''));
+  assert.deepEqual(
+    BRIDGE_WORDS.filter((word) => !uses(word)),
+    [],
+    'the adapter writes its own words where the web\'s are in the bridge',
+  );
+  // The old sentences these replaced, which no window may show any more.
+  for (const retired of ['you moved.', 'the room is gone', 'host away', 'is back —', 'Host disconnected.']) {
+    assert.equal(code.includes(retired), false, `a retired sentence is still in the adapter: ${retired}`);
+  }
 });
 
 test('a display name is refused in the words both clients use', () => {

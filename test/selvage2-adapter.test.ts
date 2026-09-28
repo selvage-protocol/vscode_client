@@ -829,7 +829,7 @@ test('a version-2 guest whose bounded retry gave up takes its mirror with it', (
   const bar = String(
     window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
   );
-  assert.match(bar, /reconnecting…/, 'the retry did not reach the status bar');
+  assert.equal(bar, '$(sync~spin) Reconnecting…', 'the retry did not reach the status bar');
 
   window.fire({ type: 'disconnected' });
   assert.equal(
@@ -859,16 +859,13 @@ test('a version-2 session with no mirror says it cannot resume a hosting session
 });
 
 
-test('a version-2 window says it is waiting for the host rather than claiming guest', (t) => {
+test('a version-2 window with no role yet claims none in the status bar', (t) => {
   // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used
-  // to read that window as `guest` — a claim a version-2 peer cannot make yet.
+  // to read that window as `guest`, a claim a version-2 peer cannot make yet. The web's words for
+  // a session whose host it cannot name claim no role either.
   const window = viewerSession(t);
   const bar = String(
     window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',
   );
-  assert.match(
-    bar,
-    /waiting for the host/,
-    `the window claimed a role the room has not given it: ${bar}`,
-  );
+  assert.equal(bar, '$(radio-tower) In a shared session', `the window claimed a role the room has not given it: ${bar}`);
 });

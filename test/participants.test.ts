@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { PEER_PALETTE, peerColour } from '../src/bridge/cursors.ts';
+import { SEAT_PALETTE } from '../src/bridge/seats.ts';
 import { initials } from '../src/bridge/initials.ts';
 import {
   badgeFiles,
@@ -119,24 +120,21 @@ test('every palette entry is a theme colour whose default is that entry', () => 
     };
   };
   const colours = manifest.contributes?.colors ?? [];
+  const wanted = [
+    ...SEAT_PALETTE.map((colour, index) => [`selvage.seat.${index + 1}`, colour] as const),
+    ...PEER_PALETTE.map((colour, index) => [`selvage.peer.${index}`, colour] as const),
+  ];
   assert.deepEqual(
     colours.map((entry) => entry.id),
-    PEER_PALETTE.map((_, index) => `selvage.peer.${index}`),
-    'the manifest contributes a colour set that is not the peer palette',
+    wanted.map(([id]) => id),
+    'the manifest contributes a colour set that is not the seats and then the peer palette',
   );
-  for (const [index, colour] of PEER_PALETTE.entries()) {
+  for (const [index, [id, colour]] of wanted.entries()) {
     const entry = colours[index];
     for (const theme of ['light', 'dark', 'highContrast']) {
-      assert.equal(
-        entry?.defaults?.[theme],
-        colour,
-        `selvage.peer.${index} is not palette entry ${index} on a ${theme} theme`,
-      );
+      assert.equal(entry?.defaults?.[theme], colour, `${id} is not its palette entry on a ${theme} theme`);
     }
-    assert.ok(
-      (entry?.description ?? '').trim() !== '',
-      `selvage.peer.${index} has no description`,
-    );
+    assert.ok((entry?.description ?? '').trim() !== '', `${id} has no description`);
   }
   for (const peerId of ['p-aaa', 'p-bbb', 'p-ccc', 'p-3d334f']) {
     assert.equal(
@@ -325,43 +323,79 @@ function viewNodes(bundle: LoadedExtension): RowNode[] {
   return children as RowNode[];
 }
 
-test('rows for the view are peers, or the one pinned note when there is nothing to list', () => {
-  const ada = { peerId: 'p-aaa', displayName: 'Ada', role: 'host', path: 'src/a.rs' };
-  const peered: RosterRow[] = viewRows({ entries: [ada], followingPeerId: undefined });
-  assert.equal(peered.length, 1);
-  assert.equal((peered[0] as { kind: string }).kind, 'peer');
-  const require = createRequire(import.meta.url);
-  const Module = require('node:module') as {
-    _resolveFilename: (...args: unknown[]) => string;
+interface SeatMember {
+  peerId: string;
+  displayName: string;
+  role: 'host' | 'guest';
+  path?: string;
+}
+
+interface SeatRow {
+  peerId: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  contextValue: string;
+  colour: string;
+}
+
+/** The roster's pure halves, read off the built bundle. */
+function roster(): {
+  seatPeople: (self: SeatMember, others: SeatMember[]) => unknown[];
+  personRows: (people: unknown[], followingPeerId?: string) => SeatRow[];
+} {
+  const exports = bundleExports() as unknown as {
+    seatPeople?: (self: SeatMember, others: SeatMember[]) => unknown[];
+    personRows?: (people: unknown[], followingPeerId?: string) => SeatRow[];
   };
-  const resolveModule = Module._resolveFilename;
-  const stub = resolve(HERE, 'test', 'helpers', 'vscode-stub.cjs');
-  Module._resolveFilename = (...args: unknown[]): string =>
-    args[0] === 'vscode' ? stub : resolveModule(...args);
-  let exported: unknown;
-  try {
-    exported = (require(resolve(HERE, 'dist', 'extension.js')) as { resolveViewRows: unknown })
-      .resolveViewRows;
-  } finally {
-    Module._resolveFilename = resolveModule;
+  assert.equal(typeof exports.seatPeople, 'function', 'the bundle exports no seating');
+  assert.equal(typeof exports.personRows, 'function', 'the bundle exports no roster rows');
+  return exports as {
+    seatPeople: (self: SeatMember, others: SeatMember[]) => unknown[];
+    personRows: (people: unknown[], followingPeerId?: string) => SeatRow[];
+  };
+}
+
+test('the roster lists the host, then you, then the others, each in their seat colour', () => {
+  const { seatPeople, personRows } = roster();
+  const bob: SeatMember = { peerId: 'p-bob', displayName: 'Bob', role: 'guest' };
+  const others: SeatMember[] = [
+    { peerId: 'p-cy', displayName: 'Cy', role: 'guest', path: 'src/c.rs' },
+    { peerId: 'p-dee', displayName: 'Dee', role: 'guest' },
+    { peerId: 'p-ada', displayName: 'Ada', role: 'host', path: 'src/a.rs' },
+  ];
+  const rows = personRows(seatPeople(bob, others), 'p-cy');
+  assert.deepEqual(
+    rows.map((row) => [row.label, row.description, row.contextValue, row.colour]),
+    [
+      ['Ada', 'Host · in src/a.rs', 'selvageParticipant', SEAT_PALETTE[0]],
+      ['Bob', '(you)', 'selvageParticipantSelf', SEAT_PALETTE[1]],
+      ['Cy', 'following · in src/c.rs', 'selvageParticipantFollowing', SEAT_PALETTE[2]],
+      ['Dee', 'not in a file yet', 'selvageParticipantAway', SEAT_PALETTE[3]],
+    ],
+  );
+  assert.equal(rows[1]?.tooltip, 'Bob (you)');
+  assert.equal(rows[2]?.tooltip, 'Cy · in src/c.rs · Following Cy');
+  for (const row of rows) {
+    assert.ok(!row.label.includes('$('), `a row label carries an icon's source text: ${row.label}`);
   }
-  assert.equal(typeof exported, 'function', 'the bundle exports no view-row resolver');
-  const words = exported as (rows: RosterRow[]) => Array<{
-    kind: string;
-    label?: string;
-    command?: string;
-  }>;
-  assert.deepEqual(words(viewRows({ entries: [], followingPeerId: undefined })), [
-    {
-      kind: 'note',
-      label: 'Selvage: you\'re the only one here — copy the invite link.',
-      command: 'selvage.copyInvite',
-    },
-  ]);
-  // No session is no row: the view is empty, which is when the editor draws the welcome the
-  // manifest contributes for it. A row here would stand in front of that welcome forever.
-  assert.deepEqual(words(viewRows(undefined)), []);
-  assert.deepEqual(words(peered).length, 1);
+});
+
+test('past the seats, a person wears the colour their id hashes to', () => {
+  const { seatPeople, personRows } = roster();
+  const self: SeatMember = { peerId: 'p-host', displayName: 'Ada', role: 'host' };
+  const others: SeatMember[] = Array.from({ length: SEAT_PALETTE.length }, (_, index) => ({
+    peerId: `p-${String(index).padStart(3, '0')}`,
+    displayName: `G${index}`,
+    role: 'guest',
+  }));
+  const rows = personRows(seatPeople(self, others));
+  assert.deepEqual(
+    rows.slice(0, SEAT_PALETTE.length).map((row) => row.colour),
+    [...SEAT_PALETTE],
+  );
+  const last = rows.at(-1);
+  assert.equal(last?.colour, peerColour(last?.peerId ?? ''));
 });
 
 test('the view is empty outside a session, where the welcome stands', async (t) => {
@@ -377,11 +411,17 @@ test('the view is empty outside a session, where the welcome stands', async (t) 
     'a row of its own would hide the welcome the manifest contributes',
   );
   const seat_ = await seat(t);
-  const ada = await waitFor('Ada to list in the view', () => {
+  const listed = await waitFor('Ada to list in the view', () => {
     const nodes = viewNodes(seat_.bundle);
-    return nodes.length === 1 && nodes[0]?.peerId !== undefined ? nodes : false;
+    return nodes.length === 2 ? nodes : false;
   });
-  assert.equal(ada[0]?.label, 'Ada');
+  assert.deepEqual(
+    listed.map((node) => [node.label, node.description]),
+    [
+      ['Ada', 'Host · not in a file yet'],
+      ['Bob', '(you)'],
+    ],
+  );
 });
 
 test('rows render on fabricated presence, naming the file each peer is in', async (t) => {
@@ -393,13 +433,13 @@ test('rows render on fabricated presence, naming the file each peer is in', asyn
     return words(cy ?? {}).includes(PATH_A) ? current : false;
   });
   const cy = nodes.find((node) => node.label === 'Cy');
-  assert.equal(cy?.description, PATH_A, 'the row does not name the file the peer is in');
+  assert.equal(cy?.description, `in ${PATH_A}`, 'the row does not name the file the peer is in');
   assert.equal(cy?.contextValue, 'selvageParticipant');
   for (const node of nodes) {
     assert.ok(!node.label?.includes('.rs'), 'a path leaked into a row label');
   }
   const ada = nodes.find((node) => node.label === 'Ada');
-  assert.equal(ada?.description, 'not in a file yet', 'the host published no caret');
+  assert.equal(ada?.description, 'Host · not in a file yet', 'the host published no caret');
 });
 
 test('a peer’s name is plain text in the hover, never markdown to render', async (t) => {
@@ -442,7 +482,7 @@ test('a peer\u2019s claimed path is a caption, so its length is the reader\u2019
   // wait that follows cannot pass on the row that was already there.
   await waitFor('Cy to list with their file known', () => {
     const found = viewNodes(seat_.bundle).find((node) => node.label === 'Cy');
-    return found?.description === PATH_A ? found : false;
+    return found?.description === `in ${PATH_A}` ? found : false;
   });
 
   const outside = `../${'x'.repeat(64 * 1024)}`;
@@ -451,7 +491,7 @@ test('a peer\u2019s claimed path is a caption, so its length is the reader\u2019
     'the caption to come back bounded',
     () => {
       const found = viewNodes(seat_.bundle).find((node) => node.label === 'Cy');
-      const caption = found?.description ?? '';
+      const caption = (found?.description ?? '').replace(/^in /, '');
       // Both halves are the effect: the caption is what presence said, and it is bounded.
       return caption.startsWith('../xxx') && caption.length <= MAX_GRANT_PATH_BYTES
         ? found
@@ -465,21 +505,16 @@ test('a peer\u2019s claimed path is a caption, so its length is the reader\u2019
         })),
     },
   );
+  const caption = (row.description ?? '').replace(/^in /, '');
+  assert.ok(caption.startsWith('../xxx'), `the caption lost what presence said: ${caption.slice(0, 20)}`);
+  assert.ok(caption.endsWith('\u2026'), 'a clipped caption does not say it was clipped');
   assert.ok(
-    (row.description ?? '').startsWith('../xxx'),
-    `the caption lost what presence said: ${row.description?.slice(0, 20)}`,
-  );
-  assert.ok(
-    (row.description ?? '').endsWith('\u2026'),
-    'a clipped caption does not say it was clipped',
-  );
-  assert.ok(
-    (row.description ?? '').length <= MAX_GRANT_PATH_BYTES,
-    `a row caption is ${row.description?.length} bytes of a stranger's choosing`,
+    caption.length <= MAX_GRANT_PATH_BYTES,
+    `a row caption is ${caption.length} bytes of a stranger's choosing`,
   );
   const hover = markdown(row);
   assert.ok(
-    hover.length <= MAX_GRANT_PATH_BYTES + 32,
+    hover.length <= MAX_GRANT_PATH_BYTES + 64,
     `a hover caption is ${hover.length} bytes of a stranger's choosing`,
   );
 
@@ -487,14 +522,14 @@ test('a peer\u2019s claimed path is a caption, so its length is the reader\u2019
   await seat_.bundle.stub.commands.executeCommand('selvage.peers');
   const items = await waitFor('the participant picker', () => {
     const listed = seat_.bundle.stub.registered.quickPicks.at(-1)?.items as
-      | Array<{ label?: string; detail?: string }>
+      | Array<{ label?: string; description?: string }>
       | undefined;
     return listed !== undefined && listed.length > 0 ? listed : false;
   });
   for (const item of items) {
     assert.ok(
-      (item.detail ?? '').length <= MAX_GRANT_PATH_BYTES,
-      `a palette row is ${(item.detail ?? '').length} bytes of a stranger's choosing`,
+      (item.description ?? '').length <= MAX_GRANT_PATH_BYTES + 32,
+      `a palette row is ${(item.description ?? '').length} bytes of a stranger's choosing`,
     );
   }
 });
@@ -537,7 +572,7 @@ test('a peer in a document is one click away, and a peer in none is not', async 
   const nodes = await waitFor('Cy to list with their file known', () => {
     const current = viewNodes(seat_.bundle);
     const row = current.find((node) => node.label === 'Cy');
-    return row?.description === PATH_A ? current : false;
+    return row?.description === `in ${PATH_A}` ? current : false;
   });
   const cyRow = nodes.find((node) => node.label === 'Cy');
   assert.equal(cyRow?.command?.command, 'selvage.goToParticipant', 'clicking the row does nothing');
@@ -588,7 +623,7 @@ test('a rename updates the row in place, and a leave removes it without rebuildi
   await cy.disconnect();
   await waitFor('Cy to leave the view', () => {
     const current = viewNodes(seat_.bundle);
-    return current.length === 1 && current[0]?.label === 'Ada' ? true : false;
+    return current.map((node) => node.label).join() === 'Ada,Bob' ? true : false;
   });
   const remaining = viewNodes(seat_.bundle);
   assert.equal(remaining.find((node) => node.label === 'Ada'), adaBefore);
@@ -690,11 +725,9 @@ test('a peer file wears their initials in their colour until they leave', async 
     return current?.badge === 'Cy' ? current : false;
   });
   assert.equal(badge.tooltip, 'Cy is here');
-  assert.equal(
-    badge.color?.id,
-    peerColourId(cy.session().peer.peer_id),
-    'the badge is not drawn in the colour the peer\u2019s caret wears',
-  );
+  // Ada hosts in seat 1 and this window is seat 2, so Cy sits in seat 3.
+  assert.equal(badge.color?.id, 'selvage.seat.3', 'the badge is not drawn in the colour Cy\u2019s seat gives');
+  assert.ok(cy.session().peer.peer_id !== '');
   const fired: unknown[] = [];
   badges.onDidChangeFileDecorations((changed) => {
     fired.push(String(changed));
@@ -746,10 +779,7 @@ test('two peers sharing a name badge their file with the count, not one dot', as
     const current = badges.provideFileDecoration(uri) as { badge?: string } | undefined;
     return current?.badge === '2' ? (current as { badge: string; tooltip: string }) : false;
   });
-  assert.ok(
-    badge.tooltip.includes('Cy (') && badge.tooltip.endsWith('are here'),
-    `two Adas collapsed into one name: ${badge.tooltip}`,
-  );
+  assert.match(badge.tooltip, /^Cy · \w+, Cy · \w+ are here$/, `two Cys collapsed into one name: ${badge.tooltip}`);
 });
 /** The bundle's pure helpers, read off the built bundle like the invite tests do. */
 function bundleExports(): {
@@ -863,8 +893,8 @@ test('hosting an empty room retires the welcome row at once', async (t) => {
       : false,
   );
   assert.deepEqual(
-    viewNodes(bundle).map((node) => node.label),
-    ["Selvage: you're the only one here — copy the invite link."],
+    viewNodes(bundle).map((node) => [node.label, node.description, node.contextValue]),
+    [['Ada', '(you) · Host', 'selvageParticipantSelf']],
   );
 });
 
@@ -873,9 +903,9 @@ test('following marks the row at once, and leaves the file it names alone', asyn
   const { bundle } = seat_;
   const adaRow = await waitFor('Ada to list', () => {
     const current = viewNodes(bundle);
-    return current.length === 1 && current[0]?.peerId !== undefined ? current[0] : false;
+    return current.find((node) => node.label === 'Ada') ?? false;
   });
-  assert.equal(adaRow.description, 'not in a file yet', 'the row lost what it said about Ada');
+  assert.equal(adaRow.description, 'Host · not in a file yet', 'the row lost what it said about Ada');
   await bundle.stub.commands.executeCommand('selvage.followParticipant', adaRow);
   await waitFor('the follow to mark the row', () =>
     viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.contextValue ===
@@ -884,11 +914,11 @@ test('following marks the row at once, and leaves the file it names alone', asyn
       : false,
   );
   const followed = viewNodes(bundle).find((node) => node.peerId === adaRow.peerId);
-  assert.equal(followed?.label, '$(eye) Ada', 'the followed row is not marked as the one followed');
+  assert.equal(followed?.label, 'Ada', 'the followed row wears more than the name');
   assert.equal(
     followed?.description,
-    'not in a file yet',
-    'the follow state displaced what the row says about where Ada is',
+    'Host · following · not in a file yet',
+    'the follow is not marked, or displaced what the row says about where Ada is',
   );
   await bundle.stub.commands.executeCommand('selvage.stopFollowing');
   await waitFor('the stop to unmark the row', () =>
@@ -898,16 +928,15 @@ test('following marks the row at once, and leaves the file it names alone', asyn
       : false,
   );
   assert.equal(
-    viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.label,
-    'Ada',
-    'the eye glyph survived the stop',
+    viewNodes(bundle).find((node) => node.peerId === adaRow.peerId)?.description,
+    'Host · not in a file yet',
+    'the follow mark survived the stop',
   );
 });
 
 test('a window with no session is invited to host, and the extension carries its own mark', () => {
   // The one surface a stranger meets before any session exists. It is the view's welcome, which
-  // the editor draws only while the view has no rows at all — the page `describeParticipants`
-  // and `resolveViewRows` leave empty outside a session.
+  // the editor draws only while the view has no rows at all, which is the view outside a session.
   const manifest = JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')) as {
     icon?: string;
     contributes?: {
@@ -969,7 +998,12 @@ test('the manifest contributes the view, with the same actions on the row as but
       .filter((entry) => (entry.group ?? '').split('@')[0] === name)
       .map((entry) => entry.command)
       .sort();
-  const actions = ['selvage.followParticipant', 'selvage.goToParticipant', 'selvage.stopFollowing'].sort();
+  const actions = [
+    'selvage.displayName',
+    'selvage.followParticipant',
+    'selvage.goToParticipant',
+    'selvage.stopFollowing',
+  ].sort();
   assert.deepEqual(inGroup('inline'), actions, 'the peer rows carry no per-peer buttons');
   assert.deepEqual(inGroup('1_selvage'), actions, 'the peer rows lost their menu actions');
   assert.deepEqual(
@@ -1003,9 +1037,11 @@ test('the manifest contributes the view, with the same actions on the row as but
   const WHEN: Record<string, string> = {
     'selvage.goToParticipant':
       'view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantFollowing)',
-    'selvage.followParticipant': 'view == selvage.participants && viewItem == selvageParticipant',
+    'selvage.followParticipant':
+      'view == selvage.participants && (viewItem == selvageParticipant || viewItem == selvageParticipantAway)',
     'selvage.stopFollowing':
       'view == selvage.participants && viewItem == selvageParticipantFollowing',
+    'selvage.displayName': 'view == selvage.participants && viewItem == selvageParticipantSelf',
   };
   for (const command of Object.keys(WHEN)) {
     assert.equal(whenOf(command, 'inline'), WHEN[command], `${command}'s button shows on the wrong rows`);
@@ -1016,9 +1052,10 @@ test('the manifest contributes the view, with the same actions on the row as but
     );
   }
   // A tree row renders a command's button from its icon: a command with none is a button
-  // with no glyph, so the three the row carries name one apiece.
+  // with no glyph, so the four the rows carry name one apiece.
   const icons = new Map(commands.map((entry) => [entry.command, entry.icon]));
   assert.equal(icons.get('selvage.goToParticipant'), '$(go-to-file)');
   assert.equal(icons.get('selvage.followParticipant'), '$(eye)');
   assert.equal(icons.get('selvage.stopFollowing'), '$(eye-closed)');
+  assert.equal(icons.get('selvage.displayName'), '$(edit)');
 });

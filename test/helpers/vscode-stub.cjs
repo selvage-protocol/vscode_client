@@ -24,6 +24,8 @@ const registered = {
   /** The buttons each information message offered, in order, beside `information`. */
   informationItems: [],
   warnings: [],
+  /** What each warning offered beyond its sentence, `[options?, ...buttons]`, beside `warnings`. */
+  warningItems: [],
   errors: [],
   /** The buttons each error message offered, in order, beside `errors`. */
   errorItems: [],
@@ -49,6 +51,13 @@ const registered = {
   warningReply: undefined,
   errorReply: undefined,
   quickPickReply: undefined,
+  /**
+   * `true` keeps a `createQuickPick` picker open after `show()`, so a test can watch its rows
+   * change and answer it through the record's `accept(item)` or `close()`.
+   */
+  quickPickHold: false,
+  /** Every `createTreeView` reveal, as `{ viewId, element, options }`, in order. */
+  reveals: [],
   inputReply: undefined,
   /** The window's open documents, as a test seeded them before the session started. */
   textDocuments: [],
@@ -347,6 +356,7 @@ function reset() {
   registered.information.length = 0;
   registered.informationItems.length = 0;
   registered.warnings.length = 0;
+  registered.warningItems.length = 0;
   registered.errors.length = 0;
   registered.errorItems.length = 0;
   registered.quickPicks.length = 0;
@@ -385,6 +395,8 @@ function reset() {
   registered.warningReply = undefined;
   registered.errorReply = undefined;
   registered.quickPickReply = undefined;
+  registered.quickPickHold = false;
+  registered.reveals.length = 0;
   registered.inputReply = undefined;
   configured.clear();
   memento.clear();
@@ -830,6 +842,17 @@ module.exports = {
       registered.treeDataProviders.push({ viewId, provider });
       return disposable();
     },
+    /** Records the view as `registerTreeDataProvider` does, and every reveal it is asked for. */
+    createTreeView(viewId, options) {
+      registered.treeDataProviders.push({ viewId, provider: options.treeDataProvider });
+      return {
+        reveal(element, revealOptions) {
+          registered.reveals.push({ viewId, element, options: revealOptions });
+          return Promise.resolve();
+        },
+        dispose() {},
+      };
+    },
     /** Records the badge provider; a test asks it what a file wears. */
     registerFileDecorationProvider(provider) {
       registered.fileDecorationProviders.push(provider);
@@ -890,7 +913,7 @@ module.exports = {
     },
     showWarningMessage: (message, ...rest) => {
       registered.warnings.push(message);
-      void rest;
+      registered.warningItems.push(rest);
       return Promise.resolve(registered.warningReply);
     },
     showErrorMessage: (message, ...rest) => {
@@ -901,6 +924,91 @@ module.exports = {
     showQuickPick: (items, options) => {
       registered.quickPicks.push({ items, options });
       return Promise.resolve(registered.quickPickReply);
+    },
+    /**
+     * A live picker. `show()` records it in `quickPicks` like `showQuickPick`, with `items` and
+     * `options` read from the picker as it stands, so a row it drops later is gone from the
+     * record too. Unless `quickPickHold` is set it answers at once: `quickPickReply` is accepted,
+     * or the picker is dismissed when there is none.
+     */
+    createQuickPick: () => {
+      const accepted = [];
+      const hidden = [];
+      const pick = {
+        title: undefined,
+        placeholder: undefined,
+        matchOnDescription: false,
+        matchOnDetail: false,
+        items: [],
+        selectedItems: [],
+        visible: false,
+        disposed: false,
+        onDidAccept(handler) {
+          accepted.push(handler);
+          return disposable();
+        },
+        onDidHide(handler) {
+          hidden.push(handler);
+          return disposable();
+        },
+        show() {
+          pick.visible = true;
+          const record = {
+            get items() {
+              return pick.items;
+            },
+            get options() {
+              return {
+                title: pick.title,
+                placeHolder: pick.placeholder,
+                matchOnDescription: pick.matchOnDescription,
+                matchOnDetail: pick.matchOnDetail,
+              };
+            },
+            get open() {
+              return pick.visible;
+            },
+            accept(item) {
+              pick.selectedItems = [item];
+              for (const handler of [...accepted]) {
+                handler();
+              }
+            },
+            close() {
+              pick.hide();
+            },
+          };
+          registered.quickPicks.push(record);
+          if (registered.quickPickHold) {
+            return;
+          }
+          const reply = registered.quickPickReply;
+          queueMicrotask(() => {
+            if (!pick.visible) {
+              return;
+            }
+            if (reply === undefined) {
+              pick.hide();
+            } else {
+              record.accept(reply);
+            }
+          });
+        },
+        hide() {
+          if (!pick.visible) {
+            return;
+          }
+          pick.visible = false;
+          for (const handler of [...hidden]) {
+            handler();
+          }
+        },
+        dispose() {
+          pick.disposed = true;
+          pick.hide();
+        },
+      };
+      return pick;
     },
     showInputBox: (options) => {
       registered.inputs.push(options);

@@ -20,7 +20,7 @@ import {
   badgeSvg,
   onePerLine,
 } from '../src/adapter/gutter.ts';
-import { ANONYMOUS_INITIALS, INITIALS_LIMIT, initials, peerColour } from '../src/bridge/index.ts';
+import { ANONYMOUS_INITIALS, INITIALS_LIMIT, SEAT_PALETTE, initials } from '../src/bridge/index.ts';
 import { LiveSession } from './helpers/live-session.ts';
 import { landStashedJoin, loadBundle, mirrorWindowDir, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -281,10 +281,10 @@ test('the badge is a base64 SVG in the glyph margin, applied at the caret line',
   assert.ok(icon.toString().startsWith(prefix), `gutterIconPath is not a data URI: ${icon.toString()}`);
   assert.equal(badge.options.gutterIconSize, 'contain');
 
-  // The image is the peer's own colour and their initials — the same badge the pure tests pin.
+  // The image is the peer's seat colour and their initials. The host sits in seat 1.
   const svg = Buffer.from(icon.toString().slice(prefix.length), 'base64').toString('utf8');
-  const colour = peerColour(host.session().peer.peer_id);
-  assert.ok(svg.includes(`fill="${colour}"`), `the badge is not the peer's colour: ${svg}`);
+  const colour = SEAT_PALETTE[0];
+  assert.ok(svg.includes(`fill="${colour}"`), `the badge is not the host's seat colour: ${svg}`);
   assert.ok(svg.includes('>Ad</text>'), `the badge does not show the initials: ${svg}`);
 
   // One deterministic render of the cached type, so the count is not the poll history.

@@ -33,7 +33,7 @@ import { LiveSession } from './helpers/live-session.ts';
 import { parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
 import { encodeKey } from '../src/engine/sealed.ts';
 import { baseOf } from './helpers/base.ts';
-import { peerColour } from '../src/bridge/index.ts';
+import { SEAT_PALETTE } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
 
@@ -326,30 +326,24 @@ test('a guest that reached the room over ws:// hands that link on', async (t) =>
 
 test('a guest’s status bar hands the invite on too', async (t) => {
   const { bundle } = await guest(t, ['workspace/README.md']);
-  // The bar is the one Selvage surface a window always has, so what it says is pinned here:
-  // the side of the room the person is on, and how many people are in it. The guest sees the
-  // host, so the count is plural. The side is the applied state's word and arrives after the
-  // join — §13.4 gives this connection no role until a state commits its key, so the bar reads
-  // "waiting for the host" until then — which is why the wait is for the settled text and not
-  // for the moment the item exists.
+  // The bar names the session the way the web's top bar does: a guest is in the host's session.
+  // The host's name arrives with the room's membership, which is why the wait is for the
+  // settled text and not for the moment the item exists.
   const item = await waitFor(
-    'the guest’s bar to name the side of the room it is on',
+    'the guest’s bar to name the session it is in',
     () => {
       const bar = bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage');
-      return bar !== undefined && String(bar.text).startsWith('$(radio-tower) Selvage: guest ')
-        ? bar
-        : false;
+      return bar !== undefined && String(bar.text) === '$(radio-tower) In Ada’s session' ? bar : false;
     },
     { describe: () => bundle.stub.registered.statusBarItems.map((entry) => String(entry.text)) },
   );
-  assert.equal(String(item.text), '$(radio-tower) Selvage: guest — 2 people in the room');
-  assert.equal(
-    item.command,
-    'selvage.copyInvite',
-    'the guest’s status bar tells a person to click it and does nothing',
-  );
-  assert.match(String(item.tooltip), /Invite link: click the status bar to copy it\./);
+  assert.equal(item.command, 'selvage.peers', 'the session item does not open the people');
+  // The invite is its own control, for a guest as for a host.
+  const copy = bundle.stub.registered.statusBarItems.find((entry) => entry.name === 'Selvage invite');
+  assert.equal(copy?.text, '$(link) Copy invite link');
+  assert.equal(copy?.command, 'selvage.copyInvite');
 });
+
 
 test('hosting puts the invite link on the clipboard without being asked', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
@@ -1044,7 +1038,7 @@ test('a host connect that outlives its window gives the seat back', async (t) =>
   );
 });
 
-test('the peers command refuses outside a session and in a room with no one else', async (t) => {
+test('the peers command refuses outside a session and lists you alone in an empty room', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
@@ -1068,21 +1062,26 @@ test('the peers command refuses outside a session and in a room with no one else
   );
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.peers');
-  const alone = await waitFor('the warning', () =>
-    bundle.stub.registered.warnings.find((message) =>
-      message.includes('no other participants'),
-    ) ?? false,
+  const alone = await waitFor('the list', () => bundle.stub.registered.quickPicks.at(-1) ?? false);
+  const rows = alone.items as PeerRow[];
+  assert.deepEqual(
+    rows.map((row) => [row.label, row.description]),
+    [['Ada', '(you) · Host']],
   );
-  assert.equal(alone, 'Selvage: no other participants yet.');
-  assert.equal(bundle.stub.registered.quickPicks.length, 0, 'a list was drawn for an empty room');
+  assert.deepEqual(bundle.stub.registered.warnings, [], 'an empty room was refused a list');
 });
 
 /** One row of the participant list, as the stub recorded it. */
 interface PeerRow {
   label: string;
   description: string;
-  detail: string;
   iconPath: { toString(): string };
+}
+
+/** The SVG a row's face is drawn from. */
+function faceOf(row: PeerRow): string {
+  const uri = row.iconPath.toString();
+  return Buffer.from(uri.slice(uri.indexOf('base64,') + 'base64,'.length), 'base64').toString('utf8');
 }
 
 test('the peers command lists the room in the colours the carets are drawn in', async (t) => {
@@ -1098,17 +1097,24 @@ test('the peers command lists the room in the colours the carets are drawn in', 
     void bundle.stub.commands.executeCommand('selvage.peers');
     const items = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[] | undefined;
     const first = items?.[0];
-    return first?.detail === 'workspace/README.md' ? first : false;
+    return first?.description === 'Host · in workspace/README.md' ? first : false;
   });
   assert.equal(row.label, 'Ada');
-  assert.equal(row.description, 'host', 'the role the room gives the peer is not in the list');
-  assert.equal(row.detail, 'workspace/README.md');
+  const rows = bundle.stub.registered.quickPicks.at(-1)?.items as PeerRow[];
+  assert.deepEqual(
+    rows.map((entry) => [entry.label, entry.description]),
+    [
+      ['Ada', 'Host · in workspace/README.md'],
+      ['Bob', '(you)'],
+    ],
+    'the list is not host first, then you',
+  );
 
-  // The colour is the one the caret is drawn in, derived from the same peer id by the same
-  // function the cursor model uses: a second way of choosing a colour is the defect here.
-  const colour = peerColour(host.session().peer.peer_id);
-  const swatch = decodeURIComponent(row.iconPath.toString());
-  assert.ok(swatch.includes(colour), `the list drew ${swatch}, not the caret colour ${colour}`);
+  // The face is the host's seat colour, the one the caret is recoloured to: seat 1 is always the
+  // host's, mauve.
+  const face = faceOf(row);
+  assert.ok(face.includes(SEAT_PALETTE[0]), `the host's face is not in seat 1's colour: ${face}`);
+  assert.ok(faceOf(rows[1] as PeerRow).includes(SEAT_PALETTE[1]), 'your face is not in seat 2');
 });
 
 test('joining again asks before leaving the room this window is in', async (t) => {
@@ -1639,8 +1645,8 @@ test('the status tooltip names the session but never the room id or the invite t
   );
 
   // The invite itself, fetched the way a click fetches it: the tooltip must hold no part
-  // of it, while still saying where the link is reached from — and no part of the room
-  // id either, which is the server's to know.
+  // of it, and no part of the room id either, which is the server's to know. The invite
+  // control beside it is the link's only way out.
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
   const invite = await waitFor('the invite link', () => {
     const clipboard = bundle.stub.registered.clipboard;
@@ -1651,7 +1657,8 @@ test('the status tooltip names the session but never the room id or the invite t
   assert.ok(!tooltip.includes(roomId), 'the room id is in the status tooltip');
   assert.ok(!tooltip.includes(token), 'the token is in the status tooltip');
   assert.ok(!tooltip.includes('token='), 'the tooltip names the token field');
-  assert.match(tooltip, /click the status bar to copy/);
+  const copy = bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage invite');
+  assert.ok(copy !== undefined && !String(copy.text).includes(token), 'the invite control shows the token');
 });
 
 test('joining asks for the invite link with an empty box, not the clipboard', async (t) => {
@@ -1976,7 +1983,10 @@ test('the host notice names a reused server and offers to change it', async (t) 
 
   // A configured address still wins over the changed memory — and its notice offers no
   // change, because the setting is changed where it is set, in Settings.
+  // A host's leave asks first; the answer is the one that leaves.
+  next.stub.registered.warningReply = 'Leave anyway';
   await next.stub.commands.executeCommand('selvage.leave');
+  next.stub.registered.warningReply = undefined;
   await waitFor('the session to be left', () =>
     next.stub.registered.information.some((message) => message.includes('left the session')) ? true : false,
   );
@@ -2176,7 +2186,10 @@ test('the first run asks for the name once, then never again', async (t) => {
 
   // The answer is kept: hosting again, after leaving, asks nothing. Only the recorded
   // boxes and notices are cleared — a reset would clear the memento under test.
+  // A host's leave asks first; the answer is the one that leaves.
+  bundle.stub.registered.warningReply = 'Leave anyway';
   await bundle.stub.commands.executeCommand('selvage.leave');
+  bundle.stub.registered.warningReply = undefined;
   await waitFor('the leave to be said', () =>
     bundle.stub.registered.information.some((message) => message.includes('left the session'))
       ? true
@@ -2983,7 +2996,10 @@ test('host, leave, join: the first join lands', async (t) => {
   await waitFor('the host to be seated', () =>
     bundle.stub.registered.information.some((message) => message.includes('is open')) ? true : false,
   );
+  // A host's leave asks first; the answer is the one that leaves.
+  bundle.stub.registered.warningReply = 'Leave anyway';
   await bundle.stub.commands.executeCommand('selvage.leave');
+  bundle.stub.registered.warningReply = undefined;
   const left = await waitFor('the leave to be said', () =>
     bundle.stub.registered.information.find((message) => message.includes('left the session')) ?? false,
   );

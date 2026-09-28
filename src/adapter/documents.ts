@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { applyChange, diff, render } from '../bridge/index.ts';
+import { applyChange, diff, render, translucent } from '../bridge/index.ts';
 import type {
   Cursor,
   EditorHost,
@@ -78,6 +78,7 @@ export class WorkspaceEditor implements EditorHost {
   private readonly onReport: (report: Report) => void;
   private readonly folders: readonly vscode.WorkspaceFolder[];
   private readonly cursors = new Cursors();
+  private seatColours: ReadonlyMap<string, string> = new Map();
   /** The documents this window shares, by room path, and the same back again by URI. */
   private readonly documents = new Map<string, vscode.TextDocument>();
   private readonly paths = new Map<string, string>();
@@ -362,9 +363,26 @@ export class WorkspaceEditor implements EditorHost {
       : await grantedText(found.uri);
   }
 
+  /**
+   * The seat colours the room's people wear, so a caret is drawn in its person's seat. Answers
+   * whether they changed, which is when the carets need drawing again.
+   */
+  setSeatColours(colours: ReadonlyMap<string, string>): boolean {
+    if (
+      colours.size === this.seatColours.size &&
+      [...colours].every(([peerId, colour]) => this.seatColours.get(peerId) === colour)
+    ) {
+      return false;
+    }
+    this.seatColours = new Map(colours);
+    return true;
+  }
+
   renderCursors(cursors: Cursor[]): void {
     const byPath = new Map<string, Cursor[]>();
-    for (const cursor of cursors) {
+    for (const drawn of cursors) {
+      const seat = this.seatColours.get(drawn.peerId);
+      const cursor = seat === undefined ? drawn : { ...drawn, colour: seat, fill: translucent(seat, 0.25) };
       const here = byPath.get(cursor.path) ?? [];
       here.push(cursor);
       byPath.set(cursor.path, here);
