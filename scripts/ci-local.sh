@@ -36,9 +36,6 @@ cd "$repo_root"
 export TMPDIR="$repo_root/.tmp"
 mkdir -p "$TMPDIR"
 
-# The system whose flake checks this builds; the flake carries them for both Linux architectures.
-system=$(nix eval --raw --impure --expr builtins.currentSystem)
-
 say() { printf '\n=== %s ===\n' "$*"; }
 
 run_lychee() {
@@ -50,6 +47,11 @@ run_lychee() {
 }
 
 job_client() {
+  # The system whose flake checks this builds; the flake carries them for both Linux architectures.
+  # Read here rather than at the top: this is the mode that needs nix, while `links` takes its
+  # lychee from PATH and has to run on a host that has none.
+  local system
+  system=$(nix eval --raw --impure --expr builtins.currentSystem)
   # The guard around a workflow's `dry_run` input reads `.github/workflows`, so none of the suites
   # below covers it. The flake check runs the same two files `ci.yml` runs, with the flake's Python
   # supplying the PyYAML that job installs.
