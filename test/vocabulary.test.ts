@@ -135,7 +135,6 @@ const SENTENCES = [
   '`Selvage: joined the room.`',
   // The invite, and the room's documents.
   "'Selvage: there is no invite link; host or join a room first.'",
-  "'Selvage: the invite link is on the clipboard.'",
   '`Selvage: the invite link could not be copied (${}).`',
   "'Selvage: this session holds no invite link to copy.'",
   "'Selvage: join a session first.'",
@@ -410,7 +409,7 @@ test('the web\'s words reach a user through the bridge that writes them', () => 
     'the adapter writes its own words where the web\'s are in the bridge',
   );
   // The old sentences these replaced, which no window may show any more.
-  for (const retired of ['you moved.', 'the room is gone', 'host away', 'is back —', 'Host disconnected.']) {
+  for (const retired of ['you moved.', 'the room is gone', 'host away', 'is back —', 'Host disconnected.', "'Selvage: the invite link is on the clipboard.'"]) {
     assert.equal(code.includes(retired), false, `a retired sentence is still in the adapter: ${retired}`);
   }
 });

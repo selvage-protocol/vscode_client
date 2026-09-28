@@ -3735,8 +3735,8 @@ async function copyInvite(): Promise<void> {
     );
     return;
   }
+  // The invite control reads Copied, as the web's button does; a notification would say it twice.
   current?.showCopied();
-  void vscode.window.showInformationMessage('Selvage: the invite link is on the clipboard.');
 }
 
 /**

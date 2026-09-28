@@ -130,6 +130,25 @@ async function room(
  * own storage directory: a guest join mints exactly one mirror under it, which the test
  * reads back through `mirrorFileUri` and `waitForMirrorFiles`.
  */
+type StatusItem = LoadedExtension['stub']['registered']['statusBarItems'][number];
+
+/** The status item that copies the invite. Taken before a `reset`, which forgets the items. */
+function inviteControl(bundle: LoadedExtension): StatusItem {
+  const control = bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage invite');
+  assert.ok(control !== undefined, 'the window shows no invite control');
+  return control;
+}
+
+/** A copy is told by the invite control, which reads Copied; no notification says it twice. */
+async function copiedByControl(bundle: LoadedExtension, control = inviteControl(bundle)): Promise<void> {
+  await waitFor('the control to say the copy happened', () => control.text === '$(check) Copied');
+  assert.equal(
+    bundle.stub.registered.information.find((message) => message.includes('clipboard')),
+    undefined,
+    'a notification repeated what the control says',
+  );
+}
+
 function activated(t: TestContext): { bundle: LoadedExtension; storage: string } {
   const bundle = loadBundle();
   bundle.stub.reset();
@@ -271,12 +290,10 @@ test('the copy command says where the invite went, and a window with none is tol
   // The notice confirms the copy hosting already made, instead of asking for one.
   assert.match(opened, /^Selvage: the room is open. Send this link to your friend — it is on the clipboard\.$/);
 
+  const control = inviteControl(bundle);
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
-  const said = await waitFor('the invite to be copied', () =>
-    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
-  );
-  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  await copiedByControl(bundle, control);
   assert.ok(/^https?:\/\//.test(bundle.stub.registered.clipboard), 'nothing reached the clipboard');
 });
 
@@ -294,10 +311,7 @@ test('a guest hands on the page link it joined by, origin and all', async (t) =>
   await bundle.stub.commands.executeCommand('selvage.join', { invite: page, displayName: 'Bob'});
   await landStashedJoin(bundle, storage, roomId, 'Bob');
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
-  const said = await waitFor('the guest copy', () =>
-    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
-  );
-  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  await copiedByControl(bundle);
   assert.equal(
     bundle.stub.registered.clipboard,
     page,
@@ -308,10 +322,7 @@ test('a guest hands on the page link it joined by, origin and all', async (t) =>
 test('a guest that reached the room over ws:// hands that link on', async (t) => {
   const { bundle, invite } = await guest(t, ['workspace/README.md']);
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
-  const said = await waitFor('the guest copy', () =>
-    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
-  );
-  assert.equal(said, 'Selvage: the invite link is on the clipboard.');
+  await copiedByControl(bundle);
   assert.equal(
     bundle.stub.registered.clipboard,
     invite,
@@ -3878,12 +3889,10 @@ test('a host that changes its mind about the window keeps the room it was hostin
   // Nothing was given up for a join that never happened: the room this window was hosting is
   // still open, for the guests in it as much as for its host.
   assert.equal(server.connectionCount, 1, 'the room ended on a question that was declined');
+  const control = inviteControl(bundle);
   bundle.stub.reset();
   await bundle.stub.commands.executeCommand('selvage.copyInvite');
-  const copied = await waitFor('the invite of the room this window still hosts', () =>
-    bundle.stub.registered.information.find((message) => message.includes('clipboard')) ?? false,
-  );
-  assert.equal(copied, 'Selvage: the invite link is on the clipboard.');
+  await copiedByControl(bundle, control);
 });
 
 test('a join from a window with no folder reloads without asking about the window', async (t) => {
