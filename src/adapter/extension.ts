@@ -94,7 +94,7 @@ import {
  * and the version the manifest carries, which `test/manifest.test.ts` holds it to. The name half
  * is not `selvage` — `selvage/<major>` is the wire version identifier the envelope's `v` carries.
  */
-const CLIENT = 'selvage-vscode/0.5.2';
+const CLIENT = 'selvage-vscode/0.6.0';
 
 /**
  * How long after the first caret event a selection reaches the room. The editor moves a caret
