@@ -3434,19 +3434,18 @@ test('activation clears a stale mirror and leaves a live sibling alone', async (
     globalState: bundle.stub.globalState,
     globalStorageUri: bundle.stub.Uri.file(storage),
   });
-  const said = await waitFor('the stale mirror to be reported', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('cleaned up the files')) ?? false,
-  );
-  assert.equal(
-    said,
-    `Selvage: cleaned up the files left by the last session.`,
-  );
-  assert.equal(existsSync(staleRoot), false, 'the stale mirror survived activation');
+  await waitFor('the stale mirror to be cleared', () => (existsSync(staleRoot) ? false : true));
   assert.equal(isFile(join(liveRoot, '.selvage-mirror.json')), true, 'a live sibling was cleared');
-  assert.equal(
-    bundle.stub.registered.warnings.filter((message) => message.includes('cleaned up the files')).length,
-    1,
-    'the live sibling earned its own sentence',
+  // A room that is gone leaves nothing to act on, so its cache goes without a word, as the Neovim
+  // client's prune does and the web page (which keeps no files) never has to.
+  assert.deepEqual(
+    [
+      ...bundle.stub.registered.information,
+      ...bundle.stub.registered.warnings,
+      ...bundle.stub.registered.errors,
+    ],
+    [],
+    'clearing a stale mirror said something',
   );
 });
 
@@ -3475,16 +3474,10 @@ test("activation leaves a live room's mirror alone, even in this window", async 
   t.after(() => {
     bundle.deactivate();
   });
-  await waitFor('the dead sibling to be reported', () =>
-    bundle.stub.registered.warnings.find((message) => message.includes('cleaned up the files')) ?? false,
-  );
+  await waitFor('the dead sibling to be cleared', () => (existsSync(deadRoot) ? false : true));
   assert.equal(existsSync(liveRoot), true, "a live room's mirror was cleared");
   assert.equal(bundle.stub.registered.folderCalls.length, 0, "a live room's folder was taken");
-  assert.equal(
-    bundle.stub.registered.warnings.filter((message) => message.includes('cleaned up the files')).length,
-    1,
-    'the live room earned its own sentence',
-  );
+  assert.deepEqual(bundle.stub.registered.warnings, [], "a live room's mirror was reported");
 });
 
 test('activation drops a mirror whose stashed invite cannot join, before asking for a name', async (t) => {

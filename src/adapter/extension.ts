@@ -3288,9 +3288,9 @@ function removeRoomFolder(mirror: Mirror): void {
 /**
  * The window's own triage at activation: a reload onto a mirror, or a crash that left
  * one. A marker with a pending invite finishes the join it was stashed for; a marker
- * with no invite and no session is a cache with no room — the directory goes, the folder
- * goes with it, and one sentence says what went. A live sibling's directory, and anything
- * without a marker of ours, is untouched.
+ * with no invite and no session is a cache with no room, so the directory and its folder go
+ * without a word. A live sibling's directory, and anything without a marker of ours, is
+ * untouched.
  */
 async function triageMirrors(
   storage: vscode.Uri,
@@ -3335,12 +3335,10 @@ async function triageMirrors(
     if (processAlive(readMarker(mirror.root)?.pid ?? 0)) {
       continue;
     }
-    // Stale: restored onto it with no session, or owned by nobody anywhere.
+    // Stale: restored onto it with no session, or owned by nobody anywhere. Clearing it says
+    // nothing, as the Neovim client's prune does: the room is gone, and nothing asked for it.
     removeRoomFolder(mirror);
     mirror.remove();
-    void vscode.window.showWarningMessage(
-      `Selvage: cleaned up the files left by the last session.`,
-    );
   }
 }
 

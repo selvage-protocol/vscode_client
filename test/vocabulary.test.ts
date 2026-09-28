@@ -127,7 +127,6 @@ const SENTENCES = [
   '`Selvage: could not open the room\'s folder in this window (${}); join again.`',
   '`Selvage: could not join the session. ${}`',
   '`Selvage: cleaned up the files left by the last session; its invite link no longer works.`',
-  '`Selvage: cleaned up the files left by the last session.`',
   '`Selvage: joined the room; the room has no open documents yet.`',
   '`Selvage: joined the room — opening ${}.`',
   '`Selvage: joined the room — opening ${}; ${} more in the room.`',
