@@ -501,10 +501,7 @@ export function isIgnoredPath(
   platform: string = hostPlatform(),
 ): boolean {
   const fold = foldsCase(platform);
-  const compiled = sources.map((source) => ({
-    base: source.dir === '' ? [] : (fold ? source.dir.toLowerCase() : source.dir).split('/'),
-    patterns: compileIgnoreText(fold ? source.text.toLowerCase() : source.text),
-  }));
+  const compiled = sources.map((source) => compiledSource(source, fold));
   const segments = (fold ? path.toLowerCase() : path).split('/');
   // Git never descends into an ignored directory, so nothing inside one can be re-included:
   // an ignored ancestor decides the path before its own patterns are read.
@@ -520,6 +517,46 @@ export function isIgnoredPath(
 interface CompiledSource {
   readonly base: readonly string[];
   readonly patterns: readonly IgnorePattern[];
+}
+
+/** One source's compiled forms, by fold decision: two platforms can ask about the same object. */
+interface CompiledForms {
+  folded?: CompiledSource;
+  exact?: CompiledSource;
+}
+
+/**
+ * The compiled form of each source object a caller has handed over. Keyed on the object rather
+ * than on its text, and holding both fold decisions, so `foldsCase`'s answer never leaks across
+ * a platform. `dir` and `text` are read-only, so a remembered form cannot go stale.
+ */
+const COMPILED = new WeakMap<IgnoreSource, CompiledForms>();
+
+/**
+ * `source` compiled, remembered on the object itself. A walk hands the same objects to every
+ * entry of a directory, so this is what keeps one ignore file's lines being read once per walk
+ * rather than once per entry of the tree it governs.
+ */
+function compiledSource(source: IgnoreSource, fold: boolean): CompiledSource {
+  let forms = COMPILED.get(source);
+  if (forms === undefined) {
+    forms = {};
+    COMPILED.set(source, forms);
+  }
+  const remembered = fold ? forms.folded : forms.exact;
+  if (remembered !== undefined) {
+    return remembered;
+  }
+  const compiled: CompiledSource = {
+    base: source.dir === '' ? [] : (fold ? source.dir.toLowerCase() : source.dir).split('/'),
+    patterns: compileIgnoreText(fold ? source.text.toLowerCase() : source.text),
+  };
+  if (fold) {
+    forms.folded = compiled;
+  } else {
+    forms.exact = compiled;
+  }
+  return compiled;
 }
 
 /**
