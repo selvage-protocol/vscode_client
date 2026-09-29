@@ -9,10 +9,13 @@ anybody asking.
 What the listing leaves out is decided twice. Once by name: dependency and build trees
 (`node_modules`, `target`, `vendor`, `build`), secret files and credential stores (`.env`, `.ssh`,
 a private key), and a name that declares a binary format a document cannot carry. Once by the
-folder's own ignore files, read the way git reads them: `<folder>/.git/info/exclude`, then every
-`.gitignore` at or below the folder, with the last matching pattern deciding. Both halves bind the
-read a peer asks for as well as the listing, so a guest that guesses an ignored path is told
-nothing about it.
+folder's own ignore files: `<folder>/.git/info/exclude`, then every `.gitignore` at or below the
+folder, with the last matching pattern deciding. Their patterns follow `gitignore(5)`, with one
+divergence: a `?` and a bracket class count characters, as `fnmatch(3)` documents, where git
+counts UTF-8 bytes. Both halves bind the read a peer asks for as well as the listing: a guest that
+guesses an ignored path that exists is refused the same silent `not-granted` an excluded name
+gets, and a path that does not exist is refused `missing` like any other absent path, which says
+nothing about the ignore rule either.
 
 The folder is the bound on what a host reads. A folder shared from inside a repository does not
 honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any

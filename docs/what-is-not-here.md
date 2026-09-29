@@ -11,7 +11,8 @@ one event loop. There is no worker, no native module and no second process.
   by one at all. What a host offers is its folder minus three things: the names it never shares
   (dependency and build trees, secret files and credential stores, a name that declares a binary
   format), what the folder's own ignore files leave out — `<folder>/.git/info/exclude` and every
-  `.gitignore` at or below the folder, read the way git reads them — and a document over the size a
+  `.gitignore` at or below the folder, matched by `gitignore(5)`'s rules except that a `?` and a
+  bracket class count characters where git counts bytes — and a document over the size a
   session carries. Nothing above the folder is read, so a folder shared from inside a repository
   (`~/proj/src` with `~/proj/.gitignore`) does not honor the rules above it, which is a real
   difference from `git status`; neither is git's user-wide ignore (`core.excludesFile`), which is a
