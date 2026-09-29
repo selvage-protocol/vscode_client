@@ -601,6 +601,45 @@ test('ignore patterns fold case only where the filesystem folds', () => {
   assert.equal(isIgnoredPath(below, 'sub/note.txt', false, 'linux'), false);
 });
 
+test('the case classes fold to alpha only where the filesystem folds', () => {
+  // git's `FNM_CASEFOLD`/`WM_CASEFOLD` folds the character against the class, so on a folding
+  // host `upper` and `lower` name the same characters, which is `alpha`. The exact reading is
+  // untouched: there `upper` is uppercase and `lower` is lowercase.
+  const upper = ignoring(['', '[[:upper:]].txt\n']);
+  const lower = ignoring(['', '[[:lower:]].txt\n']);
+  for (const platform of ['darwin', 'win32', '']) {
+    for (const path of ['b.txt', 'B.txt']) {
+      assert.equal(isIgnoredPath(upper, path, false, platform), true, `upper is alpha on ${platform}`);
+      assert.equal(isIgnoredPath(lower, path, false, platform), true, `lower is alpha on ${platform}`);
+    }
+  }
+  for (const platform of ['linux', 'freebsd']) {
+    assert.equal(isIgnoredPath(upper, 'B.txt', false, platform), true, 'uppercase is upper');
+    assert.equal(isIgnoredPath(upper, 'b.txt', false, platform), false, 'lowercase is not upper');
+    assert.equal(isIgnoredPath(lower, 'b.txt', false, platform), true, 'lowercase is lower');
+    assert.equal(isIgnoredPath(lower, 'B.txt', false, platform), false, 'uppercase is not lower');
+  }
+  // Only the two case classes fold to `alpha`; the others keep their meaning.
+  const digit = ignoring(['', '[[:digit:]].txt\n']);
+  assert.equal(isIgnoredPath(digit, '5.txt', false, 'darwin'), true);
+  assert.equal(isIgnoredPath(digit, 'b.txt', false, 'darwin'), false, 'digit did not become alpha');
+});
+
+test('`?` and a bracket class count characters, which is fnmatch(3) and not git’s bytes', () => {
+  // The one documented divergence from git's own matcher: git counts UTF-8 bytes, so `??.txt`
+  // matches a two-byte name and `?.txt` does not, while `fnmatch(3)` (which `gitignore(5)`
+  // points at) counts characters. This pins the character reading; the divergence is stated in
+  // `segmentMatches` and in the client docs.
+  const two = ignoring(['', '??.txt\n']);
+  const one = ignoring(['', '?.txt\n']);
+  assert.equal(isIgnoredPath(two, '\u00e9.txt', false), false, 'one character is not two');
+  assert.equal(isIgnoredPath(one, '\u00e9.txt', false), true, 'one character is one');
+  assert.equal(isIgnoredPath(two, 'ab.txt', false), true);
+  const cls = ignoring(['', '[\u00e9x].txt\n']);
+  assert.equal(isIgnoredPath(cls, '\u00e9.txt', false), true, 'a class holds a character');
+  assert.equal(isIgnoredPath(cls, 'y.txt', false), false);
+});
+
 test('a source is compiled once for the object and never once per platform', () => {
   // A walk asks about every entry of a directory with the same source objects, so a compiled
   // form is remembered on the object itself. What the answer is may not depend on which call
