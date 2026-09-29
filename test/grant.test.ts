@@ -600,3 +600,55 @@ test('ignore patterns fold case only where the filesystem folds', () => {
   assert.equal(isIgnoredPath(below, 'sub/note.txt', false, 'darwin'), true);
   assert.equal(isIgnoredPath(below, 'sub/note.txt', false, 'linux'), false);
 });
+
+test('a source is compiled once for the object and never once per platform', () => {
+  // A walk asks about every entry of a directory with the same source objects, so a compiled
+  // form is remembered on the object itself. What the answer is may not depend on which call
+  // asked first, on how often it was asked, or on which platform asked before it — so every
+  // question below is asked in both orders, and both objects are asked on both platforms.
+  const ones = ignoring(['', 'BUILD/\n*.LOG\n']);
+  const questions: ReadonlyArray<readonly [string, boolean, string, boolean]> = [
+    ['build', true, 'darwin', true],
+    ['build', true, 'linux', false],
+    ['BUILD', true, 'linux', true],
+    ['a.log', false, 'darwin', true],
+    ['A.LOG', false, 'linux', true],
+    ['a.log', false, 'linux', false],
+  ];
+  for (const order of [questions, [...questions].reverse()]) {
+    for (const [path, isDirectory, platform, expected] of order) {
+      assert.equal(
+        isIgnoredPath(ones, path, isDirectory, platform),
+        expected,
+        `${path} on ${platform}`,
+      );
+    }
+  }
+
+  // A fold decision is remembered beside the other one rather than instead of it: the same object
+  // answers each platform with its own reading, whichever was asked first.
+  for (const order of [
+    ['linux', 'darwin', 'linux'],
+    ['darwin', 'linux', 'darwin'],
+  ] as const) {
+    const source = ignoring(['', 'Mixed/\n']);
+    const expected = { linux: false, darwin: true } as const;
+    for (const platform of order) {
+      assert.equal(
+        isIgnoredPath(source, 'mixed', true, platform),
+        expected[platform],
+        `mixed on ${platform} after ${order.join(' then ')}`,
+      );
+    }
+  }
+
+  // Two objects are two sources, however alike they read: neither one's compiled form answers for
+  // the other, asked in either order.
+  const first = ignoring(['', 'one.txt\n']);
+  const second = ignoring(['', 'two.txt\n']);
+  assert.equal(isIgnoredPath(first, 'one.txt', false), true);
+  assert.equal(isIgnoredPath(second, 'one.txt', false), false);
+  assert.equal(isIgnoredPath(first, 'one.txt', false), true);
+  assert.equal(isIgnoredPath(second, 'two.txt', false), true);
+  assert.equal(isIgnoredPath(first, 'two.txt', false), false);
+});
