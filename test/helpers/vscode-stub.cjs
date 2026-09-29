@@ -9,6 +9,8 @@
  * lets a test see the effect of a command that resolves before its own work is done.
  */
 
+const { lstatSync, readdirSync, readFileSync } = require('node:fs');
+
 const registered = {
   commands: [],
   /** Every `executeCommand` call, as `{ id, args }`, handled or not. */
@@ -129,6 +131,22 @@ const disk = {
   /** `readFile` calls, in order. */
   reads: [],
 };
+
+/**
+ * The real directory this window's file system reads, when a test mounts one: the machine's own
+ * disk replaces the seeded working copy, so a walk can run over a tree that is really there —
+ * with really linked directories in it — and the folder URIs name the real paths. `null` reads
+ * the seeded copy, which is what every other test does.
+ */
+let mounted = null;
+
+/** Whether a path read off the real disk is inside the mounted folder, which is the bound. */
+function realPath(path) {
+  if (path !== mounted && !path.startsWith(`${mounted}/`)) {
+    throw new Error(`outside the mounted folder: ${path}`);
+  }
+  return path;
+}
 
 function pathOf(uri) {
   return String(uri).replace(/^file:\/\//, '');
@@ -380,6 +398,7 @@ function reset() {
   disk.links.clear();
   disk.unreadable.clear();
   disk.reads.length = 0;
+  mounted = null;
   registered.watchers.length = 0;
   registered.watcherFailure = undefined;
   watcherBudget = 0;
@@ -527,6 +546,16 @@ module.exports = {
   makeUnreadable,
   /** Deletes a file from the working copy, as removing it from the project does. */
   remove,
+  /**
+   * Points the window's file system at a real directory, as a host whose folder is an ordinary
+   * folder of this machine reads it: `put` and `putLink` are not consulted, and every read is
+   * refused outside the mount. A test sets the window's folders to the same path.
+   */
+  mount(root) {
+    mounted = String(root).replace(/\/+$/, '');
+  },
+  /** Every path `workspace.fs.readFile` was asked for since the last reset, in order. */
+  readPaths: () => [...disk.reads],
   /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
   watchEvent,
   /** Makes every watcher the extension creates throw, as an unwatchable folder does. */
@@ -731,6 +760,16 @@ module.exports = {
         const path = pathOf(uri);
         const index = registered.listings;
         registered.listings += 1;
+        if (mounted !== null) {
+          // A link is reported as a link and never followed here: the walk refuses it, and a
+          // `readDirectory` through one would be the escape the mount exists to test.
+          return Promise.resolve(
+            readdirSync(realPath(path), { withFileTypes: true }).map((entry) => [
+              entry.name,
+              entry.isSymbolicLink() ? 64 : entry.isDirectory() ? 2 : 1,
+            ]),
+          );
+        }
         if (disk.unreadable.has(resolved(path))) {
           return Promise.reject(new Error(`cannot read ${path}`));
         }
@@ -742,6 +781,17 @@ module.exports = {
       },
       stat: (uri) => {
         const path = pathOf(uri);
+        if (mounted !== null) {
+          // `lstat`, so a link reports the link: the final component is not followed, as the
+          // editor's own `stat` does not follow it.
+          const info = lstatSync(realPath(path));
+          return Promise.resolve({
+            type: info.isSymbolicLink() ? 64 : info.isDirectory() ? 2 : 1,
+            ctime: 0,
+            mtime: 0,
+            size: info.size,
+          });
+        }
         // A link reports the link: the final component of a stat is not followed, which is how
         // a host sees that what a peer named is a link at all. Everything before it is.
         const link = disk.links.get(path);
@@ -760,6 +810,9 @@ module.exports = {
       readFile: (uri) => {
         const path = pathOf(uri);
         disk.reads.push(path);
+        if (mounted !== null) {
+          return Promise.resolve(new Uint8Array(readFileSync(realPath(path))));
+        }
         const file = disk.files.get(resolved(path));
         if (file === undefined) {
           return Promise.reject(new Error(`not found: ${path}`));

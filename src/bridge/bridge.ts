@@ -571,6 +571,11 @@ export class SessionBridge {
     // is said once per path, out loud, rather than seeded as an empty document or left for
     // the user to discover from a guest's question; the editor may re-fire the open event
     // on focus or split, and that must not nag.
+    //
+    // The name-based excludes are what gates here, and the folder's own ignore files are
+    // deliberately not: a file the person at this window opened is their own act, and this
+    // bridge has no file system to read an ignore file from. The ignore layer narrows what a
+    // session shares by itself and what a peer may ask for, which is where it is enforced.
     const refusal = seedRefusal(path, bufferText);
     if (refusal !== undefined) {
       if (!this.refusedSeeds.has(path)) {
