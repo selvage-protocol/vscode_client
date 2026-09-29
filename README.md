@@ -61,6 +61,14 @@ several documents in the room only the first opens for a guest, so run
 `Selvage: Open a document from the room` to reach the others, and set `selvage.openOnJoin` to
 `false` to be shown nothing by a join.
 
+The room sees the folder minus what it should not carry: dependency and build trees (`node_modules`,
+`target`, `vendor`), secret files (`.env`, `.ssh`, private keys), the names that declare a binary
+format, and whatever the folder's own ignore files leave out — `.git/info/exclude` and every
+`.gitignore` at or below the folder, read the way git reads them. Nothing above the folder is read,
+so a folder shared from inside a repository does not honor a `.gitignore` above it. A file you open
+in your own window is your own act: the secrecy excludes still bind it, an ignore file does not.
+[Mirror and fetch](docs/mirror-and-fetch.md) has the whole rule.
+
 `Selvage: Leave the session` leaves on either side. Closing the host's window ends the room after
 the server's grace period, and the guest is told.
 
