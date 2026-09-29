@@ -65,15 +65,76 @@ export async function enumerateGrant(
  * exclude, which is what an absent one means.
  */
 async function rootIgnores(folder: vscode.Uri): Promise<IgnoreSource[]> {
-  const text = await readIgnoreFile(vscode.Uri.joinPath(folder, '.git', 'info', 'exclude'));
+  if (!(await entryHasType(folder, '.git', vscode.FileType.Directory))) {
+    return [];
+  }
+  const git = vscode.Uri.joinPath(folder, '.git');
+  if (!(await entryHasType(git, 'info', vscode.FileType.Directory))) {
+    return [];
+  }
+  const text = await readIgnoreFile(vscode.Uri.joinPath(git, 'info'), 'exclude');
   // The lowest precedence source there is: every `.gitignore` overrides it.
   return text === undefined ? [] : [{ dir: '', text }];
 }
 
-/** One ignore file's text, or `undefined` when there is none this window can read as text. */
-async function readIgnoreFile(uri: vscode.Uri): Promise<string | undefined> {
+/** `dir`'s own listing, or `undefined` when this window cannot read it. */
+async function listDirectory(
+  dir: vscode.Uri,
+): Promise<Array<[string, vscode.FileType]> | undefined> {
   try {
-    return decodableText(await vscode.workspace.fs.readFile(uri));
+    return await vscode.workspace.fs.readDirectory(dir);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether an entry listing holds `name` with exactly `type`, not as a link or a bit-set of one. */
+function holdsEntry(
+  entries: readonly (readonly [string, vscode.FileType])[],
+  name: string,
+  type: vscode.FileType,
+): boolean {
+  return entries.some(([entry, kind]) => entry === name && kind === type);
+}
+
+/** Whether `dir`'s own listing holds `name` with exactly `type`. */
+async function entryHasType(
+  dir: vscode.Uri,
+  name: string,
+  type: vscode.FileType,
+): Promise<boolean> {
+  const entries = await listDirectory(dir);
+  return entries !== undefined && holdsEntry(entries, name, type);
+}
+
+/**
+ * The text of the ignore file `name` at `dir`, or `undefined` when there is no ignore file this
+ * window reads.
+ *
+ * `name` has to be an ordinary file by its *entry's* type in `dir`'s listing — an exact name with
+ * no `SymbolicLink` bit and exactly `FileType.File` — before a byte is read. The entry type is
+ * what `readDirectory` reports and is what this file already trusts for the walk and
+ * `hasExactChild`; a `stat` of the name follows a link and reports its target instead. Without
+ * this, a `.gitignore` that is a link to a file outside the shared folder is read as the folder's
+ * own rule, and a `.git` that is a link to a repository elsewhere supplies its `info/exclude`: both
+ * read out of the folder, which is the bound. A name that is not an ordinary file is not an error,
+ * it is simply no ignore file. The window between that entry check and the read is the leaf read's
+ * own stated residual — `vscode.workspace.fs` exposes no `realpath` — and not a second one.
+ *
+ * `listing` is `dir`'s entries when the caller already holds them, so a walk does not read the
+ * same directory twice.
+ */
+async function readIgnoreFile(
+  dir: vscode.Uri,
+  name: string,
+  listing?: readonly (readonly [string, vscode.FileType])[],
+): Promise<string | undefined> {
+  const entries = listing ?? (await listDirectory(dir));
+  if (entries === undefined || !holdsEntry(entries, name, vscode.FileType.File)) {
+    return undefined;
+  }
+  try {
+    return decodableText(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, name)));
   } catch {
     return undefined;
   }
@@ -99,8 +160,9 @@ async function walk(
     return;
   }
   // This directory's own ignore file governs its children, and it is read whether or not some
-  // pattern would leave it out, as git reads it; `.gitignore` itself stays a shareable name.
-  const own = await readIgnoreFile(vscode.Uri.joinPath(dir, '.gitignore'));
+  // pattern would leave it out, as git reads it; `.gitignore` itself stays a shareable name. The
+  // listing just read decides whether the file is there and plain (see `readIgnoreFile`).
+  const own = await readIgnoreFile(dir, '.gitignore', entries);
   const ignores = own === undefined ? inherited : [...inherited, { dir: relative, text: own }];
   entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   for (const [name, type] of entries) {
@@ -246,8 +308,9 @@ export async function grantedFile(
   if (refusal !== undefined) {
     return { refusal };
   }
-  // A refusal here is `not-granted` like an excluded path's: it says the grant leaves this out,
-  // and not that a guess was worth making.
+  // A path that exists but is ignored is refused `not-granted`, the silent no an excluded name
+  // gets: it says the grant leaves this out and not that a guess was worth making. A path that
+  // does not exist was already refused `missing` above, because the name cannot be seen at all.
   const ignores = await governingIgnores(resolved.folder.uri, resolved.relative);
   if (isIgnoredPath(ignores, resolved.relative, false)) {
     return { refusal: 'not-granted' };
@@ -260,7 +323,9 @@ export async function grantedFile(
  * `.gitignore` of every directory from the folder down to the one holding the path.
  *
  * Lowest precedence first, and only directories the path's own resolution has already accepted,
- * so this cannot be the step that reads an ignore file through a link out of the folder.
+ * so no step here travels through a link out of the folder; each ignore file is also read only
+ * where its own parent lists it as an ordinary file (`readIgnoreFile`), so a `.gitignore` that is
+ * itself a link out is not read either.
  */
 async function governingIgnores(folder: vscode.Uri, relative: string): Promise<IgnoreSource[]> {
   const sources = await rootIgnores(folder);
@@ -269,7 +334,7 @@ async function governingIgnores(folder: vscode.Uri, relative: string): Promise<I
   for (let depth = 0; depth <= segments.length; depth += 1) {
     const dir = segments.slice(0, depth).join('/');
     const where = dir === '' ? folder : vscode.Uri.joinPath(folder, dir);
-    const text = await readIgnoreFile(vscode.Uri.joinPath(where, '.gitignore'));
+    const text = await readIgnoreFile(where, '.gitignore');
     if (text !== undefined) {
       sources.push({ dir, text });
     }

@@ -15,15 +15,17 @@
  * The last two tests mount the real disk instead, over a tree under `<repo>/.tmp/` — never
  * `/tmp`, which is a RAM-backed tmpfs on this host. A real tree is what carries a real
  * symbolic link, and what lets the walk's own reads be read back: `readPaths` is every path
- * `workspace.fs.readFile` was asked for, so a test can say that nothing outside the shared
- * folder, and nothing through a link, was ever read.
+ * `workspace.fs.readFile` was asked for, and `openedPaths` is the real file each mounted read
+ * actually opened with its links followed. A read through a link is asked for under the link's
+ * own name, so only `openedPaths` can say that nothing outside the shared folder — and nothing
+ * behind a link — was ever opened.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire, registerHooks } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { GrantRefusal, Report } from '../src/bridge/bridge.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
@@ -43,6 +45,8 @@ const stub = createRequire(import.meta.url)('./helpers/vscode-stub.cjs') as {
   mount(root: string): void;
   /** Every path `workspace.fs.readFile` was asked for since the last reset, in order. */
   readPaths(): string[];
+  /** Every real file a mounted `readFile` opened since the last reset, links followed. */
+  openedPaths(): string[];
   /** Replaces the folders the window is open on. */
   setWorkspaceFolders(paths: readonly string[]): void;
 };
@@ -350,6 +354,72 @@ function mounted(t: TestContext): { root: string; folder: string } {
   return tree;
 }
 
+/**
+ * A tree whose own ignore files would change the listing, with the ignore file itself and the
+ * `.git` directory planted as links to files and directories outside the folder: `sub/.gitignore`
+ * is a link to an outside file holding `!hidden.txt`, and `.git` is a link to an outside
+ * repository directory whose `info/exclude` names `dropped-by-the-link.txt`. If either outside
+ * file is read, it re-includes `sub/hidden.txt` or drops `dropped-by-the-link.txt` from the
+ * listing, and `realpathSync` on what a read opened reaches outside the shared folder.
+ */
+function linkedIgnoreTree(): { root: string; folder: string; outside: string } {
+  const root = mkdtempSync(join(CASES, 'grant-link-'));
+  const folder = join(root, 'folder');
+  const outside = join(root, 'outside');
+  const put = (at: string, text: string): void => {
+    const path = join(folder, at);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  };
+
+  mkdirSync(join(outside, 'gitdir', 'info'), { recursive: true });
+  writeFileSync(join(outside, 'said-by-the-link.gitignore'), '!hidden.txt\n');
+  writeFileSync(join(outside, 'gitdir', 'info', 'exclude'), 'dropped-by-the-link.txt\n');
+  writeFileSync(join(outside, 'dropped-by-the-link.txt'), 'outside\n');
+
+  put('.gitignore', 'hidden.txt\n');
+  put('hidden.txt', 'ignored by the folder\n');
+  put('dropped-by-the-link.txt', 'kept unless the outside .git is read\n');
+  put('kept.txt', 'kept\n');
+  put('sub/hidden.txt', 'ignored by the folder, re-included by a link\n');
+  symlinkSync(join(outside, 'said-by-the-link.gitignore'), join(folder, 'sub', '.gitignore'), 'file');
+  symlinkSync(join(outside, 'gitdir'), join(folder, '.git'), 'dir');
+  return { root, folder, outside };
+}
+
+/** The linked tree on the real disk, mounted as the window's file system and cleaned up after. */
+function linkedMounted(t: TestContext): { root: string; folder: string; outside: string } {
+  mkdirSync(CASES, { recursive: true });
+  const tree = linkedIgnoreTree();
+  t.after(() => {
+    stub.reset();
+    rmSync(tree.root, { recursive: true, force: true });
+  });
+  stub.mount(tree.root);
+  stub.setWorkspaceFolders([tree.folder]);
+  return tree;
+}
+
+/**
+ * Asserts every mounted read opened a file inside the shared folder, links followed, and that
+ * none of `outsidePaths` — relative to the outside directory — was opened.
+ */
+function assertNoReadLeftTheFolder(
+  tree: { folder: string; outside: string },
+  outsidePaths: readonly string[],
+): void {
+  const folder = realpathSync(tree.folder);
+  const outside = realpathSync(tree.outside);
+  const opened = stub.openedPaths();
+  assert.ok(opened.length > 0, 'the folder’s own ignore files were never read');
+  for (const path of opened) {
+    assert.ok(path.startsWith(`${folder}/`), `${path} was opened outside the shared folder`);
+  }
+  for (const path of outsidePaths) {
+    assert.ok(!opened.includes(join(outside, path)), `${path} outside the folder was opened`);
+  }
+}
+
 test('a host lists its folder through the ignore files the folder holds, and reads nothing above it', async (t) => {
   const { root, folder } = mounted(t);
   const listed = await enumerateGrant(folders());
@@ -384,17 +454,52 @@ test('a host lists its folder through the ignore files the folder holds, and rea
 });
 
 test('a peer cannot reach an ignore file through a link out of the folder', async (t) => {
-  mounted(t);
+  const { root, folder } = mounted(t);
 
   // The link's target holds a `.gitignore` naming `named.txt`, so a read of
   // `<folder>/link/.gitignore` would be the escape. The path is resolved first, the link is not a
-  // plain directory, and the refusal comes before any read at all.
+  // plain directory, and the refusal comes before any read at all. `openedPaths` records what a
+  // read would actually have opened, links followed, which `readPaths` cannot show.
   assert.deepEqual(await grantedFile(folders(), 'link/named.txt'), refused('not-a-file'));
   assert.deepEqual(await grantedFile(folders(), 'link/known.txt'), refused('not-a-file'));
-  assert.deepEqual(stub.readPaths(), [], 'an ignore file was read through the link');
+  assert.deepEqual(stub.openedPaths(), [], 'an ignore file behind the link was opened');
 
-  // And the walk never names what is behind it either.
+  // And the walk never names what is behind it either. It does read the folder's own ignore
+  // files, so `openedPaths` is what says none of those reads followed the link out.
   const listed = await enumerateGrant(folders());
   assert.deepEqual(listed.filter((path) => path.startsWith('link/')), []);
+  const realRoot = realpathSync(root);
+  const realFolder = realpathSync(folder);
+  for (const path of stub.openedPaths()) {
+    assert.ok(path.startsWith(`${realFolder}/`), `${path} was opened outside the shared folder`);
+  }
+  assert.ok(
+    !stub.openedPaths().includes(join(realRoot, 'outside', '.gitignore')),
+    'the outside .gitignore was opened through the link',
+  );
   assert.ok(listed.includes('src/main.rs'), 'the folder itself is still listed');
+});
+
+test('a linked ignore file is not read, so its rule re-includes nothing', async (t) => {
+  const tree = linkedMounted(t);
+
+  // `folder/.gitignore` is an ordinary file and ignores `hidden.txt` at every depth. The link at
+  // `sub/.gitignore` names an outside file holding `!hidden.txt`; were it read, `sub/hidden.txt`
+  // would be re-included, listed and served. It is not read, so that name stays out.
+  const listed = await enumerateGrant(folders());
+  assert.ok(!listed.includes('sub/hidden.txt'), `a linked ignore file re-included a path: ${listed.join(', ')}`);
+  assert.deepEqual(await grantedFile(folders(), 'sub/hidden.txt'), refused('not-granted'));
+  assertNoReadLeftTheFolder(tree, ['said-by-the-link.gitignore']);
+});
+
+test('a linked .git is not read, so its exclude drops nothing', async (t) => {
+  const tree = linkedMounted(t);
+
+  // The link at `.git` names an outside repository directory whose `info/exclude` holds
+  // `dropped-by-the-link.txt`; were it read, that name would vanish from the listing and be
+  // refused. It is not read, so the name is listed and served.
+  const listed = await enumerateGrant(folders());
+  assert.ok(listed.includes('dropped-by-the-link.txt'), `a linked .git dropped a path: ${listed.join(', ')}`);
+  assert.ok(servable(await grantedFile(folders(), 'dropped-by-the-link.txt')));
+  assertNoReadLeftTheFolder(tree, ['gitdir/info/exclude']);
 });

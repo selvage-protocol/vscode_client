@@ -9,7 +9,7 @@
  * lets a test see the effect of a command that resolves before its own work is done.
  */
 
-const { lstatSync, readdirSync, readFileSync } = require('node:fs');
+const { lstatSync, readdirSync, readFileSync, realpathSync } = require('node:fs');
 
 const registered = {
   commands: [],
@@ -128,8 +128,14 @@ const disk = {
   links: new Map(),
   /** Directories whose `readDirectory` throws, for the unreadable-tree path. */
   unreadable: new Set(),
-  /** `readFile` calls, in order. */
+  /** `readFile` calls, in order, as the URI path asked for (never a link's target). */
   reads: [],
+  /**
+   * Mounted reads only, as the real file each one opened with every symbolic link followed:
+   * what a `readPaths` assertion cannot see, because a read through a link is asked for under
+   * the link's own path.
+   */
+  opened: [],
 };
 
 /**
@@ -398,6 +404,7 @@ function reset() {
   disk.links.clear();
   disk.unreadable.clear();
   disk.reads.length = 0;
+  disk.opened.length = 0;
   mounted = null;
   registered.watchers.length = 0;
   registered.watcherFailure = undefined;
@@ -556,6 +563,8 @@ module.exports = {
   },
   /** Every path `workspace.fs.readFile` was asked for since the last reset, in order. */
   readPaths: () => [...disk.reads],
+  /** Every real file a mounted `readFile` opened since the last reset, links followed. */
+  openedPaths: () => [...disk.opened],
   /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
   watchEvent,
   /** Makes every watcher the extension creates throw, as an unwatchable folder does. */
@@ -809,10 +818,17 @@ module.exports = {
       },
       readFile: (uri) => {
         const path = pathOf(uri);
-        disk.reads.push(path);
         if (mounted !== null) {
-          return Promise.resolve(new Uint8Array(readFileSync(realPath(path))));
+          // `realpathSync` is what `readFileSync` follows a link through, so recording its answer
+          // records the file that was actually opened. `readPaths` keeps the asked-for path: a
+          // read through a link is asked for under the link's name, which is exactly the outside
+          // read a `readPaths` assertion cannot see.
+          const opened = realpathSync(realPath(path));
+          disk.reads.push(path);
+          disk.opened.push(opened);
+          return Promise.resolve(new Uint8Array(readFileSync(opened)));
         }
+        disk.reads.push(path);
         const file = disk.files.get(resolved(path));
         if (file === undefined) {
           return Promise.reject(new Error(`not found: ${path}`));
