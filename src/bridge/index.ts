@@ -57,8 +57,10 @@ export {
   grantUnion,
   isBinaryNamedPath,
   isGrantedPath,
+  isIgnoredPath,
   sortGrant,
 } from './grant.ts';
+export type { IgnoreSource } from './grant.ts';
 export { PeerEngine } from './peer-engine.ts';
 export type { PeerEngineOptions } from './peer-engine.ts';
 export { SEAT_LIMIT, SEAT_PALETTE, seatColours } from './seats.ts';
