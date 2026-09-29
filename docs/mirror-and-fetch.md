@@ -6,6 +6,20 @@ files, and read one the host never opened, on request. The listing follows the h
 file a build, a branch switch or another terminal creates or removes reaches the room without
 anybody asking.
 
+What the listing leaves out is decided twice. Once by name: dependency and build trees
+(`node_modules`, `target`, `vendor`, `build`), secret files and credential stores (`.env`, `.ssh`,
+a private key), and a name that declares a binary format a document cannot carry. Once by the
+folder's own ignore files, read the way git reads them: `<folder>/.git/info/exclude`, then every
+`.gitignore` at or below the folder, with the last matching pattern deciding. Both halves bind the
+read a peer asks for as well as the listing, so a guest that guesses an ignored path is told
+nothing about it.
+
+The folder is the bound on what a host reads. A folder shared from inside a repository does not
+honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
+other rule outside the folder is read, because those are rules of the person at the machine rather
+than of the project being shared. A file the host itself opens is the host's own act: the
+name-based excludes bind it and the folder's ignore files do not.
+
 A guest's window holds the room as a real directory under the extension's global storage, so the
 trees, search and language servers a person already runs work on the room's files. The join
 reloads the window onto that directory, replacing whatever tree was there, and leaving deletes it

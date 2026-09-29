@@ -7,13 +7,24 @@ one event loop. There is no worker, no native module and no second process.
   same right to edit as the host (§12.3). A window holds one session, and a host reads its own
   filesystem only for a granted path a peer asked for.
 - There is no `y-websocket` provider, because Selvage has its own envelope, and no `terminal/1`.
-- There are no exclude globs. A host shares live the documents it has open, so what is on offer is
-  visible in its own window, and any other file under the shared folder a guest reaches is read on
-  request. A file a room asks for is checked before it is read, and only when the grant would
-  publish it and every directory on the way is a plain directory of the shared folder, never a
-  link out of it. The window between that check and the read is a stated residual:
-  `vscode.workspace.fs` exposes no `realpath`, so a link swapped in after the walk is read on the
-  peer's behalf.
+- No ignore rule above the shared folder decides anything, and a host's own window is not bound
+  by one at all. What a host offers is its folder minus three things: the names it never shares
+  (dependency and build trees, secret files and credential stores, a name that declares a binary
+  format), what the folder's own ignore files leave out — `<folder>/.git/info/exclude` and every
+  `.gitignore` at or below the folder, read the way git reads them — and a document over the size a
+  session carries. Nothing above the folder is read, so a folder shared from inside a repository
+  (`~/proj/src` with `~/proj/.gitignore`) does not honor the rules above it, which is a real
+  difference from `git status`; neither is git's user-wide ignore (`core.excludesFile`), which is a
+  rule of the person at the machine rather than of the project. A file the host opens in its own
+  window is the host's own act: the name-based secrecy excludes bind it, and the folder's ignore
+  files do not.
+- A host shares live the documents it has open, so what is on offer is visible in its own window,
+  and any other file under the shared folder a guest reaches is read on request. A file a room asks
+  for is checked before it is read, and only when the grant would publish it and every directory on
+  the way is a plain directory of the shared folder, never a link out of it. The window between
+  that check and the read is a stated residual: `vscode.workspace.fs` exposes no `realpath`, so a
+  link swapped in after the walk is read on the peer's behalf — and an ignore file behind it is,
+  which is the same window read a moment earlier.
 - A change made while the connection is down is not republished when it comes back. The room keeps
   the listing it held across the host's disconnect grace and a re-seated host is sent it again, so
   the two agree; the room learns of the change at the next filesystem event or not at all. A
