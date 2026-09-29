@@ -549,7 +549,7 @@ function compiledSource(source: IgnoreSource, fold: boolean): CompiledSource {
   }
   const compiled: CompiledSource = {
     base: source.dir === '' ? [] : (fold ? source.dir.toLowerCase() : source.dir).split('/'),
-    patterns: compileIgnoreText(fold ? source.text.toLowerCase() : source.text),
+    patterns: compileIgnoreText(fold ? source.text.toLowerCase() : source.text, fold),
   };
   if (fold) {
     forms.folded = compiled;
@@ -646,7 +646,17 @@ function segmentsMatch(pattern: readonly Segment[], path: readonly string[]): bo
   return at(0, 0);
 }
 
-/** Whether one name matches one segment: `*` and `?` never cross a `/`, which a name has none of. */
+/**
+ * Whether one name matches one segment: `*` and `?` never cross a `/`, which a name has none of.
+ *
+ * `?` and a bracket class match one *character* here — one UTF-16 code unit, which is one code
+ * point for every name in the Basic Multilingual Plane — where git counts UTF-8 bytes.
+ * `gitignore(5)` points at `fnmatch(3)`, whose `?` is one character, so this follows the
+ * documented standard and git's own byte counting is an implementation detail. The difference is
+ * visible only in a non-ASCII name: `??.txt` matches `é.txt` under git and not here, `?.txt` the
+ * other way round. It is stated rather than chased; matching bytes would turn a name that is
+ * otherwise characters into a sequence of bytes.
+ */
 function segmentMatches(elements: readonly Element[], name: string): boolean {
   let element = 0;
   let index = 0;
@@ -711,9 +721,10 @@ function memberMatches(member: Member, char: string): boolean {
  * one — never matches anything, so it is dropped.
  *
  * `text` arrives already folded where the host folds; case is the caller's, because the two
- * sides of a case-insensitive comparison have to be folded the same way.
+ * sides of a case-insensitive comparison have to be folded the same way. `fold` is that decision,
+ * and it is also what makes the two case classes behave as `alpha` (`compileClass`).
  */
-function compileIgnoreText(text: string): IgnorePattern[] {
+function compileIgnoreText(text: string, fold: boolean): IgnorePattern[] {
   const patterns: IgnorePattern[] = [];
   const body = text.startsWith(BOM) ? text.slice(BOM.length) : text;
   for (const raw of body.split('\n')) {
@@ -747,7 +758,7 @@ function compileIgnoreText(text: string): IgnorePattern[] {
     const segments: Segment[] = [];
     let valid = true;
     for (const piece of pattern.split('/')) {
-      const elements = compileSegment(piece);
+      const elements = compileSegment(piece, fold);
       if (elements === undefined) {
         valid = false;
         break;
@@ -794,7 +805,7 @@ function trimTrailingSpaces(line: string): string {
  * One `/`-separated piece of a pattern, or `undefined` when git would call it invalid: a
  * backslash that escapes nothing is a pattern that never matches.
  */
-function compileSegment(piece: string): readonly Element[] | undefined {
+function compileSegment(piece: string, fold: boolean): readonly Element[] | undefined {
   const elements: Element[] = [];
   let index = 0;
   while (index < piece.length) {
@@ -822,7 +833,7 @@ function compileSegment(piece: string): readonly Element[] | undefined {
       continue;
     }
     if (char === '[') {
-      const parsed = compileClass(piece, index);
+      const parsed = compileClass(piece, index, fold);
       if (parsed === undefined) {
         return undefined;
       }
@@ -840,6 +851,7 @@ function compileSegment(piece: string): readonly Element[] | undefined {
 function compileClass(
   piece: string,
   start: number,
+  fold: boolean,
 ): { element: Element; next: number } | undefined {
   let index = start + 1;
   let negated = false;
@@ -868,7 +880,12 @@ function compileClass(
       if (!Object.hasOwn(POSIX_CLASSES, name)) {
         return undefined;
       }
-      members.push({ kind: 'named', name });
+      // Under a folding host git's `FNM_CASEFOLD`/`WM_CASEFOLD` folds the character against the
+      // class, so `upper` and `lower` name the same characters there — which is `alpha`. Without
+      // this, a folded name like `b.txt` never matches `[[:upper:]]` the way it does under git.
+      // The exact (non-folding) reading is left alone.
+      const effective = fold && (name === 'upper' || name === 'lower') ? 'alpha' : name;
+      members.push({ kind: 'named', name: effective });
       index = close + 2;
       continue;
     } else {
