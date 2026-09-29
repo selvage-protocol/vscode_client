@@ -77,6 +77,11 @@ export const GRANT_EXCLUDED_DIRS: readonly string[] = [
   '.venv',
   'venv',
   '.tox',
+  '.terraform',
+  'Pods',
+  '_build',
+  'deps',
+  '.dart_tool',
 ];
 
 /**
