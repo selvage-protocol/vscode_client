@@ -183,14 +183,15 @@ test('the extension hosts a version-2 room a second peer can verify and edit in'
   );
   assert.equal(served, SEED);
 
-  // And the guest's caret reaches the extension's own participant list: a row for Bob with the
-  // path he is in, which is a frame the extension attributed to a key its state commits.
+  // And the guest's caret reaches the extension's own participant list: a row for Bob saying
+  // where he is, in the web's words, which is a frame the extension attributed to a key its state
+  // commits.
   guest.setSelection(PATH, { anchor: 0, head: 0 });
   const row = await waitFor(
     "the guest's caret in the extension's participant list",
     () => {
       const rows = viewNodes(bundle);
-      return rows.find((node) => node.description === PATH) ?? false;
+      return rows.find((node) => node.description === `in ${PATH}`) ?? false;
     },
     { timeoutMs: 15_000, describe: () => viewNodes(bundle) },
   );
