@@ -15,9 +15,10 @@ import {
   MAX_GRANT_PATHS,
   isBinaryNamedPath,
   isGrantedPath,
+  isIgnoredPath,
   sortGrant,
 } from '../bridge/index.ts';
-import type { GrantRefusal, GrantedRead } from '../bridge/index.ts';
+import type { GrantRefusal, GrantedRead, IgnoreSource } from '../bridge/index.ts';
 
 /**
  * How many entries a walk will look at before it stops. The path count is the listing's own
@@ -34,6 +35,12 @@ export const MAX_GRANT_NODES = 20_000;
  * which is a project view missing some names rather than a wedged session. Each directory's
  * entries are visited in name order so that which paths survive the truncation does not depend
  * on the file system's own order.
+ *
+ * The listing is what this window shares by itself, so the folder's own ignore files narrow it
+ * the way they narrow a `git status`: `<folder>/.git/info/exclude` and every `.gitignore` at or
+ * below the folder. Nothing above the folder is read, which is a real difference from `git
+ * status` — a folder shared from inside a repository does not honor the rules above it, because
+ * the folder is the bound on what a host reads for the room.
  */
 export async function enumerateGrant(
   folders: readonly vscode.WorkspaceFolder[],
@@ -43,9 +50,33 @@ export async function enumerateGrant(
   // Two folders need their names in front, or two `src/main.rs` would be one room path.
   const qualified = folders.length > 1;
   for (const folder of folders) {
-    await walk(folder.uri, '', qualified ? `${folder.name}/` : '', paths, budget);
+    const ignores = await rootIgnores(folder.uri);
+    await walk(folder.uri, '', qualified ? `${folder.name}/` : '', paths, budget, ignores);
   }
   return sortGrant(paths);
+}
+
+/**
+ * The ignore sources that govern everything under a shared folder: its `.git/info/exclude`, if
+ * it has one.
+ *
+ * A folder need not be a repository, `.git` may be a file rather than a directory (a linked
+ * worktree, a submodule), and a read may fail; each of those is a folder with no repository
+ * exclude, which is what an absent one means.
+ */
+async function rootIgnores(folder: vscode.Uri): Promise<IgnoreSource[]> {
+  const text = await readIgnoreFile(vscode.Uri.joinPath(folder, '.git', 'info', 'exclude'));
+  // The lowest precedence source there is: every `.gitignore` overrides it.
+  return text === undefined ? [] : [{ dir: '', text }];
+}
+
+/** One ignore file's text, or `undefined` when there is none this window can read as text. */
+async function readIgnoreFile(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    return decodableText(await vscode.workspace.fs.readFile(uri));
+  } catch {
+    return undefined;
+  }
 }
 
 async function walk(
@@ -54,6 +85,7 @@ async function walk(
   prefix: string,
   out: string[],
   budget: { nodes: number },
+  inherited: readonly IgnoreSource[],
 ): Promise<void> {
   if (out.length >= MAX_GRANT_PATHS || budget.nodes <= 0) {
     return;
@@ -66,6 +98,10 @@ async function walk(
     // session should hear about, because the grant is a listing and not a promise.
     return;
   }
+  // This directory's own ignore file governs its children, and it is read whether or not some
+  // pattern would leave it out, as git reads it; `.gitignore` itself stays a shareable name.
+  const own = await readIgnoreFile(vscode.Uri.joinPath(dir, '.gitignore'));
+  const ignores = own === undefined ? inherited : [...inherited, { dir: relative, text: own }];
   entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   for (const [name, type] of entries) {
     if (out.length >= MAX_GRANT_PATHS || budget.nodes <= 0) {
@@ -73,7 +109,11 @@ async function walk(
     }
     budget.nodes -= 1;
     const child = relative === '' ? name : `${relative}/${name}`;
-    if (!isGrantedPath(child)) {
+    const directory = (type & vscode.FileType.Directory) !== 0;
+    // Two gates by name, and neither reads a byte: what a room never shares at all, and what
+    // this folder's own ignore files leave out. An ignored directory is not descended into, so
+    // the tree below it costs the walk nothing.
+    if (!isGrantedPath(child) || isIgnoredPath(ignores, child, directory)) {
       continue;
     }
     const target = vscode.Uri.joinPath(dir, name);
@@ -85,8 +125,8 @@ async function walk(
     if ((type & vscode.FileType.SymbolicLink) !== 0) {
       continue;
     }
-    if ((type & vscode.FileType.Directory) !== 0) {
-      await walk(target, child, prefix, out, budget);
+    if (directory) {
+      await walk(target, child, prefix, out, budget, ignores);
       continue;
     }
     // A listing carries files and never directories.
@@ -170,8 +210,9 @@ function relativeWithin(base: string, path: string): string | undefined {
  * The file a room path names, or why this window has none for it.
  *
  * `not-granted` is the name: a path that escapes the folders this session captured, or one the
- * grant leaves out. It is kept apart from the rest so that the bridge can say nothing at all
- * about such a path — a refusal would confirm that the guess was worth making.
+ * grant leaves out — by name (`isGrantedPath`) or by an ignore file of the folder's own. It is
+ * kept apart from the rest so that the bridge can say nothing at all about such a path — a
+ * refusal would confirm that the guess was worth making.
  */
 export type GrantedFile =
   | { readonly uri: vscode.Uri }
@@ -182,10 +223,16 @@ export type GrantedFile =
  *
  * This is the path a *peer* named, so it is checked rather than trusted: the excludes and the
  * segment rules of `isGrantedPath` apply to it, because a guest that guessed `.env` or
- * `.git/config` must not be able to ask for what the grant deliberately leaves out. Every
- * segment on the way to the file must be a plain directory of the folder as well, so a guessed
- * path that travels *through* a symbolic link is refused too — no such path was listed, and
- * what it would read is outside the folder.
+ * `.git/config` must not be able to ask for what the grant deliberately leaves out, and so does
+ * the folder's own ignore layer, because what the listing does not carry is not this window's to
+ * serve either. Every segment on the way to the file must be a plain directory of the folder as
+ * well, so a guessed path that travels *through* a symbolic link is refused too — no such path
+ * was listed, and what it would read is outside the folder.
+ *
+ * The order is the bound: the path is resolved first, so the ignore files this reads are the
+ * ones of directories this window has already found to be plain directories of the folder. A
+ * directory swapped for a link between that resolution and these reads is the window the leaf's
+ * own read has, and is the same stated residual rather than a second one.
  */
 export async function grantedFile(
   folders: readonly vscode.WorkspaceFolder[],
@@ -199,7 +246,35 @@ export async function grantedFile(
   if (refusal !== undefined) {
     return { refusal };
   }
+  // A refusal here is `not-granted` like an excluded path's: it says the grant leaves this out,
+  // and not that a guess was worth making.
+  const ignores = await governingIgnores(resolved.folder.uri, resolved.relative);
+  if (isIgnoredPath(ignores, resolved.relative, false)) {
+    return { refusal: 'not-granted' };
+  }
   return { uri: vscode.Uri.joinPath(resolved.folder.uri, resolved.relative) };
+}
+
+/**
+ * The ignore sources that govern a path inside a folder: `<folder>/.git/info/exclude`, then the
+ * `.gitignore` of every directory from the folder down to the one holding the path.
+ *
+ * Lowest precedence first, and only directories the path's own resolution has already accepted,
+ * so this cannot be the step that reads an ignore file through a link out of the folder.
+ */
+async function governingIgnores(folder: vscode.Uri, relative: string): Promise<IgnoreSource[]> {
+  const sources = await rootIgnores(folder);
+  const segments = relative.split('/');
+  segments.pop();
+  for (let depth = 0; depth <= segments.length; depth += 1) {
+    const dir = segments.slice(0, depth).join('/');
+    const where = dir === '' ? folder : vscode.Uri.joinPath(folder, dir);
+    const text = await readIgnoreFile(vscode.Uri.joinPath(where, '.gitignore'));
+    if (text !== undefined) {
+      sources.push({ dir, text });
+    }
+  }
+  return sources;
 }
 
 /**
