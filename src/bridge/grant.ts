@@ -416,6 +416,449 @@ export function isGrantedPath(path: string, platform: string = hostPlatform()): 
 }
 
 /**
+ * One ignore source a host read: the directory it governs ('' is the shared root) and its
+ * text.
+ */
+export interface IgnoreSource {
+  readonly dir: string;
+  readonly text: string;
+}
+
+/** One element of a compiled pattern segment. */
+type Element =
+  | { readonly kind: 'literal'; readonly value: string }
+  | { readonly kind: 'any' }
+  | { readonly kind: 'star' }
+  | { readonly kind: 'class'; readonly negated: boolean; readonly members: readonly Member[] };
+
+/** One member of a character class: a range, or one of the classes `fnmatch(3)` names. */
+type Member =
+  | { readonly kind: 'range'; readonly from: string; readonly to: string }
+  | { readonly kind: 'named'; readonly name: string };
+
+/** One `/`-separated segment of a compiled pattern. */
+interface Segment {
+  /** `**` alone: zero or more directories, and one or more where it ends the pattern. */
+  readonly deep: boolean;
+  readonly elements: readonly Element[];
+}
+
+/** One line of an ignore file, as the pattern it compiled to. */
+interface IgnorePattern {
+  readonly negated: boolean;
+  /** A trailing `/`: the pattern matches a directory, never a file. */
+  readonly directoryOnly: boolean;
+  /** A `/` at the start or in the middle: relative to the source's own directory. */
+  readonly anchored: boolean;
+  readonly segments: readonly Segment[];
+}
+
+const BOM = '\ufeff';
+
+/** The class names of `fnmatch(3)`'s bracket expressions, ASCII as git's own matcher is. */
+const POSIX_CLASSES: Readonly<Record<string, ((code: number) => boolean) | undefined>> = {
+  alnum: (code) =>
+    (code >= 0x30 && code <= 0x39) || (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a),
+  alpha: (code) => (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a),
+  blank: (code) => code === 0x20 || code === 0x09,
+  cntrl: (code) => code < 0x20 || code === 0x7f,
+  digit: (code) => code >= 0x30 && code <= 0x39,
+  graph: (code) => code > 0x20 && code < 0x7f,
+  lower: (code) => code >= 0x61 && code <= 0x7a,
+  print: (code) => code >= 0x20 && code < 0x7f,
+  punct: (code) =>
+    code > 0x20 &&
+    code < 0x7f &&
+    !((code >= 0x30 && code <= 0x39) || (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a)),
+  space: (code) => code === 0x20 || (code >= 0x09 && code <= 0x0d),
+  upper: (code) => code >= 0x41 && code <= 0x5a,
+  xdigit: (code) =>
+    (code >= 0x30 && code <= 0x39) || (code >= 0x61 && code <= 0x66) || (code >= 0x41 && code <= 0x46),
+};
+
+/**
+ * Whether a workspace-relative path is left out by the ignore sources that govern it.
+ *
+ * The sources are a host's own read of its disk, and they arrive lowest precedence first:
+ * `<folder>/.git/info/exclude`, then the `.gitignore` of every directory from the shared root
+ * down to the one holding the path. The last pattern that matches decides, a negation matches
+ * like any other, and a source governs what is strictly inside the directory it names — never
+ * that directory itself — with its patterns read against the path relative to it. A pattern
+ * that matches a directory stops git there, so an ignored ancestor leaves out everything below
+ * it however a deeper source reads (`gitignore(5)`).
+ *
+ * `isDirectory` decides a directory-only pattern (`foo/`), and `platform` folds case the way
+ * `isGrantedPath` does, only where the host's filesystem folds. `path` is `/`-separated and
+ * relative to the shared root, in the spelling the sources' own `dir` values use.
+ *
+ * The ignore layer is the host's: it reads its own disk, and a receiver has no ignore files to
+ * read, so this stays out of `isGrantedPath` and a listing is refused by name alone.
+ */
+export function isIgnoredPath(
+  sources: readonly IgnoreSource[],
+  path: string,
+  isDirectory: boolean,
+  platform: string = hostPlatform(),
+): boolean {
+  const fold = foldsCase(platform);
+  const compiled = sources.map((source) => ({
+    base: source.dir === '' ? [] : (fold ? source.dir.toLowerCase() : source.dir).split('/'),
+    patterns: compileIgnoreText(fold ? source.text.toLowerCase() : source.text),
+  }));
+  const segments = (fold ? path.toLowerCase() : path).split('/');
+  // Git never descends into an ignored directory, so nothing inside one can be re-included:
+  // an ignored ancestor decides the path before its own patterns are read.
+  for (let depth = 1; depth < segments.length; depth += 1) {
+    if (decides(compiled, segments, depth, true)) {
+      return true;
+    }
+  }
+  return decides(compiled, segments, segments.length, isDirectory);
+}
+
+/** A compiled source: the directory it governs, and the patterns to hold a path against it. */
+interface CompiledSource {
+  readonly base: readonly string[];
+  readonly patterns: readonly IgnorePattern[];
+}
+
+/**
+ * Whether the last pattern matching the path's first `depth` segments leaves it out.
+ *
+ * Sources are read lowest precedence first and the patterns of one source in file order, so
+ * the later of two matches wins, which is the rule `gitignore(5)` states for both.
+ */
+function decides(
+  sources: readonly CompiledSource[],
+  segments: readonly string[],
+  depth: number,
+  isDirectory: boolean,
+): boolean {
+  let ignored = false;
+  for (const source of sources) {
+    if (source.base.length >= depth || !startsAt(segments, source.base)) {
+      continue;
+    }
+    const relative = segments.slice(source.base.length, depth);
+    for (const pattern of source.patterns) {
+      if (matchesPattern(pattern, relative, isDirectory)) {
+        ignored = !pattern.negated;
+      }
+    }
+  }
+  return ignored;
+}
+
+/** Whether `segments` begins with `base`, which is how a source governs a path inside it. */
+function startsAt(segments: readonly string[], base: readonly string[]): boolean {
+  return base.every((segment, index) => segments[index] === segment);
+}
+
+/** Whether one pattern matches the path relative to the source that holds it. */
+function matchesPattern(
+  pattern: IgnorePattern,
+  relative: readonly string[],
+  isDirectory: boolean,
+): boolean {
+  if (pattern.directoryOnly && !isDirectory) {
+    return false;
+  }
+  if (!pattern.anchored) {
+    // No `/` but the trailing one, so the name matches at any depth below the source.
+    const leaf = pattern.segments[0];
+    return leaf !== undefined && segmentMatches(leaf.elements, relative[relative.length - 1] ?? '');
+  }
+  return segmentsMatch(pattern.segments, relative);
+}
+
+/** Whether a path matches a whole anchored pattern, its `**` segments spanning directories. */
+function segmentsMatch(pattern: readonly Segment[], path: readonly string[]): boolean {
+  const width = path.length + 1;
+  const failed = new Uint8Array((pattern.length + 1) * width);
+
+  const at = (element: number, index: number): boolean => {
+    // Each position is tried once: a `**` branches over the rest of the path, and without this
+    // a pattern of several of them revisits the same positions exponentially.
+    if (failed[element * width + index] !== 0) {
+      return false;
+    }
+    const segment = pattern[element];
+    let matched: boolean;
+    if (segment === undefined) {
+      matched = index === path.length;
+    } else if (segment.deep && element + 1 === pattern.length) {
+      // A trailing `/**` matches what is inside a directory, never the directory itself.
+      matched = index < path.length;
+    } else if (segment.deep) {
+      matched = false;
+      for (let next = index; next <= path.length && !matched; next += 1) {
+        matched = at(element + 1, next);
+      }
+    } else {
+      matched =
+        index < path.length &&
+        segmentMatches(segment.elements, path[index] ?? '') &&
+        at(element + 1, index + 1);
+    }
+    if (!matched) {
+      failed[element * width + index] = 1;
+    }
+    return matched;
+  };
+
+  return at(0, 0);
+}
+
+/** Whether one name matches one segment: `*` and `?` never cross a `/`, which a name has none of. */
+function segmentMatches(elements: readonly Element[], name: string): boolean {
+  let element = 0;
+  let index = 0;
+  let star = -1;
+  let starIndex = 0;
+  while (index < name.length) {
+    if (elements[element]?.kind === 'star') {
+      star = element;
+      starIndex = index;
+      element += 1;
+      continue;
+    }
+    const current = elements[element];
+    if (current !== undefined && elementMatches(current, name[index] ?? '')) {
+      element += 1;
+      index += 1;
+      continue;
+    }
+    if (star === -1) {
+      return false;
+    }
+    starIndex += 1;
+    index = starIndex;
+    element = star + 1;
+  }
+  while (elements[element]?.kind === 'star') {
+    element += 1;
+  }
+  return element === elements.length;
+}
+
+/** Whether one character matches one element. A `*` is consumed by the caller's own branch. */
+function elementMatches(element: Element, char: string): boolean {
+  if (element.kind === 'literal') {
+    return element.value === char;
+  }
+  if (element.kind === 'any') {
+    return true;
+  }
+  if (element.kind === 'class') {
+    const found = element.members.some((member) => memberMatches(member, char));
+    return element.negated ? !found : found;
+  }
+  return true;
+}
+
+/** Whether one character is in a class member: a range, or a named class. */
+function memberMatches(member: Member, char: string): boolean {
+  if (member.kind === 'range') {
+    return char >= member.from && char <= member.to;
+  }
+  return POSIX_CLASSES[member.name]?.(char.codePointAt(0) ?? 0) ?? false;
+}
+
+/**
+ * The patterns of one ignore file, in the order the file writes them.
+ *
+ * A line's trailing spaces go unless a backslash escapes one, `#` and `!` introduce a comment
+ * and a negation unless escaped, blanks are skipped, a trailing `/` makes a pattern
+ * directory-only, and a `/` anywhere but the end anchors it to the source's directory. A line
+ * git calls invalid — a trailing backslash, an unterminated bracket, a class name that is not
+ * one — never matches anything, so it is dropped.
+ *
+ * `text` arrives already folded where the host folds; case is the caller's, because the two
+ * sides of a case-insensitive comparison have to be folded the same way.
+ */
+function compileIgnoreText(text: string): IgnorePattern[] {
+  const patterns: IgnorePattern[] = [];
+  const body = text.startsWith(BOM) ? text.slice(BOM.length) : text;
+  for (const raw of body.split('\n')) {
+    const line = trimTrailingSpaces(raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    let pattern = line;
+    let negated = false;
+    if (pattern.startsWith('\\#') || pattern.startsWith('\\!')) {
+      pattern = pattern.slice(1);
+    } else if (pattern.startsWith('!')) {
+      negated = true;
+      pattern = pattern.slice(1);
+    }
+    let directoryOnly = false;
+    if (pattern.endsWith('/')) {
+      directoryOnly = true;
+      pattern = pattern.slice(0, -1);
+    }
+    let anchored = false;
+    if (pattern.startsWith('/')) {
+      anchored = true;
+      pattern = pattern.slice(1);
+    } else if (pattern.includes('/')) {
+      anchored = true;
+    }
+    if (pattern === '') {
+      continue;
+    }
+    const segments: Segment[] = [];
+    let valid = true;
+    for (const piece of pattern.split('/')) {
+      const elements = compileSegment(piece);
+      if (elements === undefined) {
+        valid = false;
+        break;
+      }
+      const deep = piece === '**';
+      // Consecutive `**` segments are one, and the last of them is the one that decides how
+      // many directories the run spans.
+      if (deep && segments[segments.length - 1]?.deep === true) {
+        segments.pop();
+      }
+      segments.push({ deep, elements });
+    }
+    if (valid) {
+      patterns.push({ negated, directoryOnly, anchored, segments });
+    }
+  }
+  return patterns;
+}
+
+/** A line's trailing spaces, dropped unless a backslash escapes one of them. */
+function trimTrailingSpaces(line: string): string {
+  let last = -1;
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === '\\') {
+      index += 2;
+      last = -1;
+      continue;
+    }
+    if (char === ' ') {
+      if (last === -1) {
+        last = index;
+      }
+    } else {
+      last = -1;
+    }
+    index += 1;
+  }
+  return last === -1 ? line : line.slice(0, last);
+}
+
+/**
+ * One `/`-separated piece of a pattern, or `undefined` when git would call it invalid: a
+ * backslash that escapes nothing is a pattern that never matches.
+ */
+function compileSegment(piece: string): readonly Element[] | undefined {
+  const elements: Element[] = [];
+  let index = 0;
+  while (index < piece.length) {
+    const char = piece[index] ?? '';
+    if (char === '\\') {
+      const literal = piece[index + 1];
+      if (literal === undefined) {
+        return undefined;
+      }
+      elements.push({ kind: 'literal', value: literal });
+      index += 2;
+      continue;
+    }
+    if (char === '*') {
+      // Consecutive asterisks are one here: only a `**` piece of its own spans a directory.
+      if (elements[elements.length - 1]?.kind !== 'star') {
+        elements.push({ kind: 'star' });
+      }
+      index += 1;
+      continue;
+    }
+    if (char === '?') {
+      elements.push({ kind: 'any' });
+      index += 1;
+      continue;
+    }
+    if (char === '[') {
+      const parsed = compileClass(piece, index);
+      if (parsed === undefined) {
+        return undefined;
+      }
+      elements.push(parsed.element);
+      index = parsed.next;
+      continue;
+    }
+    elements.push({ kind: 'literal', value: char });
+    index += 1;
+  }
+  return elements;
+}
+
+/** A bracket expression and the index after it, or `undefined` when it is not one. */
+function compileClass(
+  piece: string,
+  start: number,
+): { element: Element; next: number } | undefined {
+  let index = start + 1;
+  let negated = false;
+  if (piece[index] === '!' || piece[index] === '^') {
+    negated = true;
+    index += 1;
+  }
+  const members: Member[] = [];
+  let first = true;
+  while (index < piece.length) {
+    let char = piece[index] ?? '';
+    if (char === ']' && !first) {
+      return { element: { kind: 'class', negated, members }, next: index + 1 };
+    }
+    first = false;
+    if (char === '\\') {
+      const literal = piece[index + 1];
+      if (literal === undefined) {
+        return undefined;
+      }
+      char = literal;
+      index += 2;
+    } else if (char === '[' && piece[index + 1] === ':') {
+      const close = piece.indexOf(':]', index + 2);
+      const name = close === -1 ? '' : piece.slice(index + 2, close);
+      if (!Object.hasOwn(POSIX_CLASSES, name)) {
+        return undefined;
+      }
+      members.push({ kind: 'named', name });
+      index = close + 2;
+      continue;
+    } else {
+      index += 1;
+    }
+    const after = piece[index + 1];
+    if (piece[index] === '-' && after !== undefined && after !== ']') {
+      let to = after;
+      let next = index + 2;
+      if (to === '\\') {
+        const literal = piece[index + 2];
+        if (literal === undefined) {
+          return undefined;
+        }
+        to = literal;
+        next = index + 3;
+      }
+      members.push({ kind: 'range', from: char, to });
+      index = next;
+      continue;
+    }
+    members.push({ kind: 'range', from: char, to: char });
+  }
+  return undefined;
+}
+
+/**
  * A listing in the order a publishing client MUST write it: ascending by Unicode code unit,
  * which is the unit `PROTOCOL.md` §5 fixes the order in.
  *

@@ -18,9 +18,11 @@ import {
   grantUnion,
   isBinaryNamedPath,
   isGrantedPath,
+  isIgnoredPath,
   overFileBound,
   sortGrant,
 } from '../src/bridge/grant.ts';
+import type { IgnoreSource } from '../src/bridge/grant.ts';
 
 test('a granted path is workspace-relative, and one that could resolve elsewhere is not', () => {
   for (const good of [
@@ -403,4 +405,198 @@ test('a name that declares a format a room cannot carry is refused and not offer
     grantUnion(['src/main.rs', 'bundle.zip'], ['logo.png', 'src/main.rs']),
     ['src/main.rs'],
   );
+});
+
+// A host's own ignore files, read off plain strings: the layer that narrows what a session
+// shares by itself and what a peer may ask for, above the name-only excludes a receiver also
+// applies. Every rule below is gitignore(5)'s, and each one is pinned against the shape it
+// decides: where a pattern is anchored, the three `**` positions, the directory-only trailing
+// slash, negation and the directory that stops it, one source overriding another, and the lines
+// git calls invalid.
+
+/** One source per entry, lowest precedence first, as a host reads them off its disk. */
+function ignoring(
+  ...entries: readonly (readonly [string, string])[]
+): IgnoreSource[] {
+  return entries.map(([dir, text]) => ({ dir, text }));
+}
+
+test('a folder with no ignore file leaves everything in, and a source governs only what is under it', () => {
+  assert.equal(isIgnoredPath([], 'anything/at/all.txt', false), false);
+
+  const below = ignoring(['sub', 'note.txt\nsibling\n']);
+  assert.equal(isIgnoredPath(below, 'sub/note.txt', false), true);
+  assert.equal(isIgnoredPath(below, 'sub/deep/note.txt', false), true, 'the name matches any depth');
+  assert.equal(isIgnoredPath(below, 'sub/sibling/x.txt', false), true, 'a directory match takes its tree');
+  assert.equal(isIgnoredPath(below, 'note.txt', false), false, 'the source does not govern above itself');
+  assert.equal(isIgnoredPath(below, 'other/note.txt', false), false);
+  assert.equal(isIgnoredPath(below, 'sub', true), false, 'nor the directory it is in');
+});
+
+test('a pattern matches where it is anchored, and at any depth where it is not', () => {
+  const anchored = ignoring(['', '/build\nsrc/gen\n']);
+  assert.equal(isIgnoredPath(anchored, 'build', true), true);
+  assert.equal(isIgnoredPath(anchored, 'build/out.js', false), true);
+  assert.equal(isIgnoredPath(anchored, 'nested/build', true), false, 'a leading slash anchors');
+  assert.equal(isIgnoredPath(anchored, 'src/gen', false), true);
+  assert.equal(isIgnoredPath(anchored, 'nested/src/gen', false), false, 'a middle slash anchors');
+
+  const loose = ignoring(['', 'build\n*.tmp\n']);
+  assert.equal(isIgnoredPath(loose, 'nested/build/out.js', false), true);
+  assert.equal(isIgnoredPath(loose, 'a/b/c.tmp', false), true);
+  assert.equal(isIgnoredPath(loose, 'buildtools/out.js', false), false, 'a name that only starts alike');
+  assert.equal(isIgnoredPath(loose, 'x.tmp/y', false), true, 'an ignored directory takes its tree');
+});
+
+test('`*` and `?` do not cross a slash', () => {
+  const ones = ignoring(['', 'a?c\nlogs/*\n']);
+  assert.equal(isIgnoredPath(ones, 'abc', false), true);
+  assert.equal(isIgnoredPath(ones, 'a/c', false), false, '`?` is one character, and a slash is not it');
+  assert.equal(isIgnoredPath(ones, 'logs/x.log', false), true);
+  assert.equal(isIgnoredPath(ones, 'logs/deep', true), true);
+  assert.equal(isIgnoredPath(ones, 'logs/deep/x.log', false), true, 'the matched directory is enough');
+  assert.equal(isIgnoredPath(ones, 'other/logs/x.log', false), false, 'a middle slash anchors it');
+});
+
+test('`**` spans directories in each of the three positions', () => {
+  const leading = ignoring(['', '**/generated\n']);
+  assert.equal(isIgnoredPath(leading, 'generated', true), true);
+  assert.equal(isIgnoredPath(leading, 'a/b/generated', true), true);
+  assert.equal(isIgnoredPath(leading, 'a/generated/x.txt', false), true);
+  assert.equal(isIgnoredPath(leading, 'regenerated', true), false);
+
+  const trailing = ignoring(['', 'logs/**\n']);
+  assert.equal(isIgnoredPath(trailing, 'logs', true), false, '`logs/**` is what is inside logs');
+  assert.equal(isIgnoredPath(trailing, 'logs/a', true), true);
+  assert.equal(isIgnoredPath(trailing, 'logs/a/b/c.txt', false), true);
+
+  const middle = ignoring(['', 'a/**/b\n']);
+  assert.equal(isIgnoredPath(middle, 'a/b', true), true, 'zero directories in between');
+  assert.equal(isIgnoredPath(middle, 'a/x/y/b', true), true);
+  assert.equal(isIgnoredPath(middle, 'a/x/y/b/z.txt', false), true);
+  assert.equal(isIgnoredPath(middle, 'x/a/b', true), false, 'a middle slash anchors the pattern');
+
+  // Consecutive asterisks are one anywhere else, which is `*`: it never crosses a slash.
+  const regular = ignoring(['', 'a**b\nx**/y\n']);
+  assert.equal(isIgnoredPath(regular, 'aXXb', true), true);
+  assert.equal(isIgnoredPath(regular, 'x/y', false), true);
+  assert.equal(isIgnoredPath(regular, 'xzz/y', false), true);
+  assert.equal(isIgnoredPath(regular, 'x/z/y', false), false, 'the run stops at the slash');
+  assert.equal(isIgnoredPath(regular, 'q/x/y', false), false);
+  assert.equal(isIgnoredPath(regular, 'aXX/b', false), false);
+});
+
+test('a trailing slash makes a pattern directory-only', () => {
+  const ones = ignoring(['', 'out/\ndocs/build/\n']);
+  assert.equal(isIgnoredPath(ones, 'out', true), true);
+  assert.equal(isIgnoredPath(ones, 'out', false), false, 'a file named `out` is not the directory');
+  assert.equal(isIgnoredPath(ones, 'a/out', true), true, 'no other slash, so any depth matches');
+  assert.equal(isIgnoredPath(ones, 'docs/build', true), true);
+  assert.equal(isIgnoredPath(ones, 'a/docs/build', true), false, 'the middle slash anchors it');
+});
+
+test('a negation re-includes, and an ignored directory stops it', () => {
+  const ones = ignoring(['', '*.log\n!keep.log\n']);
+  assert.equal(isIgnoredPath(ones, 'a.log', false), true);
+  assert.equal(isIgnoredPath(ones, 'keep.log', false), false);
+  assert.equal(isIgnoredPath(ones, 'deep/keep.log', false), false, 'the name matches any depth');
+
+  // Git never descends into an ignored directory, so nothing inside one can be re-included.
+  const trapped = ignoring(['', 'build/\n!build/keep.txt\n']);
+  assert.equal(isIgnoredPath(trapped, 'build/keep.txt', false), true);
+  assert.equal(isIgnoredPath(trapped, 'build/keep/x.txt', false), true);
+
+  // What is inside a directory is not the directory: a negation that re-includes one is a
+  // directory git descends into.
+  const reopened = ignoring(['', 'build/*\n!build/keep/\n']);
+  assert.equal(isIgnoredPath(reopened, 'build/keep', true), false);
+  assert.equal(isIgnoredPath(reopened, 'build/keep/x.txt', false), false);
+  assert.equal(isIgnoredPath(reopened, 'build/other.txt', false), true);
+});
+
+test('a path under an ignored directory is left out however deep it is', () => {
+  const ones = ignoring(['', 'out/\n']);
+  for (const path of ['out/x', 'out/a/b/c.txt', 'deep/out/a/b.txt']) {
+    assert.equal(isIgnoredPath(ones, path, false), true, `${path} is under an ignored directory`);
+  }
+  for (const path of ['output/x.txt', 'out.txt']) {
+    assert.equal(isIgnoredPath(ones, path, false), false, `${path} is not under one`);
+  }
+  assert.equal(isIgnoredPath(ones, 'out', false), false, 'the file of that name is not the directory');
+});
+
+test('sources are read lowest precedence first, and the last match decides', () => {
+  // The first two share a directory because `<folder>/.git/info/exclude` stands beside the
+  // folder's own `.gitignore`: the `.gitignore` is the higher precedence of the two, and it
+  // overrides rather than being overridden.
+  const ones = ignoring(
+    ['', '*.log\n*.tmp\n'],
+    ['', '!keep.log\n'],
+    ['sub', '!note.tmp\n'],
+  );
+  assert.equal(isIgnoredPath(ones, 'debug.log', false), true);
+  assert.equal(isIgnoredPath(ones, 'keep.log', false), false, 'a `.gitignore` overrides info/exclude');
+  assert.equal(isIgnoredPath(ones, 'a.tmp', false), true);
+  assert.equal(isIgnoredPath(ones, 'sub/a.log', false), true);
+  assert.equal(isIgnoredPath(ones, 'sub/note.tmp', false), false, 'the deeper source decides');
+  assert.equal(isIgnoredPath(ones, 'note.tmp', false), true, 'and does not govern above itself');
+
+  // The same two sources the other way round decide the other way, which is the order rather
+  // than the patterns.
+  const reversed = ignoring(['', '!keep.log\n'], ['', '*.log\n']);
+  assert.equal(isIgnoredPath(reversed, 'keep.log', false), true);
+});
+
+test('comments, blanks, escaped characters and trailing spaces', () => {
+  const ones = ignoring(['', '# a comment\n\n\\#literal\n\\!bang\nspace\\ \ntrail   \n\\a\n']);
+  for (const path of ['#literal', '!bang']) {
+    assert.equal(isIgnoredPath(ones, path, false), true, `a backslash makes the first ${path} literal`);
+  }
+  assert.equal(isIgnoredPath(ones, 'space ', false), true, 'an escaped space is part of the name');
+  assert.equal(isIgnoredPath(ones, 'space', false), false);
+  assert.equal(isIgnoredPath(ones, 'trail', false), true, 'trailing spaces are dropped');
+  assert.equal(isIgnoredPath(ones, 'trail   ', false), false, 'and that name is not the pattern');
+  assert.equal(isIgnoredPath(ones, 'a', false), true, 'a backslash escapes an ordinary character');
+  for (const path of ['# a comment', 'literal', 'bang']) {
+    assert.equal(isIgnoredPath(ones, path, false), false, `${path} is named by no pattern`);
+  }
+});
+
+test('character classes, negated classes and the classes fnmatch(3) names', () => {
+  const ones = ignoring(['', '[abc].txt\n[!xyz].log\nd[]]e\n[]]b.txt\n[[:digit:]]g\nq[![:space:]]z\n']);
+  assert.equal(isIgnoredPath(ones, 'b.txt', false), true);
+  assert.equal(isIgnoredPath(ones, 'z.txt', false), false, 'a class is the set of characters it names');
+  assert.equal(isIgnoredPath(ones, 'a.log', false), true, 'a negated class matches what it does not name');
+  assert.equal(isIgnoredPath(ones, 'x.log', false), false);
+  assert.equal(isIgnoredPath(ones, 'd]e', false), true);
+  assert.equal(isIgnoredPath(ones, ']b.txt', false), true, 'a `]` first in a class is a member');
+  assert.equal(isIgnoredPath(ones, 'b]b.txt', false), false);
+  assert.equal(isIgnoredPath(ones, '4g', false), true);
+  assert.equal(isIgnoredPath(ones, 'ag', false), false);
+  assert.equal(isIgnoredPath(ones, 'qaz', false), true);
+  assert.equal(isIgnoredPath(ones, 'q z', false), false);
+});
+
+test('a line git calls invalid names nothing', () => {
+  const ones = ignoring(['', 'trailing\\\nunclosed[a-z\nnamed[[:nope:]]x\n']);
+  for (const path of ['trailing', 'uncloseda', 'unclosed[a-z', 'namedx']) {
+    assert.equal(isIgnoredPath(ones, path, false), false, `${path} is named by no valid pattern`);
+  }
+});
+
+test('ignore patterns fold case only where the filesystem folds', () => {
+  const ones = ignoring(['', 'build/\n*.LOG\n']);
+  for (const platform of ['darwin', 'win32', '']) {
+    assert.equal(isIgnoredPath(ones, 'BUILD', true, platform), true, `BUILD folds on ${platform}`);
+    assert.equal(isIgnoredPath(ones, 'a.log', false, platform), true, `a.log folds on ${platform}`);
+  }
+  for (const platform of ['linux', 'freebsd']) {
+    assert.equal(isIgnoredPath(ones, 'BUILD', true, platform), false, `BUILD is another name on ${platform}`);
+    assert.equal(isIgnoredPath(ones, 'a.log', false, platform), false, `a.log is another name on ${platform}`);
+  }
+  // The source's own directory folds with its patterns: on a folding filesystem `Sub` in a
+  // source's `dir` and `sub/` in a path name one directory.
+  const below = ignoring(['Sub', 'note.txt\n']);
+  assert.equal(isIgnoredPath(below, 'sub/note.txt', false, 'darwin'), true);
+  assert.equal(isIgnoredPath(below, 'sub/note.txt', false, 'linux'), false);
 });
