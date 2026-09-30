@@ -130,6 +130,8 @@ const disk = {
   unreadable: new Set(),
   /** `readFile` calls, in order, as the URI path asked for (never a link's target). */
   reads: [],
+  /** `readDirectory` calls, in order, as the URI path asked for: how a test counts a listing. */
+  listings: [],
   /**
    * Mounted reads only, as the real file each one opened with every symbolic link followed:
    * what a `readPaths` assertion cannot see, because a read through a link is asked for under
@@ -404,6 +406,7 @@ function reset() {
   disk.links.clear();
   disk.unreadable.clear();
   disk.reads.length = 0;
+  disk.listings.length = 0;
   disk.opened.length = 0;
   mounted = null;
   registered.watchers.length = 0;
@@ -563,6 +566,8 @@ module.exports = {
   },
   /** Every path `workspace.fs.readFile` was asked for since the last reset, in order. */
   readPaths: () => [...disk.reads],
+  /** Every path `workspace.fs.readDirectory` was asked for since the last reset, in order. */
+  listedPaths: () => [...disk.listings],
   /** Every real file a mounted `readFile` opened since the last reset, links followed. */
   openedPaths: () => [...disk.opened],
   /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
@@ -767,6 +772,7 @@ module.exports = {
     fs: {
       readDirectory: (uri) => {
         const path = pathOf(uri);
+        disk.listings.push(path);
         const index = registered.listings;
         registered.listings += 1;
         if (mounted !== null) {
