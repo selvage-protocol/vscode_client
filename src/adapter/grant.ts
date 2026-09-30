@@ -10,7 +10,7 @@
 
 import * as vscode from 'vscode';
 
-import { MAX_GRANT_FILE_BYTES, isGrantedPath, isIgnoredPath, walkListing } from '../bridge/index.ts';
+import { MAX_GRANT_FILE_BYTES, hostPlatform, isGrantedPath, isIgnoredPath, walkListing } from '../bridge/index.ts';
 import type {
   GrantRefusal,
   GrantedRead,
@@ -38,10 +38,12 @@ const EXCLUDE_FILE = 'exclude';
 
 /**
  * This window's file system, as the walk's seam: every read goes through `vscode.workspace.fs`,
- * so a remote or virtual workspace is read the way the editor reads it, and an entry's own type
- * is reduced to what a listing carries (`kindOf`).
+ * so a remote or virtual workspace is read the way the editor reads it, an entry's own type is
+ * reduced to what a listing carries (`kindOf`), and the platform is the one this window runs on,
+ * named here rather than read by the walk.
  */
 const GRANT_SOURCE: ListingWalkSource<vscode.Uri> = {
+  platform: hostPlatform(),
   entries: (dir) => listDirectory(dir),
   ignoreText: (dir, entries) => readIgnoreFile(dir, IGNORE_FILE, entries),
   shareable: (dir, name) => isShareableFile(vscode.Uri.joinPath(dir, name)),

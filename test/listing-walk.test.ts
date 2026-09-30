@@ -45,14 +45,20 @@ interface FakeDirectory {
 class FakeTree implements ListingWalkSource<string> {
   /** Every directory the walk asked for, in order, with repeats. */
   readonly reads: string[] = [];
+  /**
+   * The host the walk gates against, case-sensitive unless a test names another one: the suite's
+   * own runner is Linux, so a test that is not about a platform reads the names it always did.
+   */
+  readonly platform: string;
   private readonly dirs: Map<string, FakeDirectory | undefined>;
   private readonly rootIgnore: string | undefined;
   private readonly ignoreAt: Map<string, string>;
 
   constructor(
     dirs: Record<string, FakeDirectory | undefined>,
-    options: { rootIgnore?: string; ignoreAt?: Record<string, string> } = {},
+    options: { platform?: string; rootIgnore?: string; ignoreAt?: Record<string, string> } = {},
   ) {
+    this.platform = options.platform ?? 'linux';
     this.dirs = new Map(Object.entries(dirs));
     this.rootIgnore = options.rootIgnore;
     this.ignoreAt = new Map(Object.entries(options.ignoreAt ?? {}));
@@ -314,3 +320,4 @@ test('a root exclude is the floor under the .gitignore of the directory it gover
   const walked = await walkListing(tree, ROOT);
   assert.deepEqual(walked.paths, ['.gitignore', 'kept.md', 'notes.tmp'], 'the later source did not decide');
 });
+
