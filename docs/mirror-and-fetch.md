@@ -17,6 +17,13 @@ guesses an ignored path that exists is refused the same silent `not-granted` an 
 gets, and a path that does not exist is refused `missing` like any other absent path, which says
 nothing about the ignore rule either.
 
+The listing is bounded as well: `PROTOCOL.md` §13.3 holds one to 100 000 paths and to 4 MiB of
+their UTF-8 bytes, and a walk that reaches either stops there, so a folder past those bounds is
+shared in part. That is a bound on one sealed frame rather than a rule about names, and there is
+nothing a peer could do about it, so the host is the one told when it binds and a guest is not
+told at all. A guest's mirror holds as many paths as a listing may carry, so a room a conforming
+host publishes fits in it.
+
 The folder is the bound on what a host reads. A folder shared from inside a repository does not
 honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
 other rule outside the folder is read, because those are rules of the person at the machine rather
