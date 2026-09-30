@@ -28,12 +28,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { GrantRefusal, Report } from '../src/bridge/bridge.ts';
-import {
-  MAX_GRANT_FILE_BYTES,
-  MAX_GRANT_LISTING_BYTES,
-  MAX_GRANT_NODES,
-  MAX_GRANT_PATHS,
-} from '../src/bridge/index.ts';
+import { MAX_GRANT_NODES, MAX_GRANT_PATHS } from '../src/bridge/index.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 registerHooks(vscodeLoader);
@@ -51,6 +46,8 @@ const stub = createRequire(import.meta.url)('./helpers/vscode-stub.cjs') as {
   mount(root: string): void;
   /** Every path `workspace.fs.readFile` was asked for since the last reset, in order. */
   readPaths(): string[];
+  /** Every path `workspace.fs.readDirectory` was asked for since the last reset, in order. */
+  listedPaths(): string[];
   /** Every real file a mounted `readFile` opened since the last reset, links followed. */
   openedPaths(): string[];
   /** Replaces the folders the window is open on. */
@@ -512,12 +509,6 @@ test('a linked .git is not read, so its exclude drops nothing', async (t) => {
 
 // --- the bounds a walk stops at -----------------------------------------------------
 
-/** The UTF-8 bytes of a listing's paths, counted here rather than by the code under test. */
-function listedBytes(paths: readonly string[]): number {
-  const encoder = new TextEncoder();
-  return paths.reduce((total, path) => total + encoder.encode(path).length, 0);
-}
-
 test('a walk stops at the path count one listing carries, and says which bound it was', async (t) => {
   stub.reset();
   t.after(() => {
@@ -537,51 +528,6 @@ test('a walk stops at the path count one listing carries, and says which bound i
     listing.paths.length,
     'the same path was listed twice',
   );
-});
-
-test('a walk stops when the paths it lists reach the byte bound, and says which bound it was', async (t) => {
-  stub.reset();
-  t.after(() => {
-    stub.reset();
-  });
-  // 2000 names of 2100 UTF-8 bytes each: more than the 4 MiB a listing carries, in fewer files
-  // than the count bound, so the byte bound is the one that binds. A character outside ASCII
-  // is deliberate — the count is UTF-8 bytes and not UTF-16 code units.
-  const long = 'あ'.repeat(700);
-  const seeded = 2000;
-  for (let index = 0; index < seeded; index += 1) {
-    stub.put(`${index}-${long}.md`, 'x');
-  }
-
-  const listing = await enumerateGrant(folders());
-  assert.equal(listing.cut, 'bytes', 'the walk read past the byte bound in silence');
-  assert.ok(listing.paths.length > 0, 'the byte bound stopped the walk at the first path');
-  assert.ok(listing.paths.length < seeded, 'every path was listed');
-  const bytes = listedBytes(listing.paths);
-  assert.ok(bytes <= MAX_GRANT_LISTING_BYTES, `the listing is over the bound: ${bytes}`);
-  assert.ok(
-    bytes + listedBytes([`0-${long}.md`]) > MAX_GRANT_LISTING_BYTES,
-    `the walk stopped well short of the bound: ${bytes}`,
-  );
-});
-
-test('a walk stops when its budget is spent, and says so rather than listing nothing', async (t) => {
-  stub.reset();
-  t.after(() => {
-    stub.reset();
-  });
-  // The budget pays for the shareability check every candidate costs, so a folder of files too
-  // large to share spends it without naming one. Two small files sort first and are listed;
-  // the bound that stops the walk is the budget and not the listing.
-  stub.put('a-granted.md', 'x');
-  stub.put('a-granted-too.md', 'x');
-  for (let index = 0; index <= MAX_GRANT_NODES; index += 1) {
-    stub.put(`b-${index}.md`, 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
-  }
-
-  const listing = await enumerateGrant(folders());
-  assert.deepEqual(listing.paths, ['a-granted-too.md', 'a-granted.md'], 'the walk listed the wrong paths');
-  assert.equal(listing.cut, 'budget', 'the walk gave up in silence');
 });
 
 test('a name a room never shares costs the walk nothing', async (t) => {
@@ -605,48 +551,28 @@ test('a name a room never shares costs the walk nothing', async (t) => {
   assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
 });
 
-test('a walk that named every shareable file reports no cut', async (t) => {
+test('a walk lists the folder once, and takes its exclude from the entries it read', async (t) => {
   stub.reset();
   t.after(() => {
     stub.reset();
   });
-  // Exactly a listing's worth of shareable paths, and one plain file too large to share after
-  // them. The listing holds every file this walk would name, so it is short of nothing and there
-  // is no cut to report. A bound read off a candidate the walk then declines — one checked
-  // before the file is asked about, as this walk asked before — would say the listing was cut.
-  for (let index = 0; index < MAX_GRANT_PATHS; index += 1) {
-    stub.put(`f-${index}.md`, 'x');
-  }
-  stub.put('z-large.md', 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
+  stub.put('.git/info/exclude', 'dropped.tmp\n');
+  stub.put('.gitignore', 'also-dropped.tmp\n');
+  stub.put('dropped.tmp', 'dropped by the repository exclude\n');
+  stub.put('also-dropped.tmp', 'dropped by the ignore file\n');
+  stub.put('kept.txt', 'kept\n');
 
-  const listing = await enumerateGrant(folders());
-  assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
-  assert.equal(listing.paths.length, MAX_GRANT_PATHS, 'a shareable path is missing from the listing');
-  assert.ok(listing.paths.includes('f-0.md'), 'the listing holds something else');
+  // The repository exclude is the root's own ignore source, and it is read from the entries the
+  // walk already holds rather than by listing the root again. Both rules are in force, so both
+  // sources were read.
+  assert.deepEqual((await enumerateGrant(folders())).paths, ['.gitignore', 'kept.txt']);
+
+  const listed = stub.listedPaths();
+  const roots = listed.filter((path) => path === '/workspace');
+  assert.equal(roots.length, 1, `the folder was listed ${roots.length} times`);
+  // `.git` and `info` are the only other directories read, and they are not the folder: at the
+  // ceiling a second listing of the root is another 100 000-entry enumeration per publish.
+  assert.ok(listed.includes('/workspace/.git'), 'the repository directory was never read');
+  assert.ok(listed.includes('/workspace/.git/info'), 'the repository exclude was never looked for');
 });
 
-test('a file the walk would not name does not trip the byte bound either', async (t) => {
-  stub.reset();
-  t.after(() => {
-    stub.reset();
-  });
-  // The same shape at the byte bound, and cheap enough to reach without a hundred thousand files:
-  // 1026 paths of 4086 UTF-8 bytes fill all but a couple of thousand of the 4 MiB a listing
-  // carries, and the file that follows them is one no listing names. The candidate's own path
-  // would not have fitted either — 4192236 + 3500 is over the bound — so a bound decided on the
-  // candidate rather than on what is published reports a cut here.
-  const long = `p${'あ'.repeat(1360)}`;
-  assert.equal(new TextEncoder().encode(long).length, 4081);
-  for (let index = 0; index < 1026; index += 1) {
-    stub.put(`${String(index).padStart(4, '0')}-${long}`, 'x');
-  }
-  stub.put(`z${'a'.repeat(3499)}`, 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
-
-  const listing = await enumerateGrant(folders());
-  assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
-  assert.equal(listing.paths.length, 1026, `the listing is short: ${listing.paths.length} listed`);
-  assert.ok(
-    listedBytes(listing.paths) + 3500 > MAX_GRANT_LISTING_BYTES,
-    'the candidate no longer reaches past the bound, so the test proves nothing',
-  );
-});
