@@ -19,12 +19,14 @@ nothing about the ignore rule either.
 
 The listing is bounded as well: `PROTOCOL.md` §13.3 holds one to 100 000 paths and to 4 MiB of
 their UTF-8 bytes, and a walk that reaches either stops there, so a folder past those bounds is
-shared in part. The walk is the bridge's (`src/bridge/listing-walk.ts`) and not this editor's own,
-so those stops and the accounting that charges for a directory read and a shareability check but
-not for a name reached the browser and the companion with the rest of the vendored copy. That is a bound on one sealed frame rather than a rule about names, and there is
-nothing a peer could do about it, so the host is the one told when it binds and a guest is not
-told at all. A guest's mirror holds as many paths as a listing may carry, so a room a conforming
-host publishes fits in it.
+shared in part. The walk is the bridge's (`src/bridge/listing-walk.ts`), not this editor's own, so
+those stops and that accounting — a directory read and a shareability check are charged for, a
+dropped name is not — are the bridge's rule rather than this editor's, and the browser and the
+companion will read the same rule with the rest of the vendored copy when each re-syncs it. That
+is a bound on one sealed frame rather than a rule about names, and there is nothing a peer could
+do about it, so the host is the one told when it binds and a guest is not told at all. A guest's
+mirror holds as many paths as a listing may carry, so a room a conforming host publishes fits in
+it.
 
 The folder is the bound on what a host reads. A folder shared from inside a repository does not
 honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
