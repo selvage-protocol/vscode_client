@@ -57,6 +57,7 @@ export {
   MAX_GRANT_PATHS,
   MAX_GRANT_PATH_BYTES,
   grantUnion,
+  hostPlatform,
   isBinaryNamedPath,
   isGrantedPath,
   isIgnoredPath,

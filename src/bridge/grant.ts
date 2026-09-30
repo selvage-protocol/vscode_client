@@ -337,8 +337,12 @@ function foldsCase(platform: string): boolean {
   return platform === '' || platform === 'darwin' || platform === 'win32';
 }
 
-/** This host's platform, or `''` when it cannot be read. Passed explicitly in tests. */
-function hostPlatform(): string {
+/**
+ * This host's platform, or `''` when it cannot be read. The walk does not come here for it: a
+ * seam names the host it read the folder from, and a Node adapter names this, so the fold is the
+ * one of the machine holding the folder rather than of whatever global is around.
+ */
+export function hostPlatform(): string {
   const proc = (globalThis as { process?: { platform?: unknown } }).process;
   const platform = proc?.platform;
   return typeof platform === 'string' ? platform : '';

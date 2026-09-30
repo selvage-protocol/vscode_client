@@ -58,8 +58,13 @@ export interface WalkEntry {
 }
 
 /**
- * The editor's half of one walk, in the five calls the rule needs:
+ * The editor's half of one walk, in the host it read and the five calls the rule needs:
  *
+ * - `platform` is the host itself, in the spelling `process.platform` uses — `'linux'`,
+ *   `'darwin'`, `'win32'` — or `''` for a host that cannot say. The two name gates fold case only
+ *   where the host's file system does, so this is what decides whether a `Build/` is an excluded
+ *   name or an ordinary directory, and a host that does not know its own platform keeps the fold:
+ *   sharing less is the safer error. The walk reads the platform here and nowhere else.
  * - `entries(dir)` is the directory's own listing — its entries in the file system's own order,
  *   which the walk sorts — or `undefined` when this host cannot read it. A directory that cannot
  *   be listed is one the host cannot share: it is skipped in silence and is not a cut.
@@ -76,6 +81,7 @@ export interface WalkEntry {
  *   root's own entries rather than by listing the root again.
  */
 export interface ListingWalkSource<Dir> {
+  readonly platform: string;
   entries(dir: Dir): Promise<readonly WalkEntry[] | undefined>;
   ignoreText(dir: Dir, entries: readonly WalkEntry[]): Promise<string | undefined>;
   shareable(dir: Dir, name: string): Promise<boolean>;
@@ -183,6 +189,7 @@ async function walk<Dir>(
   const entries = [...listed].sort((left, right) =>
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
   );
+  const platform = source.platform;
   for (const entry of entries) {
     if (state.cut !== undefined) {
       return;
@@ -192,7 +199,7 @@ async function walk<Dir>(
     // Two gates by name, and neither reads a byte: what a room never shares at all, and what
     // this folder's own ignore files leave out. An ignored directory is not descended into, so
     // the tree below it costs the walk nothing.
-    if (!isGrantedPath(child) || isIgnoredPath(ignores, child, directory)) {
+    if (!isGrantedPath(child, platform) || isIgnoredPath(ignores, child, directory, platform)) {
       continue;
     }
     // A link, a socket and every other entry type a listing cannot carry: nothing is read for
