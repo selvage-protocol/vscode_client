@@ -33,6 +33,11 @@ const GRANT_CEILING: ListingCeiling = {
 /**
  * Which bound stopped a walk: §13.3's two, or the work it pays for. A budget cut is the walk's
  * own — what it spends on directory reads and shareability checks — and not a listing bound.
+ *
+ * `paths` and `bytes` are recorded only where a file the walk would have named did not fit, so
+ * a listing that holds every shareable file of the folder reports no cut. A spent budget leaves
+ * the rest of the folder unread, so `budget` says the walk stopped and not that anything was
+ * left out.
  */
 export type GrantCut = ListingBound | 'budget';
 
@@ -49,8 +54,10 @@ export interface GrantEnumeration {
  * The bounds are §13.3's and the walk stops at whichever binds first — `MAX_GRANT_PATHS` listed
  * paths, `MAX_GRANT_LISTING_BYTES` of their UTF-8 bytes, or the work budget. `cut` names it, so
  * the host's own window can say that the room's listing is short of the folder rather than let
- * a smaller tree pass for the whole one. Each directory's entries are visited in name order so
- * that which paths survive a cut does not depend on the file system's own order.
+ * a smaller tree pass for the whole one. A bound is recorded only where a shareable file would
+ * not fit, so a folder whose listing is whole is reported whole whatever else it holds. Each
+ * directory's entries are visited in name order so that which paths survive a cut does not
+ * depend on the file system's own order.
  *
  * The budget pays for the work that costs a call: one node for a directory this walk reads, one
  * for the shareability check it asks of a candidate file. A name it can drop on its own — an
@@ -241,25 +248,29 @@ async function walk(
     if (isBinaryNamedPath(child)) {
       continue;
     }
-    const path = `${prefix}${child}`;
-    const size = listingPathBytes(path);
-    // The listing's own bound first, before the entry costs anything: a full listing has no room
-    // for another path whatever that path turns out to be, so the walk stops here.
-    const bound = listingBound(GRANT_CEILING, state.paths.length, state.bytes, size);
-    if (bound !== undefined) {
-      state.cut = bound;
-      return;
-    }
     // The shareability check is the one call this entry costs, whether or not it ends in a name.
+    // A budget spent here stops the walk with the rest of the folder unread, and what that hides
+    // cannot be told apart from a listing that is whole.
     if (state.nodes <= 0) {
       state.cut = 'budget';
       return;
     }
     state.nodes -= 1;
-    if (await isShareableFile(target)) {
-      state.paths.push(path);
-      state.bytes += size;
+    if (!(await isShareableFile(target))) {
+      continue;
     }
+    // The listing's own bound is decided here, on a file this walk would have named and would
+    // not have fitted: a candidate it declines for any other reason cannot make the room's
+    // listing short of the folder, so it does not decide a bound either.
+    const path = `${prefix}${child}`;
+    const size = listingPathBytes(path);
+    const bound = listingBound(GRANT_CEILING, state.paths.length, state.bytes, size);
+    if (bound !== undefined) {
+      state.cut = bound;
+      return;
+    }
+    state.paths.push(path);
+    state.bytes += size;
   }
 }
 

@@ -131,7 +131,7 @@ const LISTING_CUT_SENTENCES: Record<GrantCut, string> = {
   bytes:
     `Selvage: this window's paths are longer in total than one room listing carries, so some of its files are not in the room.`,
   budget:
-    `Selvage: reading this window's folder took more work than one listing walk pays for, so some of its files are not in the room.`,
+    `Selvage: reading this window's folder took more work than one listing walk pays for, so the listing may be missing some of its files.`,
 };
 
 /**
