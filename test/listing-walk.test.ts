@@ -321,3 +321,31 @@ test('a root exclude is the floor under the .gitignore of the directory it gover
   assert.deepEqual(walked.paths, ['.gitignore', 'kept.md', 'notes.tmp'], 'the later source did not decide');
 });
 
+test('the platform a source names is the one the two name gates read', async () => {
+  // The name gates fold case only where the host's file system does, so the platform decides the
+  // listing: a `Build/` is an excluded directory on one host and an ordinary one on another, and a
+  // `release/` pattern in a `.gitignore` is read the same way. The walk takes that platform off
+  // the seam and reads no global, so a host that cannot know its platform says so explicitly and
+  // is not mistaken for the machine the suite happens to run on.
+  const tree = (platform: string): FakeTree =>
+    new FakeTree(
+      {
+        '': { entries: [folder('Build'), folder('Release'), file('.gitignore')] },
+        Build: { entries: [file('out.txt')] },
+        Release: { entries: [file('notes.md')] },
+      },
+      { platform, ignoreAt: { '': 'release/\n' } },
+    );
+
+  const folding = await walkListing(tree('darwin'), ROOT);
+  assert.deepEqual(folding.entered, [], 'a case-folding host entered what it excludes');
+  assert.deepEqual(folding.paths, ['.gitignore'], 'a case-folding host listed an excluded name');
+
+  const exact = await walkListing(tree('linux'), ROOT);
+  assert.deepEqual(exact.entered, ['Build', 'Release'], 'a case-sensitive host dropped an ordinary directory');
+  assert.deepEqual(
+    exact.paths,
+    ['.gitignore', 'Build/out.txt', 'Release/notes.md'],
+    'a case-sensitive host listed the wrong names',
+  );
+});
