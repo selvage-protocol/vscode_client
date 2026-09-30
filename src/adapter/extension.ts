@@ -54,6 +54,7 @@ import type {
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
+import type { GrantCut, GrantEnumeration } from './grant.ts';
 import type { Mirror } from './mirror.ts';
 import {
   EVERYONE_LABEL,
@@ -116,6 +117,22 @@ const SELECTION_INTERVAL_MS = 100;
  * whichever client is hosting.
  */
 const GRANT_REFRESH_INTERVAL_MS = 250;
+
+/**
+ * What this window says when a walk stopped short of the folder it shares.
+ *
+ * The bounds are §13.3's and a listing is one sealed frame, so a folder past them is shared in
+ * part, and the person who can change the folder is the host and no one else: the guest is told
+ * nothing, because a short listing is a listing like any other and no frame carries a cut.
+ */
+const LISTING_CUT_SENTENCES: Record<GrantCut, string> = {
+  paths:
+    `Selvage: this window shares more paths than one room listing carries, so some of its files are not in the room.`,
+  bytes:
+    `Selvage: this window's paths are longer in total than one room listing carries, so some of its files are not in the room.`,
+  budget:
+    `Selvage: reading this window's folder took more work than one listing walk pays for, so some of its files are not in the room.`,
+};
 
 /**
  * How long a read waits for the room to send a path this replica has received nothing for.
@@ -536,6 +553,12 @@ export class Session {
    * after it is dropped rather than sent, so the room cannot go backwards to an older listing.
    */
   private grantWalks = 0;
+  /**
+   * The bound the last walk stopped at, or `undefined` when it read the whole folder. The cut is
+   * said when it appears rather than on every walk: the watchers republish on every change, so a
+   * folder past a bound would otherwise say so once per keystroke.
+   */
+  private listingCut: GrantCut | undefined;
   /** A filesystem event whose republish has not run yet. */
   private grantTimer: ReturnType<typeof setTimeout> | undefined;
   /** What makes the listing follow the folders, live only while this session hosts. */
@@ -1204,9 +1227,9 @@ export class Session {
     }
     this.grantWalks += 1;
     const attempt = this.grantWalks;
-    let paths: string[];
+    let listing: GrantEnumeration;
     try {
-      paths = await enumerateGrant(this.folders);
+      listing = await enumerateGrant(this.folders);
     } catch (error) {
       // A later walk describes the folder now, and its own read reports its outcome.
       if (this.finished || attempt !== this.grantWalks) {
@@ -1225,6 +1248,16 @@ export class Session {
     if (this.finished || attempt !== this.grantWalks) {
       return;
     }
+    // A walk that stopped short is a fact about the folder rather than about this listing, so it
+    // is said before the news test below: the room holds part of the folder either way, and the
+    // host is the one who can do something about it.
+    if (listing.cut !== this.listingCut) {
+      this.listingCut = listing.cut;
+      if (listing.cut !== undefined) {
+        void vscode.window.showWarningMessage(LISTING_CUT_SENTENCES[listing.cut]);
+      }
+    }
+    const paths = listing.paths;
     if (this.published !== undefined && sameListing(this.published, paths)) {
       return;
     }
@@ -2836,7 +2869,7 @@ function sessionErrorSentence(message: string, code: string): string {
  */
 async function walkSharedFolders(): Promise<string[]> {
   try {
-    return await enumerateGrant(vscode.workspace.workspaceFolders ?? []);
+    return (await enumerateGrant(vscode.workspace.workspaceFolders ?? [])).paths;
   } catch {
     return [];
   }
