@@ -427,6 +427,8 @@ function viewerSession(
   fire(event: { type: string; peers?: unknown[]; path?: string; paths?: readonly string[]; graceMs?: number; peer?: unknown; reason?: string }): void;
   /** How many times the session took the mirror away. */
   mirrorRemoved(): number;
+  /** How many times the session applied a listing to the mirror. */
+  republishes(): number;
 } {
   const bundle = loadBundle();
   bundle.stub.reset();
@@ -549,19 +551,23 @@ function viewerSession(
   // listing over `MAX_GRANT_PATHS`, which is a hundred thousand paths to stage here, so the
   // report is what a test drives: the sentence it earns is this file's business.
   const overCapacity = options.overCapacity ?? [];
+  let republishes = 0;
   const mirror = {
     room: 'r-viewer',
     window: 'w-1',
     root: MIRROR_ROOT,
     uri: bundle.stub.Uri.file(MIRROR_ROOT),
     materialise: () => ({ mirrored: [], refused: [], withheld: [], overCapacity: [...overCapacity] }),
-    republish: () => ({
-      mirrored: [],
-      refused: [],
-      withheld: [],
-      overCapacity: [...overCapacity],
-      removed: [],
-    }),
+    republish: () => {
+      republishes += 1;
+      return {
+        mirrored: [],
+        refused: [],
+        withheld: [],
+        overCapacity: [...overCapacity],
+        removed: [],
+      };
+    },
     clearInvite: () => undefined,
     remove: () => {
       mirrorRemoved += 1;
@@ -626,6 +632,7 @@ function viewerSession(
     },
     /** How many times the session took the mirror away. */
     mirrorRemoved: () => mirrorRemoved,
+    republishes: () => republishes,
   };
 }
 
@@ -881,14 +888,24 @@ test('a room gone is one warning, saying where the copy is kept', (t) => {
   assert.equal(window.mirrorRemoved(), 0, 'the room closing took the only copy of the guest\'s work');
 });
 
-test('a room listing more files than this window mirrors says so, apart from a failed write', (t) => {
+test('a room listing more files than this window mirrors says so once, apart from a failed write', async (t) => {
   const window = viewerSession(t, "the room's own text", 1, { overCapacity: ['excess.md'] });
-  window.fire({ type: 'grant', paths: ['excess.md'] });
   // The sentence is the count's and not a disk's: a refusal here is one every conforming host's
   // own walk and seal keep from being published, and what a person can act on is the listing.
-  assert.deepEqual(window.bundle.stub.registered.warnings, [
-    'Selvage: the room lists more files than this window mirrors; excess.md is left out.',
-  ]);
+  const sentence =
+    'Selvage: the room lists more files than this window mirrors; excess.md is left out.';
+  assert.deepEqual(window.bundle.stub.registered.warnings, [sentence]);
+  // A room that keeps republishing one is one fact and not a sentence per listing window, which
+  // is how the workspace-settings notice beside it is said. Both listings are waited for before
+  // the count is read: the first lands on the grant, the second at the window's end. Each names
+  // the path this window already holds, so the listing window's own endings say nothing here.
+  const applied = window.republishes();
+  window.fire({ type: 'grantChanged', paths: [PATH, 'excess.md'] });
+  window.fire({ type: 'grantChanged', paths: [PATH, 'excess.md'] });
+  await waitFor('both listings to reach the mirror', () =>
+    window.republishes() >= applied + 2 ? window.republishes() : false,
+  );
+  assert.deepEqual(window.bundle.stub.registered.warnings, [sentence]);
 });
 
 test('a version-2 session with no mirror says it cannot resume a hosting session', (t) => {

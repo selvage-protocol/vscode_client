@@ -655,6 +655,8 @@ export class Session {
   private readonly refusedPutBacks = new Set<string>();
   /** Whether this session has said that the room's workspace configuration is withheld. */
   private saidWithheld = false;
+  /** Whether it has said that the room listed more files than this mirror holds. */
+  private saidOverCapacity = false;
   /** The one flush the interval allows, while one is armed. */
   private selectionTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -2208,8 +2210,11 @@ export class Session {
     }
     // A listing longer than this window holds is the room's own overflow and not a disk that
     // refused a write, so it is said apart from the refusal below: only a room listing more than
-    // one listing may carry reaches it, and what it says is the count, not a cause per path.
-    if (applied.overCapacity.length > 0) {
+    // one listing may carry reaches it, and what it says is the count, not a cause per path. A
+    // room that keeps republishing one is one fact and not one per listing window, so it is said
+    // once per session like the workspace settings above.
+    if (applied.overCapacity.length > 0 && !this.saidOverCapacity) {
+      this.saidOverCapacity = true;
       const first = applied.overCapacity[0] ?? '';
       void vscode.window.showWarningMessage(
         applied.overCapacity.length === 1
