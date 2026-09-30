@@ -3,7 +3,7 @@
 | Layer | What it is | What it needs to be tested |
 |---|---|---|
 | `src/engine/` | transport, envelope, handshake, sync, awareness, presence, reconnect, and `selvage/2`'s sealed frame, peer session, host and socket wiring | a socket |
-| `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution, and the `selvage/2` session seen as an engine | a replica and an editor interface |
+| `src/bridge/` | the adapter's editor-independent half: seeding, the echo guard, the EOL policy, the save policy, cursor attribution, the listing walk over a folder, and the `selvage/2` session seen as an engine | a replica and an editor interface |
 | `src/adapter/` | the `vscode` half: documents, `applyEdit`, the mirror, decorations, commands, status | an editor |
 | `src/node/` | the Node half of the crypto seam the engine asks a caller for (HKDF-SHA256, SHA-256, AES-256-GCM and Ed25519 over `node:crypto`) | nothing of its own |
 
