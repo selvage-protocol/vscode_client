@@ -5,12 +5,15 @@
 
 export type { SessionInfo } from './session.ts';
 export type { FrameCrypto } from './crypto.ts';
+export { HOST_MUTATIONS, HostProducer } from './host.ts';
 export {
-  HOST_MUTATIONS,
-  HostProducer,
+  LISTING_CEILING,
   MAX_LISTING_BYTES,
   MAX_LISTING_PATHS,
-} from './host.ts';
+  listingBound,
+  listingPathBytes,
+} from './limits.ts';
+export type { ListingBound, ListingCeiling } from './limits.ts';
 export type {
   HostMutation,
   HostOptions,

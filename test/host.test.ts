@@ -10,7 +10,13 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { nodeCrypto } from '../src/node/crypto.ts';
-import { ABSENCE_CHARGE, HOST_MUTATIONS, MAX_PATH_BYTES } from '../src/engine/index.ts';
+import {
+  ABSENCE_CHARGE,
+  HOST_MUTATIONS,
+  MAX_LISTING_BYTES,
+  MAX_LISTING_PATHS,
+  MAX_PATH_BYTES,
+} from '../src/engine/index.ts';
 import { PeerSession } from '../src/engine/peer.ts';
 import type { PeerOptions } from '../src/engine/peer.ts';
 import type { HostStore, PersistedHost } from '../src/engine/host.ts';
@@ -293,6 +299,34 @@ test('a path §5 refuses, and one over the bound, are dropped rather than writte
   const frame = await opened(peer.takeOutbound()[0] as Uint8Array);
   assert.deepEqual((frame.payload as { listing: string[] }).listing, ['b/ok.md']);
   assert.deepEqual(peer.listing, ['b/ok.md'], '§13.3 drops the path and applies the rest');
+});
+
+test('a listing is sealed whole, and its ceiling is counted in UTF-8 bytes', async () => {
+  // §13.3's two bounds, as the seal applies them. The long paths are 4081 UTF-8 bytes and 1361
+  // UTF-16 code units each, so a count in code units would seal all 1200 of them where the byte
+  // bound holds about 1027: the same listing the walk above stops at.
+  const long = `p${'あ'.repeat(1360)}`;
+  assert.equal(new TextEncoder().encode(long).length, 4081);
+  const { peer } = await hostHosting(
+    Array.from({ length: 1200 }, (_, index) => `${index}-${long}`),
+  );
+  const bytes = peer.listing.reduce(
+    (total, path) => total + new TextEncoder().encode(path).length,
+    0,
+  );
+  assert.ok(peer.listing.length < 1200, `the whole listing was sealed: ${peer.listing.length}`);
+  assert.ok(bytes <= MAX_LISTING_BYTES, `the state carries more than a listing may: ${bytes}`);
+  assert.ok(
+    bytes + new TextEncoder().encode(peer.listing[0] ?? '').length > MAX_LISTING_BYTES,
+    'the seal stopped well short of the byte bound',
+  );
+
+  // And the count bound, which no walk reaches without a hundred thousand paths: one over it is
+  // sealed as the bound itself.
+  const many = Array.from({ length: MAX_LISTING_PATHS + 1 }, (_, index) => `p-${index}.md`);
+  const { peer: wide } = await hostHosting(many);
+  assert.equal(wide.listing.length, MAX_LISTING_PATHS, 'the seal kept more than the count bound');
+  assert.ok(wide.listing.includes('p-0.md'), 'the listing is not the first paths of the folder');
 });
 
 // --- CANONICAL.md §6.1, the frame budget ------------------------------------------

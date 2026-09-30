@@ -21,6 +21,13 @@
 
 import type { FrameCrypto } from './crypto.ts';
 import {
+  LISTING_CEILING,
+  MAX_LISTING_BYTES,
+  MAX_LISTING_PATHS,
+  listingBound,
+  listingPathBytes,
+} from './limits.ts';
+import {
   bytesEqual,
   canonicalJson,
   encodeKey,
@@ -51,10 +58,9 @@ export const HOST_MUTATIONS = [
 
 export type HostMutation = (typeof HOST_MUTATIONS)[number];
 
-/** §13.3's second bound: what this host will enumerate. */
-export const MAX_LISTING_PATHS = 100_000;
-/** §13.3's third bound: the path bytes one listing may carry. */
-export const MAX_LISTING_BYTES = 4 * 1024 * 1024;
+// §13.3's two bounds, whose one home is `limits.ts`. Exported from here as well, because
+// this module is where a caller that holds a listing looks for them.
+export { MAX_LISTING_BYTES, MAX_LISTING_PATHS };
 
 /**
  * `CANONICAL.md` §6.1's frame budget: half of SP 800-38D's 2³² bound on one key with random
@@ -648,8 +654,8 @@ export class HostProducer {
       if (!usablePath(path) || seen.has(path)) {
         continue;
       }
-      const size = new TextEncoder().encode(path).length;
-      if (paths.length >= MAX_LISTING_PATHS || bytes + size > MAX_LISTING_BYTES) {
+      const size = listingPathBytes(path);
+      if (listingBound(LISTING_CEILING, paths.length, bytes, size) !== undefined) {
         break;
       }
       seen.add(path);
