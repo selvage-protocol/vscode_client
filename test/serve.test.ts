@@ -575,4 +575,3 @@ test('a walk lists the folder once, and takes its exclude from the entries it re
   assert.ok(listed.includes('/workspace/.git'), 'the repository directory was never read');
   assert.ok(listed.includes('/workspace/.git/info'), 'the repository exclude was never looked for');
 });
-
