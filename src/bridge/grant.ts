@@ -23,8 +23,10 @@ export const MAX_GRANT_LISTING_BYTES = MAX_LISTING_BYTES;
 
 /**
  * What one walk may spend: a node for each directory it reads and each shareability check it
- * asks of a candidate file. Twice the path bound, because a check can end in a refusal and name
- * nothing, so a tree whose listing fits under the ceiling must not be cut by the budget instead.
+ * asks of a candidate file. Twice the path bound, which leaves room for a refusal per listed
+ * path. It is headroom and not a bound a folder cannot pass: a tree with more candidates this
+ * walk declines than the budget holds is cut by the budget and told so, whatever its listing
+ * would have carried.
  */
 export const MAX_GRANT_NODES = 2 * MAX_GRANT_PATHS;
 
