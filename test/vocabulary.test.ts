@@ -92,7 +92,7 @@ const SENTENCES = [
   // frame, so the room does not know which of the two trees it is looking at.
   '`Selvage: this window shares more paths than one room listing carries, so some of its files are not in the room.`',
   '`Selvage: this window\'s paths are longer in total than one room listing carries, so some of its files are not in the room.`',
-  '`Selvage: reading this window\'s folder took more work than one listing walk pays for, so some of its files are not in the room.`',
+  '`Selvage: reading this window\'s folder took more work than one listing walk pays for, so the listing may be missing some of its files.`',
   // VS Code's alone: the Neovim mirror is not a folder the editor applies settings from.
   '`Selvage: the room\'s workspace settings (${}) are not put in this window, because VS Code would apply them rather than just show them.`',
   '`Selvage: ${} is not in the room, so it is not shared. Save a copy outside the room\'s folder to keep it.`',

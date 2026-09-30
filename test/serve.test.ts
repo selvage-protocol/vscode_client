@@ -604,3 +604,49 @@ test('a name a room never shares costs the walk nothing', async (t) => {
   assert.equal(listing.paths.length, 5, `assets starved the walk: ${listing.paths.length} listed`);
   assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
 });
+
+test('a walk that named every shareable file reports no cut', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // Exactly a listing's worth of shareable paths, and one plain file too large to share after
+  // them. The listing holds every file this walk would name, so it is short of nothing and there
+  // is no cut to report. A bound read off a candidate the walk then declines — one checked
+  // before the file is asked about, as this walk asked before — would say the listing was cut.
+  for (let index = 0; index < MAX_GRANT_PATHS; index += 1) {
+    stub.put(`f-${index}.md`, 'x');
+  }
+  stub.put('z-large.md', 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
+
+  const listing = await enumerateGrant(folders());
+  assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
+  assert.equal(listing.paths.length, MAX_GRANT_PATHS, 'a shareable path is missing from the listing');
+  assert.ok(listing.paths.includes('f-0.md'), 'the listing holds something else');
+});
+
+test('a file the walk would not name does not trip the byte bound either', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // The same shape at the byte bound, and cheap enough to reach without a hundred thousand files:
+  // 1026 paths of 4086 UTF-8 bytes fill all but a couple of thousand of the 4 MiB a listing
+  // carries, and the file that follows them is one no listing names. The candidate's own path
+  // would not have fitted either — 4192236 + 3500 is over the bound — so a bound decided on the
+  // candidate rather than on what is published reports a cut here.
+  const long = `p${'あ'.repeat(1360)}`;
+  assert.equal(new TextEncoder().encode(long).length, 4081);
+  for (let index = 0; index < 1026; index += 1) {
+    stub.put(`${String(index).padStart(4, '0')}-${long}`, 'x');
+  }
+  stub.put(`z${'a'.repeat(3499)}`, 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
+
+  const listing = await enumerateGrant(folders());
+  assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
+  assert.equal(listing.paths.length, 1026, `the listing is short: ${listing.paths.length} listed`);
+  assert.ok(
+    listedBytes(listing.paths) + 3500 > MAX_GRANT_LISTING_BYTES,
+    'the candidate no longer reaches past the bound, so the test proves nothing',
+  );
+});
