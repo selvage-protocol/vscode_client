@@ -34,7 +34,7 @@ import { parseSessionUrl, sessionUrl } from '../src/engine/index.ts';
 import { endingReason } from '../src/engine/peer.ts';
 import { encodeKey } from '../src/engine/sealed.ts';
 import { baseOf } from './helpers/base.ts';
-import { SEAT_PALETTE } from '../src/bridge/index.ts';
+import { MAX_GRANT_PATHS, SEAT_PALETTE } from '../src/bridge/index.ts';
 
 const OPTIONS = { client: 'selvage-vscode-test/0.1.0' } as const;
 
@@ -1434,6 +1434,59 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
     [...paths].sort(),
     'the listing is not ascending by UTF-16 code unit',
   );
+});
+
+test('a folder larger than one listing carries is said to the host, once', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  // One path more than a listing carries, seeded in the window's own working copy: the stub's
+  // folder is a map rather than a disk, so the bound is crossed without a hundred thousand files
+  // anywhere. `README.md` sorts before every one of them, so the second walk's change is the
+  // first path of the listing.
+  bundle.stub.put('README.md', 'the readme\n');
+  for (let index = 0; index <= MAX_GRANT_PATHS; index += 1) {
+    bundle.stub.put(`f-${index}.md`, 'x');
+  }
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+  const cut =
+    'Selvage: this window shares more paths than one room listing carries, so some of its files are not in the room.';
+  const said = await waitFor(
+    'the cut to be said',
+    () => bundle.stub.registered.warnings.find((message) => message === cut) ?? false,
+    { timeoutMs: 60_000 },
+  );
+  assert.equal(said, cut);
+  const warningCount = (): number =>
+    bundle.stub.registered.warnings.filter((message) => message === cut).length;
+  const listed = await waitFor(
+    'the cut listing to land in the room',
+    () => (guest.grantedPaths().length === MAX_GRANT_PATHS ? guest.grantedPaths() : false),
+    { timeoutMs: 60_000 },
+  );
+  assert.ok(listed.includes('README.md'), 'the first path is missing from the listing');
+
+  // The watchers republish on every change, and this change is a walk that cuts at the same
+  // bound: the notice names a fact about the folder, so it is said once for it rather than once
+  // per walk. Waiting on the room's own listing is what says the second walk finished.
+  bundle.stub.put('a-new.md', 'x');
+  bundle.stub.watchEvent('create', 'a-new.md');
+  await waitFor(
+    'the second walk to reach the room',
+    () => guest.grantedPaths().includes('a-new.md'),
+    { timeoutMs: 60_000 },
+  );
+  assert.equal(warningCount(), 1, 'the same cut was said again for a later walk');
 });
 
 test('a symbolic link to a directory is not listed, and nothing behind it is served', async (t) => {

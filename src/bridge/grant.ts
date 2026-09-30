@@ -9,15 +9,24 @@
  * path against anything, it derives.
  */
 
+import { MAX_LISTING_BYTES, MAX_LISTING_PATHS } from '../engine/limits.ts';
+
 /**
- * The most paths one listing carries.
- *
- * The server's own policy bound is far larger (100 000 paths), and a listing over the
- * transport's frame bound never arrives at all — it ends the connection the way a dropped
- * socket does (`PROTOCOL.md` §2.1, §5). This is the host's, so a pathological tree is a
- * short listing rather than a wedged session.
+ * The most paths one listing carries: §13.3's count bound, which is the receiver's because no
+ * server holds a listing. The engine's seal applies it and a host's walk stops at it, so what a
+ * walk publishes is a listing the seal takes whole rather than silently shortens.
  */
-export const MAX_GRANT_PATHS = 5000;
+export const MAX_GRANT_PATHS = MAX_LISTING_PATHS;
+
+/** §13.3's byte bound over the paths of one listing, as the walk and the seal both apply it. */
+export const MAX_GRANT_LISTING_BYTES = MAX_LISTING_BYTES;
+
+/**
+ * What one walk may spend: a node for each directory it reads and each shareability check it
+ * asks of a candidate file. Twice the path bound, because a check can end in a refusal and name
+ * nothing, so a tree whose listing fits under the ceiling must not be cut by the budget instead.
+ */
+export const MAX_GRANT_NODES = 2 * MAX_GRANT_PATHS;
 
 /** The longest path in a listing, in bytes, taken from the server's own bound. */
 export const MAX_GRANT_PATH_BYTES = 4096;

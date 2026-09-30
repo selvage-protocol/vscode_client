@@ -28,6 +28,12 @@ import { createRequire, registerHooks } from 'node:module';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { GrantRefusal, Report } from '../src/bridge/bridge.ts';
+import {
+  MAX_GRANT_FILE_BYTES,
+  MAX_GRANT_LISTING_BYTES,
+  MAX_GRANT_NODES,
+  MAX_GRANT_PATHS,
+} from '../src/bridge/index.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 registerHooks(vscodeLoader);
@@ -187,7 +193,7 @@ test('a file whose name declares a binary format is refused as binary, and not l
   // file by (`GRANT_BINARY_SUFFIXES`), and a name is a floor rather than a classification. A
   // binary whose name declares no format — `latin1.txt` here — is still listed, and asking for
   // it gets this same refusal.
-  const listed = await enumerateGrant(folders());
+  const listed = (await enumerateGrant(folders())).paths;
   assert.ok(!listed.includes('logo.png'), `a declared binary is still listed: ${listed.join(', ')}`);
   assert.ok(listed.includes('latin1.txt'), 'a name that declares no format was left out');
   assert.ok(listed.includes('notes.txt'), 'a plain text file was left out of the listing');
@@ -224,7 +230,7 @@ test('the listing names the plain files inside the size a session carries', asyn
   stub.put('/outside/secret.txt', 'outside\n');
   stub.putLink('link', 'directory', '/outside');
 
-  const paths = await enumerateGrant(folders());
+  const paths = (await enumerateGrant(folders())).paths;
   assert.deepEqual(paths, ['src/main.rs']);
   const main = await grantedFile(folders(), 'src/main.rs');
   assert.ok('uri' in main && (await isShareableFile(main.uri)));
@@ -283,7 +289,7 @@ test('a peer-named path is not servable where the folder\u2019s own ignore files
   // is an ordinary name of the folder, so it is listed like any other.
   assert.ok(servable(await grantedFile(folders(), 'keep.log')));
   assert.ok(servable(await grantedFile(folders(), 'src/main.rs')));
-  assert.deepEqual(await enumerateGrant(folders()), ['.gitignore', 'keep.log', 'src/.gitignore', 'src/main.rs']);
+  assert.deepEqual((await enumerateGrant(folders())).paths, ['.gitignore', 'keep.log', 'src/.gitignore', 'src/main.rs']);
 });
 
 test('a folder that is no repository, and one whose .git is a file, still walk', async (t) => {
@@ -298,7 +304,7 @@ test('a folder that is no repository, and one whose .git is a file, still walk',
 
   // Neither shape has an `info/exclude` to read, and neither is a fault: a folder shared with a
   // room need not be a repository at all, and a linked worktree's `.git` is a file.
-  assert.deepEqual(await enumerateGrant(folders()), ['.gitignore', 'kept.txt']);
+  assert.deepEqual((await enumerateGrant(folders())).paths, ['.gitignore', 'kept.txt']);
   assert.ok(servable(await grantedFile(folders(), 'kept.txt')));
   assert.deepEqual(await grantedFile(folders(), 'dropped.txt'), refused('not-granted'));
 });
@@ -422,7 +428,7 @@ function assertNoReadLeftTheFolder(
 
 test('a host lists its folder through the ignore files the folder holds, and reads nothing above it', async (t) => {
   const { root, folder } = mounted(t);
-  const listed = await enumerateGrant(folders());
+  const listed = (await enumerateGrant(folders())).paths;
   assert.deepEqual(listed, [
     '.gitignore',
     'keep.log',
@@ -466,7 +472,7 @@ test('a peer cannot reach an ignore file through a link out of the folder', asyn
 
   // And the walk never names what is behind it either. It does read the folder's own ignore
   // files, so `openedPaths` is what says none of those reads followed the link out.
-  const listed = await enumerateGrant(folders());
+  const listed = (await enumerateGrant(folders())).paths;
   assert.deepEqual(listed.filter((path) => path.startsWith('link/')), []);
   const realRoot = realpathSync(root);
   const realFolder = realpathSync(folder);
@@ -486,7 +492,7 @@ test('a linked ignore file is not read, so its rule re-includes nothing', async 
   // `folder/.gitignore` is an ordinary file and ignores `hidden.txt` at every depth. The link at
   // `sub/.gitignore` names an outside file holding `!hidden.txt`; were it read, `sub/hidden.txt`
   // would be re-included, listed and served. It is not read, so that name stays out.
-  const listed = await enumerateGrant(folders());
+  const listed = (await enumerateGrant(folders())).paths;
   assert.ok(!listed.includes('sub/hidden.txt'), `a linked ignore file re-included a path: ${listed.join(', ')}`);
   assert.deepEqual(await grantedFile(folders(), 'sub/hidden.txt'), refused('not-granted'));
   assertNoReadLeftTheFolder(tree, ['said-by-the-link.gitignore']);
@@ -498,8 +504,103 @@ test('a linked .git is not read, so its exclude drops nothing', async (t) => {
   // The link at `.git` names an outside repository directory whose `info/exclude` holds
   // `dropped-by-the-link.txt`; were it read, that name would vanish from the listing and be
   // refused. It is not read, so the name is listed and served.
-  const listed = await enumerateGrant(folders());
+  const listed = (await enumerateGrant(folders())).paths;
   assert.ok(listed.includes('dropped-by-the-link.txt'), `a linked .git dropped a path: ${listed.join(', ')}`);
   assert.ok(servable(await grantedFile(folders(), 'dropped-by-the-link.txt')));
   assertNoReadLeftTheFolder(tree, ['gitdir/info/exclude']);
+});
+
+// --- the bounds a walk stops at -----------------------------------------------------
+
+/** The UTF-8 bytes of a listing's paths, counted here rather than by the code under test. */
+function listedBytes(paths: readonly string[]): number {
+  const encoder = new TextEncoder();
+  return paths.reduce((total, path) => total + encoder.encode(path).length, 0);
+}
+
+test('a walk stops at the path count one listing carries, and says which bound it was', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // One more than a listing carries, all of them shareable and in memory: the stub's working
+  // copy is a map, so the bound is crossed without a hundred thousand files on a disk.
+  for (let index = 0; index <= MAX_GRANT_PATHS; index += 1) {
+    stub.put(`f-${index}.md`, 'x');
+  }
+
+  const listing = await enumerateGrant(folders());
+  assert.equal(listing.cut, 'paths', 'the walk read past the ceiling in silence');
+  assert.equal(listing.paths.length, MAX_GRANT_PATHS, 'the listing is not one ceiling wide');
+  assert.equal(
+    new Set(listing.paths).size,
+    listing.paths.length,
+    'the same path was listed twice',
+  );
+});
+
+test('a walk stops when the paths it lists reach the byte bound, and says which bound it was', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // 2000 names of 2100 UTF-8 bytes each: more than the 4 MiB a listing carries, in fewer files
+  // than the count bound, so the byte bound is the one that binds. A character outside ASCII
+  // is deliberate — the count is UTF-8 bytes and not UTF-16 code units.
+  const long = 'あ'.repeat(700);
+  const seeded = 2000;
+  for (let index = 0; index < seeded; index += 1) {
+    stub.put(`${index}-${long}.md`, 'x');
+  }
+
+  const listing = await enumerateGrant(folders());
+  assert.equal(listing.cut, 'bytes', 'the walk read past the byte bound in silence');
+  assert.ok(listing.paths.length > 0, 'the byte bound stopped the walk at the first path');
+  assert.ok(listing.paths.length < seeded, 'every path was listed');
+  const bytes = listedBytes(listing.paths);
+  assert.ok(bytes <= MAX_GRANT_LISTING_BYTES, `the listing is over the bound: ${bytes}`);
+  assert.ok(
+    bytes + listedBytes([`0-${long}.md`]) > MAX_GRANT_LISTING_BYTES,
+    `the walk stopped well short of the bound: ${bytes}`,
+  );
+});
+
+test('a walk stops when its budget is spent, and says so rather than listing nothing', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // The budget pays for the shareability check every candidate costs, so a folder of files too
+  // large to share spends it without naming one. Two small files sort first and are listed;
+  // the bound that stops the walk is the budget and not the listing.
+  stub.put('a-granted.md', 'x');
+  stub.put('a-granted-too.md', 'x');
+  for (let index = 0; index <= MAX_GRANT_NODES; index += 1) {
+    stub.put(`b-${index}.md`, 'x', { size: MAX_GRANT_FILE_BYTES + 1 });
+  }
+
+  const listing = await enumerateGrant(folders());
+  assert.deepEqual(listing.paths, ['a-granted-too.md', 'a-granted.md'], 'the walk listed the wrong paths');
+  assert.equal(listing.cut, 'budget', 'the walk gave up in silence');
+});
+
+test('a name a room never shares costs the walk nothing', async (t) => {
+  stub.reset();
+  t.after(() => {
+    stub.reset();
+  });
+  // The defect this accounting exists for: a tree rich in assets and poor in sources. Every one
+  // of these names is dropped by the name alone — a binary format a room cannot carry — so the
+  // walk spends nothing on them, where charging for each entry would spend the whole budget
+  // before the first shareable file and publish a listing that names none of them.
+  for (let index = 0; index < MAX_GRANT_NODES; index += 1) {
+    stub.put(`a-${index}.png`, 'x');
+  }
+  for (let index = 0; index < 5; index += 1) {
+    stub.put(`z-${index}.md`, 'x');
+  }
+
+  const listing = await enumerateGrant(folders());
+  assert.equal(listing.paths.length, 5, `assets starved the walk: ${listing.paths.length} listed`);
+  assert.equal(listing.cut, undefined, 'a complete listing was reported as cut');
 });

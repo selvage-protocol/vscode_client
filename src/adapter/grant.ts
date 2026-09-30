@@ -12,6 +12,8 @@ import * as vscode from 'vscode';
 
 import {
   MAX_GRANT_FILE_BYTES,
+  MAX_GRANT_LISTING_BYTES,
+  MAX_GRANT_NODES,
   MAX_GRANT_PATHS,
   isBinaryNamedPath,
   isGrantedPath,
@@ -19,22 +21,41 @@ import {
   sortGrant,
 } from '../bridge/index.ts';
 import type { GrantRefusal, GrantedRead, IgnoreSource } from '../bridge/index.ts';
+import { listingBound, listingPathBytes } from '../engine/limits.ts';
+import type { ListingBound, ListingCeiling } from '../engine/limits.ts';
+
+/** What a walk stops at: §13.3's two bounds, from the grant's one home for them. */
+const GRANT_CEILING: ListingCeiling = {
+  paths: MAX_GRANT_PATHS,
+  bytes: MAX_GRANT_LISTING_BYTES,
+};
 
 /**
- * How many entries a walk will look at before it stops. The path count is the listing's own
- * bound; this is the one that keeps a directory tree with a hundred thousand entries in it from
- * costing a hundred thousand stats before the first path is ever published.
+ * Which bound stopped a walk: §13.3's two, or the work it pays for. A budget cut is the walk's
+ * own — what it spends on directory reads and shareability checks — and not a listing bound.
  */
-export const MAX_GRANT_NODES = 20_000;
+export type GrantCut = ListingBound | 'budget';
+
+/** What one walk found: the listing, and the bound that left the folder short of it. */
+export interface GrantEnumeration {
+  readonly paths: string[];
+  readonly cut: GrantCut | undefined;
+}
 
 /**
  * The listing of a set of folders, as the file system held it when the walk ran: files only,
- * ascending by UTF-16 code unit.
+ * ascending by UTF-16 code unit, with the bound that stopped it short of the folder.
  *
- * The count is a bound and not an error: a tree larger than it produces a truncated listing,
- * which is a project view missing some names rather than a wedged session. Each directory's
- * entries are visited in name order so that which paths survive the truncation does not depend
- * on the file system's own order.
+ * The bounds are §13.3's and the walk stops at whichever binds first — `MAX_GRANT_PATHS` listed
+ * paths, `MAX_GRANT_LISTING_BYTES` of their UTF-8 bytes, or the work budget. `cut` names it, so
+ * the host's own window can say that the room's listing is short of the folder rather than let
+ * a smaller tree pass for the whole one. Each directory's entries are visited in name order so
+ * that which paths survive a cut does not depend on the file system's own order.
+ *
+ * The budget pays for the work that costs a call: one node for a directory this walk reads, one
+ * for the shareability check it asks of a candidate file. A name it can drop on its own — an
+ * excluded or ignored one, a binary-named one, a link, an entry that is not a plain file — costs
+ * nothing, because the assets a tree carries are no part of what it shares.
  *
  * The listing is what this window shares by itself, so the folder's own ignore files narrow it
  * the way they narrow a `git status`: `<folder>/.git/info/exclude` and every `.gitignore` at or
@@ -44,16 +65,18 @@ export const MAX_GRANT_NODES = 20_000;
  */
 export async function enumerateGrant(
   folders: readonly vscode.WorkspaceFolder[],
-): Promise<string[]> {
-  const paths: string[] = [];
-  const budget = { nodes: MAX_GRANT_NODES };
+): Promise<GrantEnumeration> {
+  const state: WalkState = { paths: [], bytes: 0, nodes: MAX_GRANT_NODES, cut: undefined };
   // Two folders need their names in front, or two `src/main.rs` would be one room path.
   const qualified = folders.length > 1;
   for (const folder of folders) {
+    if (state.cut !== undefined) {
+      break;
+    }
     const ignores = await rootIgnores(folder.uri);
-    await walk(folder.uri, '', qualified ? `${folder.name}/` : '', paths, budget, ignores);
+    await walk(folder.uri, '', qualified ? `${folder.name}/` : '', state, ignores);
   }
-  return sortGrant(paths);
+  return { paths: sortGrant(state.paths), cut: state.cut };
 }
 
 /**
@@ -140,17 +163,33 @@ async function readIgnoreFile(
   }
 }
 
+/**
+ * What one walk carries as it descends: the listing, its size in path bytes, the work it has
+ * left to spend, and the bound that stopped it.
+ */
+interface WalkState {
+  readonly paths: string[];
+  bytes: number;
+  nodes: number;
+  cut: GrantCut | undefined;
+}
+
 async function walk(
   dir: vscode.Uri,
   relative: string,
   prefix: string,
-  out: string[],
-  budget: { nodes: number },
+  state: WalkState,
   inherited: readonly IgnoreSource[],
 ): Promise<void> {
-  if (out.length >= MAX_GRANT_PATHS || budget.nodes <= 0) {
+  if (state.cut !== undefined) {
     return;
   }
+  // Entering a directory is a read, and a read is what the budget pays for.
+  if (state.nodes <= 0) {
+    state.cut = 'budget';
+    return;
+  }
+  state.nodes -= 1;
   let entries: Array<[string, vscode.FileType]>;
   try {
     entries = await vscode.workspace.fs.readDirectory(dir);
@@ -166,10 +205,9 @@ async function walk(
   const ignores = own === undefined ? inherited : [...inherited, { dir: relative, text: own }];
   entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   for (const [name, type] of entries) {
-    if (out.length >= MAX_GRANT_PATHS || budget.nodes <= 0) {
+    if (state.cut !== undefined) {
       return;
     }
-    budget.nodes -= 1;
     const child = relative === '' ? name : `${relative}/${name}`;
     const directory = (type & vscode.FileType.Directory) !== 0;
     // Two gates by name, and neither reads a byte: what a room never shares at all, and what
@@ -188,7 +226,7 @@ async function walk(
       continue;
     }
     if (directory) {
-      await walk(target, child, prefix, out, budget, ignores);
+      await walk(target, child, prefix, state, ignores);
       continue;
     }
     // A listing carries files and never directories.
@@ -203,8 +241,24 @@ async function walk(
     if (isBinaryNamedPath(child)) {
       continue;
     }
+    const path = `${prefix}${child}`;
+    const size = listingPathBytes(path);
+    // The listing's own bound first, before the entry costs anything: a full listing has no room
+    // for another path whatever that path turns out to be, so the walk stops here.
+    const bound = listingBound(GRANT_CEILING, state.paths.length, state.bytes, size);
+    if (bound !== undefined) {
+      state.cut = bound;
+      return;
+    }
+    // The shareability check is the one call this entry costs, whether or not it ends in a name.
+    if (state.nodes <= 0) {
+      state.cut = 'budget';
+      return;
+    }
+    state.nodes -= 1;
     if (await isShareableFile(target)) {
-      out.push(`${prefix}${child}`);
+      state.paths.push(path);
+      state.bytes += size;
     }
   }
 }
