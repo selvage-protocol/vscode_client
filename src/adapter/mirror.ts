@@ -157,13 +157,20 @@ export interface MirrorMarker {
 }
 
 /**
- * What applying a listing did: what is on disk now, what was refused, and what was withheld
- * on purpose because it is workspace configuration (`isWorkspaceConfigPath`).
+ * What applying a listing did: what is on disk now, what was refused, what was withheld on
+ * purpose because it is workspace configuration (`isWorkspaceConfigPath`), and what the room
+ * listed past the count this mirror holds.
  */
 export interface MirrorReport {
   mirrored: string[];
   refused: string[];
   withheld: string[];
+  /**
+   * The paths past `MAX_GRANT_PATHS`: §13.3's count bound, which a conforming host's own walk
+   * and seal both apply, so these are only ever a room that listed more than one listing may
+   * carry. They are the receiver's capacity and not a write that failed.
+   */
+  overCapacity: string[];
 }
 
 /** What a republish did, beside the materialise pass: which files it removed. */
@@ -388,8 +395,13 @@ function handle(room: string, window: string, root: string): Mirror {
       const mirrored: string[] = [];
       const refused: string[] = [];
       const withheld: string[] = [];
+      const overCapacity: string[] = [];
       listing.forEach((path, index) => {
-        if (index >= MAX_GRANT_PATHS || !isGrantedPath(path) || path === MIRROR_MARKER) {
+        if (index >= MAX_GRANT_PATHS) {
+          overCapacity.push(path);
+          return;
+        }
+        if (!isGrantedPath(path) || path === MIRROR_MARKER) {
           refused.push(path);
           return;
         }
@@ -403,7 +415,7 @@ function handle(room: string, window: string, root: string): Mirror {
           refused.push(path);
         }
       });
-      return { mirrored, refused, withheld };
+      return { mirrored, refused, withheld, overCapacity };
     },
     republish(listing: readonly string[], held: (path: string) => boolean): RepublishReport {
       const applied = this.materialise(listing);

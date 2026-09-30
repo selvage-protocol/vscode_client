@@ -84,6 +84,10 @@ const SENTENCES = [
   // part of the room at all.
   '`Selvage: one of the room\'s files could not be written to disk: ${}.`',
   '`Selvage: ${} of the room\'s files could not be written to disk, starting with ${}.`',
+  // A room listing more than this window mirrors. Only a listing past the protocol's own count
+  // bound reaches it, and it is the receiver's capacity rather than a write that failed.
+  '`Selvage: the room lists more files than this window mirrors; ${} is left out.`',
+  '`Selvage: the room lists more files than this window mirrors; ${} of them are left out, starting with ${}.`',
   // A folder larger than one listing carries. The host alone hears this: a cut reaches no
   // frame, so the room does not know which of the two trees it is looking at.
   '`Selvage: this window shares more paths than one room listing carries, so some of its files are not in the room.`',
