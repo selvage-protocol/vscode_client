@@ -195,13 +195,23 @@ test('workspace configuration is recognised the way the guest’s filesystem nam
 test('a listing past the count bound refuses its excess', (t) => {
   const keep = storage(t);
   const mirror = mintMirror(keep, 'r-count', { window: 'w-count', pid: process.pid });
-  const listing = Array.from({ length: MAX_GRANT_PATHS + 1 }, (_, index) => `f-${index}.md`);
+  // One path more than a listing carries. The fill is made of names the grant excludes on its
+  // own, so the count is what this test reads: they are refused without a file each, and the
+  // excess is a name the mirror would otherwise have written.
+  const fill = Array.from(
+    { length: MAX_GRANT_PATHS - 1 },
+    (_, index) => `node_modules/f-${index}.md`,
+  );
+  const listing = ['keep.md', ...fill, 'excess.md'];
+  assert.equal(listing.length, MAX_GRANT_PATHS + 1, 'the listing does not reach past the bound');
   const report = mirror.materialise(listing);
   // Red without the count bound: the excess file lands on disk unreported.
-  assert.deepEqual(report.refused, ['f-5000.md']);
-  assert.equal(isFile(join(mirror.root, 'f-5000.md')), false, 'the excess path was created');
-  assert.equal(isFile(join(mirror.root, 'f-0.md')), true, 'the bound refused the whole listing');
-  assert.equal(report.mirrored.length, MAX_GRANT_PATHS);
+  assert.deepEqual(report.overCapacity, ['excess.md']);
+  assert.equal(isFile(join(mirror.root, 'excess.md')), false, 'the excess path was created');
+  assert.equal(isFile(join(mirror.root, 'keep.md')), true, 'the bound refused the whole listing');
+  assert.deepEqual(report.mirrored, ['keep.md']);
+  assert.equal(report.refused.length, MAX_GRANT_PATHS - 1, 'a name rule stopped being read');
+  assert.deepEqual(report.withheld, []);
 });
 
 test('a symlinked directory on the way creates nothing outside the root', (t) => {
