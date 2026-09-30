@@ -63,6 +63,14 @@ export {
   sortGrant,
 } from './grant.ts';
 export type { IgnoreSource } from './grant.ts';
+export { walkListing } from './listing-walk.ts';
+export type {
+  ListingCut,
+  ListingRoot,
+  ListingWalkResult,
+  ListingWalkSource,
+  WalkEntry,
+} from './listing-walk.ts';
 export { PeerEngine } from './peer-engine.ts';
 export type { PeerEngineOptions } from './peer-engine.ts';
 export { SEAT_LIMIT, SEAT_PALETTE, seatColours } from './seats.ts';

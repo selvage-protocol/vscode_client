@@ -2,67 +2,61 @@
  * The grant, read off a working copy.
  *
  * Everything decidable about a listing — which paths it may name, in what order it is written,
- * how a tree is derived from it — is in `src/bridge/grant.ts`, because both clients have to
- * agree on it. What is left here is the editor's half: walking folders through
- * `vscode.workspace.fs`, so a remote or virtual workspace is read the way the editor reads it,
- * and resolving a room path back to the file it names.
+ * how a tree is derived from it, and where a walk over a folder stops — is in `src/bridge/`,
+ * because all three clients have to agree on it. What is left here is the editor's half: walking
+ * folders through `vscode.workspace.fs`, so a remote or virtual workspace is read the way the
+ * editor reads it, and resolving a room path back to the file it names.
  */
 
 import * as vscode from 'vscode';
 
-import {
-  MAX_GRANT_FILE_BYTES,
-  MAX_GRANT_LISTING_BYTES,
-  MAX_GRANT_NODES,
-  MAX_GRANT_PATHS,
-  isBinaryNamedPath,
-  isGrantedPath,
-  isIgnoredPath,
-  sortGrant,
+import { MAX_GRANT_FILE_BYTES, isGrantedPath, isIgnoredPath, walkListing } from '../bridge/index.ts';
+import type {
+  GrantRefusal,
+  GrantedRead,
+  IgnoreSource,
+  ListingCut,
+  ListingWalkResult,
+  ListingWalkSource,
+  WalkEntry,
 } from '../bridge/index.ts';
-import type { GrantRefusal, GrantedRead, IgnoreSource } from '../bridge/index.ts';
-import { listingBound, listingPathBytes } from '../engine/limits.ts';
-import type { ListingBound, ListingCeiling } from '../engine/limits.ts';
-
-/** What a walk stops at: §13.3's two bounds, from the grant's one home for them. */
-const GRANT_CEILING: ListingCeiling = {
-  paths: MAX_GRANT_PATHS,
-  bytes: MAX_GRANT_LISTING_BYTES,
-};
 
 /**
- * Which bound stopped a walk: §13.3's two, or the work it pays for. A budget cut is the walk's
- * own — what it spends on directory reads and shareability checks — and not a listing bound.
- *
- * `paths` and `bytes` are recorded only where a file the walk would have named did not fit, so
- * a listing that holds every shareable file of the folder reports no cut. A spent budget leaves
- * the rest of the folder unread, so `budget` says the walk stopped and not that anything was
- * left out.
+ * Which bound stopped a walk, as this adapter's consumers read it: the bridge's own `ListingCut`,
+ * under the name they already import.
  */
-export type GrantCut = ListingBound | 'budget';
+export type GrantCut = ListingCut;
 
 /** What one walk found: the listing, and the bound that left the folder short of it. */
-export interface GrantEnumeration {
-  readonly paths: string[];
-  readonly cut: GrantCut | undefined;
-}
+export type GrantEnumeration = ListingWalkResult;
+
+/** The ignore file any directory of a folder may state for its children. */
+const IGNORE_FILE = '.gitignore';
+
+/** The repository exclude a `.git` directory may state, under `info/`. */
+const EXCLUDE_FILE = 'exclude';
+
+/**
+ * This window's file system, as the walk's seam: every read goes through `vscode.workspace.fs`,
+ * so a remote or virtual workspace is read the way the editor reads it, and an entry's own type
+ * is reduced to what a listing carries (`kindOf`).
+ */
+const GRANT_SOURCE: ListingWalkSource<vscode.Uri> = {
+  entries: (dir) => listDirectory(dir),
+  ignoreText: (dir, entries) => readIgnoreFile(dir, IGNORE_FILE, entries),
+  shareable: (dir, name) => isShareableFile(vscode.Uri.joinPath(dir, name)),
+  child: (dir, name) => Promise.resolve(vscode.Uri.joinPath(dir, name)),
+  rootIgnores: (dir, entries) => rootIgnores(dir, entries),
+};
 
 /**
  * The listing of a set of folders, as the file system held it when the walk ran: files only,
  * ascending by UTF-16 code unit, with the bound that stopped it short of the folder.
  *
- * The bounds are §13.3's and the walk stops at whichever binds first — `MAX_GRANT_PATHS` listed
- * paths, `MAX_GRANT_LISTING_BYTES` of their UTF-8 bytes, or the work budget. `cut` names it, so
- * the host's own window can say that the room's listing is short of the folder rather than let
- * a smaller tree pass for the whole one. A bound is recorded only where a shareable file would
- * not fit, so a folder whose listing is whole is reported whole whatever else it holds. Each
- * directory's entries are visited in name order so that which paths survive a cut does not
- * depend on the file system's own order.
- *
- * The budget pays for the work that costs a call: one node for a directory this walk reads, one
- * for the shareability check it asks of a candidate file. A name it can drop on its own — an
- * excluded or ignored one, a binary-named one, a link, an entry that is not a plain file — costs
- * nothing, because the assets a tree carries are no part of what it shares.
+ * The rule is the bridge's (`walkListing` in `src/bridge/listing-walk.ts`), which is the whole
+ * of why this is the same walk in all three clients: the stops, the charge points and the cut
+ * reason do not vary with the editor. What is here is the editor's half — `vscode.workspace.fs`
+ * and the folder's own ignore sources.
  *
  * The listing is what this window shares by itself, so the folder's own ignore files narrow it
  * the way they narrow a `git status`: `<folder>/.git/info/exclude` and every `.gitignore` at or
@@ -73,68 +67,81 @@ export interface GrantEnumeration {
 export async function enumerateGrant(
   folders: readonly vscode.WorkspaceFolder[],
 ): Promise<GrantEnumeration> {
-  const state: WalkState = { paths: [], bytes: 0, nodes: MAX_GRANT_NODES, cut: undefined };
-  // Two folders need their names in front, or two `src/main.rs` would be one room path.
-  const qualified = folders.length > 1;
-  for (const folder of folders) {
-    if (state.cut !== undefined) {
-      break;
-    }
-    const ignores = await rootIgnores(folder.uri);
-    await walk(folder.uri, '', qualified ? `${folder.name}/` : '', state, ignores);
-  }
-  return { paths: sortGrant(state.paths), cut: state.cut };
+  const roots = folders.map((folder) => ({ dir: folder.uri, name: folder.name }));
+  return await walkListing(GRANT_SOURCE, roots);
 }
 
 /**
  * The ignore sources that govern everything under a shared folder: its `.git/info/exclude`, if
- * it has one.
+ * it has one, and the lowest precedence source there is — every `.gitignore` overrides it.
  *
  * A folder need not be a repository, `.git` may be a file rather than a directory (a linked
  * worktree, a submodule), and a read may fail; each of those is a folder with no repository
- * exclude, which is what an absent one means.
+ * exclude, which is what an absent one means. A `.git` or an `info` that is a link to something
+ * outside the folder is not read either: the entry's type is what says a name is a directory,
+ * and a `stat` of the name would follow the link.
+ *
+ * `entries` is the root's own listing, which the walk that calls this has just read: the root is
+ * not listed a second time for its excludes, and `.git` and `info` are different directories.
  */
-async function rootIgnores(folder: vscode.Uri): Promise<IgnoreSource[]> {
-  if (!(await entryHasType(folder, '.git', vscode.FileType.Directory))) {
+async function rootIgnores(
+  folder: vscode.Uri,
+  entries: readonly WalkEntry[],
+): Promise<IgnoreSource[]> {
+  if (!holdsKind(entries, '.git', 'directory')) {
     return [];
   }
   const git = vscode.Uri.joinPath(folder, '.git');
-  if (!(await entryHasType(git, 'info', vscode.FileType.Directory))) {
+  if (!(await entryHasKind(git, 'info', 'directory'))) {
     return [];
   }
-  const text = await readIgnoreFile(vscode.Uri.joinPath(git, 'info'), 'exclude');
-  // The lowest precedence source there is: every `.gitignore` overrides it.
+  const text = await readIgnoreFile(vscode.Uri.joinPath(git, 'info'), EXCLUDE_FILE);
   return text === undefined ? [] : [{ dir: '', text }];
 }
 
-/** `dir`'s own listing, or `undefined` when this window cannot read it. */
-async function listDirectory(
-  dir: vscode.Uri,
-): Promise<Array<[string, vscode.FileType]> | undefined> {
+/**
+ * The kind of one entry of this window's listing, as a listing carries it.
+ *
+ * `FileType` is a bit set, and a link to a directory carries the directory bit as well as its
+ * own, so the link is tested first: a symbolic link is neither a file this host can vouch for
+ * nor one it should follow, because it can point anywhere, including out of the folder being
+ * shared. Exactly `FileType.File` is a file and exactly `FileType.Directory` is a directory;
+ * every other type, and every bit set carrying more than the one bit, is an entry a listing
+ * cannot name.
+ */
+function kindOf(type: vscode.FileType): WalkEntry['kind'] {
+  if ((type & vscode.FileType.SymbolicLink) !== 0) {
+    return 'other';
+  }
+  if (type === vscode.FileType.File) {
+    return 'file';
+  }
+  return type === vscode.FileType.Directory ? 'directory' : 'other';
+}
+
+/** `dir`'s own listing as the entries a listing carries, or `undefined` when it cannot be read. */
+async function listDirectory(dir: vscode.Uri): Promise<WalkEntry[] | undefined> {
   try {
-    return await vscode.workspace.fs.readDirectory(dir);
+    const entries = await vscode.workspace.fs.readDirectory(dir);
+    return entries.map(([name, type]) => ({ name, kind: kindOf(type) }));
   } catch {
     return undefined;
   }
 }
 
-/** Whether an entry listing holds `name` with exactly `type`, not as a link or a bit-set of one. */
-function holdsEntry(
-  entries: readonly (readonly [string, vscode.FileType])[],
-  name: string,
-  type: vscode.FileType,
-): boolean {
-  return entries.some(([entry, kind]) => entry === name && kind === type);
+/** Whether a listing holds `name` as exactly `kind`, and not as a link or a bit-set of one. */
+function holdsKind(entries: readonly WalkEntry[], name: string, kind: WalkEntry['kind']): boolean {
+  return entries.some((entry) => entry.name === name && entry.kind === kind);
 }
 
-/** Whether `dir`'s own listing holds `name` with exactly `type`. */
-async function entryHasType(
+/** Whether `dir`'s own listing holds `name` as exactly `kind`. */
+async function entryHasKind(
   dir: vscode.Uri,
   name: string,
-  type: vscode.FileType,
+  kind: WalkEntry['kind'],
 ): Promise<boolean> {
   const entries = await listDirectory(dir);
-  return entries !== undefined && holdsEntry(entries, name, type);
+  return entries !== undefined && holdsKind(entries, name, kind);
 }
 
 /**
@@ -157,120 +164,16 @@ async function entryHasType(
 async function readIgnoreFile(
   dir: vscode.Uri,
   name: string,
-  listing?: readonly (readonly [string, vscode.FileType])[],
+  listing?: readonly WalkEntry[],
 ): Promise<string | undefined> {
   const entries = listing ?? (await listDirectory(dir));
-  if (entries === undefined || !holdsEntry(entries, name, vscode.FileType.File)) {
+  if (entries === undefined || !holdsKind(entries, name, 'file')) {
     return undefined;
   }
   try {
     return decodableText(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, name)));
   } catch {
     return undefined;
-  }
-}
-
-/**
- * What one walk carries as it descends: the listing, its size in path bytes, the work it has
- * left to spend, and the bound that stopped it.
- */
-interface WalkState {
-  readonly paths: string[];
-  bytes: number;
-  nodes: number;
-  cut: GrantCut | undefined;
-}
-
-async function walk(
-  dir: vscode.Uri,
-  relative: string,
-  prefix: string,
-  state: WalkState,
-  inherited: readonly IgnoreSource[],
-): Promise<void> {
-  if (state.cut !== undefined) {
-    return;
-  }
-  // Entering a directory is a read, and a read is what the budget pays for.
-  if (state.nodes <= 0) {
-    state.cut = 'budget';
-    return;
-  }
-  state.nodes -= 1;
-  let entries: Array<[string, vscode.FileType]>;
-  try {
-    entries = await vscode.workspace.fs.readDirectory(dir);
-  } catch {
-    // A directory that cannot be listed is one this host cannot share; it is not a fault the
-    // session should hear about, because the grant is a listing and not a promise.
-    return;
-  }
-  // This directory's own ignore file governs its children, and it is read whether or not some
-  // pattern would leave it out, as git reads it; `.gitignore` itself stays a shareable name. The
-  // listing just read decides whether the file is there and plain (see `readIgnoreFile`).
-  const own = await readIgnoreFile(dir, '.gitignore', entries);
-  const ignores = own === undefined ? inherited : [...inherited, { dir: relative, text: own }];
-  entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
-  for (const [name, type] of entries) {
-    if (state.cut !== undefined) {
-      return;
-    }
-    const child = relative === '' ? name : `${relative}/${name}`;
-    const directory = (type & vscode.FileType.Directory) !== 0;
-    // Two gates by name, and neither reads a byte: what a room never shares at all, and what
-    // this folder's own ignore files leave out. An ignored directory is not descended into, so
-    // the tree below it costs the walk nothing.
-    if (!isGrantedPath(child) || isIgnoredPath(ignores, child, directory)) {
-      continue;
-    }
-    const target = vscode.Uri.joinPath(dir, name);
-    // `FileType` is a bit set, and a link to a directory carries the directory bit as well as
-    // its own, so the link is tested first: a symbolic link is neither a file this host can
-    // vouch for nor one it should follow, because it can point anywhere, including out of the
-    // folder being shared. Nothing behind a link is listed, and nothing behind it is descended
-    // into.
-    if ((type & vscode.FileType.SymbolicLink) !== 0) {
-      continue;
-    }
-    if (directory) {
-      await walk(target, child, prefix, state, ignores);
-      continue;
-    }
-    // A listing carries files and never directories.
-    if (type !== vscode.FileType.File) {
-      continue;
-    }
-    // A file whose name declares a format a room cannot carry is left out, because the read
-    // refuses every file of that format as `binary`: naming it offered a guest a file no fetch
-    // could fill. The rule is the name alone and it is a floor — this walk reads no bytes, so a
-    // binary whose name declares no format stays listed and gets that refusal for asking
-    // (`GRANT_BINARY_SUFFIXES`).
-    if (isBinaryNamedPath(child)) {
-      continue;
-    }
-    // The shareability check is the one call this entry costs, whether or not it ends in a name.
-    // A budget spent here stops the walk with the rest of the folder unread, and what that hides
-    // cannot be told apart from a listing that is whole.
-    if (state.nodes <= 0) {
-      state.cut = 'budget';
-      return;
-    }
-    state.nodes -= 1;
-    if (!(await isShareableFile(target))) {
-      continue;
-    }
-    // The listing's own bound is decided here, on a file this walk would have named and would
-    // not have fitted: a candidate it declines for any other reason cannot make the room's
-    // listing short of the folder, so it does not decide a bound either.
-    const path = `${prefix}${child}`;
-    const size = listingPathBytes(path);
-    const bound = listingBound(GRANT_CEILING, state.paths.length, state.bytes, size);
-    if (bound !== undefined) {
-      state.cut = bound;
-      return;
-    }
-    state.paths.push(path);
-    state.bytes += size;
   }
 }
 
@@ -393,7 +296,9 @@ export async function grantedFile(
  * itself a link out is not read either.
  */
 async function governingIgnores(folder: vscode.Uri, relative: string): Promise<IgnoreSource[]> {
-  const sources = await rootIgnores(folder);
+  // The folder's exclude is refused when the folder cannot be listed at all: a folder this
+  // window cannot read has no repository exclude to hand, which is what an absent one means.
+  const sources = await rootIgnores(folder, (await listDirectory(folder)) ?? []);
   const segments = relative.split('/');
   segments.pop();
   for (let depth = 0; depth <= segments.length; depth += 1) {
