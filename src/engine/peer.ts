@@ -22,7 +22,7 @@
  */
 
 import * as Y from 'yjs';
-import { Awareness } from 'y-protocols/awareness';
+import { Awareness, removeAwarenessStates } from 'y-protocols/awareness';
 
 import type { FrameCrypto } from './crypto.ts';
 import { ENDPOINT_PATH } from './envelope.ts';
@@ -65,6 +65,8 @@ export function unrefTimer(timer: unknown): void {
  */
 const LOCAL_ORIGIN = Symbol('selvage/local');
 const APPLIED_ORIGIN = Symbol('selvage/applied');
+/** The origin of a departed peer's awareness state being dropped, which is not published. */
+const DEPARTED_ORIGIN = Symbol('selvage/departed');
 
 /**
  * The one character a document published with no text at all is named by.
@@ -1079,6 +1081,20 @@ export class PeerSession {
         await this.publishState(clock, 'roster');
       }
     });
+  }
+
+  /**
+   * §8.4: drops the awareness state held under `clientId`, so {@link presence} stops reporting
+   * it at once rather than when §8.2's expiry reaps it. The caller holds the roster's claims and
+   * decides which id a departed peer last claimed and whether a seated peer still claims it; this
+   * connection's own id is never dropped. The id's clock is kept, so a stale state for it still in
+   * flight is not applied again.
+   */
+  forgetAwareness(clientId: number): void {
+    if (clientId === this.awareness.clientID) {
+      return;
+    }
+    removeAwarenessStates(this.awareness, [clientId], DEPARTED_ORIGIN);
   }
 
   /**

@@ -1122,7 +1122,17 @@ export class RelaySession {
       case eventName.peerLeft: {
         const peerId = textOf(message.params, 'peer_id');
         if (peerId !== undefined) {
+          const claimed = this.peerList.find((peer) => peer.peer_id === peerId)?.awareness_client_id;
           this.peerList = this.peerList.filter((peer) => peer.peer_id !== peerId);
+          // §8.4: the departed peer's state goes now rather than at expiry, but only the one under
+          // the id it last claimed, and only while no seated peer claims that id too. This
+          // connection's own id is the session's to keep, and `forgetAwareness` never drops it.
+          if (
+            claimed !== undefined &&
+            !this.peerList.some((peer) => peer.awareness_client_id === claimed)
+          ) {
+            session.forgetAwareness(claimed);
+          }
           await session.seatLeft(this.clock(), peerId);
         }
         break;
