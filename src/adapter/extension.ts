@@ -14,7 +14,7 @@ import {
   COPIED_STAND_MS,
   COPY_INVITE_LABEL,
   DOWNLOAD_COST_MANY_SENTENCE,
-  HOST_LEAVE_QUESTION,
+  HOST_LEAVE_CONSEQUENCE,
   LEAVE_ASKING_LABEL,
   MAX_GRANT_PATH_BYTES,
   PeerEngine,
@@ -76,12 +76,13 @@ import type { Person, PersonAct, PersonRow, RoomMember } from './participants.ts
 export { personRows, seatPeople };
 
 /**
- * The question a host's leave asks: the web's, without its clause about the last keystrokes. That
- * clause is true of a browser tab, whose folder is written behind the page. Here a host types into
- * its own files, which VS Code saves the way it always does, and `selvage.autoSave` only writes
- * what the room changed; leaving loses no keystroke, so the clause would warn of nothing.
+ * The question a host's leave asks: the web's first sentence, without its second about the last
+ * keystrokes. That one is true of a browser tab, whose folder is written behind the page. Here a
+ * host types into its own files, which VS Code saves the way it always does, and
+ * `selvage.autoSave` only writes what the room changed; leaving loses no keystroke, so the second
+ * sentence would warn of nothing.
  */
-export const HOST_LEAVE_ASKING = `${HOST_LEAVE_QUESTION.slice(0, HOST_LEAVE_QUESTION.indexOf(', and your last'))}.`;
+export const HOST_LEAVE_ASKING = HOST_LEAVE_CONSEQUENCE;
 import {
   MIRROR_MARKER,
   isWorkspaceConfigPath,

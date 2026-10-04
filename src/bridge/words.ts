@@ -140,7 +140,7 @@ export function followEndedByTyping(name: string): string {
 
 /** Following ended because the follower moved their own caret. */
 export function followEndedByMoving(name: string): string {
-  return `Stopped following ${name} because you moved.`;
+  return `Stopped following ${name} because you moved your cursor.`;
 }
 
 /** Following ended because the followed peer left the room. */
@@ -179,12 +179,14 @@ export const LEAVE_ASKING_LABEL = 'Leave anyway';
 export const LEAVE_CANCEL_LABEL = 'Cancel';
 
 /**
- * The question a host's leave asks. It names the consequence rather than the countdown that follows
- * it: the room and its invite link go with the host who leaves, and the last keystrokes may not
- * reach the folder.
+ * What a host's leave does to the room: it and its invite link go with the host who leaves. It names
+ * the consequence rather than the countdown that follows it. A host whose editor holds every
+ * keystroke asks this alone.
  */
-export const HOST_LEAVE_QUESTION =
-  'Leaving ends the room for everyone and stops the invite link, and your last few keystrokes may not reach your folder.';
+export const HOST_LEAVE_CONSEQUENCE = 'Leaving ends the room for everyone and stops the invite link.';
+
+/** The question a host's leave asks where the folder is written behind the editor, as on the page. */
+export const HOST_LEAVE_QUESTION = `${HOST_LEAVE_CONSEQUENCE} Your last few keystrokes may not reach your folder.`;
 
 // -- the end of a session -------------------------------------------------------------------------
 

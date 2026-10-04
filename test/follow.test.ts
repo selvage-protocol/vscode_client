@@ -679,7 +679,7 @@ test('a local cursor move stops the follow and says so', async (t) => {
   );
   assert.ok(
     seat_.bundle.stub.registered.information.some(
-      (message) => message === 'Stopped following Ada because you moved.',
+      (message) => message === 'Stopped following Ada because you moved your cursor.',
     ),
     'the move ended the follow silently',
   );

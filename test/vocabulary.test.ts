@@ -184,7 +184,7 @@ const BRIDGE_WORDS = [
   'COPIED_LABEL',
   'COPY_INVITE_LABEL',
   'DOWNLOAD_COST_MANY_SENTENCE',
-  'HOST_LEAVE_QUESTION',
+  'HOST_LEAVE_CONSEQUENCE',
   'LEAVE_ASKING_LABEL',
   'disconnectingReading(',
   'downloadCostSentence(',

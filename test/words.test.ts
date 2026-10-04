@@ -2,9 +2,10 @@
  * The words every client says at the same moments, pinned as the web client says them.
  *
  * A sentence here is the web's own, so a change to one of them is a change to what every client
- * says and has to be made here deliberately. `Stopped following … because you moved.`,
- * `hostAwaySentence` and the download of several files are the ones the desktop clients need that the
- * web has no moment for as a named sentence; they follow the web's pattern.
+ * says and has to be made here deliberately. `Stopped following … because you moved your cursor.`,
+ * `hostAwaySentence`, the download of several files and the leave question's first sentence alone are
+ * the ones the desktop clients need that the web has no moment for as a named sentence; they follow
+ * the web's pattern.
  */
 
 import { test } from 'node:test';
@@ -16,6 +17,7 @@ import {
   COPIED_STAND_MS,
   COPY_INVITE_LABEL,
   DOWNLOAD_COST_MANY_SENTENCE,
+  HOST_LEAVE_CONSEQUENCE,
   HOST_LEAVE_QUESTION,
   LEAVE_ASKING_LABEL,
   LEAVE_CANCEL_LABEL,
@@ -119,7 +121,7 @@ test('a go-to with nowhere to go says why, as a reason a headline or a full stop
 
 test('a follow that ended says why', () => {
   assert.equal(followEndedByTyping('Ada'), 'Stopped following Ada because you started typing.');
-  assert.equal(followEndedByMoving('Ada'), 'Stopped following Ada because you moved.');
+  assert.equal(followEndedByMoving('Ada'), 'Stopped following Ada because you moved your cursor.');
   assert.equal(followEndedByLeaving('Ada'), 'Ada left the room, so following stopped.');
   assert.equal(followEndedByFileGone('Ada'), 'Stopped following Ada because the file is gone.');
 });
@@ -139,9 +141,10 @@ test('a host’s leave is named for its consequence and asks with two answers', 
   assert.equal(LEAVE_HOST_LABEL, 'Leave and end the room');
   assert.equal(LEAVE_ASKING_LABEL, 'Leave anyway');
   assert.equal(LEAVE_CANCEL_LABEL, 'Cancel');
+  assert.equal(HOST_LEAVE_CONSEQUENCE, 'Leaving ends the room for everyone and stops the invite link.');
   assert.equal(
     HOST_LEAVE_QUESTION,
-    'Leaving ends the room for everyone and stops the invite link, and your last few keystrokes may not reach your folder.',
+    'Leaving ends the room for everyone and stops the invite link. Your last few keystrokes may not reach your folder.',
   );
 });
 
