@@ -13,6 +13,7 @@ import {
   COPIED_LABEL,
   COPIED_STAND_MS,
   COPY_INVITE_LABEL,
+  DOWNLOAD_COST_MANY_SENTENCE,
   HOST_LEAVE_QUESTION,
   LEAVE_ASKING_LABEL,
   MAX_GRANT_PATH_BYTES,
@@ -20,10 +21,13 @@ import {
   SHARED_SESSION_IDENTITY,
   SessionBridge,
   disconnectingReading,
+  downloadCostSentence,
   followEndedByFileGone,
   followEndedByLeaving,
   followEndedByMoving,
   followEndedByTyping,
+  goToCursorNotFound,
+  goToNotInFile,
   grantUnion,
   guestIdentity,
   hostAwaySentence,
@@ -1059,13 +1063,9 @@ export class Session {
     const fresh = targets.filter((target) => !this.engine.has(target));
     if (fresh.length > 0) {
       if (targets.length === 1 && targets[0] !== undefined) {
-        void vscode.window.showInformationMessage(
-          `Selvage: fetching opens ${targets[0]} in the room, so every peer receives it.`,
-        );
+        void vscode.window.showInformationMessage(downloadCostSentence(targets[0]));
       } else {
-        void vscode.window.showInformationMessage(
-          'Selvage: fetching opens them in the room, so every peer receives them.',
-        );
+        void vscode.window.showInformationMessage(DOWNLOAD_COST_MANY_SENTENCE);
       }
     }
     let failures = 0;
@@ -1656,9 +1656,7 @@ export class Session {
         );
     if (picked !== undefined && picked.path === undefined) {
       if (verb === 'go to') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(picked.peerId)} is not in a document.`,
-        );
+        void vscode.window.showWarningMessage(`${goToNotInFile(this.displayLabel(picked.peerId))}.`);
       } else {
         void vscode.window.showWarningMessage(
           `Selvage: nothing to follow: ${this.displayLabel(picked.peerId)} is not in a document.`,
@@ -1823,9 +1821,7 @@ export class Session {
         return 'waiting';
       }
       if (mode === 'go') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(peerId)} is not in a document.`,
-        );
+        void vscode.window.showWarningMessage(`${goToNotInFile(this.displayLabel(peerId))}.`);
         return 'refused';
       }
       return 'gone';
@@ -1866,9 +1862,7 @@ export class Session {
         return 'waiting';
       }
       if (mode === 'go') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(peerId)}'s caret does not resolve here.`,
-        );
+        void vscode.window.showWarningMessage(`${goToCursorNotFound(this.displayLabel(peerId))}.`);
       }
       return 'refused';
     }

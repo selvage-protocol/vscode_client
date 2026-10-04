@@ -929,7 +929,7 @@ test('going to a peer in no document is refused, not landed', async (t) => {
   await seat_.bundle.stub.commands.executeCommand('selvage.goToParticipant');
   await waitFor('the refusal to name the peer without a document', () =>
     seat_.bundle.stub.registered.warnings.some(
-      (message) => message === 'Selvage: nothing to go to: Nora is not in a document.',
+      (message) => message === 'Nora is not in a file.',
     ),
   );
   assert.equal(

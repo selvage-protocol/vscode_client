@@ -1,6 +1,7 @@
 /**
  * The words every client says at the same moments: a session's identity, the invite control, the
- * host's absence and return, a follow that ended, a host's leave, and the end of a session. They
+ * host's absence and return, a go-to with nowhere to go, a follow that ended, the first download, a
+ * host's leave, and the end of a session. They
  * are the web client's, kept here so each client says the same sentence by construction rather than
  * by copying it.
  */
@@ -115,6 +116,21 @@ function windowWords(graceMs: number): string {
   return graceMs >= 60_000 ? graceWording(graceMs) : graceWording(Math.ceil(graceMs / 1000) * 1000);
 }
 
+// -- a go-to with nowhere to go ------------------------------------------------------------------
+
+/**
+ * A go-to refused because the person is in no file. A reason rather than a sentence: the page sets
+ * it under its own headline, and an editor that says it on its own adds the full stop.
+ */
+export function goToNotInFile(name: string): string {
+  return `${name} is not in a file`;
+}
+
+/** A go-to refused because the person's cursor is not in the text this client holds. */
+export function goToCursorNotFound(name: string): string {
+  return `${name}’s cursor could not be found in this file`;
+}
+
 // -- a follow that ended --------------------------------------------------------------------------
 
 /** Following ended because the follower typed. */
@@ -136,6 +152,17 @@ export function followEndedByLeaving(name: string): string {
 export function followEndedByFileGone(name: string): string {
   return `Stopped following ${name} because the file is gone.`;
 }
+
+// -- the first download ---------------------------------------------------------------------------
+
+/** What downloading a file costs the room, said before the first download of a session. */
+export function downloadCostSentence(path: string): string {
+  return `Downloading ${path} opens it in the room, so everyone there gets its text.`;
+}
+
+/** The same cost, for one download of several files. */
+export const DOWNLOAD_COST_MANY_SENTENCE =
+  'Downloading these files opens them in the room, so everyone there gets their text.';
 
 // -- a host's leave -------------------------------------------------------------------------------
 

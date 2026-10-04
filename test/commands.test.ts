@@ -2998,12 +2998,12 @@ test('fetch holds one listed path and says what it fetched', async (t) => {
   await host.open('notes/a.md');
   host.insert('notes/a.md', 0, 'fetched\n');
   const notice = await waitFor('the fetch notice', () =>
-    bundle.stub.registered.information.find((message) => message.includes('fetching opens')) ??
+    bundle.stub.registered.information.find((message) => message.includes('in the room, so everyone there gets')) ??
     false,
   );
   assert.equal(
     notice,
-    'Selvage: fetching opens notes/a.md in the room, so every peer receives it.',
+    'Downloading notes/a.md opens it in the room, so everyone there gets its text.',
   );
   const done = await waitFor('the fetched report', () =>
     bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??
@@ -3076,7 +3076,7 @@ test('fetch of a path the window already holds resolves without asking again', a
   );
   assert.equal(done, 'Selvage: fetched the files.');
   assert.equal(
-    bundle.stub.registered.information.filter((message) => message.includes('fetching opens'))
+    bundle.stub.registered.information.filter((message) => message.includes('in the room, so everyone there gets'))
       .length,
     0,
     'a fetch that asked for nothing announced a hold',
@@ -3109,12 +3109,12 @@ test('fetch of a directory holds every listed path under it', async (t) => {
   await host.open('notes/b.md');
   host.insert('notes/b.md', 0, 'held\n');
   const notice = await waitFor('the plural fetch notice', () =>
-    bundle.stub.registered.information.find((message) => message.includes('fetching opens')) ??
+    bundle.stub.registered.information.find((message) => message.includes('in the room, so everyone there gets')) ??
     false,
   );
   assert.equal(
     notice,
-    'Selvage: fetching opens them in the room, so every peer receives them.',
+    'Downloading these files opens them in the room, so everyone there gets their text.',
   );
   const done = await waitFor('the fetched report', () =>
     bundle.stub.registered.information.find((message) => message.includes('fetched the files')) ??

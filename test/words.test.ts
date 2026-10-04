@@ -2,9 +2,9 @@
  * The words every client says at the same moments, pinned as the web client says them.
  *
  * A sentence here is the web's own, so a change to one of them is a change to what every client
- * says and has to be made here deliberately. `Stopped following … because you moved.` and
- * `hostAwaySentence` are the two the desktop clients need that the web has no moment for as a
- * named sentence; they follow the web's pattern.
+ * says and has to be made here deliberately. `Stopped following … because you moved.`,
+ * `hostAwaySentence` and the download of several files are the ones the desktop clients need that the
+ * web has no moment for as a named sentence; they follow the web's pattern.
  */
 
 import { test } from 'node:test';
@@ -15,6 +15,7 @@ import {
   COPIED_LABEL,
   COPIED_STAND_MS,
   COPY_INVITE_LABEL,
+  DOWNLOAD_COST_MANY_SENTENCE,
   HOST_LEAVE_QUESTION,
   LEAVE_ASKING_LABEL,
   LEAVE_CANCEL_LABEL,
@@ -23,10 +24,13 @@ import {
   SESSION_ENDED_MESSAGE,
   SHARED_SESSION_IDENTITY,
   disconnectingReading,
+  downloadCostSentence,
   followEndedByFileGone,
   followEndedByLeaving,
   followEndedByMoving,
   followEndedByTyping,
+  goToCursorNotFound,
+  goToNotInFile,
   graceWording,
   guestIdentity,
   hostAwaySentence,
@@ -108,11 +112,27 @@ test('a dropped socket says it is reconnecting', () => {
   assert.equal(RECONNECTING_NOTE, 'Connection dropped. Reconnecting…');
 });
 
+test('a go-to with nowhere to go says why, as a reason a headline or a full stop finishes', () => {
+  assert.equal(goToNotInFile('Ada'), 'Ada is not in a file');
+  assert.equal(goToCursorNotFound('Ada'), 'Ada’s cursor could not be found in this file');
+});
+
 test('a follow that ended says why', () => {
   assert.equal(followEndedByTyping('Ada'), 'Stopped following Ada because you started typing.');
   assert.equal(followEndedByMoving('Ada'), 'Stopped following Ada because you moved.');
   assert.equal(followEndedByLeaving('Ada'), 'Ada left the room, so following stopped.');
   assert.equal(followEndedByFileGone('Ada'), 'Stopped following Ada because the file is gone.');
+});
+
+test('the first download says what it costs the room', () => {
+  assert.equal(
+    downloadCostSentence('src/main.rs'),
+    'Downloading src/main.rs opens it in the room, so everyone there gets its text.',
+  );
+  assert.equal(
+    DOWNLOAD_COST_MANY_SENTENCE,
+    'Downloading these files opens them in the room, so everyone there gets their text.',
+  );
 });
 
 test('a host’s leave is named for its consequence and asks with two answers', () => {
