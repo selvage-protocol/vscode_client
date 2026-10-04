@@ -294,10 +294,10 @@ test('an emoji replacement converges the room, and the buffer keeps what was typ
   host.bridge.documentOpened(PATH);
   await waitFor('the guest to have the document', () => session.guest.text(PATH) === 'a\u{1F600}b\n');
 
-  // The publish this raised used to be a lone surrogate as a CRDT delta — a delete of one
-  // half of the pair and an insert of the other — and the codec that carries an update over
-  // the wire has no encoding for half a character: the room ended up holding U+FFFD where the
-  // emoji was, on both sides and differently on each, with the state vectors still agreeing.
+  // The publish this raises carries whole characters: a delta cut through the pair would
+  // delete one half and insert the other, and the codec that carries an update over the
+  // wire has no encoding for half a character — the room would hold U+FFFD where the emoji
+  // was, on both sides and differently on each, with the state vectors still agreeing.
   host.editor.type(PATH, 'a\u{1F601}b\n');
   assert.equal(session.host.text(PATH), 'a\u{1F601}b\n');
   assert.equal(await converge(session.host, session.guest, PATH), 'a\u{1F601}b\n');
@@ -819,13 +819,12 @@ test('a local edit between two astral characters is published as whole character
 });
 
 test('a document whose apply is never answered takes no edits, and says nothing', async () => {
-  // The other half of the same story, pinned so it is not rediscovered as a mystery: a
-  // document is in flight from `issue` until `settle` or the catch runs, and the editor's
+  // A document is in flight from `issue` until `settle` or the catch runs, and the editor's
   // answer is the only thing that reaches either. An editor that never answers — a front-end
   // that dropped the message it could not decode — leaves `inFlight` set for the rest of the
   // session, and every later remote edit and local keystroke is parked in `pending` behind
-  // it without a report. The diff no longer produces a line a decoder must refuse
-  // (`test/editing.test.ts`), so what is left is the missing bound, not the message.
+  // it without a report. No bound gives up on an apply no editor ever answers, which is what
+  // this test pins (`test/editing.test.ts` covers the diff that produces the message).
   const engine = new EngineStub();
   engine.texts.set(PATH, 'base\n');
   const host = new UnansweringEditor();
@@ -1173,9 +1172,9 @@ test('a host reads the paths the room asks for a few at a time', async (t) => {
  * held it.
  *
  * The host's window reads the replica for the path first, which is what a window that draws the
- * room's documents does, and what the browser client's own proof caught: reading a room path's
- * text used to give the replica a document for it, so a host that had merely looked read its own
- * attention as the room's word and never seeded its working copy at all.
+ * room's documents does. Reading a room path's text must not give the replica a document for it,
+ * or a host that had merely looked would read its own attention as the room's word and never
+ * seed its working copy at all.
  */
 test('a guest holding a path the host has never opened is given the host’s copy of it', async (t) => {
   const session = await fakeSession();

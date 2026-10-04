@@ -270,8 +270,8 @@ test('selvage/2: the retry reaches the bridge an adapter listens to', async (t) 
   });
   server.drop('Bob');
 
-  // The bridge event the adapter's status bar is wired to (`events.ts`): before this fix the same
-  // drop arrived at the adapter as `disconnected`.
+  // The bridge event the adapter's status bar is wired to (`events.ts`): a retried drop is
+  // `reconnecting`, and only a session that is over is `disconnected`.
   await waitFor('the bridge to report the retry', () =>
     seen.includes('reconnecting') ? true : false,
   );

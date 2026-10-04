@@ -4,9 +4,8 @@
  *
  * Message types 2 (auth) and 3 (awareness query) belong to y-protocols and are unused by
  * Selvage: both are read and dropped. The query is dropped rather than answered because
- * an answer costs a whole frame, and a frame is a byte stream with no count — so a frame of
- * query bytes drew one answer per byte, which an inbound bound on the frame does nothing to
- * bound. `MAX_REPLIES_PER_FRAME` caps what any one frame can draw, whatever it holds.
+ * an answer costs a whole frame, and a frame is a byte stream with no count — so
+ * `MAX_REPLIES_PER_FRAME` caps what any one frame can draw, whatever it holds.
  */
 
 import * as decoding from 'lib0/decoding';

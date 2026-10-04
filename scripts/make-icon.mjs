@@ -10,9 +10,8 @@
  * script refuses a file that does not look like that export (not an 8-bit RGB or RGBA PNG, or not
  * square) rather than deriving something from the wrong image.
  *
- * The icon it replaces is a centred 580×580 **crop** of the same export, resized to 256, which
- * cuts the owner's field away and leaves the wordmark almost touching the canvas edge. This
- * produces the whole frame instead: the owner's composition, the wordmark where the owner put it.
+ * This produces the whole frame rather than a crop of the export: the owner's composition,
+ * the wordmark where the owner put it, and no field cut away at the canvas edge.
  *
  * Standard library only. The derivation is an exact area average — each destination pixel is the
  * mean of the source rectangle it covers, premultiplied by alpha — so it is a function of the
@@ -43,9 +42,8 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
  *
  * They travel with the pixels: an export that declares a gamma or a chromaticity is written back
  * with the same declaration, so "no colour change" is true of how a colour-managed viewer reads
- * the file and not only of the sample values. The owner's export carries none of them, and the
- * icon's predecessor carried ImageMagick's `cHRM`; either way this file's declaration is the
- * source's rather than one this script invents.
+ * the file and not only of the sample values. The owner's export carries none of them, so this
+ * file's declaration is the source's rather than one this script invents.
  */
 const COLOUR_CHUNKS = ['cHRM', 'gAMA', 'iCCP', 'sRGB'];
 

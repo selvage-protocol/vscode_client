@@ -3,8 +3,8 @@
  *
  * `test/helpers/undestroyed-session.ts` is the session's own clock; this is the relay's.
  * `RelaySession` runs the session's clocks on an interval of its own (`§13.8`), armed when the
- * connection is seated, and a caller that never disconnects used to be a process that never
- * ended. The socket is a stub and no server is involved: what is under test is the timer the
+ * connection is seated, and a caller that never disconnects must not be a process that never
+ * ends. The socket is a stub and no server is involved: what is under test is the timer the
  * relay arms on its own account, and nothing else here holds the event loop.
  */
 

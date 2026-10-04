@@ -501,8 +501,8 @@ async function nixElectronLibraryPath(): Promise<string> {
  * The clipboard the host suite reads its invite back from has to be this run's own. `xvfb-run`
  * gives the instances an X display, but the Wayland variables it leaves in place are the login
  * session's, so a Wayland-capable Electron reads — and writes — the session clipboard that
- * `wl-copy` and every other client on the machine own: a run has taken another repository's test
- * value off it as its invite, and then joined an address nothing was listening on. With only the
+ * `wl-copy` and every other client on the machine own, so the invite this run reads could be
+ * another repository's test value and the address it names one nothing is listening on. With
  * X display, the selection belongs to these two instances and to nothing else.
  *
  * `XDG_SESSION_TYPE` is named rather than dropped because it is the hint a client falls back on.

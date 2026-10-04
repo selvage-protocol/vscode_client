@@ -427,7 +427,7 @@ jobs:
           name: packaged-commit
 
       # Node to run the `vsce` entry point downloaded above; nothing is installed with it.
-      # Moved ahead of tagging and the Marketplace login so the check below can use it.
+      # It stands ahead of tagging and the Marketplace login so the check below can use it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.18.0"
@@ -453,9 +453,9 @@ jobs:
       # assumed: the commit `build` packaged from is read out of its artifact and compared with this
       # job's checkout and with the commit this run releases. A mismatch stops the job before the
       # tag is touched and before anything is published, so a package built from a different commit
-      # than the tag names is a red run and not a silent release. `RELEASE_COMMIT` stands where the
-      # run's own sha used to: a dispatch releases the commit its bump produced, and that is not the
-      # commit the dispatch named.
+      # than the tag names is a red run and not a silent release. `RELEASE_COMMIT` is the commit
+      # this run releases: a dispatch releases the commit its bump produced, not the commit the
+      # dispatch named.
       - name: verify the package came from the commit this run releases
         run: |
           packaged=$(cat packaged-commit.txt)
@@ -527,9 +527,8 @@ jobs:
       # role assignment on any Azure subscription — it exists only to authenticate to the
       # Marketplace — so `allow-no-subscriptions` skips the subscription lookup `azure/login`
       # otherwise requires. Client ID and tenant ID are public identifiers, not secrets;
-      # hardcoded here rather than as repository variables because nothing in this session's
-      # tooling can create Actions variables, and a workflow file is itself reviewable
-      # provenance for which identity a release runs as.
+      # hardcoded here rather than as repository variables, since a workflow file is itself
+      # reviewable provenance for which identity a release runs as.
       # The Marketplace authorises this identity by its Visual Studio profile id, which is a
       # separate value from the client id below and is not shown anywhere in the Azure portal;
       # if this identity is ever rotated, the replacement's profile id is found by signing in as

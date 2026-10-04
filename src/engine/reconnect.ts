@@ -18,7 +18,7 @@ export interface ReconnectPolicy {
 /**
  * The reference client's numbers, which §9.1 calls policy rather than wire: 500 ms doubling to a
  * 10 s ceiling, five attempts. Seven attempts, ≈35 s, is what `attemptsForGrace` derives for the
- * 30 s default grace below, and these five are what a server that advertises no grace gets.
+ * 30 s default grace, and these five are what a server that advertises no grace gets.
  */
 export const DEFAULT_RECONNECT: ReconnectPolicy = {
   enabled: true,

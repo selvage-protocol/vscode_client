@@ -535,10 +535,10 @@ test('a name a room never shares costs the walk nothing', async (t) => {
   t.after(() => {
     stub.reset();
   });
-  // The defect this accounting exists for: a tree rich in assets and poor in sources. Every one
-  // of these names is dropped by the name alone — a binary format a room cannot carry — so the
-  // walk spends nothing on them, where charging for each entry would spend the whole budget
-  // before the first shareable file and publish a listing that names none of them.
+  // A tree rich in assets and poor in sources: every one of these names is dropped by the name
+  // alone — a binary format a room cannot carry — so the walk spends nothing on them. Charging
+  // for each entry would spend the whole budget before the first shareable file and publish a
+  // listing that names none of them.
   for (let index = 0; index < MAX_GRANT_NODES; index += 1) {
     stub.put(`a-${index}.png`, 'x');
   }

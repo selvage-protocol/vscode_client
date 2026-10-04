@@ -4,10 +4,8 @@
  * `//`, and no credentials, query, fragment or endpoint path — so that a component cannot read
  * a different server out of a base than the component that produced it.
  *
- * The shape that matters most here is the one that shipped: a special-scheme URL needs no
- * `//` (RFC 3986 §3), so `ws:host/session?room=…` parses as `ws://host/session?room=…`. The
- * producer kept the spelling `ws:host`; `metaUrl` matched `^ws(s?)://`, found nothing, and
- * built `ws:host/meta`, which a browser resolves to an `http://host/meta` GET. Every test
+ * The shape that matters most here is a special-scheme URL written without its `//`: RFC 3986
+ * §3 allows it, so `ws:host/session?room=…` parses as `ws://host/session?room=…`. Every test
  * below is written against that spelling, not against the tidy one.
  *
  * The guard is `sessionBase` plus the `SessionBase` type it is the only producer of; the
@@ -102,8 +100,8 @@ test('the scheme of a base is a prefix on every base the reader accepts', () => 
 });
 
 test('the base a session URL is taken apart into is the one the engine dials', () => {
-  // The paste that shipped: a wire invite left without the `//`. `parseSessionUrl` is the
-  // boundary a paste crosses, so the base it hands back is already the engine's.
+  // A wire invite written without the `//`: `parseSessionUrl` is the boundary a paste
+  // crosses, so the base it hands back is already the engine's.
   for (const [written, base] of [
     ['ws:host:8080/session?room=r&token=t', 'ws://host:8080'],
     ['wss:host/prefix/session?room=r&token=t', 'wss://host/prefix'],
@@ -128,7 +126,7 @@ test('a host address spelled without the `//` dials and reads /meta as one serve
   const dialled: string[] = [];
   const metaReads: string[] = [];
   const engine = await LiveSession.host(
-    // The bug's shape, against the fake server's own base with the `//` taken out.
+    // The spelling to read, against the fake server's own base with the `//` taken out.
     server.wsBase.replace('ws://', 'ws:'),
     'Ada',
     {

@@ -54,7 +54,7 @@ function delay(ms) {
  * The invite has to name the server this window was told to host on, and carry the room and the
  * token it minted. An invite is the room's own server address over the scheme a browser speaks
  * (`ws://` as `http://`, `wss://` as `https://`), so a plain `ws://` server's link is `http://`;
- * the retired `server=` parameter is neither read nor written. The same shape
+ * a `server=` parameter is neither read nor written. The same shape
  * `test/https-invite.test.ts` pins without an editor (`buildPageLink`), checked here against the
  * link a real clipboard actually holds.
  */

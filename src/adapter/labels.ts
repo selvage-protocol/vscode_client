@@ -10,7 +10,7 @@
  *   caret is a bar in their colour, their selection a tint of it, the overview ruler carries a
  *   tick where they are, the caret's `hoverMessage` names them, and the status bar lists the
  *   room. This is the default, because any label in the line reads as the document's own text
- *   and one above it covers the line — the complaint the floating label was drawn to answer.
+ *   and one above it covers the line.
  * - `floating` — a small coloured box above the caret, out of the line's flow. The public API
  *   has no position, layer or overlay, so this is done by writing declarations into
  *   `textDecoration`; see `FLOATING_DECLARATIONS`. It is an explicit opt-in and it *does*

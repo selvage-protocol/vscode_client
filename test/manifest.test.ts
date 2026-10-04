@@ -89,9 +89,9 @@ test('every setting the manifest declares is one the adapter reads', () => {
 test('the client identifier is the client name and the manifest version, never the wire version', () => {
   // `session.hello`'s `client` is free-form diagnostics (`PROTOCOL.md` §5), and the reference
   // client sends `selvage-client/<CARGO_PKG_VERSION>`. A diagnostic identity that names a version
-  // the artefact does not carry is a log line that lies, and this one went two releases without
-  // saying the extension's own version because nothing read it. `selvage/<major>` is the *wire*
-  // version identifier the envelope's `v` carries, so the name half must not be `selvage`.
+  // the artefact does not carry is a log line that lies, so the version half is the manifest's
+  // own. `selvage/<major>` is the *wire* version identifier the envelope's `v` carries, so the
+  // name half must not be `selvage`.
   const source = readFileSync(resolve(ADAPTER, 'extension.ts'), 'utf8');
   const declared = /const CLIENT = '([^']+)'/.exec(source);
   assert.ok(declared !== null, 'the adapter no longer declares CLIENT, so this test pins nothing');
