@@ -716,7 +716,11 @@ export function isContent(plaintext: Uint8Array): boolean {
       const type = decoding.readVarUint(decoder);
       if (type === MESSAGE_SYNC) {
         const subtype = decoding.readVarUint(decoder);
-        content ||= subtype === 1 || subtype === 2;
+        if (subtype > 2) {
+          // A sync sub-type this version does not read ends the stream as an unknown type does.
+          break;
+        }
+        content ||= subtype !== 0;
         decoding.readVarUint8Array(decoder);
       } else if (type === MESSAGE_AWARENESS) {
         decoding.readVarUint8Array(decoder);

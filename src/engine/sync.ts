@@ -69,11 +69,13 @@ export function encodeAwareness(
 }
 
 /**
- * Applies one binary frame: every message in it, in order.
+ * Applies one binary frame: every message in it, in order, up to the first one §7's table does
+ * not define. A `message_type` above 3 or a `sync_type` above 2 has no length to read past, so
+ * reading stops there, and the messages before it stand with the replies they asked for.
  *
- * Throws when the frame cannot be read as y-protocols at all. The caller drops such a
- * frame and keeps the session: a payload it cannot decode is a peer bug, not a reason to
- * end a working connection (the reference client does the same).
+ * Throws when a message the table defines cannot be read, which is a truncated or malformed
+ * frame. The caller drops such a frame and keeps the session: a payload it cannot decode is a
+ * peer bug, not a reason to end a working connection (the reference client does the same).
  */
 export function applyFrame(
   frame: Uint8Array,
@@ -84,7 +86,7 @@ export function applyFrame(
   const decoder = decoding.createDecoder(frame);
   const replies: Uint8Array[] = [];
 
-  while (decoding.hasContent(decoder)) {
+  reading: while (decoding.hasContent(decoder)) {
     const messageType = decoding.readVarUint(decoder);
     switch (messageType) {
       case MESSAGE_SYNC: {
@@ -108,7 +110,7 @@ export function applyFrame(
         ) {
           syncProtocol.readSyncStep2(decoder, doc, origin);
         } else {
-          throw new Error(`unknown y-protocols sync message type ${syncType}`);
+          break reading;
         }
         break;
       }
@@ -130,7 +132,7 @@ export function applyFrame(
         break;
       }
       default: {
-        throw new Error(`unknown y-protocols message type ${messageType}`);
+        break reading;
       }
     }
   }

@@ -109,14 +109,14 @@ test('a frame of sync queries draws one answer and stays aligned behind it', (t)
   );
 });
 
-test('a sync sub-type y-protocols does not define is still a frame this client drops', (t) => {
+test('a sync sub-type y-protocols does not define draws no answer and applies nothing', (t) => {
   const room = replica(t, 'the room’s text\n');
-  // The dispatch reads the sub-type itself, so it has to keep refusing a message that
-  // `y-protocols/sync`'s own `readSyncMessage` refuses.
-  assert.throws(
-    () => applyFrame(Uint8Array.of(MESSAGE_SYNC, 7), room.doc, room.awareness, 'peer'),
-    /unknown y-protocols sync message type 7/,
-  );
+  // The dispatch reads the sub-type itself, so a message `y-protocols/sync`'s own
+  // `readSyncMessage` refuses ends the reading here (§7), and nothing behind it is answered.
+  const frame = new Uint8Array([MESSAGE_SYNC, 7, ...encodeSyncStep1(new Y.Doc())]);
+  const effect = applyFrame(frame, room.doc, room.awareness, 'peer');
+  assert.equal(effect.replies.length, 0, 'a SyncStep1 behind the undefined sub-type was answered');
+  assert.equal(room.doc.getText(PATH).toString(), 'the room’s text\n');
 });
 
 test('a legitimate frame is still applied and still answered', (t) => {

@@ -123,3 +123,84 @@ test('document content behind an auth message is content, whatever the status', 
   assert.equal(isContent(concat(authStatus(3), update)), true, 'behind status 3');
   assert.equal(isContent(denial('no entry')), false, 'an auth message alone is not content');
 });
+
+/**
+ * A frame whose last readable message is followed by one §7's table does not define, then by
+ * bytes that would be content if anything read them.
+ */
+function endedBy(undefinedMessage: Uint8Array, room: { doc: Y.Doc }, state: Uint8Array): Uint8Array {
+  return concat(
+    encodeSyncStep1(room.doc),
+    updateWriting('before the stop\n'),
+    state,
+    undefinedMessage,
+    updateWriting('past the stop\n'),
+  );
+}
+
+test('a message type §7 does not define ends the reading, and the messages before it stand', (t) => {
+  for (const messageType of [4, 127, 300]) {
+    const room = replica(t);
+    const peer = replica(t);
+    const state = peerAwareness(t);
+    const head = encoding.createEncoder();
+    encoding.writeVarUint(head, messageType);
+
+    const effect = applyFrame(
+      endedBy(encoding.toUint8Array(head), peer, state.message),
+      room.doc,
+      room.awareness,
+      'peer',
+    );
+
+    assert.equal(effect.replies.length, 1, `type ${messageType}: the SyncStep1 before it went unanswered`);
+    assert.equal(
+      room.doc.getText(PATH).toString(),
+      'before the stop\n',
+      `type ${messageType}: the update before it was lost, or the bytes after it were read`,
+    );
+    assert.deepEqual(
+      room.awareness.getStates().get(state.client),
+      { path: PATH },
+      `type ${messageType}: the awareness state before it was lost`,
+    );
+  }
+});
+
+test('a sync sub-type §7 does not define ends the reading, and the messages before it stand', (t) => {
+  for (const syncType of [3, 7, 200]) {
+    const room = replica(t);
+    const peer = replica(t);
+    const state = peerAwareness(t);
+    const head = encoding.createEncoder();
+    encoding.writeVarUint(head, 0);
+    encoding.writeVarUint(head, syncType);
+
+    const effect = applyFrame(
+      endedBy(encoding.toUint8Array(head), peer, state.message),
+      room.doc,
+      room.awareness,
+      'peer',
+    );
+
+    assert.equal(effect.replies.length, 1, `sub-type ${syncType}: the SyncStep1 before it went unanswered`);
+    assert.equal(
+      room.doc.getText(PATH).toString(),
+      'before the stop\n',
+      `sub-type ${syncType}: the update before it was lost, or the bytes after it were read`,
+    );
+    assert.deepEqual(
+      room.awareness.getStates().get(state.client),
+      { path: PATH },
+      `sub-type ${syncType}: the awareness state before it was lost`,
+    );
+  }
+});
+
+test('the content walk stops where the applier stops, at a sync sub-type §7 does not define', () => {
+  const update = updateWriting('past the stop\n');
+  // An empty `varUint8Array` behind the sub-type: a walk that read one there would go on to the
+  // update and call the frame content the applier never applies.
+  assert.equal(isContent(concat(Uint8Array.of(0, 3, 0), update)), false, 'read past sub-type 3');
+  assert.equal(isContent(concat(update, Uint8Array.of(0, 3, 0))), true, 'lost the update before it');
+});
