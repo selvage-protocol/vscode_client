@@ -1588,7 +1588,8 @@ export class PeerSession {
     try {
       replies = applyFrame(plaintext, this.doc, this.awareness, APPLIED_ORIGIN).replies;
     } catch {
-      // A stream no replica decodes is a sender's bug: dropped, and the session goes on.
+      // A stream no replica decodes is a sender's bug: what was applied before the bad message
+      // stays, its replies are not sent, and the session goes on.
       return;
     }
     // §13.9: a `viewer` publishes its SyncStep1, its awareness and its holds, and nothing else

@@ -74,8 +74,10 @@ export function encodeAwareness(
  * reading stops there, and the messages before it stand with the replies they asked for.
  *
  * Throws when a message the table defines cannot be read, which is a truncated or malformed
- * frame. The caller drops such a frame and keeps the session: a payload it cannot decode is a
- * peer bug, not a reason to end a working connection (the reference client does the same).
+ * frame. The messages before that one have already been applied and are not rolled back; what
+ * the throw loses is the rest of the frame and the replies. The caller keeps the session: a
+ * payload it cannot decode is a peer bug, not a reason to end a working connection (the
+ * reference client does the same).
  */
 export function applyFrame(
   frame: Uint8Array,
