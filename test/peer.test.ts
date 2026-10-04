@@ -38,7 +38,8 @@ import {
   seal,
 } from '../src/engine/sealed.ts';
 import type { SessionKeypair } from '../src/engine/sealed.ts';
-import { applyFrame, encodeSyncStep1, encodeUpdate } from '../src/engine/sync.ts';
+import { applyFrame, encodeAwareness, encodeSyncStep1, encodeUpdate } from '../src/engine/sync.ts';
+import type { PeerInfo } from '../src/engine/envelope.ts';
 
 const ROOM = 'R7f3a2c19';
 const RENEW_MS = 300;
@@ -601,6 +602,122 @@ test('the first state after a re-seat goes out above clock 0, so a y-protocols p
   } finally {
     watching.destroy();
     replica.destroy();
+  }
+});
+
+// --- §8.2, the awareness clock ---------------------------------------------------
+
+/** A peer's own awareness set, with y-protocols' clock stopped so only the test moves it. */
+function peerAwarenessSet(): { awareness: Awareness; release: () => void } {
+  const doc = new Y.Doc();
+  const awareness = new Awareness(doc);
+  clearInterval(awareness._checkInterval);
+  awareness.setLocalState({ path: 'README.md' });
+  return {
+    awareness,
+    release: () => {
+      awareness.destroy();
+      doc.destroy();
+    },
+  };
+}
+
+/** The local record `presence` is built against; nothing here reads it. */
+const SELF: PeerInfo = { peer_id: 'p-self', display_name: 'Self', role: 'guest' };
+
+/** Whether the session holds a state for `clientId`. */
+function holdsState(peer: PeerSession, clientId: number): boolean {
+  return peer.presence([], SELF).some((presence) => presence.clientId === clientId);
+}
+
+test('a remote awareness state is forgotten at the first tick past awareness_expire_ms, and a renewal keeps it', async () => {
+  const now = await room();
+  const peer = await session();
+  const remote = peerAwarenessSet();
+  try {
+    await peer.tick(0);
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+    const client = remote.awareness.clientID;
+    const published = (counter: number): Promise<Uint8Array> =>
+      frame(now.peer, 0, counter, encodeAwareness(remote.awareness, [client]));
+    assert.deepEqual(await peer.deliver(2, await published(1)), { status: 'applied', kind: 0 });
+    assert.ok(holdsState(peer, client), 'the state was applied');
+
+    await peer.tick(2 + EXPIRE_MS - 1);
+    assert.ok(holdsState(peer, client), 'forgotten before awareness_expire_ms had passed');
+
+    // The renewal: the same state on a newer clock, which is what the window is measured from.
+    remote.awareness.setLocalState({ path: 'README.md' });
+    await peer.deliver(500, await published(2));
+    await peer.tick(2 + EXPIRE_MS);
+    assert.ok(holdsState(peer, client), 'a renewed state was forgotten on the first state’s window');
+    await peer.tick(500 + EXPIRE_MS - 1);
+    assert.ok(holdsState(peer, client), 'forgotten before the renewal’s window had passed');
+
+    await peer.tick(500 + EXPIRE_MS);
+    assert.equal(holdsState(peer, client), false, 'kept past awareness_expire_ms');
+    assert.equal(peer.droppedFrames.length, 0, 'an expiry is not a refusal');
+  } finally {
+    remote.release();
+  }
+});
+
+test('an entry the receiver ignores does not renew the state it names', async () => {
+  const now = await room();
+  const peer = await session();
+  const remote = peerAwarenessSet();
+  try {
+    await peer.tick(0);
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+    const client = remote.awareness.clientID;
+    const stale = encodeAwareness(remote.awareness, [client]);
+    await peer.deliver(2, await frame(now.peer, 0, 1, stale));
+    // The same entry again, at the clock the receiver already holds: §8.2 ignores it.
+    await peer.deliver(500, await frame(now.peer, 0, 2, stale));
+
+    await peer.tick(2 + EXPIRE_MS);
+    assert.equal(holdsState(peer, client), false, 'an ignored entry renewed the state');
+  } finally {
+    remote.release();
+  }
+});
+
+test('y-protocols’ own clock neither renews the local state nor expires a remote one', async (t) => {
+  // The library's interval is the mocked one, and its records are aged by hand: lib0 reads
+  // `Date.now` once at import, so its notion of time cannot be mocked, only what it compares.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const now = await room();
+  const peer = await session({
+    keepalive: { ping_interval_ms: 30_000, awareness_renew_ms: 60_000, awareness_expire_ms: 120_000 },
+  });
+  const remote = peerAwarenessSet();
+  try {
+    await peer.tick(0);
+    await peer.deliver(
+      1,
+      await state(now.host, 1, [
+        [now.ours, 'guest', 'p-self'],
+        [now.peer, 'guest', 'p-other'],
+      ]),
+    );
+    peer.setAwareness({ path: 'README.md' });
+    const client = remote.awareness.clientID;
+    await peer.deliver(2, await frame(now.peer, 0, 1, encodeAwareness(remote.awareness, [client])));
+    await peer.whenIdle();
+    peer.takeOutbound();
+
+    // Past the library's 15 s renewal and its 30 s expiry, as it would read them.
+    const inside = (peer as unknown as { awareness: Awareness }).awareness;
+    for (const meta of inside.meta.values()) {
+      meta.lastUpdated -= 31_000;
+    }
+    t.mock.timers.tick(3_000);
+    await peer.whenIdle();
+
+    assert.deepEqual(peer.takeOutbound(), [], 'the library renewed the local state on its own clock');
+    assert.ok(holdsState(peer, client), 'the library expired the remote state on its own clock');
+  } finally {
+    remote.release();
   }
 });
 

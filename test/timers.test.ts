@@ -1,11 +1,10 @@
 /**
  * The timers the engine arms, and the one thing they must never do: hold a process open.
  *
- * `PeerSession` runs `y-protocols`' awareness clock, which is an interval — the same clock
- * `§8.2`'s renewal and expiry are read on — and `RelaySession` runs the session's clocks on an
- * interval of its own (`§13.8`). Both are cleared when the thing that armed them is destroyed,
- * and every timer the engine starts is `unref`ed, so a caller that forgets costs nothing: the
- * process still ends.
+ * `y-protocols`' `Awareness` arms an interval when it is constructed, which `PeerSession` clears
+ * at once because §8.2 runs on the session's own clocks, and `RelaySession` runs those clocks on
+ * a timer of its own (`§13.8`), cleared when the relay is destroyed. Every timer the engine starts
+ * is `unref`ed, so a caller that forgets costs nothing: the process still ends.
  *
  * The proof is a real process, one for each clock: `test/helpers/undestroyed-session.ts` opens a
  * guest and a host, `test/helpers/undestroyed-relay.ts` seats a relay, and neither destroys

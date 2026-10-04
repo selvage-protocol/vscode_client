@@ -67,6 +67,8 @@ const LOCAL_ORIGIN = Symbol('selvage/local');
 const APPLIED_ORIGIN = Symbol('selvage/applied');
 /** The origin of a departed peer's awareness state being dropped, which is not published. */
 const DEPARTED_ORIGIN = Symbol('selvage/departed');
+/** The origin of a remote awareness state lapsing on §8.2's expiry, which is not published. */
+const EXPIRED_ORIGIN = Symbol('selvage/expired');
 
 /**
  * The one character a document published with no text at all is named by.
@@ -423,6 +425,8 @@ export class PeerSession {
   private localState: AwarenessState | null = null;
   /** The clock of the renewal that last published the local state (§8.2). */
   private awarenessRenewedAt: number | undefined;
+  /** The clock at which each remote awareness state was last applied, which §8.2 expires by. */
+  private readonly awarenessSeenAt = new Map<number, number>();
   /** The clock of the most recent tick or delivery, which a queued frame is stamped with. */
   private clockOfLastMove = 0;
   private readonly outbound: Uint8Array[] = [];
@@ -538,10 +542,10 @@ export class PeerSession {
     // §7's document: one `Y.Doc`, one `Y.Text` per path.
     this.doc = new Y.Doc();
     this.awareness = new Awareness(this.doc);
-    // y-protocols runs the awareness clock on an interval, and §8.2's renewal and expiry are
-    // read on that same clock. `destroy()` clears it, and a caller that forgets would otherwise
-    // hold its process open for ever: `unref` is what makes forgetting cost nothing.
-    unrefTimer(this.awareness._checkInterval);
+    // y-protocols starts a clock of its own here, renewing at 15 s and expiring at 30 s of wall
+    // time. §8.2 has a client stop it and run on the session's advertised values instead, which
+    // the tick does ({@link renewAwareness}, {@link expireAwareness}).
+    clearInterval(this.awareness._checkInterval);
     const minted = this.awareness.clientID;
     if (options.awarenessClientId !== undefined) {
       // The id the handshake announced, so the states this connection publishes and the peer
@@ -612,6 +616,7 @@ export class PeerSession {
       'update',
       (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
         if (origin !== 'local') {
+          this.noteRemoteAwareness(changes);
           return;
         }
         const clients = [...changes.added, ...changes.updated, ...changes.removed];
@@ -631,6 +636,23 @@ export class PeerSession {
         });
       },
     );
+  }
+
+  /**
+   * §8.2: an applied entry renews the remote state it names, on the clock of the delivery that
+   * carried it, and a removed state has nothing left to expire. y-protocols reports an entry in
+   * `updated` whenever it applied it, the same state on a newer clock included, and leaves out
+   * one it ignored, which therefore renews nothing.
+   */
+  private noteRemoteAwareness(changes: { added: number[]; updated: number[]; removed: number[] }): void {
+    for (const id of [...changes.added, ...changes.updated]) {
+      if (id !== this.awareness.clientID) {
+        this.awarenessSeenAt.set(id, this.clockOfLastMove);
+      }
+    }
+    for (const id of changes.removed) {
+      this.awarenessSeenAt.delete(id);
+    }
   }
 
   /** A connection's session: §13.1's steps 1 and 2, and nothing sent yet. */
@@ -672,8 +694,8 @@ export class PeerSession {
         // §7.1's first state is what brings the room's listing into existence and commits this
         // connection's key. A host that could not seal one is a host no peer can see, and some
         // other connection holding the host key has to be the one that publishes instead. The
-        // session that is not handed over is released here: it already holds a `Y.Doc` and the
-        // clock `Awareness` runs, and one of those left behind is a process that never exits.
+        // session that is not handed over is released here, with the `Y.Doc` and the awareness
+        // set it already holds.
         peer.destroy();
         return undefined;
       }
@@ -986,6 +1008,7 @@ export class PeerSession {
     this.clockOfLastMove = clock;
     this.host?.flushFrames(clock);
     this.expireLeases(clock);
+    this.expireAwareness(clock);
     this.refreshHostAway(clock, false);
     if (this.ending !== undefined) {
       return;
@@ -1001,6 +1024,28 @@ export class PeerSession {
     await this.resync(clock);
     await this.announceHolds(clock);
     this.renewAwareness(clock);
+  }
+
+  /**
+   * §8.2's expiry: a remote state not renewed for `awareness_expire_ms` is forgotten, checked on
+   * the tick as §13.7's leases are ({@link expireLeases}), so it goes at the first tick past its
+   * window and never inside it. The state's clock is kept, so a stale copy of it still in flight
+   * is not applied again.
+   */
+  private expireAwareness(clock: number): void {
+    const lapsed: number[] = [];
+    for (const [id, at] of this.awarenessSeenAt) {
+      if (clock - at >= this.expire) {
+        lapsed.push(id);
+      }
+    }
+    if (lapsed.length === 0) {
+      return;
+    }
+    for (const id of lapsed) {
+      this.awarenessSeenAt.delete(id);
+    }
+    removeAwarenessStates(this.awareness, lapsed, EXPIRED_ORIGIN);
   }
 
   /**
@@ -1027,11 +1072,7 @@ export class PeerSession {
     return this.outbound.splice(0, this.outbound.length);
   }
 
-  /**
-   * Releases what the session holds outside itself: the awareness clock `y-protocols` runs, and
-   * the document. A session that ends and is not destroyed leaves a timer behind, and a timer
-   * with nothing to hold alive is a process that never exits.
-   */
+  /** Releases the awareness set and the document this session holds. */
   destroy(): void {
     this.awareness.destroy();
     this.doc.destroy();
