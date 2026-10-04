@@ -3,14 +3,13 @@
  * refuses because the document moved under it is rebuilt against the document as it now reads
  * and offered again.
  *
- * This is the data-loss bug the two-instance proof shows intermittently: a keystroke typed while
- * one of the bridge's own applies is in flight is deferred, the editor refuses the apply because
- * the keystroke moved the document's version, and the bridge's refusal path reconciles the buffer
- * back to the room — the keystroke is gone, from the buffer and from the room, with no
- * `divergence` and no `applyRefused` to say so. The Neovim client's adapter rebases a refused
- * change through the local edit it withheld and offers it again
- * (`nvim_client/companion/editor.ts`); this pins the same behaviour on this side, which is what
- * the clients' parity requires of a behaviour the protocol does not constrain.
+ * A keystroke typed while one of the bridge's own applies is in flight is deferred, and the
+ * editor refuses the apply because the keystroke moved the document's version. Reconciling the
+ * buffer back to the room without rebasing that deferred edit loses the keystroke, from the
+ * buffer and from the room, with no `divergence` and no `applyRefused` to say so. The Neovim
+ * client's adapter rebases a refused change through the local edit it withheld and offers it
+ * again (`nvim_client/companion/editor.ts`); this pins the same behaviour on this side, which
+ * is what the clients' parity requires of a behaviour the protocol does not constrain.
  *
  * A refusal with no local edit behind it is still the bridge's, and still reaches the person:
  * that is what the second test holds.
@@ -364,8 +363,8 @@ test('a re-offered change whose merge equals the buffer’s pre-apply text keeps
     if (window.offered.length === 1) {
       // The room is deleting one of the two adjacent newlines, and the user presses Enter
       // while that change is in flight. The two edits are inverses, so the correct merge is
-      // the text the buffer held before the apply — the state the bridge used to read as
-      // “the change did not land”.
+      // the text the buffer held before the apply, which must not be read as “the change did
+      // not land”.
       window.type('a\n\n\nb');
       return Promise.resolve(false);
     }
@@ -453,7 +452,7 @@ test('a guest shares the mirror root and nothing else', () => {
   // this window's editor, so a document at one never carries the room's text.
   assert.equal(editor.register(doc('file', '/mirror/.vscode/settings.json')), undefined);
   assert.equal(editor.register(doc('file', '/mirror/team.code-workspace')), undefined);
-  // No scheme from the old world names a document anymore.
+  // Only a `file:` scheme names a shared document.
   assert.equal(editor.register(doc('selvage', '/mirror/a.md')), undefined);
 });
 

@@ -62,8 +62,8 @@ test('spike 1: absolute offsets drift under a concurrent edit; relative position
   sync(ada, bob);
   assert.equal(bob.text.toString(), SEED, 'the seed arrives over the wire');
 
-  // Ada publishes her caret in the shape §8.1 used to carry: raw offsets. The parser now
-  // refuses it, and the rest of this spike is the reason it does.
+  // Ada publishes her caret as raw offsets, which §8.1 does not carry: the parser refuses
+  // them, and the rest of this spike is why the wire carries anchors instead.
   ada.awareness.setLocalState({ path: 'src/main.rs', selection });
   bob.awareness.setLocalState({ path: 'src/main.rs' });
   applyFrame(

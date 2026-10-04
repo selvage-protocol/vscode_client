@@ -2,11 +2,11 @@
  * The listing walk's own tests: the rule in `src/bridge/listing-walk.ts`, read through a seam a
  * test hands it rather than through an editor's file system.
  *
- * What is pinned here is the accounting and the bounds that used to be written once per client —
- * one node charged per directory read and per shareability check, a name dropped for free, a bound
- * recorded only where a file the walk would have named did not fit, one budget across every root,
- * and a directory that cannot be listed skipped rather than reported as a cut. `test/serve.test.ts`
- * drives the same rule through this client's own seam, end to end.
+ * What is pinned here is the accounting and the bounds: one node charged per directory read and
+ * per shareability check, a name dropped for free, a bound recorded only where a file the walk
+ * would have named did not fit, one budget across every root, and a directory that cannot be
+ * listed skipped rather than reported as a cut. `test/serve.test.ts` drives the same rule
+ * through this client's own seam, end to end.
  */
 
 import { test } from 'node:test';
@@ -99,10 +99,10 @@ function listedBytes(paths: readonly string[]): number {
 }
 
 test('a front of never-listed assets lists nothing of them and does not starve the walk', async () => {
-  // The defect the accounting exists for: a tree rich in assets and poor in sources. Every one of
-  // these names is dropped by the name alone — a binary format a room cannot carry — so the walk
-  // spends nothing on them, where charging for each entry would spend the whole budget before the
-  // first shareable file and publish a listing that names none of them.
+  // A tree rich in assets and poor in sources: every one of these names is dropped by the name
+  // alone — a binary format a room cannot carry — so the walk spends nothing on them. Charging
+  // for each entry would spend the whole budget before the first shareable file and publish a
+  // listing that names none of them.
   const assets = Array.from({ length: MAX_GRANT_NODES }, (_, index) => file(`a-${index}.png`));
   const sources = Array.from({ length: 5 }, (_, index) => file(`z-${index}.md`));
   const tree = new FakeTree({ '': { entries: [...assets, ...sources] } });
@@ -289,9 +289,9 @@ test('the entries of a directory are visited in name order', async () => {
 });
 
 test('a shared root is listed once, and its own sources come from the entries it was read with', async () => {
-  // The root's repository exclude used to be fetched by listing the root a second time before the
-  // walk listed it. It is read from the entries the walk already holds now — the fake refuses to
-  // hand one back unless those entries hold a `.git` directory — and the root is read once.
+  // The root's repository exclude is read from the entries the walk already holds — the fake
+  // refuses to hand one back unless those entries hold a `.git` directory — so the root is
+  // listed once rather than twice.
   const tree = new FakeTree(
     {
       '': { entries: [file('.gitignore'), folder('.git'), file('a.md')] },

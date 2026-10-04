@@ -5,8 +5,7 @@
  * and token are in the query and nothing else is, because the link *is* the server. A pasted
  * page link joins the same way it loads, resolving the socket from that same origin, while a
  * `ws://` link joins as it stands — a room whose server serves no page is handed on by its wire
- * address. Each test here fails against the old behaviour: the clipboard held the wire URL, the
- * box refused page links, and the engine never saw them.
+ * address.
  */
 
 import { test } from 'node:test';
@@ -33,7 +32,6 @@ const ROOT = resolve(here, '..');
 const BUNDLE = resolve(ROOT, 'dist', 'extension.js');
 const STUB = resolve(ROOT, 'test', 'helpers', 'vscode-stub.cjs');
 
-/** The page the client links to when nothing is configured. */
 /** The page a room's own server serves, over the scheme a browser speaks. */
 function pageOf(server: FakeServer): string {
   return server.wsBase.replace(/^ws/, 'http');
@@ -139,9 +137,9 @@ test('a pasted page link reads back into the same join, and nothing else does', 
     origin: 'https://edit.example',
     fragment: '',
   });
-  // A link written before the format changed carries `server`. Nothing reads it: the format
-  // defines `room` and `token` alone, so it is an unknown query parameter and the link's own
-  // origin is the server a guest reaches.
+  // A link may carry `server`, and nothing reads it: the format defines `room` and `token`
+  // alone, so it is an unknown query parameter and the link's own origin is the server a
+  // guest reaches.
   assert.deepEqual(
     parsePageLink('https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080'),
     { room: 'r-1', token: 'tok', origin: 'https://edit.example', fragment: '' },
@@ -306,9 +304,9 @@ test('a page address is not a setting any more: the link is the server', async (
   });
   for (const configured of ['https://custom.example:9443/', 'http://custom.example:9443/', 'not a url']) {
     const fresh = freshActivated(t);
-    // The setting is gone. A window that still has it configured — an old settings file — must
-    // not be able to send a link to a page that dials another server, which is what a separate
-    // page address allowed.
+    // A window with the old page-address setting — an old settings file — must not be able to
+    // send a link to a page that dials another server: the room's own server is the link's
+    // origin.
     fresh.bundle.stub.configure({ webOrigin: configured });
     const { link } = await copiedInvite(fresh.bundle, server);
     assert.ok(

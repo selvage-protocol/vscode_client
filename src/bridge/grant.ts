@@ -318,7 +318,7 @@ function hasUnsafeChar(segment: string): boolean {
  * shareable; anything else under `.env.*` — `.env.production` included — is configuration,
  * not secret, and stays shareable too. That last half is deliberate, and the one place this
  * rule knowingly shares a name that can hold a real secret: denying the whole `.env.*`
- * family back would take the templates with it, which is the break this rule exists to undo.
+ * family would take the templates with it.
  */
 function isEnvSecret(leaf: string): boolean {
   if (leaf === '.env' || leaf === '.env.local') {

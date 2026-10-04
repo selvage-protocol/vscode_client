@@ -2,7 +2,7 @@
  * A process that opens `selvage/2` sessions, destroys none of them, and ends.
  *
  * It is the subject of `test/timers.test.ts`: a session holds a clock — `y-protocols`' awareness
- * interval — and one that is never destroyed used to hold the whole process open with it. The
+ * interval — and one that is never destroyed must not hold the whole process open with it. The
  * test runs this file and requires it to exit on its own, so a timer that keeps the event loop
  * alive is a red test rather than a machine that hangs until someone notices.
  *

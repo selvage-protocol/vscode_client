@@ -747,9 +747,9 @@ test('hosting while a guest asks before leaving, and an emptied window is told t
 });
 
 test('a refused address costs a guest no session', async (t) => {
-  // The address that reproduces the defect: the page invite a host copies, whose query is the
-  // room and its token and whose fragment the room key. It is refused before the question that
-  // gives the guest's room up, so a paste by mistake costs nothing at all.
+  // The page invite a host copies, whose query is the room and its token and whose fragment
+  // the room key: not a server address. It is refused before the question that gives the
+  // guest's room up, so a paste by mistake costs nothing at all.
   const { bundle, server } = await guest(t, ['workspace/README.md']);
   const before = server.acceptedConnections;
   const invite = 'https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY';
@@ -2688,10 +2688,8 @@ test('a wire invite is refused when the engine would not dial it as pasted', asy
   );
   // The spelling a special scheme does not need: `ws:host/session?…` is `ws://host/session?…`
   // to the URL parser and to the engine's one reading of a base, so it is the invitation the
-  // engine dials and the box admits it. It is also the shape that shipped un-normalised — the
-  // producer kept the spelling, `metaUrl` matched a prefix that was not there, and the `/meta`
-  // read became a cleartext `http://host/meta` GET — so admitting it here is what pins the
-  // engine as the component that reads it, not the box.
+  // engine dials and the box admits it. Admitting it here is also what pins the engine as the
+  // component that reads it, not the box.
   for (const withoutSlashes of [
     'ws:127.0.0.1:8080/session?room=r&token=t',
     'wss:name/session?room=r&token=t',
@@ -2731,9 +2729,9 @@ test('an invite that arrives by argument is refused before the name question', a
   const token = 'tok-by-argument';
   // Each one is a link no socket can open: `ws://` shapes `parseSessionUrl` alone would
   // pass, two of them bases the engine would rewrite before it dialled, and two page
-  // links with half the query missing. An invite that arrives by argument used to skip
-  // the box's own check entirely, so it was not refused until after the name was asked
-  // and the window had reloaded onto the mirror.
+  // links with half the query missing. An invite that arrives by argument is checked the
+  // same way as the box's, so it is refused before the name is asked and before the
+  // window reloads onto the mirror.
   const unusable = [
     'wss://host:8080/session?room=r',
     `not-a-url/session?room=r&token=${token}`,
@@ -3834,8 +3832,8 @@ test('saving a file the room does not list says so once', async (t) => {
   await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
   await waitForMirrorFiles(storage, roomId, ['a.md']);
 
-  // The editor writes the file — no provider refuses it anymore — and the client says
-  // afterwards that the save is not shared. A listed save stays silent.
+  // The editor writes the file itself, and the client says afterwards that the save is
+  // not shared. A listed save stays silent.
   const holder = { text: 'mine\n' };
   const document = mirrorDocument(bundle, storage, roomId, 'notes/scratch.md', holder);
   bundle.stub.fire('saveTextDocument', document);
@@ -4217,8 +4215,8 @@ test('a join refused for a room that is gone says it once', async (t) => {
   t.after(async () => {
     await server.stop();
   });
-  // The reference server's own words for this code are the sentence itself, so the client's
-  // parenthetical used to read `That room is gone (the room is gone).`
+  // The reference server's own words for this code are the sentence itself, so the client
+  // omits its parenthetical rather than repeating them.
   server.helloRefusal = { code: 'room_gone', message: 'the room is gone' };
   const { bundle, storage } = activated(t);
   await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');

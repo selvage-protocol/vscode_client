@@ -419,7 +419,7 @@ test('the web\'s words reach a user through the bridge that writes them', () => 
     [],
     'the adapter writes its own words where the web\'s are in the bridge',
   );
-  // The old sentences these replaced, which no window may show any more.
+  // No window may show these sentences.
   for (const retired of ['you moved.', 'the room is gone', 'host away', 'is back —', 'Host disconnected.', "'Selvage: the invite link is on the clipboard.'"]) {
     assert.equal(code.includes(retired), false, `a retired sentence is still in the adapter: ${retired}`);
   }

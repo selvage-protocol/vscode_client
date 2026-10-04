@@ -24,8 +24,8 @@ const CURSOR = { label: 'Ada', colour: '#e06c75' } as const;
 const LONG = 'justaverylongnvimuserhehehehehehehehe';
 
 test('no name is drawn with the default setting', () => {
-  // The whole point of the change: a window that is configured with nothing must not put a
-  // peer-controlled string over the code. The caret, its hover and the status bar remain.
+  // A window that is configured with nothing must not put a peer-controlled string over the
+  // code. The caret, its hover and the status bar remain.
   assert.equal(DEFAULT_LABEL_MODE, 'none');
   assert.equal(labelMode(undefined), 'none');
   assert.equal(labelAttachment(CURSOR, 'none'), undefined);

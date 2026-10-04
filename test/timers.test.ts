@@ -4,9 +4,8 @@
  * `PeerSession` runs `y-protocols`' awareness clock, which is an interval — the same clock
  * `§8.2`'s renewal and expiry are read on — and `RelaySession` runs the session's clocks on an
  * interval of its own (`§13.8`). Both are cleared when the thing that armed them is destroyed,
- * and a caller that forgets used to be a process that never ends: two sessions left behind by an
- * ad-hoc script held a shell for half an hour with nothing to show for it. Every timer the
- * engine starts is `unref`ed now, so forgetting costs nothing.
+ * and every timer the engine starts is `unref`ed, so a caller that forgets costs nothing: the
+ * process still ends.
  *
  * The proof is a real process, one for each clock: `test/helpers/undestroyed-session.ts` opens a
  * guest and a host, `test/helpers/undestroyed-relay.ts` seats a relay, and neither destroys

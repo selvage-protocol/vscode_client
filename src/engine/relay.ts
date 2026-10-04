@@ -865,9 +865,8 @@ export class RelaySession {
    * A `session.error` event as the refusal it is. `§6.3` carries the code and the sentence in
    * the event's `params`, and the server's own frame is
    * `{"event":"session.error","params":{"code":…,"message":…}}`.
-   * `ServerMessage.error` is the shape of a refused *request*, so reading it here turned every
-   * handshake refusal and every mid-session fault into one generic sentence with its code lost,
-   * which is what left `§11`'s terminal codes unreadable to a caller.
+   * `ServerMessage.error` is the shape of a refused *request*, so a fault's code and sentence
+   * are read from `params` and never from it.
    */
   private sessionFault(params: unknown): ProtocolError {
     return new ProtocolError(

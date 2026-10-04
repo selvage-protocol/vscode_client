@@ -923,9 +923,9 @@ test('a version-2 session with no mirror says it cannot resume a hosting session
 
 
 test('a version-2 window with no role yet claims none in the status bar', (t) => {
-  // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and the bar used
-  // to read that window as `guest`, a claim a version-2 peer cannot make yet. The web's words for
-  // a session whose host it cannot name claim no role either.
+  // Before a state commits this connection's key, `§13.4`'s role is `undefined`, and a bar that
+  // read that window as `guest` would claim a role a version-2 peer cannot make yet. The web's
+  // words for a session whose host it cannot name claim no role either.
   const window = viewerSession(t);
   const bar = String(
     window.bundle.stub.registered.statusBarItems.find((item) => item.name === 'Selvage')?.text ?? '',

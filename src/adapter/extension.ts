@@ -175,7 +175,7 @@ const ROOM_FULL = 'x.room_full';
  */
 const SERVER_FULL = /^server full\b/;
 
-/** The session this window is in. One per window: multi-room is a v1 non-goal. */
+/** The session this window is in. One per window. */
 let current: Session | undefined;
 
 /**
@@ -3813,13 +3813,6 @@ function joinedMessage(documents: string[]): Notice {
   return messageWithButton(sentence, rest > 0 ? OPEN_COMMAND : undefined);
 }
 
-/**
- * Puts this window's invite on the clipboard, or warns that it has none because there is no
- * session to have one from. What a host copies is the page link built from the wire invite it
- * minted; what a guest copies is the link it joined by, as it stood. The sentence that
- * accompanies the copy is the caller's: hosting again and copying the link deliberately say
- * different things about the same copy.
- */
 /**
  * What reaching for this window's invite did. A window with no session and a session whose
  * connection holds no link are different moments: only the first is `host or join a room

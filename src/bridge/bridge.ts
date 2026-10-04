@@ -117,8 +117,7 @@ export interface EditorHost {
    * there is none: a path that escapes the folder or that the grant excludes (`.git/**`,
    * `.env`) is `not-granted`, and a directory, a symbolic link, a name that is not there, a
    * file over the size a session will carry and a file whose bytes are not text are each
-   * named as they are. The distinction is the user's: one sentence for all of them sent a
-   * person looking for a file that had never been deleted, when what they had was a zip.
+   * named as they are: the distinction is the user's.
    */
   readGrantedFile(path: string): Promise<GrantedRead>;
   /** Draws the remote cursors; `[]` clears them. */
@@ -1120,11 +1119,9 @@ export class SessionBridge {
 /**
  * What a refusal says, per cause, or `undefined` for a cause that must not be said at all.
  *
- * One sentence used to stand for every one of these, and it blamed a deletion: a person
- * refused a `.zip` went looking for a file that had never gone anywhere, when the answer was
- * that a room carries text and a zip is not text. `not-granted` is the exception, and it has
- * no sentence on purpose: a peer that guessed at a name the grant excludes learns nothing
- * from the answer — not even that the name failed a rule rather than being absent.
+ * `not-granted` has no sentence on purpose: a peer that guessed at a name the grant excludes
+ * learns nothing from the answer — not even that the name failed a rule rather than being
+ * absent.
  */
 function refusalSentence(cause: GrantRefusal): string | undefined {
   switch (cause) {

@@ -1153,12 +1153,6 @@ export class PeerSession {
    * §7.1's closing: the host's statement that the room is over, above every state it published.
    *
    * A host that publishes one stops publishing; every peer that already holds a verified state
-   * below its `issued` applies it and ends, and §9's room dies when its last connection ends.
-   */
-  /**
-   * §7.1's closing: the host's statement that the room is over, above every state it published.
-   *
-   * A host that publishes one stops publishing; every peer that already holds a verified state
    * below its `issued` applies it and ends, and §9's room dies when its last connection ends. The
    * session that published it ends with them, which is what §13.10 gives a receiver that applies
    * one and what keeps a host from publishing content into a room it has just declared over.

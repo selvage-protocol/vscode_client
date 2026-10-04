@@ -6,9 +6,9 @@
 .tmp/**
 .github/**
 # Any depth, not just the root: `node_modules/**` is anchored where a gitignore pattern with a
-# slash in it sits, so a dependency tree one directory down escapes it. That is how a 199 KB
-# package became 51 MB — the release workflow installs its two publishers into prefixes of
-# their own, and `.vscodeignore` ships what it is not told to drop.
+# slash in it sits, so a dependency tree one directory down escapes it — the release workflow
+# installs its two publishers into prefixes of their own, and `.vscodeignore` ships what it is
+# not told to drop.
 **/node_modules/**
 src/**
 test/**

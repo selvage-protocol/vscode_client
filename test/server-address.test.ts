@@ -169,14 +169,13 @@ test('hosting on a bare host dials the completed address', async (t) => {
 /**
  * An invite link is a room and its key, and neither is a server address.
  *
- * The address that reproduces the defect is the page invite a host copies —
+ * The shape to refuse is the page invite a host copies —
  * `https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY` — whose query carries the room
  * and its token and whose fragment carries the room key and the host key. `normaliseServerUrl`
- * leaves both on, so a paste of it used to be written into `selvage.lastServer` before the
- * engine refused to dial it: the key on disk, in a window's memento, for a host that never
- * happened. Every position an address is taken — the box's answer, the argument and the
- * `Change the server` writes — refuses it now, in the words both clients use, and stores
- * nothing.
+ * leaves both on, so a paste of one must never reach `selvage.lastServer`: the key would be on
+ * disk, in a window's memento, for a host that never happened. Every position an address is
+ * taken — the box's answer, the argument and the `Change the server` writes — refuses it, in
+ * the words both clients use, and stores nothing.
  */
 test('an invite link is refused as a server address, and never remembered', async (t) => {
   const invite = 'https://selvage.example:8443/?room=r&token=t#k=KEY&h=HOSTKEY';

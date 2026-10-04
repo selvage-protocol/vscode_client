@@ -151,7 +151,7 @@ function rgMirror(pattern, dir) {
 /** Routes the guest through the reconnect proxy when one is configured, keeping the room and the
  * token the host actually minted. The invite *is* the server — its origin is the address the
  * guest dials — so routing means replacing that origin and nothing else, for a page link and a
- * wire invite alike. Nothing in a link names a second server: `server=` is retired and ignored,
+ * wire invite alike. Nothing in a link names a second server: `server=` is ignored,
  * so a link that carried one would leave the relay out of the path and the blip cutting a socket
  * the guest never held. */
 function routeThroughProxy(invite) {

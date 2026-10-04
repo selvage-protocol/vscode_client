@@ -519,8 +519,8 @@ test('the indicator wears the peer colour, and no banner paints the document', a
   assert.equal(item.command, 'selvage.stopFollowing');
 
   await waitFor('the follow to land at the host caret', () => caretOf(editor) === 5);
-  // The regression: following paints no text line. No whole-line type exists, and no
-  // paint call on the followed editor used one — the caret and selection types never do.
+  // Following paints no text line: no whole-line type exists, and no paint call on the
+  // followed editor uses one — the caret and selection types never do.
   assert.deepEqual(wholeLineTypes(seat_), [], 'starting the follow created a whole-line type');
   assert.deepEqual(
     wholeLinePaints(seat_, [editor]),
@@ -719,8 +719,7 @@ test("a landing's own late echo does not end the follow", async (t) => {
     selections: [{ active: caretOf(editor) ?? 5 }],
   });
   // The echo must not end the follow: the indicator stays up and nothing says the person
-  // moved — which is what a misread echo broke. Tracking the next genuine move proves the
-  // follow survived it.
+  // moved. Tracking the next genuine move proves the follow survived it.
   assert.ok(followItem(seat_) !== undefined, "the landing's echo ended the follow");
   assert.deepEqual(
     seat_.bundle.stub.registered.information.filter((message) => message.includes('you moved')),
@@ -1591,9 +1590,9 @@ test('a host jump to a path it does not share is refused without opening', async
 });
 
 test('a guest follow to a peer-named path outside the grant is refused without opening', async (t) => {
-  // The guest branch of the open had no grant check: a peer publishing awareness for
-  // `../../x` — or the mirror's own marker — made a following window open it. The gate
-  // lives at `mirrorUri` now, so both refuse with the grant's sentence and open nothing.
+  // A peer publishing awareness for `../../x` — or the mirror's own marker — names no
+  // document this window shares. The gate lives at `mirrorUri`, so the guest branch refuses
+  // with the grant's sentence and opens nothing.
   const seat_ = await seat(t, { [PATH_A]: TEXT_A });
   const holder = { text: TEXT_A };
   await openHeld(seat_, PATH_A, holder, 5);

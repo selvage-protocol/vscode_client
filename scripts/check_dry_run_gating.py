@@ -8,10 +8,8 @@ in the `bump` job carries the same test negated, and the `build` and `publish` j
 `inputs.dry_run != true` themselves. The flag is worth exactly as much as that second half: the
 plan step is a `run:` block printing a promise, and what keeps the promise is the conditions on
 the steps and jobs below it. A step added later with no condition performs the bump the plan said
-it would not — which is what happened in `reference_server`, whose `release.yml` printed "nothing
-was resolved, written, committed, pushed or dispatched" and then cut a release. This is that
-repository's check (`reference_server/scripts/check_dry_run_gating.py`), carried here because a
-regression in this file is otherwise found by a dispatch rather than by CI.
+it would not, so this check is what catches a miss: a regression in this file is otherwise found
+by a dispatch rather than by CI.
 
 `actionlint` cannot see it. Every step in a file like this one is syntactically valid, every
 `if:` is a well-formed expression and the file lints clean; the defect is *which steps do not

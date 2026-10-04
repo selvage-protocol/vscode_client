@@ -7,7 +7,7 @@ first step conditioned positively on it is the rehearsal, and every step after i
 condition that excludes a dry run. So what the tests here have to pin is that this reads
 *position* and not a list of commands:
 
-  * the shape that shipped in `reference_server` — a plan step and steps after it with no
+  * the shape — a plan step and steps after it with no
     condition — is refused, and the refusal names the step and says what to add;
   * each of the spellings a gating condition is written in across these repositories is
     accepted: `inputs.dry_run != true` on a step, which is this repository's, on a job, next to

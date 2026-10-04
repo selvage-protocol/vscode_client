@@ -24,7 +24,7 @@
 # first and zeros the rest (0.5.1 -> 1.0.0). The resulting version is printed as the last line of
 # stdout and shares that line with nothing else, so the caller can name the tag and the Release
 # from it. `--dry-run` prints the same version and writes nothing. Anything that is not one of the
-# three words — the `X.Y.Z` form included, which this script no longer takes — is refused with the
+# three words — the `X.Y.Z` form included, which this script does not take — is refused with the
 # tree unchanged.
 #
 # Every spot is found by the shape of the key that carries it rather than by the version it holds,

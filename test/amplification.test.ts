@@ -2,12 +2,10 @@
  * What one inbound binary frame may cost this client in answers.
  *
  * A y-protocols frame is a stream of top-level messages with no count and no terminator, so
- * a frame of one byte per message is well-formed, and two message types in it are *answered*:
- * `SyncStep1` draws a catch-up carrying the replica, and the awareness query used to draw the
- * whole awareness set. Answering the query cost one frame per byte of the query — 256000 bytes
- * of `0x03` measured 256000 replies and 8 MB from a single legal 256 KB frame — and the
- * engine's own 16 MiB inbound bound allowed roughly half a gigabyte of generated replies.
- * `selvage/1` never sends that message, so it is read and dropped; a frame may also be
+ * a frame of one byte per message is well-formed, and two message types in it are *answered* or
+ * *dropped*:
+ * `SyncStep1` draws a catch-up carrying the replica, and the awareness query draws nothing:
+ * `selvage/1` never sends that message, so it is read and dropped. A frame may also be
  * answered at most once, which is all a conforming peer's frame asks for.
  *
  * The named test below fails without either guard: the reply count is the assertion, and the
