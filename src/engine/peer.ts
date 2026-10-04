@@ -22,7 +22,7 @@
  */
 
 import * as Y from 'yjs';
-import { Awareness } from 'y-protocols/awareness';
+import { Awareness, removeAwarenessStates } from 'y-protocols/awareness';
 
 import type { FrameCrypto } from './crypto.ts';
 import { ENDPOINT_PATH } from './envelope.ts';
@@ -65,6 +65,8 @@ export function unrefTimer(timer: unknown): void {
  */
 const LOCAL_ORIGIN = Symbol('selvage/local');
 const APPLIED_ORIGIN = Symbol('selvage/applied');
+/** The origin of a departed peer's awareness state being dropped, which is not published. */
+const DEPARTED_ORIGIN = Symbol('selvage/departed');
 
 /**
  * The one character a document published with no text at all is named by.
@@ -1082,6 +1084,20 @@ export class PeerSession {
   }
 
   /**
+   * §8.4: drops the awareness state held under `clientId`, so {@link presence} stops reporting
+   * it at once rather than when §8.2's expiry reaps it. The caller holds the roster's claims and
+   * decides which id a departed peer last claimed and whether a seated peer still claims it; this
+   * connection's own id is never dropped. The id's clock is kept, so a stale state for it still in
+   * flight is not applied again.
+   */
+  forgetAwareness(clientId: number): void {
+    if (clientId === this.awareness.clientID) {
+      return;
+    }
+    removeAwarenessStates(this.awareness, [clientId], DEPARTED_ORIGIN);
+  }
+
+  /**
    * §9.1: a dropped socket is recovered by a fresh `session.hello` on a new socket, and a
    * reconnecting client is a new peer. What that changes here is the connection and nothing
    * about the replica: a new session keypair for the new connection (§13.1's step 2), the new
@@ -1109,12 +1125,20 @@ export class PeerSession {
       this.seat = seat;
       this.roster = new Set(roster);
       const previousAwareness = this.awareness.clientID;
-      this.awareness.clientID = awarenessClientId >>> 0;
-      if (previousAwareness !== this.awareness.clientID) {
+      const nextAwareness = awarenessClientId >>> 0;
+      this.awareness.clientID = nextAwareness;
+      if (previousAwareness !== nextAwareness) {
         // The old id's entry is this connection's leftover, not a peer's; left behind it would
         // answer `presence()` under a stranger's id and be tombstoned on the next rotation.
         this.awareness.states.delete(previousAwareness);
         this.awareness.meta.delete(previousAwareness);
+        // §8.2: a y-protocols receiver ignores a first entry at clock 0, and `setLocalState`
+        // starts an id it holds no clock for at 0. Clock 0 of the fresh id is spent here, as the
+        // constructor's `setLocalState(null)` spends it for the first, so the first state this
+        // connection publishes goes out at 1.
+        if (!this.awareness.meta.has(nextAwareness)) {
+          this.awareness.meta.set(nextAwareness, { clock: 0, lastUpdated: Date.now() });
+        }
       }
       this.awarenessRenewedAt = undefined;
       // The counter is per key (§6.1): the new key starts at 0, and the marks the receiver

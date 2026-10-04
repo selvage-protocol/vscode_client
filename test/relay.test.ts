@@ -4,8 +4,9 @@
  * where `PROTOCOL.md` §5.1 says the refusal happens, and the fault the server reports is read
  * from the field the server writes it in. The first cases open no connection — the corpus and the
  * engine's own tests already pin the frame bytes, and what is added there is the one reading
- * `PeerSession` was never handed — and the last three drive a socket by hand, because a refusal
- * is a frame and nothing else in the suite delivers one.
+ * `PeerSession` was never handed — and the rest drive a socket by hand: a refusal is a frame and
+ * nothing else in the suite delivers one, and §8.4's `peer.left` turns on the awareness ids the
+ * roster claims, which a test names here rather than taking the ones a real client mints.
  */
 
 import { test } from 'node:test';
@@ -13,7 +14,11 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
 import { MISSING_FRAGMENT, parseInvite } from '../src/engine/peer.ts';
-import { encodeKey } from '../src/engine/sealed.ts';
+import * as encoding from 'lib0/encoding';
+
+import { encodeKey, frameKey, mintSessionKey, seal } from '../src/engine/sealed.ts';
+import type { SessionKeypair } from '../src/engine/sealed.ts';
+import { MESSAGE_AWARENESS } from '../src/engine/sync.ts';
 import { MAX_INBOX_FRAMES, RelaySession, wireInvite } from '../src/engine/relay.ts';
 import type { RelayEvent } from '../src/engine/relay.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
@@ -280,4 +285,181 @@ test('the fault’s code arrives in the bridge’s own event', async (t) => {
     describe: () => reported,
   });
   assert.deepEqual(reported, [{ code: 'x.room_full', message: 'the room is full' }]);
+});
+
+// --- §8.4: a departed peer's awareness state --------------------------------------------
+
+/** A room whose host and peers are real keys, so the frames a test delivers verify. */
+interface SealedRoom {
+  socket: ControlledSocket;
+  relay: RelaySession;
+  /** The awareness client id this connection announced in its `session.hello`. */
+  ownAwareness: number;
+  /** Delivers a `kind = 0` frame from `signer` carrying one awareness message. */
+  awareness(signer: SessionKeypair, entries: Array<[number, number, unknown]>): Promise<void>;
+}
+
+const SEALED_ROOM = 'room-1';
+
+/**
+ * Joins a room by hand: the handshake seats this connection among `peers`, whose awareness ids are
+ * the ones a test names, and the host's state commits `committed` so their frames are applied.
+ * `peers` may name this connection's own awareness id, read from the hello it sent.
+ */
+async function sealedRoom(
+  t: TestContext,
+  committed: Array<[SessionKeypair, string]>,
+  peers: (ownAwareness: number) => Array<{ peer_id: string; awareness_client_id: number }>,
+): Promise<SealedRoom> {
+  const roomKey = new Uint8Array(32).fill(7);
+  const host = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(3))) as SessionKeypair;
+  const key = await frameKey(nodeCrypto, SEALED_ROOM, roomKey);
+  assert.ok(key !== undefined);
+  const counters = new Map<SessionKeypair, number>();
+  const sealed = async (signer: SessionKeypair, kind: number, plaintext: Uint8Array) => {
+    const counter = (counters.get(signer) ?? 0) + 1;
+    counters.set(signer, counter);
+    const bytes = await seal(
+      nodeCrypto,
+      { roomId: SEALED_ROOM, frameKey: key, kind, epoch: 0, counter, nonce: new Uint8Array(12).fill(4), signer },
+      plaintext,
+    );
+    assert.ok(bytes !== undefined);
+    return bytes;
+  };
+
+  const socket = new ControlledSocket();
+  t.after(() => {
+    socket.close();
+  });
+  const invite =
+    `ws://127.0.0.1:9999/session?room=${SEALED_ROOM}&token=tok-1` +
+    `#k=${encodeKey(roomKey)}&h=${encodeKey(host.public)}`;
+  const seated = RelaySession.join({
+    invite,
+    displayName: 'Bo',
+    crypto: nodeCrypto,
+    webSocketFactory: () => socket,
+    keepalive: KEEPALIVE,
+    handshakeTimeoutMs: 5_000,
+  });
+  await attach(socket);
+  const hello = JSON.parse(socket.sent[0] as string) as { params: { awareness_client_id: number } };
+  const ownAwareness = hello.params.awareness_client_id;
+  socket.deliver(
+    JSON.stringify({
+      v: 'selvage/2',
+      id: 1,
+      event: 'room.joined',
+      params: {
+        room_id: SEALED_ROOM,
+        self: { peer_id: 'p-self', display_name: 'Bo', awareness_client_id: ownAwareness },
+        peers: peers(ownAwareness).map((peer) => ({ ...peer, display_name: peer.peer_id })),
+        capabilities: [],
+        keepalive: KEEPALIVE,
+      },
+    }),
+  );
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+
+  const entries: Record<string, unknown> = {};
+  for (const [peer, seat] of committed) {
+    entries[encodeKey(peer.public)] = { peer_id: seat, role: 'guest' };
+  }
+  const state = { issued: 1, listing: ['README.md'], peers: entries };
+  socket.deliverBinary(await sealed(host, 1, new TextEncoder().encode(JSON.stringify(state))));
+  await waitFor("the host's state to be applied", () => relay.listing().length > 0);
+
+  return {
+    socket,
+    relay,
+    ownAwareness,
+    async awareness(signer, states) {
+      const update = encoding.createEncoder();
+      encoding.writeVarUint(update, states.length);
+      for (const [client, clock, value] of states) {
+        encoding.writeVarUint(update, client);
+        encoding.writeVarUint(update, clock);
+        encoding.writeVarString(update, JSON.stringify(value));
+      }
+      const message = encoding.createEncoder();
+      encoding.writeVarUint(message, MESSAGE_AWARENESS);
+      encoding.writeVarUint8Array(message, encoding.toUint8Array(update));
+      socket.deliverBinary(await sealed(signer, 0, encoding.toUint8Array(message)));
+    },
+  };
+}
+
+/** Delivers `peer.left` for `seat` and waits until the relay's roster no longer names it. */
+async function leave(room: SealedRoom, seat: string): Promise<void> {
+  room.socket.deliver(JSON.stringify({ v: 'selvage/2', event: 'peer.left', params: { peer_id: seat } }));
+  await waitFor(`the relay to drop ${seat} from its roster`, () =>
+    room.relay.peerInfos().every((peer) => peer.peer_id !== seat),
+  );
+}
+
+function clientsIn(relay: RelaySession): number[] {
+  return relay.presence().map((entry) => entry.clientId);
+}
+
+test("peer.left drops the state under the id the departed peer claimed, and no other", async (t) => {
+  const ann = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(21))) as SessionKeypair;
+  const room = await sealedRoom(t, [[ann, 'p-ann']], () => [{ peer_id: 'p-ann', awareness_client_id: 200 }]);
+  // 150 is a state the same key published under an id nobody claims, which §8.4 does not drop.
+  await room.awareness(ann, [
+    [200, 1, { path: 'README.md' }],
+    [150, 1, { path: 'README.md' }],
+  ]);
+  await waitFor('both states to be held', () => {
+    const clients = clientsIn(room.relay);
+    return clients.includes(200) && clients.includes(150);
+  });
+
+  await leave(room, 'p-ann');
+  const clients = clientsIn(room.relay);
+  assert.equal(clients.includes(200), false, `the departed peer's state is still reported: ${clients}`);
+  assert.equal(clients.includes(150), true, 'a state under an id the peer did not claim was dropped');
+
+  // The id's clock is kept, so the same state arriving late is not applied again. 151 rides in
+  // the same frame, so its arrival is the frame having been read.
+  await room.awareness(ann, [
+    [200, 1, { path: 'README.md' }],
+    [151, 1, { path: 'README.md' }],
+  ]);
+  await waitFor('the late frame to be read', () => clientsIn(room.relay).includes(151));
+  assert.equal(clientsIn(room.relay).includes(200), false, 'a stale state brought the departed peer back');
+});
+
+test('peer.left keeps a state while a seated peer still claims its id, this connection included', async (t) => {
+  const ann = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(21))) as SessionKeypair;
+  const bea = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(22))) as SessionKeypair;
+  const room = await sealedRoom(t, [[ann, 'p-ann'], [bea, 'p-bea']], (own) => [
+    { peer_id: 'p-ann', awareness_client_id: 200 },
+    { peer_id: 'p-bea', awareness_client_id: 200 },
+    { peer_id: 'p-cid', awareness_client_id: own },
+  ]);
+  await room.awareness(ann, [[200, 1, { path: 'README.md' }]]);
+  room.relay.setAwareness({ path: 'README.md' });
+  await waitFor('both states to be held', () => {
+    const clients = clientsIn(room.relay);
+    return clients.includes(200) && clients.includes(room.ownAwareness);
+  });
+
+  await leave(room, 'p-ann');
+  const kept = room.relay.presence().find((entry) => entry.clientId === 200);
+  assert.ok(kept !== undefined, 'a state another seated peer claims was dropped');
+  assert.equal(kept.peer?.peer_id, 'p-bea', 'and it is attributed to the peer that still claims it');
+
+  await leave(room, 'p-cid');
+  assert.equal(
+    clientsIn(room.relay).includes(room.ownAwareness),
+    true,
+    "this connection's own state was dropped for a peer that claimed its id",
+  );
+
+  await leave(room, 'p-bea');
+  assert.equal(clientsIn(room.relay).includes(200), false, 'the last claimant left and the state stayed');
 });

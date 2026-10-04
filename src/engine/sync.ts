@@ -20,6 +20,9 @@ export const MESSAGE_AWARENESS = 1;
 export const MESSAGE_AUTH = 2;
 export const MESSAGE_QUERY_AWARENESS = 3;
 
+/** The auth status y-protocols writes for a denial, the one status followed by a reason. */
+const AUTH_PERMISSION_DENIED = 0;
+
 /**
  * How many messages one frame may be answered with, and — because the answer to a SyncStep1
  * is a whole replica-sized diff — how many such diffs one frame may cost. A conforming peer
@@ -123,7 +126,7 @@ export function applyFrame(
         break;
       }
       case MESSAGE_AUTH: {
-        decoding.readVarUint8Array(decoder);
+        skipAuth(decoder);
         break;
       }
       default: {
@@ -132,6 +135,19 @@ export function applyFrame(
     }
   }
   return { replies };
+}
+
+/**
+ * Reads past one auth message's body (§7): y-protocols' `varUint(status)`, then a
+ * `varString(reason)` when the status is 0 (permission denied) and nothing for any other
+ * status. The reason is read as its bytes and not decoded, because nothing here reads it.
+ * The applier and `isContent` (`sealed.ts`) both read an auth message through this, so the
+ * two agree on where it ends.
+ */
+export function skipAuth(decoder: decoding.Decoder): void {
+  if (decoding.readVarUint(decoder) === AUTH_PERMISSION_DENIED) {
+    decoding.readVarUint8Array(decoder);
+  }
 }
 
 /** Prepends a top-level message type to an already-encoded message body. */

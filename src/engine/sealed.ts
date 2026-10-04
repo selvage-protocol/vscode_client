@@ -15,6 +15,13 @@
 import * as decoding from 'lib0/decoding';
 
 import type { FrameCrypto } from './crypto.ts';
+import {
+  MESSAGE_AUTH,
+  MESSAGE_AWARENESS,
+  MESSAGE_QUERY_AWARENESS,
+  MESSAGE_SYNC,
+  skipAuth,
+} from './sync.ts';
 
 /** The five kinds this version defines, in the order §6.1 gives them. */
 export const KINDS: readonly number[] = [0, 1, 2, 3, 4];
@@ -707,13 +714,15 @@ export function isContent(plaintext: Uint8Array): boolean {
   try {
     while (decoding.hasContent(decoder)) {
       const type = decoding.readVarUint(decoder);
-      if (type === 0) {
+      if (type === MESSAGE_SYNC) {
         const subtype = decoding.readVarUint(decoder);
         content ||= subtype === 1 || subtype === 2;
         decoding.readVarUint8Array(decoder);
-      } else if (type === 1 || type === 2) {
+      } else if (type === MESSAGE_AWARENESS) {
         decoding.readVarUint8Array(decoder);
-      } else if (type !== 3) {
+      } else if (type === MESSAGE_AUTH) {
+        skipAuth(decoder);
+      } else if (type !== MESSAGE_QUERY_AWARENESS) {
         // A message type this version does not read: the walk stops where the stream stops
         // making sense, and what it has already seen is what the frame carries.
         break;
