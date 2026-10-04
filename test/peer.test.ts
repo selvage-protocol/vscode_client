@@ -526,6 +526,84 @@ test('a dropped socket publishes nothing under the key it held, and the re-seat 
   }
 });
 
+/** The awareness entries a published frame's y-protocols stream carries: client id and clock. */
+function awarenessClocks(payload: number[]): Map<number, number> {
+  const clocks = new Map<number, number>();
+  const reader = decoding.createDecoder(Uint8Array.from(payload));
+  while (decoding.hasContent(reader)) {
+    const type = decoding.readVarUint(reader);
+    if (type !== 1) {
+      return clocks;
+    }
+    const update = decoding.createDecoder(decoding.readVarUint8Array(reader));
+    const entries = decoding.readVarUint(update);
+    for (let index = 0; index < entries; index += 1) {
+      const client = decoding.readVarUint(update);
+      clocks.set(client, decoding.readVarUint(update));
+      decoding.readVarString(update);
+    }
+  }
+  return clocks;
+}
+
+test('the first state after a re-seat goes out above clock 0, so a y-protocols peer applies it', async () => {
+  const now = await room();
+  const first = 1001;
+  const second = 2002;
+  const peer = await session({ awarenessClientId: first });
+  await peer.tick(0);
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  peer.setAwareness({ path: 'README.md' });
+  await peer.whenIdle();
+  peer.takeOutbound();
+
+  peer.detach();
+  await peer.reseat('p-new', ['p-host'], second);
+  const recommit = await frame(
+    now.host,
+    1,
+    2,
+    utf8({
+      issued: 2,
+      listing: ['README.md'],
+      peers: { [encodeKey(peer.sessionKey)]: { peer_id: 'p-new', role: 'guest' } },
+    }),
+  );
+  assert.deepEqual(await peer.deliver(2, recommit), { status: 'applied', kind: 1 });
+  await peer.tick(3);
+  await peer.whenIdle();
+
+  // The receiver is y-protocols' own, holding nothing for the fresh id: what it applies is what a
+  // peer on that library shows.
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  const clocks = new Map<number, number>();
+  try {
+    for (const bytes of peer.takeOutbound()) {
+      const published = await publishedFrame(bytes);
+      if (published.kind !== 0) {
+        continue;
+      }
+      const payload = published.payload as number[];
+      for (const [client, clock] of awarenessClocks(payload)) {
+        clocks.set(client, clock);
+      }
+      applyFrame(Uint8Array.from(payload), replica, watching, 'corpus');
+    }
+    assert.ok(clocks.has(second), 'the re-seated connection published its state under the fresh id');
+    const clock = clocks.get(second) ?? 0;
+    assert.ok(clock > 0, `the first state under the fresh id went out at clock ${clock}`);
+    assert.deepEqual(
+      watching.getStates().get(second),
+      { path: 'README.md' },
+      'a y-protocols peer shows the state',
+    );
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
+});
+
 /** The update a published content frame carries, decoded out of its y-protocols message. */
 function updateOf(payload: number[]): Uint8Array {
   const reader = decoding.createDecoder(Uint8Array.from(payload));

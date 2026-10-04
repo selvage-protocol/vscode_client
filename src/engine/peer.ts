@@ -1109,12 +1109,20 @@ export class PeerSession {
       this.seat = seat;
       this.roster = new Set(roster);
       const previousAwareness = this.awareness.clientID;
-      this.awareness.clientID = awarenessClientId >>> 0;
-      if (previousAwareness !== this.awareness.clientID) {
+      const nextAwareness = awarenessClientId >>> 0;
+      this.awareness.clientID = nextAwareness;
+      if (previousAwareness !== nextAwareness) {
         // The old id's entry is this connection's leftover, not a peer's; left behind it would
         // answer `presence()` under a stranger's id and be tombstoned on the next rotation.
         this.awareness.states.delete(previousAwareness);
         this.awareness.meta.delete(previousAwareness);
+        // §8.2: a y-protocols receiver ignores a first entry at clock 0, and `setLocalState`
+        // starts an id it holds no clock for at 0. Clock 0 of the fresh id is spent here, as the
+        // constructor's `setLocalState(null)` spends it for the first, so the first state this
+        // connection publishes goes out at 1.
+        if (!this.awareness.meta.has(nextAwareness)) {
+          this.awareness.meta.set(nextAwareness, { clock: 0, lastUpdated: Date.now() });
+        }
       }
       this.awarenessRenewedAt = undefined;
       // The counter is per key (§6.1): the new key starts at 0, and the marks the receiver
