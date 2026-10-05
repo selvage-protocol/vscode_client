@@ -13,17 +13,21 @@ import {
   COPIED_LABEL,
   COPIED_STAND_MS,
   COPY_INVITE_LABEL,
-  HOST_LEAVE_QUESTION,
+  DOWNLOAD_COST_MANY_SENTENCE,
+  HOST_LEAVE_CONSEQUENCE,
   LEAVE_ASKING_LABEL,
   MAX_GRANT_PATH_BYTES,
   PeerEngine,
   SHARED_SESSION_IDENTITY,
   SessionBridge,
   disconnectingReading,
+  downloadCostSentence,
   followEndedByFileGone,
   followEndedByLeaving,
   followEndedByMoving,
   followEndedByTyping,
+  goToCursorNotFound,
+  goToNotInFile,
   grantUnion,
   guestIdentity,
   hostAwaySentence,
@@ -72,12 +76,13 @@ import type { Person, PersonAct, PersonRow, RoomMember } from './participants.ts
 export { personRows, seatPeople };
 
 /**
- * The question a host's leave asks: the web's, without its clause about the last keystrokes. That
- * clause is true of a browser tab, whose folder is written behind the page. Here a host types into
- * its own files, which VS Code saves the way it always does, and `selvage.autoSave` only writes
- * what the room changed; leaving loses no keystroke, so the clause would warn of nothing.
+ * The question a host's leave asks: the web's first sentence, without its second about the last
+ * keystrokes. That one is true of a browser tab, whose folder is written behind the page. Here a
+ * host types into its own files, which VS Code saves the way it always does, and
+ * `selvage.autoSave` only writes what the room changed; leaving loses no keystroke, so the second
+ * sentence would warn of nothing.
  */
-export const HOST_LEAVE_ASKING = `${HOST_LEAVE_QUESTION.slice(0, HOST_LEAVE_QUESTION.indexOf(', and your last'))}.`;
+export const HOST_LEAVE_ASKING = HOST_LEAVE_CONSEQUENCE;
 import {
   MIRROR_MARKER,
   isWorkspaceConfigPath,
@@ -1059,13 +1064,9 @@ export class Session {
     const fresh = targets.filter((target) => !this.engine.has(target));
     if (fresh.length > 0) {
       if (targets.length === 1 && targets[0] !== undefined) {
-        void vscode.window.showInformationMessage(
-          `Selvage: fetching opens ${targets[0]} in the room, so every peer receives it.`,
-        );
+        void vscode.window.showInformationMessage(downloadCostSentence(targets[0]));
       } else {
-        void vscode.window.showInformationMessage(
-          'Selvage: fetching opens them in the room, so every peer receives them.',
-        );
+        void vscode.window.showInformationMessage(DOWNLOAD_COST_MANY_SENTENCE);
       }
     }
     let failures = 0;
@@ -1656,9 +1657,7 @@ export class Session {
         );
     if (picked !== undefined && picked.path === undefined) {
       if (verb === 'go to') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(picked.peerId)} is not in a document.`,
-        );
+        void vscode.window.showWarningMessage(`${goToNotInFile(this.displayLabel(picked.peerId))}.`);
       } else {
         void vscode.window.showWarningMessage(
           `Selvage: nothing to follow: ${this.displayLabel(picked.peerId)} is not in a document.`,
@@ -1823,9 +1822,7 @@ export class Session {
         return 'waiting';
       }
       if (mode === 'go') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(peerId)} is not in a document.`,
-        );
+        void vscode.window.showWarningMessage(`${goToNotInFile(this.displayLabel(peerId))}.`);
         return 'refused';
       }
       return 'gone';
@@ -1866,9 +1863,7 @@ export class Session {
         return 'waiting';
       }
       if (mode === 'go') {
-        void vscode.window.showWarningMessage(
-          `Selvage: nothing to go to: ${this.displayLabel(peerId)}'s caret does not resolve here.`,
-        );
+        void vscode.window.showWarningMessage(`${goToCursorNotFound(this.displayLabel(peerId))}.`);
       }
       return 'refused';
     }
