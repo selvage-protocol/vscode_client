@@ -1,8 +1,9 @@
 /**
  * A process that opens `selvage/2` sessions, destroys none of them, and ends.
  *
- * It is the subject of `test/timers.test.ts`: a session holds a clock — `y-protocols`' awareness
- * interval — and one that is never destroyed must not hold the whole process open with it. The
+ * It is the subject of `test/timers.test.ts`: a session is built on `y-protocols`' `Awareness`,
+ * which arms an interval when it is constructed, and a session that is never destroyed must not
+ * hold the whole process open with it. The
  * test runs this file and requires it to exit on its own, so a timer that keeps the event loop
  * alive is a red test rather than a machine that hangs until someone notices.
  *
@@ -51,6 +52,6 @@ if (host === undefined || guest === undefined) {
   process.exit(3);
 }
 
-// Both sessions have now started the awareness clock, which is the timer under test; neither
-// is destroyed, which is the whole point of the fixture.
+// Both sessions have now constructed their awareness sets, whose interval is the timer under
+// test; neither is destroyed, which is the whole point of the fixture.
 process.stdout.write('ready\n');
