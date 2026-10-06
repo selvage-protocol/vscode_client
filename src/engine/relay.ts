@@ -1314,6 +1314,12 @@ function readInvite(options: RelayJoinOptions): InviteRead {
  * token and fragment over the scheme a browser speaks; `parseInvite` takes the endpoint form,
  * so the page is resolved to the connection URL first and the fragment is carried across
  * unchanged.
+ *
+ * The page's query is carried across unchanged too. Reading `room` and `token` out of it would
+ * take the first of each, and §5.1 has a link that repeats either be malformed and refused by
+ * `parseInvite`: a rewrite that collapsed the repeat would hand it a link it can no longer
+ * refuse. The one check made here is that the link names both, which is how a page whose
+ * origin is a server is told from one that carries nothing to join.
  */
 export function wireInvite(link: string): string {
   const hash = link.indexOf('#');
@@ -1341,7 +1347,7 @@ export function wireInvite(link: string): string {
   if (base === undefined) {
     return link;
   }
-  return `${sessionUrl(base, room, token)}${fragment}`;
+  return `${sessionUrl(base)}${url.search}${fragment}`;
 }
 
 // --- the handshake envelopes ------------------------------------------------

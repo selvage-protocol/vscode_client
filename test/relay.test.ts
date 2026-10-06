@@ -60,6 +60,38 @@ test('wireInvite turns a page link from https to wss', () => {
   }
 });
 
+test('a page link that repeats the room is refused through the rewrite, not collapsed', () => {
+  const read = parseInvite(wireInvite(`https://example.org/?room=r-1&room=r-2&token=t${FRAGMENT}`));
+  assert.ok(!read.ok);
+  assert.equal(read.reason, 'the invite names `room` twice');
+});
+
+test('a page link that repeats the token is refused through the rewrite, not collapsed', () => {
+  const read = parseInvite(wireInvite(`https://example.org/?room=r-1&token=t-1&token=t-2${FRAGMENT}`));
+  assert.ok(!read.ok);
+  assert.equal(read.reason, 'the invite names `token` twice');
+});
+
+test('a page link that repeats a fragment key is refused through the rewrite', () => {
+  const read = parseInvite(
+    wireInvite(`https://example.org/?room=r-1&token=t#k=${ROOM_KEY}&k=${ROOM_KEY}&h=${HOST_KEY}`),
+  );
+  assert.ok(!read.ok);
+  assert.equal(read.reason, 'the invite names `k` twice');
+});
+
+test('a page link with one room and token still rewrites and joins, an unknown parameter ignored', () => {
+  const read = parseInvite(wireInvite(`https://example.org/?room=r-1&token=t&who=you${FRAGMENT}`));
+  assert.equal(read.ok, true);
+  if (read.ok) {
+    // §5.1: a receiver ignores a query parameter it does not know, so the rewrite carries the
+    // query rather than read the two names it knows out of it.
+    assert.equal(read.invite.socketUrl, 'wss://example.org/session?room=r-1&token=t&who=you');
+    assert.equal(read.invite.room, 'r-1');
+    assert.equal(read.invite.token, 't');
+  }
+});
+
 test('wireInvite leaves a link it cannot read as it stands', () => {
   assert.equal(wireInvite('not a url'), 'not a url');
   // A page link with no room or token names nothing to join; the refusal is parseInvite's.
