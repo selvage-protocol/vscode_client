@@ -204,6 +204,87 @@ test('selvage/2: a terminal refusal on the reconnect is not retried', async (t) 
   );
 });
 
+test('selvage/2: a §11 refusal carried only by the close number stops the retry', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { host, guest } = await pair(server);
+  t.after(() => {
+    host.disconnect();
+    guest.disconnect();
+  });
+  await waitFor("the guest to apply the host's state", () => guest.listing().length > 0);
+  const seen = events(guest);
+  const before = server.acceptedConnections;
+
+  // The refusal reaches the client only as the close number: §11's 4001 is `room_unknown`, a
+  // retry cannot change it, and the client stops and says why rather than re-helloeing into it.
+  server.refuseFull = { after: before, code: 4001, reason: 'no such room' };
+  server.drop('Bob');
+
+  const failed = await waitFor(
+    'the refusal to be reported',
+    () => seen.find((event) => event.type === 'failed') ?? false,
+  );
+  assert.equal(failed.type === 'failed' ? failed.code : '', 'room_unknown');
+  await waitFor('the session to end', () => guest.end !== undefined || false);
+  assert.equal(guest.end, 'room-gone');
+  assert.equal(
+    server.acceptedConnections,
+    before + 1,
+    `a terminal close was retried: ${server.acceptedConnections - before} attempts`,
+  );
+});
+
+test('selvage/2: a 1013 close on the reconnect is a capacity signal, so the guest keeps trying', async (t) => {
+  // A budget wide enough that the retries are still arriving while the assertions run.
+  const SLOW = { initialDelayMs: 50, maxDelayMs: 50, maxAttempts: 20 } as const;
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  const { host, guest } = await pair(server, SLOW);
+  t.after(() => {
+    host.disconnect();
+    guest.disconnect();
+  });
+  await waitFor("the guest to apply the host's state", () => guest.listing().length > 0);
+  const firstSeat = guest.sessionInfo().seat;
+  const seen = events(guest);
+  const before = server.acceptedConnections;
+
+  // §2.1: at the cap the socket is closed 1013 with no `session.error` — "try again later" is
+  // what the number means, and a retry is what the client does with it.
+  server.refuseFull = { after: before, code: 1013, reason: 'capacity reached' };
+  server.drop('Bob');
+
+  const attempts = await waitFor(
+    'the retries to keep coming past the capacity close',
+    () => (server.acceptedConnections - before >= 3 ? server.acceptedConnections - before : false),
+    { timeoutMs: 15_000, describe: () => `attempts: ${server.acceptedConnections - before}` },
+  );
+  assert.ok(attempts >= 3, `the capacity close stopped the retry after ${attempts} attempts`);
+  assert.equal(guest.end, undefined, 'a capacity close ended the session instead of retrying');
+  assert.equal(
+    seen.some((event) => event.type === 'ended'),
+    false,
+    'the ending was reported for a capacity close that is worth retrying',
+  );
+
+  // The cap lifts and the retry lands: the signal really was transient.
+  server.refuseFull = undefined;
+  const seat = await waitFor(
+    'the guest to be seated once the cap lifts',
+    () => {
+      const now = guest.sessionInfo().seat;
+      return now !== firstSeat ? now : false;
+    },
+    { timeoutMs: 15_000 },
+  );
+  assert.notEqual(seat, firstSeat);
+});
+
 test('selvage/2: the room\'s advertised grace sizes the retry budget', async (t) => {
   // 600 ms at the fast backoff is 11 attempts, against the five the policy itself carries:
   // a client that ignored the grace would spend five, and the grace is what raises the floor.

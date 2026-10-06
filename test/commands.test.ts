@@ -4194,20 +4194,62 @@ test("the reload's own resume never asks about the window it already replaced", 
   );
 });
 
-test('a join refused because the room already has a host says so, without the code', async (t) => {
+test('a join refused with a code this client names no sentence for keeps the server’s words, without the code', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {
     await server.stop();
   });
-  server.helloRefusal = { code: 'host_present', message: 'the room already has a host' };
+  server.helloRefusal = { code: 'bad_params', message: 'a display_name is required' };
   const { bundle, storage } = activated(t);
   await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
 
   const said = await waitFor('the refusal', () =>
     bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
   );
-  assert.equal(said, 'Selvage: could not join the session. That room already has a host.');
-  assert.doesNotMatch(said, /host_present/, 'the wire code is on screen');
+  assert.equal(said, 'Selvage: could not join the session. a display_name is required');
+  assert.doesNotMatch(said, /bad_params/, 'the wire code is on screen');
+});
+
+test('a join refused at the server’s cap reads the 1013 close, not its wording', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  // §2.1: at the connection cap the upgrade is answered and the socket closed 1013, with no
+  // `session.error` — the reason is the server's own words, and a client reads the number.
+  server.refuseFull = { after: server.acceptedConnections, code: 1013, reason: 'capacity reached' };
+  const { bundle, storage } = activated(t);
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
+
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
+  );
+  assert.equal(
+    said,
+    'Selvage: could not join the session. The server is full. Try again in a few minutes.',
+  );
+  assert.doesNotMatch(said, /1013|capacity|socket|No server answered/, 'the number or the socket is on screen');
+});
+
+test('a join refused with the server-full code says so, never the raw message', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  // The reference server's own refusal for a mint past its room cap (`session.rs`), whose
+  // wording does not name it "server full" — only the code says which capacity ran out.
+  server.helloRefusal = { code: 'x.server_full', message: 'the server holds at most 1024 rooms' };
+  const { bundle, storage } = activated(t);
+  await joinOntoItsReload(bundle, storage, `${sessionUrl(server.wsBase, 'r', 't')}${KEYS}`, 'r', 'Bob');
+
+  const said = await waitFor('the refusal', () =>
+    bundle.stub.registered.errors.find((message) => message.includes('could not join')) ?? false,
+  );
+  assert.equal(
+    said,
+    'Selvage: could not join the session. The server is full. Try again in a few minutes.',
+  );
+  assert.doesNotMatch(said, /x\.server_full|1024|at most/, 'the code or the server’s text is on screen');
 });
 
 test('a join refused for a room that is gone says it once', async (t) => {

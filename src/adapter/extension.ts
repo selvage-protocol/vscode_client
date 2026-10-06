@@ -41,6 +41,7 @@ import {
 } from '../bridge/index.ts';
 import type { Engine, FilePeer, FilePresence, Report } from '../bridge/index.ts';
 import {
+  TRY_AGAIN_LATER,
   code as errCode,
   isProtocolError,
   parseSessionUrl,
@@ -174,9 +175,16 @@ const MAX_UNLISTED_WARNINGS = 500;
 const ROOM_FULL = 'x.room_full';
 
 /**
- * The close reason that server sends when the server itself is full. Neither its code nor its
- * refusal reaches a client as a `session.error` — the connection is closed instead — so the
- * reason is the one thing that says which capacity ran out.
+ * The code this client's server names its own capacity refusal with. A room mint is a request
+ * a server can answer, so the refusal carries the code; it is the reserved namespace, and the
+ * sentence beside it is never what is read.
+ */
+const SERVER_FULL_CODE = 'x.server_full';
+
+/**
+ * The close reason the reference server sends at its connection cap, kept as the fallback for a
+ * `1013` whose code never reaches this client: before now the wording was the only signal, and
+ * an engine reads the close number itself (`closeCode`).
  */
 const SERVER_FULL = /^server full\b/;
 
@@ -2832,12 +2840,13 @@ function connectRefusal(error: unknown, check: string): string {
     return 'The server is full. Try again in a few minutes.';
   }
   switch (error.code) {
+    case SERVER_FULL_CODE:
+    case TRY_AGAIN_LATER:
+      return 'The server is full. Try again in a few minutes.';
     case errCode.roomUnknown:
       return 'That invite names a room the server does not have. Ask the host for a fresh invite.';
     case errCode.tokenInvalid:
       return 'That invite is no longer valid. Ask the host for a fresh invite.';
-    case errCode.hostPresent:
-      return 'That room already has a host.';
     case ROOM_FULL:
       return 'The room is full — it seats no more people.';
     case errCode.roomGone:
