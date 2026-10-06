@@ -69,7 +69,8 @@ concurrency:
 env:
   # Pinned rather than `@latest`: the Open VSX publisher is third-party code that a release
   # runs with the repository's `OVSX_TOKEN`, so the version is chosen and reviewed here rather
-  # than resolved at release time. `ovsx` needs Node 20 or newer; the jobs below set 22.18.0.
+  # than resolved at release time. `ovsx` needs Node 20 or newer; the jobs below set 24.18.1,
+  # the Node `engines.node` names, so the whole repository has one Node.
   OVSX_VERSION: "1.2.0"
 
 permissions:
@@ -104,7 +105,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: github.event_name == 'workflow_dispatch'
         with:
-          node-version: "22.18.0"
+          node-version: "24.18.1"
           cache: npm
 
       # A bump is a commit on `main` and nothing else. The push below is not forced, so a dispatch
@@ -261,7 +262,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.18.0"
+          node-version: "24.18.1"
           cache: npm
 
       - run: npm ci
@@ -430,7 +431,7 @@ jobs:
       # It stands ahead of tagging and the Marketplace login so the check below can use it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.18.0"
+          node-version: "24.18.1"
 
       # `actions/upload-artifact` excludes hidden files by default, and npm's `.bin`
       # shims are themselves inside a hidden directory, so `node_modules/.bin/vsce` never

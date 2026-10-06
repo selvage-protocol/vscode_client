@@ -13,11 +13,15 @@ suites that need a built `selvaged`, and the two-window end-to-end harness, run 
 
 You need:
 
-- VS Code 1.85 or newer. The manifest pins `engines.vscode` at `^1.85.0`.
+- VS Code 1.137 or newer. The manifest pins `engines.vscode` at `^1.137.0`, which is also the
+  build the two-window end-to-end proof launches, so the declared floor is the one that gets
+  exercised ([Checks](docs/checks.md)).
 - A `selvaged` to connect to. The host starts one and notes the address it prints; the guest needs
   just the invite link.
-- Node 22.18 or newer, if you build or test the extension from a checkout: the tests are `.ts`
-  files run directly by `node --test`, which needs type stripping.
+- Node 24 or newer, if you build or test the extension from a checkout. `engines.node` names the
+  extension host's runtime floor, and VS Code 1.137.0's extension host is Node 24.18.1 — the
+  version CI pins, so the suite runs on the runtime the extension is installed into. The tests are
+  `.ts` files run directly by `node --test`, which needs type stripping.
 
 ### Install
 

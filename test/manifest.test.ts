@@ -131,6 +131,25 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
   );
 });
 
+test('the end-to-end proof launches the build the manifest declares', () => {
+  // The floor is only a claim until something runs it: `test/e2e/run.ts` downloads and launches
+  // one build, and it has to be the one `engines.vscode` promises. Both numbers move together or
+  // this fails; `SELVAGE_E2E_VSCODE_VERSION` is the seam for a run against another build.
+  const source = readFileSync(resolve(ROOT, 'test', 'e2e', 'run.ts'), 'utf8');
+  const launched = /SELVAGE_E2E_VSCODE_VERSION \?\? '([^']+)'/.exec(source);
+  assert.ok(
+    launched !== null,
+    'test/e2e/run.ts no longer defaults SELVAGE_E2E_VSCODE_VERSION to a pinned build',
+  );
+  const floor = /^\^?(\d+\.\d+\.\d+)$/.exec(manifest.engines?.vscode ?? '');
+  assert.ok(floor !== null, `engines.vscode is not an exact floor: ${String(manifest.engines?.vscode)}`);
+  assert.equal(
+    launched[1],
+    floor[1],
+    `the e2e launches VS Code ${launched[1]} while the manifest declares ${String(manifest.engines?.vscode)}`,
+  );
+});
+
 test('activation stays lazy: a command starts the extension, a mirror restores it', () => {
   // A command activation event is generated from `contributes.commands` since VS Code
   // 1.74, so the extension starts when a user runs one of its commands and not before. A

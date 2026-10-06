@@ -21,7 +21,8 @@
 # The interop suite needs an `interop_peer` from that checkout as well
 # (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one).
 # `npm test` runs every suite and `npm run test:interop` runs the interop one, both with a
-# server built. CI pins Node 22.18.0; this uses whatever `node` is on PATH.
+# server built. CI pins Node 24.18.1, the version `engines.node` names; this uses whatever `node`
+# is on PATH.
 #
 # `links` needs neither node nor nix: it takes `lychee` from PATH when there is one, which is how
 # the runner runs it, and else from a nix shell. What it checks and what it does not is

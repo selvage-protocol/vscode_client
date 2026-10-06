@@ -73,7 +73,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.18.0"
+          node-version: "24.18.1"
           cache: npm
 
       # First, before anything is installed or built. A tag is a name, and a name can be moved;
@@ -265,7 +265,7 @@ jobs:
       # run through `node` directly, as the other two workflows do.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.18.0"
+          node-version: "24.18.1"
 
       - name: verify the extension publisher is present
         run: node ./vsce-publish/node_modules/@vscode/vsce/vsce --version

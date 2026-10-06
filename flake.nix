@@ -14,19 +14,20 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      # Node 22 and nothing else. Deliberately no git hooks: the hook set that installs itself
-      # into whatever repository the shell is started in belongs to `reference_server`, and a
-      # JavaScript repository has no use for it.
+      # Node 24 and nothing else — the version `engines.node` names, which is the extension host
+      # of the declared VS Code floor and what CI pins. Deliberately no git hooks: the hook set
+      # that installs itself into whatever repository the shell is started in belongs to
+      # `reference_server`, and a JavaScript repository has no use for it.
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.nodejs_22 ];
+          packages = [ pkgs.nodejs_24 ];
         };
       });
 
       checks = forAllSystems (
         pkgs:
         let
-          node = pkgs.nodejs_22;
+          node = pkgs.nodejs_24;
 
           # The dependency tree is built from the lock file, not taken from a checkout's
           # `node_modules`: that directory is ignored by git and so never reaches the store copy
