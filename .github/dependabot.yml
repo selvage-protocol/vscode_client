@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The three CRDT packages are hand-pinned to one version across the four clients'
+      # lockfiles, so they move together rather than one repository at a time.
+      crdt:
+        patterns:
+          - yjs
+          - lib0
+          - y-protocols
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
