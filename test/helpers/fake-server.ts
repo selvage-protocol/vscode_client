@@ -116,6 +116,14 @@ export class FakeServer {
    * (`PROTOCOL.md` §9.1, §11); the fake server produces the fault the real one will not
    * produce on demand. */
   helloRefusal: { code: string; message: string } | undefined = undefined;
+  /**
+   * When set, every connection accepted past `after` is answered at the upgrade and closed at
+   * once with `code` and `reason`, seating nothing and sending no `session.error`: the shape of
+   * the connection cap (`PROTOCOL.md` §2.1), where a capacity fault is IANA's to name and the
+   * close frame is the whole of what a client gets. `after` is read against the server's total
+   * accepted count, so a case sets it to `acceptedConnections` to refuse the next dial.
+   */
+  refuseFull: { after: number; code: number; reason: string } | undefined = undefined;
 
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
@@ -266,6 +274,11 @@ export class FakeServer {
 
   private onConnection(socket: WebSocket, url: string): void {
     this.accepted += 1;
+    const full = this.refuseFull;
+    if (full !== undefined && this.accepted > full.after) {
+      socket.close(full.code, full.reason);
+      return;
+    }
     const query = new URLSearchParams(url.split('?')[1] ?? '');
     const room = query.get('room') ?? undefined;
     const token = query.get('token') ?? undefined;
@@ -592,8 +605,6 @@ function closeCode(codeName: string): number {
       return close.tokenInvalid;
     case code.roomGone:
       return close.roomGone;
-    case code.hostPresent:
-      return close.hostPresent;
     default:
       return close.protocolError;
   }

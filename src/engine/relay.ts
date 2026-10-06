@@ -22,7 +22,7 @@
 
 import WebSocket from 'ws';
 
-import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, WIRE_VERSION, event as eventName, isTerminalCode, numberField, parseServerMessage } from './envelope.ts';
+import { CLIENT_CAPABILITIES, DEFAULT_KEEPALIVE, WIRE_VERSION, closeCode, event as eventName, isTerminalCode, numberField, parseServerMessage } from './envelope.ts';
 import type { Keepalive } from './envelope.ts';
 import { endingReason, parseInvite, PeerSession, unrefTimer } from './peer.ts';
 import type { Ending, PeerInvite, PeerOptions } from './peer.ts';
@@ -446,8 +446,13 @@ export class RelaySession {
               return;
             }
             if (this.handshaking) {
-              // Closed before it was seated: the handshake will never finish.
-              refusing(new Error(`the socket closed before the session was seated: ${code} ${reason}`));
+              // Closed before it was seated: the handshake will never finish. The close number,
+              // not the reason beside it, is what names the fault (§11): a capacity close is
+              // retried, a §11 refusal is a stop, anything else is an ordinary drop.
+              refusing(new ProtocolError(
+                closeCode(code),
+                `the socket closed before the session was seated: ${code} ${reason}`,
+              ));
               return;
             }
             this.onClose(code, reason);
@@ -1452,9 +1457,10 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 /**
- * §9.1: a refusal a retry cannot change. The four named codes are terminal (§11, `isTerminalCode`),
- * and so is a fault in the reserved `x.` namespace — capacity, in this slice — which a handshake
- * refused with **MUST NOT** have re-helloed automatically.
+ * §9.1: a refusal a retry cannot change. The three named codes are terminal (§11,
+ * `isTerminalCode`), and so is a fault in the reserved `x.` namespace — capacity, in this
+ * slice — which a handshake refused with **MUST NOT** have re-helloed automatically. A `1013`
+ * capacity close is not among them: it says try again, and the retry does.
  */
 function terminalForRetry(code: string): boolean {
   return code.startsWith('x.') || isTerminalCode(code);

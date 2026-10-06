@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { code, isTerminalCode, parseServerMessage } from '../src/engine/envelope.ts';
+import { TRY_AGAIN_LATER, closeCode, code, isTerminalCode, parseServerMessage } from '../src/engine/envelope.ts';
 import { fetchMeta } from '../src/engine/meta.ts';
 
 test('a text frame parses permissively, and unknown fields do not matter', () => {
@@ -50,14 +50,30 @@ test('a text frame parses permissively, and unknown fields do not matter', () =>
 test('a refusal is terminal when §11 names it so, or when it is in the reserved namespace', () => {
   // §9.1: a refusal a retry cannot change is not retried. The reserved `x.` namespace is
   // terminal whatever it names, so an implementation can refuse without teaching a client its
-  // word first, and the bare codes are the four §11 fixes.
-  for (const named of [code.roomUnknown, code.tokenInvalid, code.hostPresent, code.roomGone]) {
+  // word first, and the bare codes are the three §11 fixes.
+  for (const named of [code.roomUnknown, code.tokenInvalid, code.roomGone]) {
     assert.equal(isTerminalCode(named), true, named);
   }
   assert.equal(isTerminalCode('x.room_full'), true);
   assert.equal(isTerminalCode('x.anything'), true);
   for (const transient of [code.badMessage, code.badParams, code.helloRequired, code.alreadySeated, undefined]) {
     assert.equal(isTerminalCode(transient), false, String(transient));
+  }
+});
+
+test('a close number becomes a code by §11’s table, and a number §11 does not register carries none', () => {
+  assert.equal(closeCode(4000), 'protocol_error');
+  assert.equal(closeCode(4001), code.roomUnknown);
+  assert.equal(closeCode(4002), code.tokenInvalid);
+  assert.equal(closeCode(4003), code.roomGone);
+  // §2.1's capacity close is IANA's, not §11's: a client retries it rather than reading a
+  // session refusal into it, which is the whole reason it must not be terminal.
+  assert.equal(closeCode(1013), TRY_AGAIN_LATER);
+  assert.equal(isTerminalCode(TRY_AGAIN_LATER), false, 'a full server is worth dialling again');
+  // §11: 4004–4999 is unregistered, and a client **MUST NOT** read session meaning into one.
+  for (const unregistered of [1006, 4004, 4005, 4999]) {
+    assert.equal(closeCode(unregistered), 'closed', String(unregistered));
+    assert.equal(isTerminalCode(closeCode(unregistered)), false, String(unregistered));
   }
 });
 

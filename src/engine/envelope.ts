@@ -39,9 +39,7 @@ export const code = {
   roomUnknown: 'room_unknown',
   tokenInvalid: 'token_invalid',
   roomGone: 'room_gone',
-  hostPresent: 'host_present',
   alreadySeated: 'already_seated',
-  docNotOpen: 'doc_not_open',
 } as const;
 
 /** WebSocket close codes, in the private-use range (§11). */
@@ -50,8 +48,38 @@ export const close = {
   roomUnknown: 4001,
   tokenInvalid: 4002,
   roomGone: 4003,
-  hostPresent: 4004,
 } as const;
+
+/**
+ * The bare code a `1013` close is read as. `1013` is IANA's "try again later" and not §11
+ * vocabulary — §11 leaves a capacity fault to IANA — so this is a name of this client's own,
+ * and it is deliberately not one a retry gives up on: a full server is worth dialling again.
+ */
+export const TRY_AGAIN_LATER = 'try_again_later';
+
+/**
+ * The code a WebSocket close number carries, so a close is read by number and not by the
+ * server's wording. `1013` is the capacity fault this client retries; §11's three refusals
+ * keep the names §11 also gives their codes, and 4000 is the protocol's own close; every other
+ * number — including one §11 does not register, which a client **MUST NOT** read session
+ * meaning into — is `closed`, which retries like any other drop of the socket.
+ */
+export function closeCode(codeNumber: number): string {
+  switch (codeNumber) {
+    case 1013:
+      return TRY_AGAIN_LATER;
+    case close.protocolError:
+      return 'protocol_error';
+    case close.roomUnknown:
+      return code.roomUnknown;
+    case close.tokenInvalid:
+      return code.tokenInvalid;
+    case close.roomGone:
+      return code.roomGone;
+    default:
+      return 'closed';
+  }
+}
 
 /**
  * The reserved namespace for a code an implementation defines for itself (§10.1, §11). A
@@ -64,7 +92,6 @@ const RESERVED_CODE_PREFIX = 'x.';
 export const TERMINAL_CODES: readonly string[] = [
   code.roomUnknown,
   code.tokenInvalid,
-  code.hostPresent,
   code.roomGone,
 ];
 
