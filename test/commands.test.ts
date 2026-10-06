@@ -2626,6 +2626,19 @@ test('joining refuses a bad link in the box, before connecting', async (t) => {
     undefined,
     'a link whose unknown parameter names another server was refused',
   );
+  // §5.1: `room` and `token` appear at most once, and a link that repeats one is malformed. The
+  // box refuses it in the reader's own words — the repeat is the one thing about a whole-looking
+  // link a person cannot see — rather than accepting it and joining the first value.
+  assert.equal(
+    validate('https://page.example/?room=r-1&room=r-2&token=t'),
+    'the invite names `room` twice',
+    'a page link that repeats the room was accepted',
+  );
+  assert.equal(
+    validate('https://page.example/?room=r-1&token=t&token=t-2'),
+    'the invite names `token` twice',
+    'a page link that repeats the token was accepted',
+  );
   // A truncated paste, a server address, a page link missing half of itself, a wire invite
   // the engine would not dial as pasted, and nothing at all: all fail here, in plain words,
   // rather than later as whatever the engine said.

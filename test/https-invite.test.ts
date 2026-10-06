@@ -164,6 +164,34 @@ test('a pasted page link reads back into the same join, and nothing else does', 
   assert.equal(parsePageLink('not a link'), undefined);
 });
 
+test('a page link that repeats a room or a token is refused, not read at its first value', () => {
+  const { parsePageLink } = inviteHelpers();
+  const keys = '#k=room-key&h=host-key';
+  // §5.1: `room` and `token` appear at most once, so a link that repeats either is malformed.
+  // Reading the first of two would join a room the link does not name.
+  assert.equal(
+    parsePageLink(`https://edit.example/?room=r-1&room=r-2&token=tok${keys}`),
+    undefined,
+  );
+  assert.equal(
+    parsePageLink(`https://edit.example/?room=r-1&token=tok&token=tok-2${keys}`),
+    undefined,
+  );
+  // The positive control: one of each, with an unknown parameter and a fragment, still reads
+  // the same values it did before the repeat was refused.
+  assert.deepEqual(
+    parsePageLink(`https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080${keys}`),
+    {
+      room: 'r-1',
+      token: 'tok',
+      origin: 'https://edit.example',
+      fragment: keys,
+      roomKey: 'room-key',
+      hostKey: 'host-key',
+    },
+  );
+});
+
 test('a connect notice names the invite’s address, never the wire URL that carries the token', () => {
   const { sessionAddress } = inviteHelpers();
   const wire = sessionUrl(baseOf('ws://127.0.0.1:8080'), 'r-1', 'super-secret');

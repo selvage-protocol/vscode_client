@@ -30,12 +30,14 @@ export {
   PEER_MUTATIONS,
   PeerSession,
   endingReason,
+  inviteQuery,
   parseInvite,
 } from './peer.ts';
 export type {
   AppliedFrame,
   DroppedFrame,
   Ending,
+  InviteQuery,
   InviteRead,
   Outcome,
   PeerInvite,
