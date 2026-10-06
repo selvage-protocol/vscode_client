@@ -137,6 +137,7 @@ completing command there.
 ## Licence
 
 The client is `MIT OR Apache-2.0`, at your option: [`LICENSE-MIT`](LICENSE-MIT) and
-[`LICENSE-APACHE`](LICENSE-APACHE). The cross-library anchor fixture under `test/fixtures/` is
-vendored from the [`specification`](https://github.com/selvage-protocol/specification) repository,
-whose material is `CC-BY-4.0`.
+[`LICENSE-APACHE`](LICENSE-APACHE). The fixtures under `test/fixtures/` — the cross-library
+anchor and the specification's `schema/limits.json` — are vendored from the
+[`specification`](https://github.com/selvage-protocol/specification) repository, whose material is
+`CC-BY-4.0`.
