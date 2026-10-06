@@ -56,10 +56,27 @@ observed on failure ([`test/helpers/wait.ts`](../test/helpers/wait.ts)).
 [`test/manifest.test.ts`](../test/manifest.test.ts) loads the built bundle and activates it against
 a stub `vscode`, which is how CI checks the manifest without an editor.
 
-[`test/e2e/run.ts`](../test/e2e/run.ts) builds the most: it starts a real `selvaged`, resolves a
-pinned VS Code build (`1.137.0` by default; set `SELVAGE_E2E_VSCODE_VERSION` to move it) and
-launches two real Extension Development Host processes, headless under Xvfb, one hosting and one
-joining by invite through a window reload, and asserts their documents converge. It has heavier
-prerequisites than everything else here (a network, Xvfb, an internet download the first time, and
-`nix` for the shared-library path a VS Code build downloaded outside `nix` needs on NixOS), so it
-is a manual verification step: run `scripts/e2e/run-two-instance.sh` from the repository root.
+[`test/e2e/run.ts`](../test/e2e/run.ts) builds the most: it starts a real `selvaged`, resolves the
+VS Code build the manifest declares — `1.137.0`, the `engines.vscode` floor, so the declared floor
+is the one exercised; set `SELVAGE_E2E_VSCODE_VERSION` to move it for a one-off run — and launches
+two real Extension Development Host processes, headless under Xvfb, one hosting and one joining by
+invite through a window reload, and asserts their documents converge. It has heavier prerequisites
+than everything else here (a network, Xvfb, an internet download the first time, and `nix` for the
+shared-library path a VS Code build downloaded outside `nix` needs on NixOS), so it is a manual
+verification step: run `scripts/e2e/run-two-instance.sh` from the repository root.
+
+Three numbers describe the editor floor and they are one number: `engines.vscode` is `^1.137.0`,
+the `@types/vscode` pin is `1.137.0`, and the build the e2e launches by default is `1.137.0`.
+[`test/manifest.test.ts`](../test/manifest.test.ts) fails when the e2e's default and the manifest
+drift apart, so raising the floor means moving both.
+
+`engines.node` names the extension host that build runs, and it is Node 24: 24.18.1, which the
+build's own Electron reports — `ELECTRON_RUN_AS_NODE=1 <build>/code -e 'process.versions.node'`,
+with the shared-library path the run above needs on NixOS. So `scripts/build.mjs` compiles for
+`node24`, CI pins 24.18.1 and the dev shell carries nixpkgs' own Node 24, which makes the suite run
+on the runtime the extension is installed into. `@types/node` stays at `^26`, a major *ahead* of
+both runtimes rather than at the floor: pinned to 24, `tsc --noEmit` fails with `'CryptoKey' refers
+to a value, but is being used as a type here` in `src/engine/crypto-web.ts` and two test files,
+because the global `CryptoKey` and `SubtleCrypto` type names only arrive in `@types/node` 25. The
+engine is a copy three other clients vendor, so the pin stays where it is and the runtime is
+exercised by the e2e rather than by the types.

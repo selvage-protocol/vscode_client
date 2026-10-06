@@ -88,13 +88,14 @@ const WATCH_DOOMED_PATH = 'doomed-while-live.txt';
 const WATCH_DOOMED_TEXT = 'a file the host removes while the room is live\n';
 
 /**
- * The VS Code build this proof runs against. Left to `@vscode/test-electron`, that is whatever
- * the update service calls stable at the moment of the run, so the editor being proved moves
- * under the proof without anything here changing — and the version is resolved over the
- * network before the cache is consulted for *what* to run. Pinned, a build already in the
- * cache is used without a request at all. Move it deliberately with
- * `SELVAGE_E2E_VSCODE_VERSION`; a version the cache does not hold is downloaded on the next
- * run.
+ * The VS Code build this proof runs against: the floor `package.json` declares, so the version
+ * that gets exercised is the version the manifest promises, and `test/manifest.test.ts` fails
+ * when the two drift apart. Left to `@vscode/test-electron`, that is whatever the update service
+ * calls stable at the moment of the run, so the editor being proved moves under the proof without
+ * anything here changing — and the version is resolved over the network before the cache is
+ * consulted for *what* to run. Pinned, a build already in the cache is used without a request at
+ * all. Move it deliberately with `SELVAGE_E2E_VSCODE_VERSION`, which is the seam for a run
+ * against another build; a version the cache does not hold is downloaded on the next run.
  */
 const VSCODE_VERSION = process.env.SELVAGE_E2E_VSCODE_VERSION ?? '1.137.0';
 

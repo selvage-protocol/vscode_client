@@ -29,8 +29,9 @@ const options = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  // The oldest VS Code the manifest declares; the extension host's Node tracks it.
-  target: 'node18',
+  // The oldest VS Code the manifest declares, and the extension host's Node tracks it: that
+  // build's own Electron reports `node 24.18.1` (`docs/checks.md`).
+  target: 'node24',
   external: ['vscode', 'bufferutil', 'utf-8-validate'],
   sourcemap: true,
   logLevel: 'info',

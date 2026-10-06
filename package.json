@@ -23,8 +23,8 @@
   "type": "module",
   "main": "./dist/extension.js",
   "engines": {
-    "vscode": "^1.85.0",
-    "node": ">=18"
+    "vscode": "^1.137.0",
+    "node": ">=24"
   },
   "capabilities": {
     "untrustedWorkspaces": {
@@ -346,7 +346,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
-    "@types/vscode": "1.85.0",
+    "@types/vscode": "1.137.0",
     "@types/ws": "8.18.1",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
