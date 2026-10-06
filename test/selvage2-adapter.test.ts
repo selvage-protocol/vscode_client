@@ -163,6 +163,63 @@ test('a fragment naming one key is refused locally, naming the missing key', asy
   );
 });
 
+test('a page link that repeats a key is refused locally, by name, before any socket', async (t) => {
+  const dialled = armedSockets(t);
+  const { bundle } = activated(t);
+  const { parsePageLink, wireInviteFor } = adapterExports();
+  const keys = `#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`;
+  const page = 'https://edit.example/?room=r-1&room=r-2&token=tok';
+
+  // §5.1: `room` and `token` appear at most once, and a link that repeats either is malformed.
+  // `parsePageLink` reads the query the one way the engine reads it, so the repeat is found
+  // rather than collapsed and the link is refused instead of joined at `r-1`.
+  assert.equal(parsePageLink(`${page}${keys}`), undefined);
+  assert.equal(
+    parsePageLink(`https://edit.example/?room=r-1&token=tok&token=tok-2${keys}`),
+    undefined,
+  );
+  // The address, and not a wire URL built from the repeat's first value: the page link is
+  // handed on whole, and the engine's own reader is what refuses it by name.
+  assert.equal(wireInviteFor(`${page}${keys}`), page);
+
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: `${page}${keys}`,
+    displayName: 'Bob',
+  });
+  assert.deepEqual(bundle.stub.registered.errors, ['Selvage: the invite names `room` twice']);
+  assert.deepEqual(dialled, [], 'the refusal dialled a server anyway');
+  assert.deepEqual(
+    bundle.stub.registered.clipboardWrites,
+    [],
+    'a refused join handed on an invite',
+  );
+});
+
+test('a page link that repeats the token is refused locally, by name', async (t) => {
+  const dialled = armedSockets(t);
+  const { bundle } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', {
+    invite: `https://edit.example/?room=r-1&token=tok&token=tok-2#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`,
+    displayName: 'Bob',
+  });
+  assert.deepEqual(bundle.stub.registered.errors, ['Selvage: the invite names `token` twice']);
+  assert.deepEqual(dialled, [], 'the refusal dialled a server anyway');
+});
+
+test('a page link with one room and token, and an unknown parameter, rewrites as before', () => {
+  const { parsePageLink, wireInviteFor } = adapterExports();
+  const page = 'https://edit.example/?room=r-1&token=tok&server=ws%3A%2F%2Fother%3A8080';
+  // The positive control: one of each reads the same values, and the unknown parameter is
+  // ignored rather than carried into the wire URL.
+  assert.deepEqual(parsePageLink(page), {
+    room: 'r-1',
+    token: 'tok',
+    origin: 'https://edit.example',
+    fragment: '',
+  });
+  assert.equal(wireInviteFor(page), 'wss://edit.example/session?room=r-1&token=tok');
+});
+
 test('the wire URL an invite joins on never carries the fragment', () => {
   const { wireInviteFor } = adapterExports();
   const fragment = `#k=${'A'.repeat(43)}&h=${'B'.repeat(43)}`;

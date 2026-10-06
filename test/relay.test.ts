@@ -92,6 +92,24 @@ test('a page link with one room and token still rewrites and joins, an unknown p
   }
 });
 
+test('joining a page link that repeats the room is refused by name, before any socket', async () => {
+  const dialled: string[] = [];
+  const factory: WebSocketFactory = (url: string) => {
+    dialled.push(url);
+    throw new Error('a socket this case did not expect');
+  };
+  await assert.rejects(
+    RelaySession.join({
+      invite: `https://example.org/?room=r-1&room=r-2&token=t${FRAGMENT}`,
+      displayName: 'Bo',
+      webSocketFactory: factory,
+    }),
+    (error: unknown) =>
+      error instanceof Error && error.message === 'the invite names `room` twice',
+  );
+  assert.deepEqual(dialled, [], 'the refusal dialled a server anyway');
+});
+
 test('wireInvite leaves a link it cannot read as it stands', () => {
   assert.equal(wireInvite('not a url'), 'not a url');
   // A page link with no room or token names nothing to join; the refusal is parseInvite's.

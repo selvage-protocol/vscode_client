@@ -43,6 +43,7 @@ import type { Engine, FilePeer, FilePresence, Report } from '../bridge/index.ts'
 import {
   TRY_AGAIN_LATER,
   code as errCode,
+  inviteQuery,
   isProtocolError,
   parseSessionUrl,
   sessionBase,
@@ -3412,6 +3413,13 @@ function inviteLinkRefusal(value: string): string | undefined {
     // parameter is ignored the way an unknown query parameter is.
     return undefined;
   }
+  // `parsePageLink` also refuses a page link that repeats `room` or `token`, and that is the
+  // one refusal its `undefined` cannot say: the link looks whole, so it is refused in the
+  // reader's own words rather than as a paste that lost half of itself.
+  const repeated = repeatedPageName(invite);
+  if (repeated !== undefined) {
+    return repeated;
+  }
   // `§5.1`'s fragment is not part of what a socket is handed, and the engine reads the rest of
   // the link as a query: a fragment left on would glue into the token, so the wire URL is taken
   // apart the one way every other reader takes it apart.
@@ -3450,6 +3458,29 @@ function inviteLinkRefusal(value: string): string | undefined {
     return inviteLinkHint();
   }
   return undefined;
+}
+
+/**
+ * The name a page link repeats, in `§5.1`'s own words, or `undefined` when it repeats neither
+ * (including when it names only one of the two, which is the paste hint's refusal rather than
+ * this one). The query is read by the engine's own reader, so a repeat is found rather than
+ * collapsed and the values are decoded the way the join decodes them.
+ */
+function repeatedPageName(text: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return undefined;
+  }
+  if (!url.searchParams.has('room') || !url.searchParams.has('token')) {
+    return undefined;
+  }
+  const join = inviteQuery(url.search.slice(1));
+  return join.ok ? undefined : join.reason;
 }
 
 /**
@@ -3529,6 +3560,10 @@ export function buildPageLink(
  * puts in its fragment — the page's own parsing, mirrored so a copied link joins the same way it
  * loads. Pure so tests pin it without an editor.
  *
+ * The query is read by the engine's own reader, so a link that repeats `room` or `token` is
+ * refused here rather than joined at the first of the two values, in the same shape as a link
+ * that names one of them and not the other.
+ *
  * The fragment is read as it arrived as well as split into its two values, because handing the
  * link on has to hand it on whole: a fragment carrying a parameter this client does not know is
  * still part of what the host sent.
@@ -3547,17 +3582,16 @@ export function parsePageLink(
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return undefined;
   }
-  const room = url.searchParams.get('room');
-  const token = url.searchParams.get('token');
-  if (room === null || room === '' || token === null || token === '') {
+  const join = inviteQuery(url.search.slice(1));
+  if (!join.ok || join.room === '' || join.token === '') {
     return undefined;
   }
   const keys = fragmentKeys(url.hash);
   // The origin is the server, so nothing in the query names one. `server` is ignored like any
   // other unknown parameter.
   return {
-    room,
-    token,
+    room: join.room,
+    token: join.token,
     origin: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`,
     fragment: url.hash,
     ...(keys.roomKey === undefined ? {} : { roomKey: keys.roomKey }),

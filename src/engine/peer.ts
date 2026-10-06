@@ -160,7 +160,7 @@ export function parseInvite(link: string): InviteRead {
   };
 }
 
-type InviteQuery =
+export type InviteQuery =
   | { ok: true; room: string; token: string }
   | { ok: false; reason: string };
 
@@ -170,8 +170,11 @@ type InviteQuery =
  * §5.1 has each of the two appear **at most once** and a URL that repeats either be malformed,
  * so a reader refuses one rather than let the last of two values win. A parameter the receiver
  * does not know is ignored, as an unknown query parameter is.
+ *
+ * Exported because the editor adapters read the same query off a page link they resolve
+ * themselves: the rule and the decoding live here, so no adapter writes a second one.
  */
-function inviteQuery(query: string): InviteQuery {
+export function inviteQuery(query: string): InviteQuery {
   let room: string | undefined;
   let token: string | undefined;
   for (const pair of query.split('&')) {
