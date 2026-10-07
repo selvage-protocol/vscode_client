@@ -62,8 +62,17 @@ is the one exercised; set `SELVAGE_E2E_VSCODE_VERSION` to move it for a one-off 
 two real Extension Development Host processes, headless under Xvfb, one hosting and one joining by
 invite through a window reload, and asserts their documents converge. It has heavier prerequisites
 than everything else here (a network, Xvfb, an internet download the first time, and `nix` for the
-shared-library path a VS Code build downloaded outside `nix` needs on NixOS), so it is a manual
-verification step: run `scripts/e2e/run-two-instance.sh` from the repository root.
+shared-library path a VS Code build downloaded outside `nix` needs on NixOS), so it is not in
+`ci.yml`: a one-off run is `scripts/e2e/run-two-instance.sh` from the repository root.
+
+[`.github/workflows/e2e-current.yml`](../.github/workflows/e2e-current.yml) runs that same script
+unattended on a weekly schedule with `SELVAGE_E2E_VSCODE_VERSION=stable`, so the build users
+install today is exercised too and a VS Code release that breaks the extension is a red run rather
+than a user report. It is the one workflow here that checks out another repository: the proof
+starts a real `selvaged`, and the sibling `reference_server` gives it the `../reference_server`
+layout the helper expects. The floor is unchanged by it — `engines.vscode`, the `@types/vscode`
+pin and the e2e's own default stay one number, kept equal by `test/manifest.test.ts` — and the
+scheduled job is the half that follows the editor.
 
 Three numbers describe the editor floor and they are one number: `engines.vscode` is `^1.137.0`,
 the `@types/vscode` pin is `1.137.0`, and the build the e2e launches by default is `1.137.0`.
