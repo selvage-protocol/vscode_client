@@ -467,8 +467,20 @@ function nixEval(expr: string, timeoutMs: number): Promise<string> {
 
 /** `nix`'s answer for the shared libraries an Electron binary downloaded outside nix needs on
  * NixOS — `nix-ld` supplies the loader, not the libraries a desktop app links against.
- * Cached, because evaluating it is the slow part of every run. */
+ *
+ * A host that installs its own system libraries needs no answer, and using this one there is
+ * worse than leaving it out: those libraries are built against nixpkgs' glibc, and a binary
+ * linked against the host's glibc cannot load them — on Ubuntu 24.04 the editor dies before it
+ * opens a window with `version 'GLIBC_ABI_GNU2_TLS' not found`, raised the moment `libmount` is
+ * looked up in this path. So `/etc/NIXOS`, the marker nixpkgs itself reads, decides: with no
+ * marker there is no path and the loader stays on the host's own libraries.
+ *
+ * Cached, because evaluating it is the slow part of every run.
+ */
 async function nixElectronLibraryPath(): Promise<string> {
+  if (!existsSync('/etc/NIXOS')) {
+    return '';
+  }
   const cacheFile = resolve(TMP, 'e2e-libpath.txt');
   try {
     return readFileSync(cacheFile, 'utf8').trim();

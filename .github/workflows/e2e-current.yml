@@ -105,17 +105,12 @@ jobs:
 
       # `nix` twice over: `scripts/e2e/run-two-instance.sh` runs the proof inside the server
       # flake's dev shell under `xvfb-run`, and `test/e2e/run.ts` evaluates `<nixpkgs>` for the
-      # shared libraries an Electron binary downloaded outside nix needs on NixOS.
-      #
-      # The action installs nix with no channel and sets no `NIX_PATH` unless this is given, and
-      # `nix develop` passes `NIX_PATH` through unchanged, so without it `<nixpkgs>` in the proof
-      # is unresolvable inside the dev shell and the run dies before it starts an editor.
-      # `flake:nixpkgs` is the registry entry `scripts/e2e/run-two-instance.sh` already uses for
-      # `nix shell nixpkgs#xvfb-run`.
+      # shared libraries an Electron binary downloaded outside nix needs on NixOS — which this
+      # runner is not, so there the proof keeps the host's own libraries and no `NIX_PATH` has to
+      # be arranged for it.
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=flake:nixpkgs
 
       # `test/helpers/selvaged.ts` looks for the binary in the sibling's target tree and fails the
       # proof with this command when it is missing, so it is built the way the helper names.
