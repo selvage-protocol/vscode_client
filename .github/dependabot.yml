@@ -29,6 +29,15 @@ updates:
           - yjs
           - lib0
           - y-protocols
+    ignore:
+      # The types pin is one of the three numbers that describe the editor floor: it, the
+      # `engines.vscode` range and the build the two-window proof launches are one number, and
+      # `test/manifest.test.ts` fails unless they agree. A bump of it alone can therefore never
+      # be green, and nothing here has wanted an API the floor lacks, so the floor is raised
+      # deliberately rather than a version at a time. Whether this extension still runs on a
+      # current editor is the e2e against another build (`SELVAGE_E2E_VSCODE_VERSION`), not the
+      # types.
+      - dependency-name: "@types/vscode"
     commit-message:
       prefix: chore
       include: scope
