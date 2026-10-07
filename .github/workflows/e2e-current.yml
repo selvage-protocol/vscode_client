@@ -125,3 +125,16 @@ jobs:
         env:
           SELVAGE_E2E_VSCODE_VERSION: stable
         run: scripts/e2e/run-two-instance.sh
+
+      # A red run here is this job doing its work, and the reason for one is in the editors' own
+      # logs: `@vscode/test-electron` reports a child's exit code and nothing it printed, and a
+      # build whose `code` binary never starts never reaches the extension host, so the proof's own
+      # failure carries no cause. Printed only when something above failed, and it can turn nothing
+      # red into green.
+      - name: the editors' own output, when the proof fails
+        if: failure()
+        run: |
+          for log in .tmp/e2e-run/*.log; do
+            echo "===== ${log}"
+            tail -n 80 "${log}"
+          done
