@@ -49,11 +49,21 @@ jobs:
       # The sibling the proof's own paths expect, so the runner has the layout the local command
       # uses and no environment variable has to move it. The repository is public, so the
       # default token — `contents: read` on this repository alone — is only for rate limits.
+      #
+      # `actions/checkout` refuses a `path` outside `GITHUB_WORKSPACE` — `input-helper.ts`
+      # resolves the input against the workspace and refuses anything not under it — so the
+      # checkout lands inside the workspace and the step below moves it one level up. What reads
+      # it is `../reference_server`: `test/helpers/selvaged.ts` and `test/e2e/run.ts` resolve
+      # that from this repository's root, and `scripts/e2e/run-two-instance.sh` runs
+      # `nix develop ../reference_server`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: selvage-protocol/reference_server
-          path: ../reference_server
+          path: .reference_server
           persist-credentials: false
+
+      - name: move the server checkout to the sibling the proof reads
+        run: mv .reference_server ../reference_server
 
       # Copied from `reference_server`'s `ci.yml`, where it is copied from that repository's own
       # `nightly.yml`: the preinstalled toolchains nothing here uses, each removal non-fatal and
