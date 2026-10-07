@@ -6,7 +6,8 @@ working in one checkout, one of whom starts a `selvaged` to hold the room.
 
 Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
 fetch command, the participants view and follow behind it. CI runs the server-free suite; the
-suites that need a built `selvaged`, and the two-window end-to-end harness, run locally.
+suites that need a built `selvaged` run locally. The two-window end-to-end harness runs locally
+and in a weekly scheduled run of its own against the VS Code build stable users install today.
 [Checks](docs/checks.md) lists every suite and the gate before a push.
 
 ## Get it working

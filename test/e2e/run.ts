@@ -14,8 +14,9 @@
  * This has heavier prerequisites than `npm test` — a network, Xvfb, a VS Code build pinned
  * below and downloaded the first time that version is used, `nix` for the shared-library path
  * an unpackaged Electron binary needs on NixOS — so it is not part of `npm test`/`test:fast` or
- * CI (see `docs/checks.md`). Run it with `scripts/e2e/run-two-instance.sh` from the repository
- * root.
+ * `ci.yml` (see `docs/checks.md`). Run it with `scripts/e2e/run-two-instance.sh` from the
+ * repository root; `.github/workflows/e2e-current.yml` runs the same script weekly against the
+ * current stable VS Code build.
  *
  * The reconnect phase (§4 of the task, optional) proves the bounded-backoff reconnect path
  * for real: a `DropProxy` sits in front of the real server, the guest is routed through it
