@@ -1,0 +1,115 @@
+name: e2e-current
+
+# The two-window proof — `test/e2e/run.ts`, two real VS Code Extension Development Hosts and a
+# real `selvaged` — run against the VS Code build users install today rather than against the
+# declared floor.
+#
+# `ci.yml` proves the floor and proves it on purpose: `engines.vscode`, the `@types/vscode` pin
+# and the build the proof launches by default are one number, which `test/manifest.test.ts` keeps
+# equal. The editor being proved must not move under the proof, so nothing there follows `stable`
+# on its own, and the gap that leaves is a VS Code release that breaks the extension going
+# unnoticed until a user reports it. This job closes that gap and only that one: the floor stays
+# the floor, the schedule checks the current build, and a red run here is the release that broke
+# it.
+#
+# No `pull_request` trigger: what moves here is VS Code's release cadence and not our diffs, so
+# this is not the feedback path a pull request waits on. Weekly, an order of magnitude nearer a
+# stable build's arrival than a commit's.
+#
+# It is also the one workflow here that puts another repository beside this checkout: the proof
+# starts a real `selvaged`, `test/helpers/selvaged.ts` looks for it at `../reference_server`, and
+# `scripts/e2e/run-two-instance.sh` runs from this repository root with that layout.
+on:
+  schedule:
+    # Mondays 05:23 UTC: off the hour, so this run does not queue behind the many crons that fire
+    # on it. The editor it resolves is `stable`, asked of the update service at run time.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-current-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-current:
+    # GitHub-hosted `ubuntu-24.04`, like every other job in this repository. A cold Nix store
+    # (the server's dev shell and a `cargo build`), a VS Code download and two Electron windows
+    # make this the longest job here, which is why the timeout is not `ci.yml`'s.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # The extension: the commit the dispatch names, `main` on the schedule.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The sibling the proof's own paths expect, so the runner has the layout the local command
+      # uses and no environment variable has to move it. The repository is public, so the
+      # default token — `contents: read` on this repository alone — is only for rate limits.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: selvage-protocol/reference_server
+          path: ../reference_server
+          persist-credentials: false
+
+      # Copied from `reference_server`'s `ci.yml`, where it is copied from that repository's own
+      # `nightly.yml`: the preinstalled toolchains nothing here uses, each removal non-fatal and
+      # gated on the free space the runner actually has. This job needs the most of any here —
+      # a Nix store, a VS Code download and two Electron windows — so it wants the insurance
+      # even more, and it pays for it only when the free space is genuinely short.
+      - name: free disk space
+        run: |
+          df -h /
+          # A cold Nix store — the rust-overlay toolchain plus crane's dependency
+          # artefacts — needs on the order of 10-20 GB, and the runner the job lands on
+          # has had 87 GB free, so this usually has nothing to do. It deletes only when
+          # the free space is genuinely short, which keeps the insurance without paying
+          # for it on every run.
+          available_kb=$(df --output=avail -k / | tail -n 1)
+          if [ "$available_kb" -ge $((30 * 1024 * 1024)) ]; then
+            echo "skipping: $((available_kb / 1024 / 1024)) GB free is enough for a cold Nix store"
+            exit 0
+          fi
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet || true
+          df -h /
+
+      # The Node `engines.node` names, the same version `ci.yml` pins.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.18.1"
+          cache: npm
+
+      - run: npm ci
+
+      # The proof loads the built extension (`dist/extension.js`), so it is built before the run.
+      # `test/e2e/run.ts` builds again at its own start, which keeps the two agreeing.
+      - run: npm run build
+
+      # `nix` twice over: `scripts/e2e/run-two-instance.sh` runs the proof inside the server
+      # flake's dev shell under `xvfb-run`, and `test/e2e/run.ts` evaluates `<nixpkgs>` for the
+      # shared libraries an Electron binary downloaded outside nix needs on NixOS.
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # `test/helpers/selvaged.ts` looks for the binary in the sibling's target tree and fails the
+      # proof with this command when it is missing, so it is built the way the helper names.
+      - name: build the server the proof starts
+        run: nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
+
+      # The local command, unmodified, with the one variable that moves the editor: `stable`
+      # resolves through `@vscode/test-electron` to whatever the update service calls stable at
+      # this moment, which is the whole point of the job. The proof's own default stays the
+      # declared floor, because `test/manifest.test.ts` holds it there.
+      - name: the two-window proof against the current stable build
+        env:
+          SELVAGE_E2E_VSCODE_VERSION: stable
+        run: scripts/e2e/run-two-instance.sh
