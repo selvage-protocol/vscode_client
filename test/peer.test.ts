@@ -25,6 +25,7 @@ import {
   parseInvite,
 } from '../src/engine/peer.ts';
 import type { PeerOptions } from '../src/engine/peer.ts';
+import type { Selection } from '../src/engine/presence.ts';
 import {
   decodeKey,
   encodeKey,
@@ -414,6 +415,236 @@ test('an edit held back before a committing state is published once a state comm
   }
   await peer.tick(2 + RENEW_MS + 1);
   assert.equal(peer.takeOutbound().length, 0, 'and it is not sent twice');
+});
+
+// --- §13.1's step 4 and §8.2's clock: the awareness frame the gate holds back -------
+
+/** The awareness states a published frame carries, by client id. */
+function awarenessStates(payload: number[]): Map<number, unknown> {
+  const states = new Map<number, unknown>();
+  const reader = decoding.createDecoder(Uint8Array.from(payload));
+  while (decoding.hasContent(reader)) {
+    const type = decoding.readVarUint(reader);
+    if (type !== 1) {
+      return new Map();
+    }
+    const update = decoding.createDecoder(decoding.readVarUint8Array(reader));
+    const entries = decoding.readVarUint(update);
+    for (let index = 0; index < entries; index += 1) {
+      const client = decoding.readVarUint(update);
+      decoding.readVarUint(update);
+      states.set(client, JSON.parse(decoding.readVarString(update)));
+    }
+  }
+  return states;
+}
+
+/** Every awareness state these published frames carry, by client id. */
+async function statesIn(frames: readonly Uint8Array[]): Promise<Map<number, unknown>> {
+  const states = new Map<number, unknown>();
+  for (const bytes of frames) {
+    const { kind, payload } = await publishedFrame(bytes);
+    if (kind !== 0) {
+      continue;
+    }
+    for (const [client, state] of awarenessStates(payload as number[])) {
+      states.set(client, state);
+    }
+  }
+  return states;
+}
+
+test('a local awareness change held back before a committing state is published by it', async () => {
+  const now = await room();
+  const client = 3003;
+  const peer = await session({ awarenessClientId: client });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  // A state that commits another key, and that peer's text, so the gate is shut while this
+  // connection has something to select.
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']], ['README.md'])),
+    { status: 'applied', kind: 1 },
+  );
+  assert.deepEqual(await peer.deliver(2, await content(now.peer, 1, 'README.md', 'hello')), {
+    status: 'applied',
+    kind: 0,
+  });
+  peer.takeOutbound();
+  const before = peer.publishedCount;
+
+  peer.setSelection('README.md', { anchor: 1, head: 4 });
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, '§13.1\u2019s step 4 holds the frame back');
+  assert.equal(peer.publishedCount, before, 'and nothing is published for it');
+
+  // The state that commits this key carries the held change out with it; the caller changed
+  // nothing else, and §8.2\u2019s renewal has not come round.
+  assert.deepEqual(
+    await peer.deliver(3, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  assert.equal(peer.publishedCount, before + 1, 'the held state, exactly once');
+  const states = await statesIn(peer.takeOutbound());
+  const held = states.get(client) as { path?: string; selection?: Selection } | undefined;
+  assert.equal(held?.path, 'README.md', 'the state the caller set is the one that went out');
+  assert.deepEqual(
+    peer.resolveSelection('README.md', held?.selection as Selection),
+    { anchor: 1, head: 4 },
+    'with the selection it was set to',
+  );
+
+  await peer.tick(3 + RENEW_MS - 1);
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'and the flush did not send it twice');
+});
+
+test('a change set, cleared and set again inside the gate publishes only the last one', async () => {
+  const now = await room();
+  const client = 4004;
+  const peer = await session({ awarenessClientId: client });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+  peer.setAwareness({ path: 'README.md' });
+  await peer.whenIdle();
+  peer.setAwareness(null);
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'both changes are held inside the gate');
+
+  // A change after the clearing: the flush must carry this one, and the cleared state it
+  // replaced must not come back with it.
+  peer.setAwareness({ path: 'theirs.md' });
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0);
+  const before = peer.publishedCount;
+
+  assert.deepEqual(
+    await peer.deliver(2, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  assert.equal(peer.publishedCount, before + 1, 'the held change was published, exactly once');
+  const states = await statesIn(peer.takeOutbound());
+  assert.deepEqual(states.get(client), { path: 'theirs.md' }, 'the state the caller last set');
+  assert.equal(states.size, 1, 'one state, and no resurrection of the cleared one');
+});
+
+test('a state cleared inside the gate is never published, by the flush or the renewal', async () => {
+  const now = await room();
+  const client = 4104;
+  const peer = await session({ awarenessClientId: client });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+  peer.setAwareness({ path: 'README.md' });
+  await peer.whenIdle();
+  peer.setAwareness(null);
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'the clearing is held like the change before it');
+
+  const before = peer.publishedCount;
+  assert.deepEqual(
+    await peer.deliver(2, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  assert.equal(peer.publishedCount, before, 'the flush published something for a cleared state');
+  assert.equal((await statesIn(peer.takeOutbound())).size, 0, 'no awareness frame went out');
+
+  await peer.tick(3 + RENEW_MS);
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, '§8.2\u2019s renewal resurrected a cleared state');
+});
+
+test('an awareness change made while the gate is open goes out at once, and only once', async () => {
+  const now = await room();
+  const client = 5005;
+  const peer = await session({ awarenessClientId: client });
+  await peer.tick(0);
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+  const before = peer.publishedCount;
+
+  peer.setAwareness({ path: 'README.md' });
+  await peer.whenIdle();
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, 'one frame, at once');
+  assert.deepEqual(
+    awarenessStates((await publishedFrame(out[0] as Uint8Array)).payload as number[]).get(client),
+    { path: 'README.md' },
+  );
+  assert.equal(peer.publishedCount, before + 1);
+
+  // Every later state that commits this key runs the flush; nothing was held for it, so it
+  // publishes nothing.
+  assert.deepEqual(
+    await peer.deliver(2, await state(now.host, 2, [[now.ours, 'guest', 'p-self']])),
+    { status: 'applied', kind: 1 },
+  );
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'the flush republished a state it never held');
+  assert.equal(peer.publishedCount, before + 1);
+});
+
+test('a held awareness change is not published under a dead key, and the re-seat renews it', async () => {
+  const now = await room();
+  const first = 6006;
+  const second = 7007;
+  const peer = await session({ awarenessClientId: first });
+  await peer.tick(0);
+  assert.deepEqual(
+    await peer.deliver(1, await state(now.host, 1, [[now.peer, 'guest', 'p-other']])),
+    { status: 'applied', kind: 1 },
+  );
+  peer.takeOutbound();
+
+  peer.setAwareness({ path: 'README.md' });
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'the gate holds it');
+
+  peer.detach();
+  await peer.reseat('p-new', ['p-host'], second);
+  assert.equal(peer.takeOutbound().length, 0, 'the dead key publishes nothing for it');
+
+  const recommit = await frame(
+    now.host,
+    1,
+    2,
+    utf8({
+      issued: 2,
+      listing: ['README.md'],
+      peers: { [encodeKey(peer.sessionKey)]: { peer_id: 'p-new', role: 'guest' } },
+    }),
+  );
+  assert.deepEqual(await peer.deliver(2, recommit), { status: 'applied', kind: 1 });
+  assert.equal(
+    (await statesIn(peer.takeOutbound())).size,
+    0,
+    'the re-seat must not carry the held state out under the old key',
+  );
+
+  // The re-seat republishes `localState` on its own clock, under the fresh id.
+  await peer.tick(3);
+  await peer.whenIdle();
+  const out = peer.takeOutbound();
+  assert.equal(out.length, 1, '§8.2 renews the local state under the new id');
+  assert.deepEqual(
+    awarenessStates((await publishedFrame(out[0] as Uint8Array)).payload as number[]).get(second),
+    { path: 'README.md' },
+  );
 });
 
 test('the flush carries this connection\'s edits and not a peer\'s content', async () => {

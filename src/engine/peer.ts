@@ -428,6 +428,15 @@ export class PeerSession {
   private localState: AwarenessState | null = null;
   /** The clock of the renewal that last published the local state (§8.2). */
   private awarenessRenewedAt: number | undefined;
+  /**
+   * Whether a local awareness change was made while §13.1's step 4 held this connection back.
+   *
+   * The state itself is in {@link localState} and in the awareness set — what is owed is the
+   * frame, which {@link flushHeldBackAwareness} publishes once a state commits this key. Left to
+   * §8.2's renewal clock alone the room sees the peer's previous caret for a whole window, so a
+   * re-joined client is invisible, caret and selection alike, until the clock heals it.
+   */
+  private awarenessHeld = false;
   /** The clock at which each remote awareness state was last applied, which §8.2 expires by. */
   private readonly awarenessSeenAt = new Map<number, number>();
   /** The clock of the most recent tick or delivery, which a queued frame is stamped with. */
@@ -630,15 +639,23 @@ export class PeerSession {
           // §13.1's step 4 holds every frame but the announcement back until a state commits
           // this key; §13.9 lets a `viewer` publish its awareness, so role decides nothing here.
           if (!this.mayPublish()) {
+            // The state is already in `localState`; what the gate holds is its frame. The state
+            // that commits this key publishes it, without waiting a renewal window for it.
+            this.awarenessHeld = true;
             return;
           }
-          await this.publish('content', encodeAwareness(this.awareness, clients));
-          // §8.2's renewal clock is measured from the state that last went out, whichever
-          // caller published it: a caret moved by hand is a renewal of the same state.
-          this.awarenessRenewedAt = this.clockOfLastMove;
+          await this.publishAwareness(clients);
         });
       },
     );
+  }
+
+  /** One awareness frame for `clients`, with §8.2's renewal clock re-based on it. */
+  private async publishAwareness(clients: number[]): Promise<void> {
+    await this.publish('content', encodeAwareness(this.awareness, clients));
+    // §8.2's renewal clock is measured from the state that last went out, whichever caller
+    // published it: a caret moved by hand is a renewal of the same state.
+    this.awarenessRenewedAt = this.clockOfLastMove;
   }
 
   /**
@@ -1185,6 +1202,9 @@ export class PeerSession {
         }
       }
       this.awarenessRenewedAt = undefined;
+      // The held state belonged to the connection that went; the re-seat republishes `localState`
+      // on its own clock, under the fresh id, and never under the dead key (§9.1, §8.4).
+      this.awarenessHeld = false;
       // The counter is per key (§6.1): the new key starts at 0, and the marks the receiver
       // keeps are keyed by the old and new keys alike, so nothing is lost by resetting it.
       this.counter = 0;
@@ -1552,6 +1572,7 @@ export class PeerSession {
     if (this.commitsOurs()) {
       await this.handshakeOnce(clock);
       await this.flushHeldBackEdits();
+      await this.flushHeldBackAwareness();
       // §13.7 asks for the whole held set when it changes. A hold taken while this connection
       // could not publish — the open that lands the window in the room, before the state that
       // commits this key has arrived — is a change with nothing sent for it, and the renewal
@@ -1580,6 +1601,28 @@ export class PeerSession {
       return;
     }
     await this.publish('content', encodeUpdate(Y.mergeUpdates(held)));
+  }
+
+  /**
+   * Publishes the local awareness state a change made before a state committed this key.
+   *
+   * §13.1's step 4 held it: the state is in `localState`, and leaving the frame to §8.2's renewal
+   * clock is a whole window in which the room still shows the peer's previous presence. What goes
+   * out is `localState`, so the latest change is the one published, and a cleared state stays
+   * cleared — publishing `{}` would put a live presence with a cursor at nowhere back on the wire.
+   */
+  private async flushHeldBackAwareness(): Promise<void> {
+    if (!this.awarenessHeld || this.localState === null) {
+      // A clearing owes nothing: there is no state left to publish, and the next local change
+      // that does set one is held again on its own.
+      this.awarenessHeld = false;
+      return;
+    }
+    if (!this.mayPublish()) {
+      return;
+    }
+    this.awarenessHeld = false;
+    await this.publishAwareness([this.awareness.clientID]);
   }
 
   /** §13.2 and §13.3: a `kind = 0` plaintext, applied to the session document and answered. */
