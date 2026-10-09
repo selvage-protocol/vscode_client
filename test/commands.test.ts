@@ -575,6 +575,10 @@ test('a guest lands in the room\'s first document, even one that arrives after t
   assert.deepEqual(bundle.stub.registered.shown, [], 'an empty room put something in the window');
 
   // A room that was empty at join still owes the guest the landing the join could not make.
+  // The host holds the path before its folder walk names it, and the two reports are separate
+  // frames: the guest is told the room holds the path while its own listing still names nothing,
+  // so the landing takes the address that is honest for what it knows — a `selvage:` document —
+  // and the listing that follows is what moves the document onto the room's file (`held.ts`).
   await host.open('workspace/README.md');
   const shown = await waitFor('the room document to open', () => {
     const found = bundle.stub.registered.shown.filter((uri) => uri.startsWith('file:'));
@@ -590,7 +594,10 @@ test('a guest lands in the room\'s first document, even one that arrives after t
   );
   assert.deepEqual(
     bundle.stub.registered.shown,
-    [mirrorFileUri(landingStorage, roomId, 'workspace/README.md')],
+    [
+      `selvage:/workspace/README.md`,
+      mirrorFileUri(landingStorage, roomId, 'workspace/README.md'),
+    ],
     'a document that arrived later pulled the window away from the guest',
   );
 });
@@ -3849,6 +3856,264 @@ test('a document the room opens joins even with no listing at all', async (t) =>
     host.text('late.md') === 'guest edit\n' ? host.text('late.md') : false,
   );
   assert.equal(echoed, 'guest edit\n');
+});
+
+/**
+ * A guest on a room whose host holds `path` while its folder names nothing: `§13.3`'s two sets
+ * at their most distinct, since keeping a document is permitted where offering it is not. The
+ * room holds a path no listing names, so this window has no file for it and its document is
+ * addressed at `selvage:` (`held.ts`).
+ */
+async function heldRoom(
+  t: TestContext,
+  path: string,
+): Promise<{ host: LiveSession; bundle: LoadedExtension; storage: string; roomId: string }> {
+  const { host, invite, roomId } = await room(t, []);
+  await host.open(path);
+  // The listing is the host's folder, and the folder does not name this path: the hold is the
+  // whole of what the room has said about it.
+  await host.grant([]);
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
+  await waitFor('the guest to be told the room holds the path', () =>
+    roomOffer(bundle).includes(path) ? true : false,
+  );
+  return { host, bundle, storage, roomId };
+}
+
+/** A `selvage:` document stand-in, as `mirrorDocument` is one for a mirror file. */
+function heldDocument(
+  bundle: LoadedExtension,
+  path: string,
+  holder: { text: string },
+): Record<string, unknown> {
+  return {
+    uri: bundle.stub.Uri.parse(`selvage:/${path}`),
+    eol: 1,
+    isDirty: false,
+    getText: () => holder.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    save: () => Promise.resolve(true),
+  };
+}
+
+/** The provider `activate` registered for the `selvage:` address. */
+function heldFiles(
+  bundle: LoadedExtension,
+): LoadedExtension['stub']['registered']['fileSystemProviders'][number] {
+  const found = bundle.stub.registered.fileSystemProviders.find(
+    (each) => each.scheme === 'selvage',
+  );
+  assert.ok(found !== undefined, 'no file system was registered for the `selvage:` address');
+  return found;
+}
+
+test('a path the room holds and its listing does not name opens as a `selvage:` document', async (t) => {
+  const { host, bundle, storage, roomId } = await heldRoom(t, 'notes/kept.md');
+  const applied: string[] = [];
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      applied.push(change.text);
+    }
+    return true;
+  };
+
+  // The room offers exactly one document, so the command lands in it without a picker.
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const uri = 'selvage:/notes/kept.md';
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes(uri) ? true : false,
+  );
+  assert.equal(bundle.stub.registered.errors.length, 0, 'the open was refused');
+  // A document the editor may type into, not a read-only view of the room's text: `DESIGN.md`
+  // §4.2 has every holder of the invite token edit the session.
+  assert.equal(heldFiles(bundle).options?.isReadonly, false, 'the address was registered read-only');
+  assert.deepEqual(bundle.stub.registered.providerReads, [uri], 'the document was served elsewhere');
+  // The live session's own gate, and not only the provider's stand-in: a `selvage:` URI a person
+  // can type or paste names a path the room holds, or it names nothing at all — so nothing takes
+  // a hold the room should not have.
+  assert.throws(
+    () => heldFiles(bundle).provider.readFile(bundle.stub.Uri.parse('selvage:/elsewhere.md')),
+    /not found/,
+  );
+
+  // The room's document and not a copy of it: the hold reaches the room, and this window's
+  // mirror has grown nothing — the listing is still the whole of the mirror's shape.
+  await waitFor('the hold to reach the room', () =>
+    host.peerDocuments().includes('notes/kept.md') ? true : false,
+  );
+  assert.deepEqual(dirEntries(mirrorWindowDir(storage, roomId)), ['.selvage-mirror.json']);
+
+  // What the room writes reaches the document through the same hold and apply a mirror file's
+  // text does, and the address serves that text back: the room is read, never copied to a file.
+  host.insert('notes/kept.md', 0, 'the room wrote this\n');
+  await waitFor('the room text to reach the document', () =>
+    applied.join('') === 'the room wrote this\n' ? true : false,
+  );
+  assert.equal(
+    new TextDecoder().decode(heldFiles(bundle).provider.readFile(bundle.stub.Uri.parse(uri))),
+    'the room wrote this\n',
+  );
+});
+
+test('the open command offers a held path the listing does not name', async (t) => {
+  const { host, bundle } = await heldRoom(t, 'notes/kept.md');
+  await host.open('scratch.md');
+  await host.grant([]);
+
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  const picked = await waitFor('the document picker', () =>
+    bundle.stub.registered.quickPicks.length > 0 ? bundle.stub.registered.quickPicks[0] : false,
+  );
+  assert.deepEqual(
+    [...(picked.items as string[])].sort(),
+    ['notes/kept.md', 'scratch.md'],
+    'the picker is not the room\'s own document set',
+  );
+  assert.equal(bundle.stub.registered.inputs.length, 0, 'a path was asked for by hand');
+});
+
+test('an edit to a path the room holds and its listing does not name publishes', async (t) => {
+  const { host, bundle } = await heldRoom(t, 'kept.md');
+  const holder = { text: '' };
+  const document = heldDocument(bundle, 'kept.md', holder);
+  bundle.stub.registered.textDocuments.push(document);
+  bundle.stub.fire('openTextDocument', document);
+  await waitFor('the hold to reach the room', () =>
+    host.peerDocuments().includes('kept.md') ? true : false,
+  );
+
+  holder.text = 'guest edit\n';
+  bundle.stub.fire('changeTextDocument', { document });
+  const published = await waitFor('the edit to publish', () =>
+    host.text('kept.md') === 'guest edit\n' ? true : false,
+  );
+  assert.equal(published, true);
+  // Never a file the room does not list: the sentence about one is not said for an address that
+  // is the room's own document, whatever the listing names.
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('is not in the room')),
+    false,
+    'the address was treated as an unlisted file in the mirror',
+  );
+});
+
+test('a listed path beside a held one opens as the mirror file, and the mirror holds the listing', async (t) => {
+  const { host, invite, roomId } = await room(t, []);
+  await host.open('kept.md');
+  // The listing names one of the two the room holds: the other is the room's alone.
+  await host.grant(['a.md']);
+  const { bundle, storage } = activated(t);
+  await bundle.stub.commands.executeCommand('selvage.join', { invite, displayName: 'Bob' });
+  await landStashedJoin(bundle, storage, roomId, 'Bob', { openOnJoin: false });
+  await waitForMirrorFiles(storage, roomId, ['a.md']);
+
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'a.md' });
+  await waitFor('the listed path to open', () =>
+    bundle.stub.registered.opened.includes(mirrorFileUri(storage, roomId, 'a.md')) ? true : false,
+  );
+  await waitFor('the guest to be told the room holds both', () =>
+    roomOffer(bundle).includes('kept.md') ? true : false,
+  );
+  await bundle.stub.commands.executeCommand('selvage.openDocument', { path: 'kept.md' });
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes('selvage:/kept.md') ? true : false,
+  );
+  assert.deepEqual(bundle.stub.registered.opened, [
+    mirrorFileUri(storage, roomId, 'a.md'),
+    'selvage:/kept.md',
+  ]);
+  assert.deepEqual(dirEntries(mirrorWindowDir(storage, roomId)), ['.selvage-mirror.json', 'a.md']);
+  // A path the listing names is the mirror's file and never this address, whatever the room
+  // holds open on it.
+  assert.throws(
+    () => heldFiles(bundle).provider.readFile(bundle.stub.Uri.parse('selvage:/a.md')),
+    /not found/,
+  );
+});
+
+test('the listing naming a held path gives the document over to the room\'s file', async (t) => {
+  const { host, bundle, storage, roomId } = await heldRoom(t, 'kept.md');
+  await bundle.stub.commands.executeCommand('selvage.openDocument');
+  await waitFor('the held path to open', () =>
+    bundle.stub.registered.opened.includes('selvage:/kept.md') ? true : false,
+  );
+  // The tab the open put in the window: what must not outlive the address.
+  const tab = { input: { uri: bundle.stub.Uri.parse('selvage:/kept.md') } };
+  bundle.stub.window.tabGroups.all.push({ tabs: [tab] });
+
+  // The host's folder names it now: the mirror materialises the file, and the document moves to
+  // it — one document for one room path, at the address the room's listing gives it.
+  await host.grant(['kept.md']);
+  await waitForMirrorFiles(storage, roomId, ['kept.md']);
+  await waitFor('the file to open', () =>
+    bundle.stub.registered.opened.includes(mirrorFileUri(storage, roomId, 'kept.md')) ? true : false,
+  );
+  assert.ok(
+    bundle.stub.registered.closedTabs.flat().includes(tab),
+    'the tab on the old address stayed open',
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.find((message) => message.includes('is now in the room\'s listing')),
+    'Selvage: kept.md is now in the room\'s listing, so it opened as a file.',
+  );
+  assert.ok(host.peerDocuments().includes('kept.md'), 'the room lost the document');
+});
+
+test('a held path with unsaved changes keeps its tab when the listing names it', async (t) => {
+  const { host, bundle, storage, roomId } = await heldRoom(t, 'kept.md');
+  const holder = { text: 'unsaved\n' };
+  const document = { ...heldDocument(bundle, 'kept.md', holder), isDirty: true };
+  bundle.stub.registered.textDocuments.push(document);
+  const tab = { input: { uri: bundle.stub.Uri.parse('selvage:/kept.md') } };
+  bundle.stub.window.tabGroups.all.push({ tabs: [tab] });
+  bundle.stub.fire('openTextDocument', document);
+  await waitFor('the hold to reach the room', () =>
+    host.peerDocuments().includes('kept.md') ? true : false,
+  );
+
+  // Closing it would ask to save or discard what the person typed, so it stays — unshared, as a
+  // copy kept when its path left the room does — and the file is in the window's tree for anyone
+  // who wants it.
+  await host.grant(['kept.md']);
+  const said = await waitFor('the kept copy to be told', () =>
+    bundle.stub.registered.warnings.find((message) => message.includes('is now in the room\'s listing')) ??
+    false,
+  );
+  assert.equal(
+    said,
+    'Selvage: kept.md is now in the room\'s listing; your unsaved copy is kept but is not the file.',
+  );
+  assert.deepEqual(bundle.stub.registered.closedTabs, [], 'a tab with unsaved changes was closed');
+  assert.equal(
+    bundle.stub.registered.opened.includes(mirrorFileUri(storage, roomId, 'kept.md')),
+    false,
+    'the file opened over a kept copy',
+  );
+});
+
+test('a link planted in the mirror does not decide a held path with no file', async (t) => {
+  const { host, bundle, storage, roomId } = await heldRoom(t, 'notes/kept.md');
+  // A tool's link where the room's file would be: the address has no file there, so the link is
+  // not this document and the mirror-leaf refusal is about something else.
+  const root = mirrorWindowDir(storage, roomId);
+  mkdirSync(join(root, 'notes'), { recursive: true });
+  symlinkSync('/etc/passwd', join(root, 'notes', 'kept.md'));
+
+  const holder = { text: '' };
+  const document = heldDocument(bundle, 'notes/kept.md', holder);
+  bundle.stub.registered.textDocuments.push(document);
+  bundle.stub.fire('openTextDocument', document);
+  await waitFor('the hold to reach the room', () =>
+    host.peerDocuments().includes('notes/kept.md') ? true : false,
+  );
+  assert.equal(
+    bundle.stub.registered.warnings.some((message) => message.includes('is not a regular file')),
+    false,
+    'the mirror leaf decided a document that has no file',
+  );
 });
 
 test('saving a file the room does not list says so once', async (t) => {

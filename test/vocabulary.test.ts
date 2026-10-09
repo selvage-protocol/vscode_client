@@ -96,6 +96,10 @@ const SENTENCES = [
   // A document open on a path the host deleted or moved out of the room.
   '`Selvage: ${} is no longer in the room, so it was closed.`',
   '`Selvage: ${} is no longer in the room; your unsaved copy is kept but no longer shared.`',
+  // A path the room held without listing it, whose listing then named it: the `selvage:`
+  // document gives way to the room's file (`held.ts`).
+  '`Selvage: ${} is now in the room\'s listing, so it opened as a file.`',
+  '`Selvage: ${} is now in the room\'s listing; your unsaved copy is kept but is not the file.`',
   // What the room's own reports say. The host-away, host-back and room-gone sentences are the
   // web's, written once in the bridge; `BRIDGE_WORDS` below pins that the adapter says them.
   '`Selvage: the editor would not apply the room\'s change to ${}; the file may be read-only.`',

@@ -107,6 +107,18 @@ const registered = {
    * reads since `reset`.
    */
   readHold: undefined,
+  /**
+   * Every `workspace.registerFileSystemProvider`, as `{ scheme, provider, options }`: what a
+   * test asks for the provider a scheme's documents are served by, and whether the editor was
+   * told that scheme is writable. Not cleared by `reset`, like `listeners`: a provider is
+   * registered by `activate`, and a test that resets mid-session still reads the window's
+   * documents through it.
+   */
+  fileSystemProviders: [],
+  /** Every provider `readFile`, as the URI asked for, in order. */
+  providerReads: [],
+  /** Every provider `writeFile`, as `{ uri, text }`, in order. */
+  providerWrites: [],
 };
 
 /**
@@ -411,6 +423,8 @@ function reset() {
   mounted = null;
   registered.watchers.length = 0;
   registered.watcherFailure = undefined;
+  registered.providerReads.length = 0;
+  registered.providerWrites.length = 0;
   watcherBudget = 0;
   registered.treeDataProviders.length = 0;
   registered.fileDecorationProviders.length = 0;
@@ -518,23 +532,28 @@ function parseUri(value) {
   };
 }
 
-/** A read-only document stand-in: its text is whatever the guest provider serves. */
-function documentFor(uri) {
+/**
+ * A read-only document stand-in: its text is whatever the document was opened with — the guest
+ * provider's bytes where a provider served it, the seeded disk for a `file:` one, and empty
+ * otherwise. A `file:` document the working copy does not hold opens empty: the mirror lives on
+ * the real filesystem, which this stand-in cannot read, so the room's text arrives through the
+ * hold the open takes.
+ */
+function documentFor(uri, served) {
   return {
     uri,
     eol: 1,
     isDirty: false,
     getText: () => {
-      // A `file:` document is the host's own working copy, which is the disk a test seeded.
+      if (served !== undefined) {
+        return served;
+      }
       if (uri.scheme === 'file') {
         const file = disk.files.get(pathOf(uri));
         if (file !== undefined) {
           return new TextDecoder().decode(file.bytes);
         }
       }
-      // A `file:` document the working copy does not hold: the mirror lives on the real
-      // filesystem, which this stand-in cannot read, so it opens empty and the room's
-      // text arrives through the hold the open takes.
       return '';
     },
     positionAt: (offset) => offset,
@@ -676,6 +695,7 @@ module.exports = {
   FileSystemError: {
     NoPermissions: (uri) => new Error(`no permissions: ${String(uri)}`),
     FileNotFound: (uri) => new Error(`not found: ${String(uri)}`),
+    FileNotADirectory: (uri) => new Error(`not a directory: ${String(uri)}`),
   },
 
   Position: class {
@@ -869,7 +889,33 @@ module.exports = {
     },
     openTextDocument(uri) {
       registered.opened.push(uri.toString());
-      return Promise.resolve(documentFor(uri));
+      const provider = registered.fileSystemProviders.find((entry) => entry.scheme === uri.scheme);
+      if (provider === undefined) {
+        return Promise.resolve(documentFor(uri));
+      }
+      // A scheme with a provider behind it is served and reported the way the editor serves one:
+      // the provider's bytes are the document's first content, and the document is in the window
+      // — `workspace.textDocuments` holds it and the editor reports it. A test can fire an open
+      // for a `file:` document because it can seed one; a provider-backed document has no disk
+      // behind it, so this is the only way one arrives. A provider that refuses the URI —
+      // `FileNotFound` for a path its session does not hold — rejects, as the editor does.
+      return Promise.resolve(provider.provider.readFile(uri)).then((bytes) => {
+        registered.providerReads.push(uri.toString());
+        const document = documentFor(uri, new TextDecoder().decode(bytes));
+        registered.textDocuments.push(document);
+        fire('openTextDocument', document);
+        return document;
+      });
+    },
+    registerFileSystemProvider(scheme, provider, options) {
+      const entry = { scheme, provider, options };
+      const at = registered.fileSystemProviders.findIndex((each) => each.scheme === scheme);
+      if (at === -1) {
+        registered.fileSystemProviders.push(entry);
+      } else {
+        registered.fileSystemProviders[at] = entry;
+      }
+      return disposable();
     },
     applyEdit: (edit) => registered.applyEditImpl(edit),
     createFileSystemWatcher,

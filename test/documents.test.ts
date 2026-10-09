@@ -452,8 +452,47 @@ test('a guest shares the mirror root and nothing else', () => {
   // this window's editor, so a document at one never carries the room's text.
   assert.equal(editor.register(doc('file', '/mirror/.vscode/settings.json')), undefined);
   assert.equal(editor.register(doc('file', '/mirror/team.code-workspace')), undefined);
-  // Only a `file:` scheme names a shared document.
-  assert.equal(editor.register(doc('selvage', '/mirror/a.md')), undefined);
+});
+
+/**
+ * A guest's `selvage:` document is a room path by the address's own rule (`held.ts`): the URI's
+ * path is the room path, and the mirror root has nothing to do with it \u2014 the address is for the
+ * paths the mirror has no file for. The grant's shape rule gates it, and the marker and the
+ * workspace configuration are refused there as they are in the mirror.
+ */
+test('a guest shares a `selvage:` address by the room path it names', () => {
+  const editor = new WorkspaceEditor({
+    role: 'guest',
+    mirrorRoot: '/mirror',
+    folders: [],
+    report: () => undefined,
+  });
+  type Document = Parameters<typeof editor.register>[0];
+  const doc = (path: string): Document =>
+    ({ uri: { scheme: 'selvage', path, fsPath: path, query: '', toString: () => `selvage:${path}` } }) as unknown as Document;
+  assert.equal(editor.register(doc('/a.md')), 'a.md');
+  assert.equal(editor.register(doc('/notes/b.md')), 'notes/b.md');
+  // A path a grant would never carry: the shape rule is the same one a mirror file passes.
+  assert.equal(editor.register(doc('/../escape.md')), undefined);
+  assert.equal(editor.register(doc('/')), undefined);
+  // The mirror's own marker is bookkeeping, and the workspace's configuration is applied rather
+  // than shown, so neither is a room document at either address.
+  assert.equal(editor.register(doc(`/${MIRROR_MARKER}`)), undefined);
+  assert.equal(editor.register(doc('/.vscode/settings.json')), undefined);
+  assert.equal(editor.register(doc('/team.code-workspace')), undefined);
+});
+
+/**
+ * A window with no mirror has no room to share a document with, so the `selvage:` address names
+ * nothing there any more than a mirror path does.
+ */
+test('a guest with no mirror shares no `selvage:` document either', () => {
+  const editor = new WorkspaceEditor({ role: 'guest', folders: [], report: () => undefined });
+  type Document = Parameters<typeof editor.register>[0];
+  const document = {
+    uri: { scheme: 'selvage', path: '/a.md', fsPath: '/a.md', query: '', toString: () => 'selvage:/a.md' },
+  } as unknown as Document;
+  assert.equal(editor.register(document), undefined);
 });
 
 test('a guest with no mirror shares nothing', () => {
