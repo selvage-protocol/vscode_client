@@ -4116,6 +4116,112 @@ test('a link planted in the mirror does not decide a held path with no file', as
   );
 });
 
+test('a window with no mirror serves nothing at the `selvage:` address', async (t) => {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  // This window is the host and its folder names nothing, so the room's hold on the guest's path
+  // is the only thing that names it: `heldWithoutFile`'s own shape, in a window with no mirror.
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  const guest = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
+  t.after(async () => {
+    await guest.disconnect();
+  });
+  await guest.open('notes/kept.md');
+  await waitFor('the room to hold the path', () =>
+    roomOffer(bundle).includes('notes/kept.md') ? true : false,
+  );
+
+  // A hold alone must not put text at an address this window cannot share a document under: a
+  // host's documents are its own files, and the editor's own share rule says so. Serving one
+  // here would leave a document in front of the person whose edits the room never hears, so the
+  // provider answers what `documentUri` and `heldShareablePath` already answer — the mirror is
+  // what an address on this scheme is made of.
+  const uri = bundle.stub.Uri.parse('selvage:/notes/kept.md');
+  assert.throws(() => heldFiles(bundle).provider.readFile(uri), /not found/);
+  assert.throws(() => heldFiles(bundle).provider.stat(uri), /not found/);
+  // And the editor's own open of that address goes nowhere: a provider-backed document is served
+  // by its provider, so a refusal there is the dead end gone rather than merely hidden.
+  await assert.rejects(async () => await bundle.stub.workspace.openTextDocument(uri), /not found/);
+  assert.deepEqual(bundle.stub.registered.providerReads, [], 'the address served a document');
+});
+
+test('a save of a `selvage:` document clears its marker and writes nothing', async (t) => {
+  const { host, bundle } = await heldRoom(t, 'notes/kept.md');
+  const buffer = { text: '', dirty: false };
+  const saves: string[] = [];
+  const roomText = 'the room wrote this\n';
+  const later = `${roomText}and this later\n`;
+  let landedLater: () => void = () => undefined;
+  const laterArrived = new Promise<void>((resolve) => {
+    landedLater = resolve;
+  });
+  const uri = bundle.stub.Uri.parse('selvage:/notes/kept.md');
+  const document = {
+    uri,
+    eol: 1,
+    get isDirty(): boolean {
+      return buffer.dirty;
+    },
+    getText: () => buffer.text,
+    positionAt: (offset: number) => offset,
+    offsetAt: (position: number) => position,
+    // The editor's own save, as VS Code runs one for a provider-backed document: the buffer's
+    // bytes go through the provider — which is the address's whole answer on a write — and then
+    // the dirty marker clears.
+    save: () => {
+      saves.push(buffer.text);
+      heldFiles(bundle).provider.writeFile(uri, new TextEncoder().encode(buffer.text), {
+        create: false,
+        overwrite: true,
+      });
+      buffer.dirty = false;
+      return Promise.resolve(true);
+    },
+  };
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as { edits: Array<{ text: string }> }).edits) {
+      buffer.text += change.text;
+    }
+    // The room's change landed through an apply of the client's own, which leaves the document
+    // dirty until it is saved: the marker the save below is for.
+    buffer.dirty = true;
+    if (buffer.text === later) {
+      landedLater();
+    }
+    return true;
+  };
+  bundle.stub.registered.textDocuments.push(document);
+  bundle.stub.fire('openTextDocument', document);
+  await waitFor('the hold to reach the room', () =>
+    host.peerDocuments().includes('notes/kept.md') ? true : false,
+  );
+
+  host.insert('notes/kept.md', 0, roomText);
+  const saved = await waitFor('the save to run', () => (saves.length > 0 ? saves : false));
+  assert.deepEqual([...saved], [roomText], 'the save did not write the room\'s own text');
+  assert.equal(buffer.dirty, false, 'the save left the dirty marker up');
+  // Nothing was written anywhere: there is no file at this address for a second copy, so the
+  // room's text is what it was.
+  assert.equal(host.text('notes/kept.md'), roomText, 'a save moved the room\'s text');
+  // And the address still reads the room, live: the unit of that is the room's next edit, which
+  // is served the moment it has landed — a write that had kept the buffer's bytes would be
+  // answering with them instead, and would only stop at its own next save.
+  host.insert('notes/kept.md', roomText.length, 'and this later\n');
+  await laterArrived;
+  assert.equal(
+    new TextDecoder().decode(heldFiles(bundle).provider.readFile(uri)),
+    later,
+    'the address stopped reading the room after a save',
+  );
+});
+
 test('saving a file the room does not list says so once', async (t) => {
   const { host, invite, roomId } = await room(t, []);
   await host.grant(['a.md']);

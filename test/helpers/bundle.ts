@@ -70,7 +70,11 @@ export interface Registered {
     scheme: string;
     provider: {
       readFile(uri: unknown): Uint8Array;
-      writeFile(uri: unknown, content: Uint8Array): Thenable<void> | void;
+      writeFile(
+        uri: unknown,
+        content: Uint8Array,
+        options?: { create: boolean; overwrite: boolean },
+      ): Thenable<void> | void;
       stat(uri: unknown): { type: number; size: number };
     };
     options: { isReadonly?: boolean } | undefined;
@@ -186,6 +190,14 @@ export interface EditorStub {
       all: Array<{ tabs: unknown[] }>;
       close(tabs: readonly unknown[]): Promise<boolean>;
     };
+  };
+  /**
+   * The editor's own document open, as the extension calls it. A provider-backed scheme is
+   * served through its registered provider, so a URI the provider refuses cannot become a
+   * document — which is what decides whether an address is openable at all.
+   */
+  workspace: {
+    openTextDocument(uri: unknown): Promise<unknown>;
   };
   /** The editor's `Uri`, for the mirror file a test opens the room through. */
   Uri: {
