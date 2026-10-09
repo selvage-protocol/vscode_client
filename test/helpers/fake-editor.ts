@@ -3,9 +3,9 @@
  *
  * A change this adapter applies itself reports back as a change event after a few
  * macrotasks — which is how a coalesced editor event arrives after the call that caused it
- * returned — while a keystroke reports before its own call returns. That difference is the
- * whole of `SPIKES.md` spike 2, and modelling it is what makes the echo guard testable
- * without an editor.
+ * returned — while a keystroke reports before its own call returns. A guard that bets on
+ * that timing loses or duplicates an edit; comparing content does not. Modelling the
+ * difference is what makes the echo guard testable without an editor.
  */
 
 import type { EditorHost, GrantedRead, GrantRefusal, Report, SessionBridge } from '../../src/bridge/bridge.ts';

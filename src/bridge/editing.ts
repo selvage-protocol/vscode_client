@@ -2,12 +2,13 @@
  * The document policy: line endings, the smallest change between two texts, and the
  * comparison that stands in for an echo guard.
  *
- * All three are settled by measurement in `SPIKES.md`. Two editors with different line
- * endings rewrite each other for ever unless the replica holds LF and the adapter restores
- * the document's own endings on render (spike 3); a "this edit is mine" flag loses or
- * duplicates an edit depending on when the coalesced change event lands, while comparing
- * the buffer's text against the replica's is not a bet on timing (spike 2). This module is
- * the policy those two findings add up to, with no editor in scope.
+ * All three are measured rather than chosen (`npm run test:spikes`,
+ * `test/spikes/eol.test.ts` and `test/spikes/echo-guard.test.ts`). Two editors with
+ * different line endings rewrite each other for ever unless the replica holds LF and the
+ * adapter restores the document's own endings on render; a "this edit is mine" flag loses
+ * or duplicates an edit depending on when the coalesced change event lands, while comparing
+ * the buffer's text against the replica's is not a bet on timing. This module is the policy
+ * those two findings add up to, with no editor in scope.
  */
 
 /** A document's line endings. A file with neither (or an empty one) is `'\n'`. */
@@ -61,9 +62,9 @@ function splitsPair(text: string, offset: number): boolean {
  *
  * A whole-document replacement is the same edit with `start = 0`, and it is what the
  * cheapest implementation does. It is worth the extra scan to avoid: it collapses undo
- * granularity, resets folding and can jump the local caret, and the replica's delta is
- * available for free (`SPIKES.md`, spike 2 finding 2). An empty change — `start === end`,
- * `text === ''` — means the texts already agree.
+ * granularity, resets folding and can jump the local caret, and the replica's new text is at
+ * hand when it changes, so the smallest change costs nothing extra. An empty change —
+ * `start === end`, `text === ''` — means the texts already agree.
  */
 export function diff(from: string, to: string): TextChange {
   if (from === to) {

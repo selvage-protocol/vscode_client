@@ -1,5 +1,5 @@
 /**
- * Spike 1 (§7 risk 1): does a cursor survive a concurrent edit, and in what unit is an
+ * Spike 1: does a cursor survive a concurrent edit, and in what unit is an
  * offset measured?
  *
  * The experiment is run over the primitives the engine uses: two `Y.Doc`s exchanging

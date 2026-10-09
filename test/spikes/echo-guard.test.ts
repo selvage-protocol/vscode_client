@@ -1,11 +1,11 @@
 /**
- * Spike 2 (§7 risk 2): the CRDT ↔ buffer echo, and whether a boolean guard survives the
+ * Spike 2: the CRDT ↔ buffer echo, and whether a boolean guard survives the
  * timing.
  *
  * VS Code gives no way to tell who caused a text change: `WorkspaceEdit` carries no
  * author and `TextDocumentChangeEvent` has only `reason: Undo | Redo | undefined`. Every
- * extension therefore suppresses the event its own `applyEdit` produced, and the study's
- * §2.5 says the guard window is the likeliest source of "an edit vanished" bugs. This
+ * extension therefore suppresses the event its own `applyEdit` produced, and the guard
+ * window is the likeliest source of "an edit vanished" bugs. This
  * models the buffer API — an edit that dispatches a change event a tick or two later, as
  * a coalesced event does — and measures what each guard does.
  */
