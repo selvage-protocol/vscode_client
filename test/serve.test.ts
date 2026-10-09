@@ -703,6 +703,30 @@ test('a leaf swapped for a link between the name and the read is refused', async
   assert.ok(swapped, 'the leaf was not looked up through the seam: this test covers nothing');
 });
 
+test('a leaf grown past the bound between the name and the read is refused', async (t) => {
+  const tree = readTree(t, (put) => {
+    put('leaf.txt', 'small\n');
+  });
+
+  // The type and the size are read from the descriptor the bytes come from, not from the name a
+  // moment earlier, so a file grown after the lookup cannot get a peer past the bound: the size
+  // the read is held to is the size of the object being read.
+  let swapped = false;
+  afterLstat((path) => {
+    if (!path.endsWith('/leaf.txt') || swapped) {
+      return;
+    }
+    swapped = true;
+    writeFileSync(join(tree.folder, 'leaf.txt'), 'x'.repeat(MAX_GRANT_FILE_BYTES + 1));
+  });
+  t.after(() => {
+    afterLstat(undefined);
+  });
+
+  assert.deepEqual(await readGrantedText(folders(), 'leaf.txt'), unreadable('too-large'));
+  assert.ok(swapped, 'the leaf was not looked up through the seam: this test covers nothing');
+});
+
 test('a peer read of a file this window cannot open is `missing`, not a shape it is not', async (t) => {
   const tree = readTree(t, (put) => {
     put('locked.txt', 'secret\n');
