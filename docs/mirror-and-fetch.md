@@ -38,9 +38,8 @@ guest's read goes through the editor's own file system: the grant's checks bound
 and the window resolves the name for itself, having no descriptor to keep. A folder shared from
 inside a repository does not honor a `.gitignore` above it, and neither git's user-wide ignore
 (`core.excludesFile`) nor any other rule outside the folder is read, because those are rules of the
-person at the machine rather
-than of the project being shared. A file the host itself opens is the host's own act: the
-name-based excludes bind it and the folder's ignore files do not.
+person at the machine rather than of the project being shared. A file the host itself opens is the
+host's own act: the name-based excludes bind it and the folder's ignore files do not.
 
 A guest's window holds the room as a real directory under the extension's global storage, so the
 trees, search and language servers a person already runs work on the room's files. A tool that
