@@ -14,7 +14,7 @@
  * This has heavier prerequisites than `npm test` — a network, Xvfb, a VS Code build pinned
  * below and downloaded the first time that version is used, `nix` for the shared-library path
  * an unpackaged Electron binary needs on NixOS — so it is not part of `npm test`/`test:fast` or
- * `ci.yml` (see `docs/checks.md`). Run it with `scripts/e2e/run-two-instance.sh` from the
+ * `ci.yml`. Run it with `scripts/e2e/run-two-instance.sh` from the
  * repository root; `.github/workflows/e2e-current.yml` runs the same script weekly against the
  * current stable VS Code build.
  *
