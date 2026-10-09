@@ -115,7 +115,8 @@ completing command there.
 - **Undo is shared.** A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a
   peer's edit; that change is published like any other and the room reconverges.
 - **A formatter that edits the document is published** like any other change, so with formatters
-  running on both sides a session can echo. Turn format-on-type off while collaborating.
+  running on both sides a session can echo. Turn format-on-type and format-on-save off while
+  collaborating.
 - **A big file is not carried.** A document over 1 MiB stays out of the room, and a request for
   one is refused with the reason.
 - **A path the room holds without listing it has no file here**, so it cannot be opened from the
