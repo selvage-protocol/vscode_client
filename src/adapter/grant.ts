@@ -408,14 +408,28 @@ function withinFolders(
  */
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 
+/**
+ * `O_NONBLOCK` where the platform has it, so no open of a leaf can wait. A leaf this window
+ * opens is a name a concurrent writer can have replaced with a FIFO since it was looked up, and
+ * `O_NOFOLLOW` refuses a link rather than a FIFO: an ordinary open of a FIFO waits for a writer
+ * inside a thread-pool thread, so the descriptor's own type — the thing that refuses it — is
+ * never reached, and the thread waits for as long as the writer leaves it there. A non-blocking
+ * open of one answers at once, whatever is on the other end of it.
+ */
+const NO_BLOCK = constants.O_NONBLOCK ?? 0;
+
 /** The shared folder itself: a link at the root *is* the folder the front-end named. */
 const FOLDER = constants.O_RDONLY | constants.O_DIRECTORY;
 
 /** A step inside it: a directory, and never a link to one. */
 const STEP = FOLDER | NO_FOLLOW;
 
-/** A leaf: the file itself, and never a link to one. */
-const LEAF = constants.O_RDONLY | NO_FOLLOW;
+/**
+ * A leaf: the file itself, and never a link to one. What refuses a leaf that is not a plain file
+ * is the type of the descriptor the open answered with, so that open must not wait for one: see
+ * `NO_BLOCK`.
+ */
+const LEAF = constants.O_RDONLY | NO_FOLLOW | NO_BLOCK;
 
 /** The decision `pinnedSteps` answers with, seeded from the name this platform publishes. */
 const steps = { pinned: existsSync('/proc/self/fd') };
