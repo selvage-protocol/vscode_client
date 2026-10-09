@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { RelaySession } from '../src/engine/relay.ts';
-import { BUNDLE, landStashedJoin, loadBundle, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
+import { BUNDLE, landStashedJoin, loadBundle, testHostFolder, testStoragePath, waitForMirrorFiles } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
 import { RealServer } from './helpers/selvaged.ts';
 import { waitFor } from './helpers/wait.ts';
@@ -129,8 +129,10 @@ test('the extension hosts a version-2 room a second peer can verify and edit in'
     await server.stop();
   });
   const { bundle } = activated(t);
-  // The working copy the host shares: one file, which the mint state seals the name of.
-  bundle.stub.put(PATH, SEED);
+  // The folder the host shares, really on disk: one file, which the mint state seals the name of,
+  // and whose text the host reads out of its own folder for the guest below.
+  const folder = testHostFolder(bundle, t);
+  folder.put(PATH, SEED);
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',

@@ -13,7 +13,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -22,6 +31,7 @@ import {
   loadBundle,
   mirrorFileUri,
   mirrorWindowDir,
+  testHostFolder,
   testStoragePath,
   waitForMirrorFiles,
   waitForMirrorGone,
@@ -1495,12 +1505,13 @@ test('a symbolic link to a directory is not listed, and nothing behind it is ser
     await server.stop();
   });
   const { bundle } = activated(t);
-  bundle.stub.put('README.md', 'the readme\n');
+  const folder = testHostFolder(bundle, t);
+  folder.put('README.md', 'the readme\n');
   // A directory link out of the shared folder, as a monorepo package link or a shared config
-  // directory is. The editor reports one as a directory *and* a link, and what is behind it
-  // belongs to whatever it names rather than to the folder the invite was accepted on.
-  bundle.stub.put('/outside/secret.txt', 'OUTSIDE THE ROOT\n');
-  bundle.stub.putLink('linkd', 'directory', '/outside');
+  // directory is. What is behind it belongs to whatever it names rather than to the folder the
+  // invite was accepted on, so neither the listing nor a read a peer asks for may reach it.
+  writeFileSync(join(folder.outside, 'secret.txt'), 'OUTSIDE THE ROOT\n');
+  symlinkSync(folder.outside, join(folder.folder, 'linkd'), 'dir');
 
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
@@ -1522,7 +1533,8 @@ test('a symbolic link to a directory is not listed, and nothing behind it is ser
   );
 
   // The path behind the link was never listed, so a guest that guessed it asks for a path the
-  // grant leaves out and is refused like any other, with the file on the far side unread.
+  // grant leaves out and is refused like any other; the read resolves the link itself and stops at
+  // it, rather than reading the file on the far side for the peer.
   await guest.open('linkd/secret.txt');
   const refusals = await waitFor('the refusal of the path through the link to be reported', () =>
     bundle.stub.registered.errors.length > 0 ? bundle.stub.registered.errors : false,
@@ -1621,7 +1633,8 @@ test('a host names deletion when the room asks for a file it removed', async (t)
     await server.stop();
   });
   const { bundle } = activated(t);
-  bundle.stub.put('doomed.txt', 'was here\n');
+  const folder = testHostFolder(bundle, t);
+  folder.put('doomed.txt', 'was here\n');
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
     displayName: 'Ada',
@@ -1635,7 +1648,7 @@ test('a host names deletion when the room asks for a file it removed', async (t)
   // The host removes the file after publishing it, and the guest opens it from the
   // listing as it stood: the refusal names the likely cause instead of reading as a
   // failure, and nothing is seeded for it.
-  bundle.stub.remove('doomed.txt');
+  rmSync(join(folder.folder, 'doomed.txt'));
   await guest.open('doomed.txt');
   const refusal = await waitFor('the host to refuse the deleted path', () =>
     bundle.stub.registered.errors.find((message) => message.includes('doomed.txt')) ??
@@ -1656,11 +1669,12 @@ test('a host refuses a zip the room asks for as a binary file, never as a deleti
     await server.stop();
   });
   const { bundle } = activated(t);
+  const folder = testHostFolder(bundle, t);
   // A zip as it is on disk: a local file header, whose first bytes carry a NUL. A listing
   // names it — the walk rules on a file's type and the size a session will carry, and does
   // not read it — so a guest can ask for it, and the answer has to be about what the file is
   // rather than about a deletion nobody made.
-  bundle.stub.put(
+  folder.put(
     'logs_96234608913.zip',
     new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00]),
   );

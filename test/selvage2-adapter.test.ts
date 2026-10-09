@@ -28,6 +28,7 @@ import {
   BUNDLE,
   ROOT,
   loadBundle,
+  testHostFolder,
   testStoragePath,
 } from './helpers/bundle.ts';
 import type { LoadedExtension } from './helpers/bundle.ts';
@@ -321,8 +322,8 @@ function armedSockets(t: TestContext): string[] {
 }
 
 /**
- * A window hosting on the fake server, with the file a case is about in its folder when it
- * names one.
+ * A window hosting on the fake server, over a real folder — the one a peer's read resolves — with
+ * the file a case is about in it when it names one.
  */
 async function hosted(
   t: TestContext,
@@ -330,9 +331,10 @@ async function hosted(
 ): Promise<{ bundle: LoadedExtension; server: FakeServer; invite: string }> {
   const server = await serverFor(t, options.server ?? {});
   const { bundle } = activated(t);
-  bundle.stub.put('README.md', 'the readme\n');
+  const folder = testHostFolder(bundle, t);
+  folder.put('README.md', 'the readme\n');
   if (options.share !== undefined) {
-    bundle.stub.put(PATH, options.share);
+    folder.put(PATH, options.share);
   }
   await bundle.stub.commands.executeCommand('selvage.host', {
     serverUrl: server.wsBase,
