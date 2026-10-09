@@ -5,9 +5,9 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
 import { waitFor } from './wait.ts';
@@ -142,6 +142,12 @@ export interface EditorStub {
   makeUnreadable(path: string): void;
   /** Deletes a file from the working copy, as removing it from the project does. */
   remove(path: string): void;
+  /**
+   * Points the window's file system at a real directory, as a host whose folder is an ordinary
+   * folder of this machine reads it: the working copy is not consulted, and every read outside
+   * the mount is refused.
+   */
+  mount(root: string): void;
   /** Fires a file system event on every live watcher, as an editor's own watcher arrives. */
   watchEvent(kind: 'create' | 'change' | 'delete', path: string): void;
   /** Makes every watcher the extension creates throw, as an unwatchable folder does. */
@@ -213,6 +219,45 @@ export function testStoragePath(t: { after(callback: () => void): void }): strin
     rmSync(dir, { recursive: true, force: true });
   });
   return dir;
+}
+
+/**
+ * A folder the bundle can *host* from: a real directory under `<repo>/.tmp/`, with the window
+ * moved onto it and the stub's own file system mounted on it, so the listing walk — the editor's
+ * view of the folder — and the read a peer asks for see the same tree.
+ *
+ * A host reads a peer's file through Node's own file system, each component inside the descriptor
+ * of the component before it, so there has to be a folder that is really there: the stub's working
+ * copy is a map of names, and a read of it is not a read this code makes at all.
+ */
+export function testHostFolder(
+  bundle: LoadedExtension,
+  t: { after(callback: () => void): void },
+): {
+  root: string;
+  folder: string;
+  /** A directory beside the folder, which only a link planted in the folder reaches. */
+  outside: string;
+  put(rel: string, content: string | Uint8Array): void;
+} {
+  mkdirSync(join(ROOT, '.tmp'), { recursive: true });
+  const root = mkdtempSync(join(ROOT, '.tmp', 'host-'));
+  const folder = join(root, 'folder');
+  const outside = join(root, 'outside');
+  mkdirSync(folder, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const put = (rel: string, content: string | Uint8Array): void => {
+    const path = join(folder, rel);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  };
+  t.after(() => {
+    bundle.stub.reset();
+    rmSync(root, { recursive: true, force: true });
+  });
+  bundle.stub.mount(root);
+  bundle.stub.setWorkspaceFolders([folder]);
+  return { root, folder, outside, put };
 }
 
 /** The one window directory a join minted for `room` under a storage path. */
