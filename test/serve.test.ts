@@ -30,11 +30,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { createRequire, registerHooks } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -587,6 +591,51 @@ function bytesRead(): number | undefined {
   return line === undefined ? undefined : Number(line.slice('rchar:'.length).trim());
 }
 
+/** What a read that never answered looks like; a FIFO is the shape that produces one. */
+const WAITING = Symbol('waiting');
+
+/**
+ * How long a read that has to answer is given before it counts as one that will not: an open of a
+ * FIFO with no writer never answers at all, so any finite deadline tells a refusal from a wait,
+ * and this one is far above the milliseconds a read of a handful of bytes takes.
+ */
+const ANSWER_DEADLINE_MS = 5_000;
+
+/**
+ * `read`, or `WAITING` when it has not answered within `ms`. This is never a sleep and hope: what
+ * is asserted is that an answer arrives, and the deadline is only how long one may take.
+ */
+async function answeredWithin<T>(read: Promise<T>, ms: number): Promise<T | typeof WAITING> {
+  let expired: ReturnType<typeof setTimeout> | undefined;
+  const waiting = new Promise<typeof WAITING>((settle) => {
+    expired = setTimeout(() => settle(WAITING), ms);
+    expired.unref();
+  });
+  try {
+    return await Promise.race([read, waiting]);
+  } finally {
+    clearTimeout(expired);
+  }
+}
+
+/** A FIFO at `path`: `mkfifo(1)`, which is the only way Node can make one. */
+function mkfifo(path: string): void {
+  execFileSync('mkfifo', [path]);
+}
+
+/**
+ * Lets a read that is waiting to open `path` as a FIFO finish, so that a run without the guard
+ * reports its failure instead of leaving a thread-pool thread waiting and the test run hanging at
+ * exit. Nothing is on the other end of a FIFO no read is waiting on, and that is the throw.
+ */
+function releaseWaitingRead(path: string): void {
+  try {
+    closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK));
+  } catch {
+    // No reader was waiting: there is nothing to release.
+  }
+}
+
 test('a host lists its folder through the ignore files the folder holds, and reads nothing above it', async (t) => {
   const { root, folder } = mounted(t);
   const listed = (await enumerateGrant(folders())).paths;
@@ -778,6 +827,82 @@ test('a leaf swapped for a link between the name and the read is refused', async
   // served what a link happens to point at.
   assert.deepEqual(await readGrantedText(folders(), 'leaf.txt'), unreadable('not-a-file'));
   assert.ok(swapped, 'the leaf was not looked up through the seam: this test covers nothing');
+});
+
+test('a leaf swapped for a FIFO between the name and the read is refused, not waited on', async (t) => {
+  if (process.platform === 'win32') {
+    return; // Windows has no FIFO, and no `O_NONBLOCK` for one to matter to.
+  }
+  const tree = readTree(t, (put) => {
+    put('leaf.txt', 'inside\n');
+  });
+  const leaf = join(tree.folder, 'leaf.txt');
+
+  // A writer with access to the folder can put a FIFO where the file was, in the same window the
+  // link swap above lands in. `O_NOFOLLOW` refuses a link and not a FIFO, so an ordinary open of
+  // one waits for a writer inside a thread-pool thread, and the descriptor's own type — the thing
+  // that refuses it — is never reached. The open is `O_NONBLOCK`, so it answers at once whatever
+  // is on the other end, and what it answered with is what the type check refuses.
+  let swapped = false;
+  afterLstat((path) => {
+    if (!path.endsWith('/leaf.txt') || swapped) {
+      return;
+    }
+    swapped = true;
+    rmSync(leaf);
+    mkfifo(leaf);
+  });
+  t.after(() => {
+    afterLstat(undefined);
+  });
+
+  const answer = await answeredWithin(readGrantedText(folders(), 'leaf.txt'), ANSWER_DEADLINE_MS);
+  assert.ok(swapped, 'the leaf was not looked up through the seam: this test covers nothing');
+  if (answer === WAITING) {
+    releaseWaitingRead(leaf);
+    assert.fail(`the read was still waiting for a FIFO writer after ${ANSWER_DEADLINE_MS} ms`);
+  }
+  assert.deepEqual(answer, unreadable('not-a-file'));
+});
+
+test('a .gitignore swapped for a FIFO between the listing and the read is refused, not waited on', async (t) => {
+  if (process.platform === 'win32') {
+    return;
+  }
+  const tree = readTree(t, (put) => {
+    put('.gitignore', 'notes.txt\n');
+    put('notes.txt', 'notes\n');
+  });
+  const ignore = join(tree.folder, '.gitignore');
+
+  // The ignore files are read through the same descriptor flags a leaf is, so they have the same
+  // window and the same guard: the listing said `.gitignore` was an ordinary file, the name can be
+  // a FIFO by the time the open runs, and without `O_NONBLOCK` that open waits exactly as the leaf
+  // above does. (The `.git` and `info` opens are the other shape — a directory, which
+  // `O_DIRECTORY` refuses at once — so a FIFO at either cannot wait on anything.)
+  let swapped = false;
+  beforeOpen((path) => {
+    if (!path.endsWith('/.gitignore') || swapped) {
+      return;
+    }
+    swapped = true;
+    rmSync(ignore);
+    mkfifo(ignore);
+  });
+  t.after(() => {
+    beforeOpen(undefined);
+  });
+
+  const answer = await answeredWithin(readGrantedText(folders(), 'notes.txt'), ANSWER_DEADLINE_MS);
+  assert.ok(swapped, 'the ignore file was never opened through the seam: this test covers nothing');
+  if (answer === WAITING) {
+    releaseWaitingRead(ignore);
+    assert.fail(`the ignore read was still waiting for a FIFO writer after ${ANSWER_DEADLINE_MS} ms`);
+  }
+  // A FIFO is not an ignore file, so the folder's own rule is not read out of it: the answer is
+  // the one a folder with no `.gitignore` gives, which is also what a local writer reaches by
+  // deleting the file. The rule drops the name under test, so this answer says the swap landed.
+  assert.deepEqual(answer, { kind: 'text', text: 'notes\n' });
 });
 
 test('a leaf grown past the bound between the name and the read is refused', async (t) => {
