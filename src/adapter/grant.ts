@@ -460,6 +460,19 @@ function refused(cause: GrantRefusal): Refused {
 }
 
 /**
+ * An ignore file's text, `undefined` where there is no ignore file this window reads, or the
+ * refusal the reading earned. A refusal is its own case because `undefined` is what every caller
+ * reads as "no rules of this directory": an ignore file that was there and was not read has to
+ * be a refusal, or the rules it holds stop binding the read in silence.
+ */
+type IgnoreText = string | Refused | undefined;
+
+/** Whether an ignore reading answered with a refusal rather than with rules or with nothing. */
+function isRefusal(answer: IgnoreText | readonly IgnoreSource[]): answer is Refused {
+  return typeof answer === 'object' && answer !== null && 'kind' in answer;
+}
+
+/**
  * The directory holding the path's leaf, and the ignore sources that govern the path: the folder
  * itself where the platform can address a directory it already holds, its path where it cannot.
  */
@@ -659,14 +672,51 @@ function holdsName(entries: readonly WalkEntry[] | undefined, name: string): boo
   return entries?.some((entry) => entry.name === name) ?? false;
 }
 
+/** What reading an open file within the bound gave: its bytes, or which of the two ways none. */
+type BoundedRead = { readonly bytes: Uint8Array } | 'over' | 'failed';
+
+/**
+ * An open file's bytes through that descriptor, up to `MAX_GRANT_FILE_BYTES`, or which of the two
+ * ways there were none: `over` when the file held more than the bound while it was read, and
+ * `failed` when a read did not complete.
+ *
+ * The bound is the read's own, and not a check of the descriptor's size before it. Those are two
+ * moments, and a concurrent writer writes in the one between them: a file under the bound when it
+ * is measured can be grown past it before a read that runs to the end of the file has finished,
+ * and the allocation such a read makes is the writer's to choose. Reading the bound plus one byte
+ * stops there whatever the writer does with the rest of the file, and the byte past the bound is
+ * what tells a file of exactly the bound from one that is over it.
+ */
+async function readBounded(handle: FileHandle): Promise<BoundedRead> {
+  const bytes = new Uint8Array(MAX_GRANT_FILE_BYTES + 1);
+  let filled = 0;
+  while (filled < bytes.length) {
+    const read = await handle
+      .read(bytes, filled, bytes.length - filled, filled)
+      .catch(() => undefined);
+    if (read === undefined) {
+      return 'failed';
+    }
+    if (read.bytesRead === 0) {
+      break;
+    }
+    filled += read.bytesRead;
+  }
+  return filled > MAX_GRANT_FILE_BYTES ? 'over' : { bytes: bytes.subarray(0, filled) };
+}
+
 /**
  * The bytes at `path` as an ignore file's text, or `undefined` when they are not one this window
  * reads.
  *
  * The open is `O_NOFOLLOW` where the platform has it, and the type comes from the descriptor the
  * open returned rather than from the name again, so the type and the bytes are one object's.
+ *
+ * A file that is over the bound is a refusal and not an absent ignore file: `undefined` is what
+ * every caller reads as "no rules of its own", and answering that for a file whose rules were
+ * never read is how a folder's own rules stop binding a read rather than being enforced by it.
  */
-async function readIgnoreText(path: string): Promise<string | undefined> {
+async function readIgnoreText(path: string): Promise<IgnoreText> {
   const handle = await open(path, LEAF).catch(() => undefined);
   if (handle === undefined) {
     return undefined;
@@ -676,8 +726,11 @@ async function readIgnoreText(path: string): Promise<string | undefined> {
     if (info === undefined || !info.isFile()) {
       return undefined;
     }
-    const bytes = await handle.readFile().catch(() => undefined);
-    return bytes === undefined ? undefined : decodableText(bytes);
+    const read = await readBounded(handle);
+    if (read === 'failed') {
+      return undefined;
+    }
+    return read === 'over' ? refused('too-large') : decodableText(read.bytes);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -697,7 +750,7 @@ async function ignoreInside(
   dir: FileHandle,
   name: string,
   listing?: readonly WalkEntry[],
-): Promise<string | undefined> {
+): Promise<IgnoreText> {
   const entries = listing ?? (await listInside(dir));
   if (entries === undefined || !holdsKind(entries, name, 'file')) {
     return undefined;
@@ -714,7 +767,7 @@ async function ignoreByName(
   dir: string,
   name: string,
   listing?: readonly WalkEntry[],
-): Promise<string | undefined> {
+): Promise<IgnoreText> {
   const entries = listing ?? (await listByName(dir));
   if (entries === undefined || !holdsKind(entries, name, 'file')) {
     return undefined;
@@ -739,7 +792,7 @@ async function ignoreByName(
 async function excludeInside(
   directory: FileHandle,
   entries: readonly WalkEntry[] | undefined,
-): Promise<string | undefined> {
+): Promise<IgnoreText> {
   if (!holdsKind(entries ?? [], '.git', 'directory')) {
     return undefined;
   }
@@ -766,7 +819,10 @@ async function excludeInside(
 }
 
 /** The same rule read off the root's entries, for a platform that cannot address an open directory. */
-async function excludeByName(root: string, entries: readonly WalkEntry[]): Promise<IgnoreSource[]> {
+async function excludeByName(
+  root: string,
+  entries: readonly WalkEntry[],
+): Promise<IgnoreSource[] | Refused> {
   if (!holdsKind(entries, '.git', 'directory')) {
     return [];
   }
@@ -776,7 +832,10 @@ async function excludeByName(root: string, entries: readonly WalkEntry[]): Promi
     return [];
   }
   const text = await ignoreByName(join(git, 'info'), EXCLUDE_FILE);
-  return text === undefined ? [] : [{ dir: '', text }];
+  if (text === undefined) {
+    return [];
+  }
+  return isRefusal(text) ? text : [{ dir: '', text }];
 }
 
 /**
@@ -803,11 +862,19 @@ async function openInside(root: string, segments: readonly string[]): Promise<Op
   // a `.git` directory, and they are the same ones its own ignore file is read from.
   let entries = await listInside(directory);
   const exclude = await excludeInside(directory, entries);
+  if (isRefusal(exclude)) {
+    await directory.close().catch(() => undefined);
+    return exclude;
+  }
   if (exclude !== undefined) {
     sources.push({ dir: '', text: exclude });
   }
   for (let depth = 0; ; depth += 1) {
     const own = await ignoreInside(directory, IGNORE_FILE, entries);
+    if (isRefusal(own)) {
+      await directory.close().catch(() => undefined);
+      return own;
+    }
     if (own !== undefined) {
       sources.push({ dir: relative, text: own });
     }
@@ -844,12 +911,19 @@ async function walkByName(root: string, segments: readonly string[]): Promise<Na
   // The root is listed once: `excludeByName` reads the repository exclude off the entries held
   // here rather than listing the folder again for itself.
   const listed = await listByName(root);
-  const sources: IgnoreSource[] = [...(await excludeByName(root, listed ?? []))];
+  const excluded = await excludeByName(root, listed ?? []);
+  if (isRefusal(excluded)) {
+    return excluded;
+  }
+  const sources: IgnoreSource[] = [...excluded];
   let head = root;
   let relative = '';
   for (let depth = 0; ; depth += 1) {
     const entries = depth === 0 ? listed : await listByName(head);
     const own = await ignoreByName(head, IGNORE_FILE, entries);
+    if (isRefusal(own)) {
+      return own;
+    }
     if (own !== undefined) {
       sources.push({ dir: relative, text: own });
     }
@@ -888,6 +962,10 @@ async function walkByName(root: string, segments: readonly string[]): Promise<Na
  * already have: a path that does not exist is `missing` whatever the ignore files say about the
  * name, and one that exists and they leave out is `not-granted`, the silent no an excluded name
  * gets, rather than a refusal that says the guess was worth making.
+ *
+ * The read stops at the bound rather than at the end of the file (`readBounded`), so the size the
+ * descriptor reported is not the only thing standing between a writer and what this process
+ * allocates for a file that grows while it is being read.
  */
 async function readLeaf(
   name: string,
@@ -922,11 +1000,14 @@ async function readLeaf(
     if (opened.size > MAX_GRANT_FILE_BYTES) {
       return refused('too-large');
     }
-    const bytes = await handle.readFile().catch(() => undefined);
-    if (bytes === undefined) {
+    const read = await readBounded(handle);
+    if (read === 'failed') {
       return refused('missing');
     }
-    const text = decodableText(bytes);
+    if (read === 'over') {
+      return refused('too-large');
+    }
+    const text = decodableText(read.bytes);
     return text === undefined ? refused('binary') : { kind: 'text', text };
   } finally {
     await handle.close().catch(() => undefined);
