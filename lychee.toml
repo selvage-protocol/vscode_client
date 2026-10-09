@@ -3,7 +3,7 @@
 #
 # The check's scope is `README.md` and `docs/`, this repository's reader-facing front matter, so
 # that the gate is about the prose a reader is handed rather than about every Markdown file the
-# repository holds. `SPIKES.md` and the rest are deliberately outside it. Run it with
+# repository holds. The rest of the tree is deliberately outside it. Run it with
 #
 #   lychee --config lychee.toml --no-progress README.md docs
 #
