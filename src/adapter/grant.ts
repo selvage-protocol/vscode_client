@@ -417,8 +417,12 @@ const STEP = FOLDER | NO_FOLLOW;
 /** A leaf: the file itself, and never a link to one. */
 const LEAF = constants.O_RDONLY | NO_FOLLOW;
 
+/** The decision `pinnedSteps` answers with, seeded from the name this platform publishes. */
+const steps = { pinned: existsSync('/proc/self/fd') };
+
 /**
- * Whether this process takes each step inside the descriptor of the directory before it.
+ * Whether this process takes each step inside the descriptor of the directory before it, and the
+ * one place a test can take the other reading.
  *
  * Linux publishes a process's open descriptors under `/proc/self/fd`, and a name under one of those
  * is looked up in the directory that descriptor holds rather than through the name again. Node
@@ -427,8 +431,6 @@ const LEAF = constants.O_RDONLY | NO_FOLLOW;
  * and what this host cannot reach: `/proc` is where the descent needs it. Passing `value` sets the
  * reading and answers with it, so a test can read the way those platforms read.
  */
-const steps = { pinned: existsSync('/proc/self/fd') };
-
 export function pinnedSteps(value?: boolean): boolean {
   if (value !== undefined) {
     steps.pinned = value;
