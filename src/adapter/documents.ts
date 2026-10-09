@@ -19,7 +19,7 @@ import type {
   TextChange,
 } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
-import { grantedFile, grantedText, roomPathOf } from './grant.ts';
+import { readGrantedText, roomPathOf } from './grant.ts';
 import { MIRROR_MARKER, isWorkspaceConfigPath, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
@@ -351,16 +351,14 @@ export class WorkspaceEditor implements EditorHost {
    * The path came from a peer, so it is resolved against the captured folders and has to be a
    * path the grant itself would publish — the `.git/**` and `.env` defaults included, and every
    * directory on the way a plain directory of the folder rather than a symbolic link out of it —
-   * before a single byte is read. The answer is the text, or why there is none: a name this
-   * window does not share, one that is not there, one that is not a plain file, one over the
-   * size a session will carry, or bytes that are not text. The bridge says which of those
-   * happened.
+   * and it is resolved *inside* the descriptor of each component the step before it found, so the
+   * bytes come from the object whose type and size were read rather than from a name checked a
+   * moment earlier. The answer is the text, or why there is none: a name this window does not
+   * share, one that is not there, one that is not a plain file, one over the size a session will
+   * carry, or bytes that are not text. The bridge says which of those happened.
    */
   async readGrantedFile(path: string): Promise<GrantedRead> {
-    const found = await grantedFile(this.folders, path);
-    return 'refusal' in found
-      ? { kind: 'refused', cause: found.refusal }
-      : await grantedText(found.uri);
+    return await readGrantedText(this.folders, path);
   }
 
   /**

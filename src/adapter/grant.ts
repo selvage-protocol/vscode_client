@@ -5,10 +5,18 @@
  * how a tree is derived from it, and where a walk over a folder stops — is in `src/bridge/`,
  * because all three clients have to agree on it. What is left here is the editor's half: walking
  * folders through `vscode.workspace.fs`, so a remote or virtual workspace is read the way the
- * editor reads it, and resolving a room path back to the file it names.
+ * editor reads it, and resolving a room path back to the file it names. A read a *peer* asked
+ * for is the one exception: it resolves and reads in one step, over Node's own file system,
+ * because `vscode.workspace.fs` hands back a path rather than a descriptor and a path can be
+ * swapped for a link between the walk and the read.
  */
 
 import * as vscode from 'vscode';
+import { constants, existsSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { MAX_GRANT_FILE_BYTES, hostPlatform, isGrantedPath, isIgnoredPath, walkListing } from '../bridge/index.ts';
 import type {
@@ -157,8 +165,9 @@ async function entryHasKind(
  * this, a `.gitignore` that is a link to a file outside the shared folder is read as the folder's
  * own rule, and a `.git` that is a link to a repository elsewhere supplies its `info/exclude`: both
  * read out of the folder, which is the bound. A name that is not an ordinary file is not an error,
- * it is simply no ignore file. The window between that entry check and the read is the leaf read's
- * own stated residual — `vscode.workspace.fs` exposes no `realpath` — and not a second one.
+ * it is simply no ignore file. The window between that entry check and the read is `grantedFile`'s
+ * own stated residual — it answers a URI the editor resolves again — and not a second one: the
+ * read a peer asked for does not come through here (`readGrantedText`).
  *
  * `listing` is `dir`'s entries when the caller already holds them, so a walk does not read the
  * same directory twice.
@@ -184,28 +193,19 @@ async function readIgnoreFile(
  * half of the read's rule a walk can afford: a file's bytes are not read to decide whether to
  * name it, so a listing names files a session may carry and not only those it will — a file
  * whose name declares a format a session cannot carry is a separate rule, drawn from the name
- * alone (`isBinaryNamedPath`).
+ * alone (`isBinaryNamedPath`). A link reports its own type, so a link is not a file a listing
+ * can name.
+ *
+ * This is the walk's own question, over the editor's view of the folder; the read a peer asked
+ * for answers for itself, from the descriptor it reads through (`readLeaf`).
  */
 export async function isShareableFile(uri: vscode.Uri): Promise<boolean> {
-  const info = await shareableInfo(uri);
-  return typeof info !== 'string';
-}
-
-/**
- * The leaf's own stat when it is the shape a session will carry, or the cause it is not.
- * One rule in two shapes: `isShareableFile` is the yes-or-no of it, a read wants the reason.
- */
-async function shareableInfo(uri: vscode.Uri): Promise<vscode.FileStat | GrantRefusal> {
-  let info: vscode.FileStat;
   try {
-    info = await vscode.workspace.fs.stat(uri);
+    const info = await vscode.workspace.fs.stat(uri);
+    return info.type === vscode.FileType.File && info.size <= MAX_GRANT_FILE_BYTES;
   } catch {
-    return 'missing';
+    return false;
   }
-  if (info.type !== vscode.FileType.File) {
-    return 'not-a-file';
-  }
-  return info.size > MAX_GRANT_FILE_BYTES ? 'too-large' : info;
 }
 
 /**
@@ -251,7 +251,7 @@ export type GrantedFile =
   | { readonly refusal: GrantRefusal };
 
 /**
- * The file a room path names, or why this window has none for it.
+ * The file a room path names, as a URI this window can open, or why it has none for it.
  *
  * This is the path a *peer* named, so it is checked rather than trusted: the excludes and the
  * segment rules of `isGrantedPath` apply to it, because a guest that guessed `.env` or
@@ -261,10 +261,14 @@ export type GrantedFile =
  * well, so a guessed path that travels *through* a symbolic link is refused too — no such path
  * was listed, and what it would read is outside the folder.
  *
+ * The answer is a URI, so the editor resolves the name again when it opens it, and a segment or
+ * a leaf swapped for a link in between is that second resolution's to follow: the window is the
+ * editor's own and not one this function can close. It is what the follow that opens a peer's
+ * path in this window uses (`openRoomPath`). Handing a peer the *bytes* of a file is a different
+ * shape, and it is `readGrantedText`, which never answers with a name.
+ *
  * The order is the bound: the path is resolved first, so the ignore files this reads are the
- * ones of directories this window has already found to be plain directories of the folder. A
- * directory swapped for a link between that resolution and these reads is the window the leaf's
- * own read has, and is the same stated residual rather than a second one.
+ * ones of directories this window has already found to be plain directories of the folder.
  */
 export async function grantedFile(
   folders: readonly vscode.WorkspaceFolder[],
@@ -295,7 +299,9 @@ export async function grantedFile(
  * Lowest precedence first, and only directories the path's own resolution has already accepted,
  * so no step here travels through a link out of the folder; each ignore file is also read only
  * where its own parent lists it as an ordinary file (`readIgnoreFile`), so a `.gitignore` that is
- * itself a link out is not read either.
+ * itself a link out is not read either. This is `grantedFile`'s reading of them, on the way to a
+ * URI the editor opens; a peer's read reads the same sources through the directory descriptors
+ * it holds (`openInside`).
  */
 async function governingIgnores(folder: vscode.Uri, relative: string): Promise<IgnoreSource[]> {
   // The folder's exclude is refused when the folder cannot be listed at all: a folder this
@@ -322,7 +328,7 @@ async function governingIgnores(folder: vscode.Uri, relative: string): Promise<I
  * A path that travels through a symbolic link therefore lands on a real file somewhere else
  * entirely, while the leaf's own `stat` reports an ordinary file. A link's own `stat` reports the
  * `SymbolicLink` bit, so the path is walked one segment at a time and every segment has to be
- * exactly a directory. The leaf is left to the caller, which reads it only as a plain file.
+ * exactly a directory. The leaf is left to the caller, which hands the editor the URI to open.
  *
  * Each segment also has to be spelled as the directory lists it: on a case-insensitive mount
  * `.GIT` stats as a directory when only `.git` is on disk, and the grant excludes only the
@@ -331,7 +337,8 @@ async function governingIgnores(folder: vscode.Uri, relative: string): Promise<I
  *
  * What this cannot see, because the API does not expose it: a segment that is followed by the
  * editor's own file system without reporting a link (a mount point, a provider that resolves
- * links itself), and a link put in place between this walk and the read that follows it.
+ * links itself), and a link put in place between this walk and the editor's own open of the URI
+ * it answers with.
  */
 async function resolutionRefusal(
   folder: vscode.Uri,
@@ -391,28 +398,445 @@ function withinFolders(
 }
 
 /**
- * A file's text, or why a session cannot carry it.
- *
- * The size and type the listing already asked of this file, then the bytes themselves: a
- * document is one `Y.Text`, and a room carries text, so a NUL byte or a byte sequence that is
- * not valid UTF-8 is not something to put into one. The listing deliberately stays with the
- * first half — a walk that read every file to decide whether to name it would read a whole
- * project to publish a name list, and the host's own disk is not read for a peer until the
- * peer asks (`DESIGN.md` §4.2) — so a binary can be listed and is refused here.
+ * `O_NOFOLLOW` where the platform has it, so a name that is a link is refused by the open
+ * itself rather than by an `lstat` of the same name that a rename can get behind. Windows has
+ * none, and there the walk by name (`walkByName`) is the only thing that refuses a link.
  */
-export async function grantedText(uri: vscode.Uri): Promise<GrantedRead> {
-  const info = await shareableInfo(uri);
-  if (typeof info === 'string') {
-    return { kind: 'refused', cause: info };
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+
+/** The shared folder itself: a link at the root *is* the folder the front-end named. */
+const FOLDER = constants.O_RDONLY | constants.O_DIRECTORY;
+
+/** A step inside it: a directory, and never a link to one. */
+const STEP = FOLDER | NO_FOLLOW;
+
+/** A leaf: the file itself, and never a link to one. */
+const LEAF = constants.O_RDONLY | NO_FOLLOW;
+
+/**
+ * Whether a step can be taken relative to the directory the step before it found. Linux
+ * publishes a process's open descriptors under `/proc/self/fd`, and a name under one of those is
+ * looked up in the directory that descriptor holds rather than through the name again. Node
+ * offers no other way to name the child of a directory that is already open, so a platform
+ * without it takes the steps by name and checks each one (`walkByName`).
+ */
+const PINNED_STEPS = existsSync('/proc/self/fd');
+
+/** A refusal, shaped the way the bridge reads one. */
+type Refused = { readonly kind: 'refused'; readonly cause: GrantRefusal };
+
+function refused(cause: GrantRefusal): Refused {
+  return { kind: 'refused', cause };
+}
+
+/**
+ * The directory holding the path's leaf, and the ignore sources that govern the path: the folder
+ * itself where the platform can address a directory it already holds, its path where it cannot.
+ */
+type OpenedFolder =
+  | {
+      readonly handle: FileHandle;
+      readonly sources: readonly IgnoreSource[];
+      readonly entries: readonly WalkEntry[] | undefined;
+    }
+  | Refused;
+
+/** The same, for a platform that cannot address a directory that is already open. */
+type NamedFolder =
+  | {
+      readonly path: string;
+      readonly sources: readonly IgnoreSource[];
+      readonly entries: readonly WalkEntry[] | undefined;
+    }
+  | Refused;
+
+/**
+ * A file's text, read for a peer, or why this window will not serve it.
+ *
+ * This is the one place a host reads its own disk because someone else asked rather than because
+ * the person at the machine acted, so the path is not resolved and then used: every component is
+ * opened with `O_NOFOLLOW` inside the descriptor of the component before it, every name has to be
+ * an entry of the directory that holds it spelled exactly as that directory lists it, and the
+ * bytes come from the descriptor whose type and size were read. A name checked and then resolved
+ * again is two readings of one name — a directory that is a plain directory when it is checked is
+ * a link somewhere else by the time the next name is resolved, and the file system reports neither
+ * reading to the other — which is how a path a walk refused is read out of the folder on the
+ * peer's behalf.
+ *
+ * The rules are `grantedFile`'s, in the same order, because the answer a peer gets has to be the
+ * one the listing agrees with: `isGrantedPath`'s exclusions and segment rules, then the folder's
+ * own ignore files, read from the directories this descent itself accepted, so a `.gitignore` or a
+ * `.git` that is a link out is not read either, then the leaf's type, its size, and its bytes.
+ *
+ * What is left, and it is not a link: a segment that is a *mount point* rather than a link. The
+ * file system reports it as a directory, so a step through one is a step through a directory, and
+ * only comparing the file systems' identities (`st_dev`) at each step would see it. Planting one
+ * takes `CAP_SYS_ADMIN`.
+ */
+export async function readGrantedText(
+  folders: readonly vscode.WorkspaceFolder[],
+  path: string,
+): Promise<GrantedRead> {
+  const resolved = withinFolders(folders, path);
+  if (resolved === undefined || !isGrantedPath(resolved.relative)) {
+    return refused('not-granted');
   }
-  let bytes: Uint8Array;
+  const root = localPath(resolved.folder);
+  if (root === undefined) {
+    return refused('not-a-file');
+  }
+  const segments = resolved.relative.split('/');
+  const leaf = segments.pop();
+  if (leaf === undefined) {
+    return refused('not-granted');
+  }
+  if (PINNED_STEPS) {
+    const directory = await openInside(root, segments);
+    if ('kind' in directory) {
+      return directory;
+    }
+    try {
+      if (!holdsName(directory.entries, leaf)) {
+        return refused('missing');
+      }
+      return await readLeaf(inside(directory.handle, leaf), directory.sources, resolved.relative);
+    } finally {
+      await directory.handle.close().catch(() => undefined);
+    }
+  }
+  const directory = await walkByName(root, segments);
+  if ('kind' in directory) {
+    return directory;
+  }
+  if (!holdsName(directory.entries, leaf)) {
+    return refused('missing');
+  }
+  return await readLeaf(join(directory.path, leaf), directory.sources, resolved.relative);
+}
+
+/**
+ * The folder on this extension host's own disk, or `undefined` when it is not a `file:` folder.
+ *
+ * Only a `file:` folder has a descriptor to descend: a virtual scheme is the editor's own view of
+ * a store this process cannot resolve a component of, and every rule here is about resolving
+ * components. Such a folder is still listed and is refused on a read, which is what `not-a-file`
+ * says: this window has no plain file to vouch for.
+ */
+function localPath(folder: vscode.WorkspaceFolder): string | undefined {
+  return folder.uri.scheme === 'file' ? folder.uri.fsPath : undefined;
+}
+
+/** A name inside a directory that is already open: `/proc/self/fd/<fd>` is that directory. */
+function inside(directory: FileHandle, name = ''): string {
+  return join('/proc/self/fd', String(directory.fd), name);
+}
+
+/**
+ * Why a step could not be taken.
+ *
+ * A name that is not there, or one this window cannot open, is `missing`, which is the shared
+ * vocabulary's own word for a file that is absent, deleted since the listing, or unreadable;
+ * anything else the file system refuses — a link where a directory has to be, a name that is not
+ * one — is `not-a-file`.
+ */
+function stepRefusal(error: unknown): GrantRefusal {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  return code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' ? 'missing' : 'not-a-file';
+}
+
+/**
+ * The kind of one entry a directory's own listing carries. A link is tested first, whatever it
+ * points at: what a step is about to resolve must be a directory of this folder, and what a leaf
+ * must be is a plain file.
+ */
+function entryKind(entry: Dirent): WalkEntry['kind'] {
+  if (entry.isSymbolicLink()) {
+    return 'other';
+  }
+  if (entry.isFile()) {
+    return 'file';
+  }
+  return entry.isDirectory() ? 'directory' : 'other';
+}
+
+/** A directory's own entries, read through its descriptor, or `undefined` when it cannot be read. */
+async function listInside(directory: FileHandle): Promise<WalkEntry[] | undefined> {
+  const entries = await readdir(inside(directory), { withFileTypes: true }).catch(() => undefined);
+  return entries?.map((entry) => ({ name: entry.name, kind: entryKind(entry) }));
+}
+
+/** The same for a directory named by path: the platform that cannot pin a step reads by name. */
+async function listByName(dir: string): Promise<WalkEntry[] | undefined> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => undefined);
+  return entries?.map((entry) => ({ name: entry.name, kind: entryKind(entry) }));
+}
+
+/**
+ * Whether a listing carries `name` exactly as the path spelled it, entry name and nothing else.
+ *
+ * A file system that folds case or ignores Unicode normalization resolves a name no entry
+ * carries, while the ignore check above ran on the spelling the peer sent, so without this a path
+ * could pass that check and then open the file it meant to leave out. A directory this window
+ * cannot list carries nothing, so a name under one is `missing`, the same refusal a name the
+ * folder does not hold gets.
+ */
+function holdsName(entries: readonly WalkEntry[] | undefined, name: string): boolean {
+  return entries?.some((entry) => entry.name === name) ?? false;
+}
+
+/**
+ * The bytes at `path` as an ignore file's text, or `undefined` when they are not one this window
+ * reads.
+ *
+ * The open is `O_NOFOLLOW` where the platform has it, and the type comes from the descriptor the
+ * open returned rather than from the name again, so the type and the bytes are one object's.
+ */
+async function readIgnoreText(path: string): Promise<string | undefined> {
+  const handle = await open(path, LEAF).catch(() => undefined);
+  if (handle === undefined) {
+    return undefined;
+  }
   try {
-    bytes = await vscode.workspace.fs.readFile(uri);
-  } catch {
-    return { kind: 'refused', cause: 'missing' };
+    const info = await handle.stat().catch(() => undefined);
+    if (info === undefined || !info.isFile()) {
+      return undefined;
+    }
+    const bytes = await handle.readFile().catch(() => undefined);
+    return bytes === undefined ? undefined : decodableText(bytes);
+  } finally {
+    await handle.close().catch(() => undefined);
   }
-  const text = decodableText(bytes);
-  return text === undefined ? { kind: 'refused', cause: 'binary' } : { kind: 'text', text };
+}
+
+/**
+ * The text of the ignore file `name` inside `dir`, or `undefined` when the directory holds no
+ * ignore file this window reads.
+ *
+ * `name` counts only where that directory's own listing reports it as an ordinary file: a link, a
+ * directory and a FIFO are each no ignore file, and a link is exactly what a `stat` of the name
+ * follows. Both the listing and the read name the child through `dir`'s descriptor, so neither
+ * resolves a name through a directory anywhere but the one the path's resolution found and
+ * accepted.
+ */
+async function ignoreInside(
+  dir: FileHandle,
+  name: string,
+  listing?: readonly WalkEntry[],
+): Promise<string | undefined> {
+  const entries = listing ?? (await listInside(dir));
+  if (entries === undefined || !holdsKind(entries, name, 'file')) {
+    return undefined;
+  }
+  return readIgnoreText(inside(dir, name));
+}
+
+/**
+ * The same for a platform that cannot address a directory that is already open. The listing and
+ * the read are two resolutions of one name, so a name swapped for a link between them is
+ * followed: that is `walkByName`'s window and not a second one.
+ */
+async function ignoreByName(
+  dir: string,
+  name: string,
+  listing?: readonly WalkEntry[],
+): Promise<string | undefined> {
+  const entries = listing ?? (await listByName(dir));
+  if (entries === undefined || !holdsKind(entries, name, 'file')) {
+    return undefined;
+  }
+  return readIgnoreText(join(dir, name));
+}
+
+/**
+ * `<root>/.git/info/exclude`, read inside the root's own descriptor, or `undefined` when the
+ * folder has no repository exclude — which is what an absent one means, not a fault.
+ *
+ * `.git` and `info` are opened with `O_NOFOLLOW`, so a `.git` that is a link to a repository
+ * elsewhere is refused where a directory has to be rather than read as this folder's repository.
+ * A platform that cannot address an open directory does not come here; it goes through
+ * `excludeByName`, which reads the same rule off the root's listing.
+ */
+async function excludeInside(directory: FileHandle): Promise<string | undefined> {
+  const git = await open(inside(directory, '.git'), STEP).catch(() => undefined);
+  if (git === undefined) {
+    return undefined;
+  }
+  try {
+    const info = await open(inside(git, 'info'), STEP).catch(() => undefined);
+    if (info === undefined) {
+      return undefined;
+    }
+    try {
+      return await ignoreInside(info, EXCLUDE_FILE);
+    } finally {
+      await info.close().catch(() => undefined);
+    }
+  } finally {
+    await git.close().catch(() => undefined);
+  }
+}
+
+/** The same rule read off the root's entries, for a platform that cannot address an open directory. */
+async function excludeByName(root: string, entries: readonly WalkEntry[]): Promise<IgnoreSource[]> {
+  if (!holdsKind(entries, '.git', 'directory')) {
+    return [];
+  }
+  const git = join(root, '.git');
+  const info = await listByName(git);
+  if (info === undefined || !holdsKind(info, 'info', 'directory')) {
+    return [];
+  }
+  const text = await ignoreByName(join(git, 'info'), EXCLUDE_FILE);
+  return text === undefined ? [] : [{ dir: '', text }];
+}
+
+/**
+ * The directory holding the path's leaf, opened one step at a time *inside the descriptor of the
+ * step before it*, and the ignore sources that govern the path: the repository exclude at the
+ * root first, then the `.gitignore` of every directory from the root down to that one, lowest
+ * precedence first.
+ *
+ * A step is opened `O_NOFOLLOW` and has to be an entry of the directory it is opened in, spelled
+ * exactly as that directory lists it (`holdsName`), so a link is refused where a directory has to
+ * be — by the open itself and not by a check of the same name — and a name the file system would
+ * resolve under another spelling is `missing`. The listing that decides the name is the same one
+ * the directory's own ignore file is read from, so a directory is not listed twice.
+ */
+async function openInside(root: string, segments: readonly string[]): Promise<OpenedFolder> {
+  const folder = await open(root, FOLDER).catch((error: unknown) => refused(stepRefusal(error)));
+  if ('kind' in folder) {
+    return folder;
+  }
+  let directory = folder;
+  let relative = '';
+  const sources: IgnoreSource[] = [];
+  const exclude = await excludeInside(directory);
+  if (exclude !== undefined) {
+    sources.push({ dir: '', text: exclude });
+  }
+  for (let depth = 0; ; depth += 1) {
+    const entries = await listInside(directory);
+    const own = await ignoreInside(directory, IGNORE_FILE, entries);
+    if (own !== undefined) {
+      sources.push({ dir: relative, text: own });
+    }
+    if (depth === segments.length) {
+      return { handle: directory, sources, entries };
+    }
+    const segment = segments[depth] ?? '';
+    if (!holdsName(entries, segment)) {
+      await directory.close().catch(() => undefined);
+      return refused('missing');
+    }
+    const next = await open(inside(directory, segment), STEP).catch((error: unknown) =>
+      refused(stepRefusal(error)),
+    );
+    await directory.close().catch(() => undefined);
+    if ('kind' in next) {
+      return next;
+    }
+    directory = next;
+    relative = relative === '' ? segment : `${relative}/${segment}`;
+  }
+}
+
+/**
+ * The same walk by name, for a platform that cannot address a directory that is already open:
+ * every step has to be a plain directory of the folder, spelled exactly as the directory holding
+ * it lists it, before the name is resolved, and the ignore files are listed and read by name. The
+ * check and the resolution of the step after it are two readings of one name — see
+ * `readGrantedText` — so what a link planted between them reaches is the residual, and entering it
+ * takes a concurrent local writer.
+ */
+async function walkByName(root: string, segments: readonly string[]): Promise<NamedFolder> {
+  // The root is listed once: `excludeByName` reads the repository exclude off the entries held
+  // here rather than listing the folder again for itself.
+  const listed = await listByName(root);
+  const sources: IgnoreSource[] = [...(await excludeByName(root, listed ?? []))];
+  let head = root;
+  let relative = '';
+  for (let depth = 0; ; depth += 1) {
+    const entries = depth === 0 ? listed : await listByName(head);
+    const own = await ignoreByName(head, IGNORE_FILE, entries);
+    if (own !== undefined) {
+      sources.push({ dir: relative, text: own });
+    }
+    if (depth === segments.length) {
+      return { path: head, sources, entries };
+    }
+    const segment = segments[depth] ?? '';
+    if (!holdsName(entries, segment)) {
+      return refused('missing');
+    }
+    head = join(head, segment);
+    const info = await lstat(head).catch(() => undefined);
+    if (info === undefined) {
+      return refused('missing');
+    }
+    if (!info.isDirectory()) {
+      return refused('not-a-file');
+    }
+    relative = relative === '' ? segment : `${relative}/${segment}`;
+  }
+}
+
+/**
+ * A leaf's text, or why this window will not serve it.
+ *
+ * The type and the size are read by name and then again through the descriptor the bytes are read
+ * from, so the name cannot be moved onto another object between the two and the bytes are the
+ * object that was measured. A document is one `Y.Text` and a room carries text, so a NUL byte or a
+ * byte sequence that is not valid UTF-8 is not something to put into one (`decodableText`), and a
+ * plain file over `MAX_GRANT_FILE_BYTES` is more than a session will carry.
+ *
+ * The name is read once before the ignore rule as well, which is the order the caller's answers
+ * already have: a path that does not exist is `missing` whatever the ignore files say about the
+ * name, and one that exists and they leave out is `not-granted`, the silent no an excluded name
+ * gets, rather than a refusal that says the guess was worth making.
+ */
+async function readLeaf(
+  name: string,
+  ignores: readonly IgnoreSource[],
+  path: string,
+): Promise<GrantedRead> {
+  const info = await lstat(name).catch(() => undefined);
+  if (info === undefined) {
+    return refused('missing');
+  }
+  if (isIgnoredPath(ignores, path, false)) {
+    return refused('not-granted');
+  }
+  if (!info.isFile()) {
+    return refused('not-a-file');
+  }
+  if (info.size > MAX_GRANT_FILE_BYTES) {
+    return refused('too-large');
+  }
+  const handle = await open(name, LEAF).catch((error: unknown) => refused(stepRefusal(error)));
+  if ('kind' in handle) {
+    return handle;
+  }
+  try {
+    const opened = await handle.stat().catch(() => undefined);
+    if (opened === undefined) {
+      return refused('missing');
+    }
+    if (!opened.isFile()) {
+      return refused('not-a-file');
+    }
+    if (opened.size > MAX_GRANT_FILE_BYTES) {
+      return refused('too-large');
+    }
+    const bytes = await handle.readFile().catch(() => undefined);
+    if (bytes === undefined) {
+      return refused('missing');
+    }
+    const text = decodableText(bytes);
+    return text === undefined ? refused('binary') : { kind: 'text', text };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 /**

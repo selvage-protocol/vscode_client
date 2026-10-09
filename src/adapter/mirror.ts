@@ -14,8 +14,9 @@
  * symlinked directory on the way is where a walk escapes, not the linked file the guard
  * already rejects. The leaf is opened `O_NOFOLLOW | O_EXCL`, so a symlink planted between
  * the check and the use is refused rather than followed; a directory swapped in the same
- * window still is (Node has no `openat`), which stays a stated residual rather than a
- * claimed guarantee.
+ * window still is, because this path names each step rather than resolving it inside the
+ * descriptor of the step before it (`src/adapter/grant.ts` reads a peer's file that way),
+ * which stays a stated residual rather than a claimed guarantee.
  */
 
 import * as vscode from 'vscode';
