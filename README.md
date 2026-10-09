@@ -103,7 +103,7 @@ completing command there.
 | `Selvage: Join a session from an invite link` | Join the room an invite link names, replacing this window's folder with the room's mirror. Accepts the page link a host copies, whose origin is the server the room lives on; a `ws://` link joins as it stands, which is how a room whose server serves no page is handed on. A link that cannot join (a truncated paste, half a query) is refused before the name is asked and before the window reloads, in words that leave the link's token out. A window holding a folder of its own is asked before the reload takes it, and that folder stays on disk either way. A refusal says what happened in ordinary words; the room's own `no such room: <id>` and `invalid room token` never reach the person. |
 | `Selvage: Set the name other participants see` | Report the name in force, and set it. A change while a session is live renames it at once; the next host or join carries the same name. |
 | `Selvage: Change the server` | Report the server the next host uses, and set it, without hosting first. |
-| `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file; a host's open files are the room's. |
+| `Selvage: Open a document from the room` | Put one of the room's documents in an editor. A guest opens its mirror file, or a `selvage:` document where the room's listing names no file for the path; a host's open files are the room's. |
 | `Selvage: Download a file from the room` | Hold one listed path, or a directory of them, in the room, so everyone there gets its text, filling the mirror. Refused while hosting: your files are already on your disk. |
 | `Selvage: Copy the invite link` | Put the session's invite on the clipboard. A session the server gave no invite to says so, and a clipboard the editor refuses says why. A host copies the page its own server serves, carrying the room and its token, so one address decides both the page a guest opens and the socket they join on. A guest hands on the link it joined by, as it stood; the invite is the permission, so the token it joined with is the guest's to pass on. |
 | `Selvage: Leave the session` | Leave the session. Leaving as the host asks first, then ends the room for everyone at once. |
@@ -121,8 +121,11 @@ completing command there.
   collaborating.
 - **A big file is not carried.** A document over 1 MiB stays out of the room, and a request for
   one is refused with the reason.
-- **A path the room holds without listing it has no file here**, so it cannot be opened from the
-  room; the Neovim client holds such a document in a buffer instead.
+- **A path the room holds without listing it opens as a `selvage:` document.** The listing is
+  the host's folder while the room's open documents are every seat's holds, so a document can be
+  in the room and named by no listing: it is read from the room and edited like any other, and it
+  becomes an ordinary file if a listing names it. The Neovim client holds the same document in a
+  `selvage://` buffer.
 - **Leaving deletes the mirror** from the window. Your own files are untouched: the mirror is a
   cache of the room, never a source of truth.
 - **A host's dropped connection ends its session.** A guest reconnects instead, and an edit it made

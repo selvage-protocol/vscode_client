@@ -48,6 +48,14 @@ it covers have been. The join reloads the window onto that directory, replacing 
 there, and leaving deletes it again. `Selvage: Download a file from the room` is how content that
 nobody has opened yet arrives in it, and how a whole project is published to the other side.
 
+The directory holds the listing's shape and nothing else. The room's open-document set is a
+different thing — every seat's holds (`PROTOCOL.md` §13.7) — and a host can hold a document its
+own folder walk leaves out, an ignored path being the plain case. Such a document has no file
+here and opens at a `selvage:` address instead: `Selvage: Open a document from the room` reaches
+it, its text comes from the room, what is typed into it is published like any other document's,
+and no file appears in the tree for it. If a listing names the path later, the file is
+materialised and the document moves onto it, saying so.
+
 A file the host deletes or moves out of the folder leaves the room for a guest too. A guest
 document open on it closes, its hold is released and its file goes from the directory, with
 `<path> is no longer in the room, so it was closed`. A document with unsaved changes keeps its
