@@ -1829,12 +1829,23 @@ export class Session {
    * Whether this window may hold `path` at the `selvage:` address: a path the room holds and its
    * listing does not name, which is the one address this window mints for that (`documentUri`).
    *
+   * A window with no mirror has no such address at all — `documentUri` and the editor's
+   * `heldShareablePath` both require one, because a window whose documents are its own files has
+   * nothing it could serve here — so the hold alone must not offer one: without the mirror the
+   * provider would serve text at an address the editor then refuses to share, leaving a document
+   * in front of the person that the room never hears about.
+   *
    * A `selvage:` URI can be typed, pasted or restored from a window's own state, so the provider
    * asks this before it serves anything: without it, a URI for a path no room holds would take a
    * hold the room should not have and put a document in a window's set that the room never had.
    */
   heldWithoutFile(path: string): boolean {
-    return this.addressable(path) && !this.listed().includes(path) && this.offered().includes(path);
+    return (
+      this.mirror !== undefined &&
+      this.addressable(path) &&
+      !this.listed().includes(path) &&
+      this.offered().includes(path)
+    );
   }
 
   /**
