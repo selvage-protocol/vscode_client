@@ -21,7 +21,15 @@ The listing is bounded as well: `PROTOCOL.md` §13.3 holds one to 100 000 paths 
 their UTF-8 bytes, and a folder past either bound is shared in part. There is nothing a peer
 could do about it, so the host is the one told when it binds and a guest is not told at all.
 
-The folder is the bound on what a host reads. A folder shared from inside a repository does not
+The folder is the bound on what a host reads. A file a guest asks for is resolved one component at
+a time, each component inside the descriptor of the one before it, and its bytes come from the
+descriptor whose type and size were read — so a component a symbolic link replaces between the
+listing and the read is refused rather than followed out of the folder. What that cannot see is a
+mount point, which the file system reports as an ordinary directory and which takes
+`CAP_SYS_ADMIN` to plant. Where the platform offers neither a name for a directory that is already
+open nor `O_NOFOLLOW`, each component is resolved by name and checked before the next step, and a
+name swapped between that check and the step that uses it is the residual there. A folder shared
+from inside a repository does not
 honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
 other rule outside the folder is read, because those are rules of the person at the machine rather
 than of the project being shared. A file the host itself opens is the host's own act: the
