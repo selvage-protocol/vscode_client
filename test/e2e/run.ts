@@ -53,18 +53,18 @@
  */
 
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import type { Dirent } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { constants } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
+import { runTests } from '@vscode/test-electron';
 
 import { RealServer } from '../helpers/selvaged.ts';
-import { ensureVscodeCache } from './vscode-cache.ts';
+import { DISPLAY_ONLY_ENV, VSCODE_VERSION, inheritElectronLibraries, vscodeExecutable } from './electron.ts';
+import { mintStash, stashedMirror } from './mirrors.ts';
+import { killWindows, windowsFor } from './windows.ts';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
 const TMP = resolve(ROOT, '.tmp');
@@ -87,18 +87,6 @@ const WATCH_PATH = 'made-while-live/after-start.txt';
 const WATCH_TEXT = 'a file the host made while the room was live\n';
 const WATCH_DOOMED_PATH = 'doomed-while-live.txt';
 const WATCH_DOOMED_TEXT = 'a file the host removes while the room is live\n';
-
-/**
- * The VS Code build this proof runs against: the floor `package.json` declares, so the version
- * that gets exercised is the version the manifest promises, and `test/manifest.test.ts` fails
- * when the two drift apart. Left to `@vscode/test-electron`, that is whatever the update service
- * calls stable at the moment of the run, so the editor being proved moves under the proof without
- * anything here changing — and the version is resolved over the network before the cache is
- * consulted for *what* to run. Pinned, a build already in the cache is used without a request at
- * all. Move it deliberately with `SELVAGE_E2E_VSCODE_VERSION`, which is the seam for a run
- * against another build; a version the cache does not hold is downloaded on the next run.
- */
-const VSCODE_VERSION = process.env.SELVAGE_E2E_VSCODE_VERSION ?? '1.137.0';
 
 const RECONNECT = process.env.SELVAGE_E2E_RECONNECT !== '0';
 /**
@@ -129,14 +117,6 @@ const INSTANCE_DEADLINE_MS = Number(
  * can be given room with `SELVAGE_E2E_WATCHDOG_MS`.
  */
 const WATCHDOG_MS = Number(process.env.SELVAGE_E2E_WATCHDOG_MS ?? '900000');
-/**
- * How long the one `nix eval` below may take. It resolves and evaluates `<nixpkgs>`, which can
- * block on an evaluation, a fetch or a store lock, so it is bounded like every other step: an
- * answer that never comes is a failure naming the cache and the way out, rather than a run that
- * sits there until the watchdog. The answer is slow and stable and is cached once it arrives.
- */
-const NIX_EVAL_TIMEOUT_MS = Number(process.env.SELVAGE_E2E_NIX_TIMEOUT_MS ?? '120000');
-const NIX_EVAL_KILL_GRACE_MS = 2000;
 /** How long the server is given to stop on the way out before the process leaves without it. */
 const SERVER_STOP_GRACE_MS = 5000;
 
@@ -167,66 +147,29 @@ function log(...parts: unknown[]): void {
  * promise never settles, which says nothing about whether anything is still behind it.
  */
 function liveEditorProcesses(): { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } {
-  const alive: { host: number[]; guest: number[]; guestPhases: number[]; empty: number[] } = {
-    host: [],
-    guest: [],
-    guestPhases: [],
-    empty: [],
+  const profiles = {
+    host: resolve(RUN_DIR, 'host-user-data'),
+    guest: resolve(RUN_DIR, 'guest-user-data'),
+    guestPhases: resolve(RUN_DIR, 'guest-phases-user-data'),
+    empty: resolve(RUN_DIR, 'empty-user-data'),
   };
-  const hostUserData = resolve(RUN_DIR, 'host-user-data');
-  const guestUserData = resolve(RUN_DIR, 'guest-user-data');
-  const guestPhasesUserData = resolve(RUN_DIR, 'guest-phases-user-data');
-  const emptyUserData = resolve(RUN_DIR, 'empty-user-data');
-  let entries: string[];
-  try {
-    entries = readdirSync('/proc');
-  } catch {
-    // No procfs: say nothing rather than guess.
-    return alive;
-  }
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) {
-      continue;
-    }
-    let cmdline: string;
-    try {
-      cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8');
-    } catch {
-      // It exited between the listing and the read.
-      continue;
-    }
-    if (cmdline.includes(hostUserData)) {
-      alive.host.push(Number(entry));
-    } else if (cmdline.includes(guestPhasesUserData)) {
-      alive.guestPhases.push(Number(entry));
-    } else if (cmdline.includes(guestUserData)) {
-      alive.guest.push(Number(entry));
-    } else if (cmdline.includes(emptyUserData)) {
-      alive.empty.push(Number(entry));
-    }
-  }
-  return alive;
+  const found = windowsFor(Object.values(profiles));
+  return {
+    host: found.get(profiles.host) ?? [],
+    guest: found.get(profiles.guest) ?? [],
+    guestPhases: found.get(profiles.guestPhases) ?? [],
+    empty: found.get(profiles.empty) ?? [],
+  };
 }
 
 /**
- * SIGTERMs the editors this run spawned, found the way the watchdog reports them: by the
- * user-data directory only this run passes, so nothing else on the machine can match. They are
- * `@vscode/test-electron`'s children and no handle on them comes back, so on a throw, a signal
- * or the watchdog they are otherwise abandoned alive.
+ * SIGTERMs the editors this run spawned, in the profiles `liveEditorProcesses` reads them from.
+ * They are `@vscode/test-electron`'s children and no handle on them comes back, so on a throw, a
+ * signal or the watchdog they are otherwise abandoned alive.
  */
 function killLiveEditors(reason: string): void {
   const alive = liveEditorProcesses();
-  const pids = [...alive.host, ...alive.guest, ...alive.guestPhases, ...alive.empty];
-  if (pids.length > 0) {
-    log(`killing live editors (${reason}): ${pids.join(', ')}`);
-  }
-  for (const pid of pids) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // It exited between the scan and the signal.
-    }
-  }
+  killWindows([...alive.host, ...alive.guest, ...alive.guestPhases, ...alive.empty], `live editors (${reason})`, log);
 }
 
 /**
@@ -236,17 +179,7 @@ function killLiveEditors(reason: string): void {
  * everything alive.
  */
 function killEmptyEditors(reason: string): void {
-  const alive = liveEditorProcesses();
-  if (alive.empty.length > 0) {
-    log(`killing empty-window editors (${reason}): ${alive.empty.join(', ')}`);
-  }
-  for (const pid of alive.empty) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // It exited between the scan and the signal.
-    }
-  }
+  killWindows(liveEditorProcesses().empty, `empty-window editors (${reason})`, log);
 }
 
 /**
@@ -396,138 +329,6 @@ async function inherit(command: string, args: string[]): Promise<void> {
   });
 }
 
-/**
- * `nix eval`, awaited and bounded. `execFile`'s own timeout sends one signal and then waits for
- * ever on a child that ignores it, which bounds nothing; this kills in two steps and reports.
- */
-function nixEval(expr: string, timeoutMs: number): Promise<string> {
-  return new Promise<string>((resolvePromise, reject) => {
-    const child = spawn('nix', ['eval', '--impure', '--raw', '--expr', expr], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-    let escalation: ReturnType<typeof setTimeout> | undefined;
-    const killed = (): Error =>
-      new Error(
-        `nix eval did not finish within ${String(timeoutMs)}ms, so it was killed` +
-          (stderr.trim() === '' ? '' : `; its last output was:\n${stderr.trim()}`),
-      );
-    const finish = (error?: Error): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      if (escalation !== undefined) {
-        clearTimeout(escalation);
-      }
-      if (error === undefined) {
-        resolvePromise(stdout);
-      } else {
-        reject(error);
-      }
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      escalation = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, NIX_EVAL_KILL_GRACE_MS);
-    }, timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', (error) => {
-      finish(error);
-    });
-    // A killed child's stdio can be held open by something behind it, so a timed-out evaluation
-    // reports at `exit`; one that finished waits for `close`, when its output has been read.
-    child.on('exit', () => {
-      if (timedOut) {
-        finish(killed());
-      }
-    });
-    child.on('close', (code) => {
-      if (timedOut) {
-        finish(killed());
-      } else if (code !== 0) {
-        finish(new Error(`nix eval exited with ${String(code)}:\n${stderr.trim()}`));
-      } else {
-        finish();
-      }
-    });
-  });
-}
-
-/** `nix`'s answer for the shared libraries an Electron binary downloaded outside nix needs on
- * NixOS — `nix-ld` supplies the loader, not the libraries a desktop app links against.
- *
- * A host that installs its own system libraries needs no answer, and using this one there is
- * worse than leaving it out: those libraries are built against nixpkgs' glibc, and a binary
- * linked against the host's glibc cannot load them — on Ubuntu 24.04 the editor dies before it
- * opens a window with `version 'GLIBC_ABI_GNU2_TLS' not found`, raised the moment `libmount` is
- * looked up in this path. So `/etc/NIXOS`, the marker nixpkgs itself reads, decides: with no
- * marker there is no path and the loader stays on the host's own libraries.
- *
- * Cached, because evaluating it is the slow part of every run.
- */
-async function nixElectronLibraryPath(): Promise<string> {
-  if (!existsSync('/etc/NIXOS')) {
-    return '';
-  }
-  const cacheFile = resolve(TMP, 'e2e-libpath.txt');
-  try {
-    return readFileSync(cacheFile, 'utf8').trim();
-  } catch {
-    // fall through and compute it
-  }
-  const packages = [
-    'glib', 'nss', 'nspr', 'dbus', 'atk', 'cups', 'gtk3', 'pango', 'cairo', 'expat',
-    'libdrm', 'mesa', 'alsa-lib', 'at-spi2-atk', 'at-spi2-core', 'libx11', 'libxcb',
-    'libxcomposite', 'libxdamage', 'libxext', 'libxfixes', 'libxrandr', 'libxkbcommon',
-    'libGL', 'systemd', 'libnotify', 'gsettings-desktop-schemas', 'libxtst',
-    'libxscrnsaver', 'libxshmfence', 'libgbm', 'libxi', 'libxrender', 'libuuid',
-  ];
-  const expr = `with import <nixpkgs> {}; lib.makeLibraryPath [${packages.join(' ')}]`;
-  let stdout: string;
-  try {
-    stdout = await nixEval(expr, NIX_EVAL_TIMEOUT_MS);
-  } catch (error) {
-    throw new Error(
-      `nix eval for the Electron library path failed:\n${String(error)}\n` +
-        `That answer is cached: one that was obtained is written to\n  ${cacheFile}\n` +
-        `and every later run reads it instead of evaluating again. Warm it once, in a shell with\n` +
-        `a working nixpkgs, with\n  nix eval --impure --raw --expr '${expr}' > ${cacheFile}\n` +
-        `or allow the evaluation longer with SELVAGE_E2E_NIX_TIMEOUT_MS.`,
-    );
-  }
-  writeFileSync(cacheFile, stdout);
-  return stdout.trim();
-}
-
-/**
- * The clipboard the host suite reads its invite back from has to be this run's own. `xvfb-run`
- * gives the instances an X display, but the Wayland variables it leaves in place are the login
- * session's, so a Wayland-capable Electron reads — and writes — the session clipboard that
- * `wl-copy` and every other client on the machine own, so the invite this run reads could be
- * another repository's test value and the address it names one nothing is listening on. With
- * X display, the selection belongs to these two instances and to nothing else.
- *
- * `XDG_SESSION_TYPE` is named rather than dropped because it is the hint a client falls back on.
- * The session bus is left alone: it is not a display, and the portal clipboard is out of play in
- * a dev host with the sandbox off.
- */
-const DISPLAY_ONLY_ENV: Record<string, string | undefined> = {
-  WAYLAND_DISPLAY: undefined,
-  WAYLAND_SOCKET: undefined,
-  XDG_SESSION_TYPE: 'x11',
-};
 
 interface InstanceOutcome {
   role: string;
@@ -576,125 +377,12 @@ async function pollFor<T>(label: string, check: () => T | undefined, deadlineMs:
   }
 }
 
-/**
- * Every mirror window directory for `room` under a user-data dir, as `{ publisher,
- * window, root, marker }`: what the orchestrator reads off its own disk instead of
- * driving a window it cannot click through.
- */
-function roomMirrors(
-  userDataDir: string,
-  room: string,
-): Array<{ publisher: string; window: string; root: string; marker: { invite?: string } }> {
-  const found: Array<{ publisher: string; window: string; root: string; marker: { invite?: string } }> = [];
-  let publishers: Dirent[];
-  try {
-    publishers = readdirSync(join(userDataDir, 'User', 'globalStorage'), { withFileTypes: true });
-  } catch {
-    return found;
-  }
-  for (const publisher of publishers) {
-    if (!publisher.isDirectory()) {
-      continue;
-    }
-    let windows: Dirent[];
-    try {
-      windows = readdirSync(join(userDataDir, 'User', 'globalStorage', publisher.name, 'rooms', room), {
-        withFileTypes: true,
-      });
-    } catch {
-      continue;
-    }
-    for (const window of windows) {
-      if (!window.isDirectory()) {
-        continue;
-      }
-      const root = join(userDataDir, 'User', 'globalStorage', publisher.name, 'rooms', room, window.name);
-      try {
-        const marker = JSON.parse(readFileSync(join(root, '.selvage-mirror.json'), 'utf8')) as {
-          invite?: string;
-        };
-        found.push({ publisher: publisher.name, window: window.name, root, marker });
-      } catch {
-        // Not a mirror yet.
-      }
-    }
-  }
-  return found;
-}
-
-/**
- * The mirror whose marker still carries a pending join: the join stashed it, and
- * the reload tore the joining run down before any triage could finish it — under
- * the test runner the reloaded window never boots, so a stashed marker is the
- * whole proof the reload staged, read off the orchestrator's disk.
- */
-function stashedMirror(
-  userDataDir: string,
-  room: string,
-): { publisher: string; root: string; invite: string; displayName?: string } | undefined {
-  for (const mirror of roomMirrors(userDataDir, room)) {
-    if (mirror.marker.invite === undefined) {
-      continue;
-    }
-    try {
-      const marker = JSON.parse(readFileSync(join(mirror.root, '.selvage-mirror.json'), 'utf8')) as {
-        invite: string;
-        displayName?: string;
-      };
-      return { publisher: mirror.publisher, root: mirror.root, invite: marker.invite, displayName: marker.displayName };
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Stashes a join the way `mintMirror` writes it — the marker a reload's triage
- * finishes — so a window opened straight onto the mirror lands without joining.
- * The invite is the one the join stage wrote down verbatim (proxy rewrite and
- * all); the name rides beside it so no question interrupts the landing. The room
- * is alive on the server either way: minting here mints no room, it stages one.
- */
-function mintStash(
-  userDataDir: string,
-  publisher: string,
-  room: string,
-  invite: string,
-  displayName: string,
-): string {
-  const window = randomUUID();
-  const root = join(userDataDir, 'User', 'globalStorage', publisher, 'rooms', room, window);
-  mkdirSync(root, { recursive: true });
-  writeFileSync(
-    join(root, '.selvage-mirror.json'),
-    `${JSON.stringify({
-      room,
-      window,
-      pid: process.pid,
-      created: new Date().toISOString(),
-      invite,
-      displayName,
-    })}\n`,
-  );
-  return root;
-}
 
 /** Takes down only the guest's join-stage window: its reload landed and the phases
  * run in another window, so the undriven guest leaves before it can add presence
  * noise. Scoped to the join profile, never the phases one. */
 function killGuestJoinEditors(reason: string): void {
-  const alive = liveEditorProcesses();
-  if (alive.guest.length > 0) {
-    log(`killing guest join-stage editors (${reason}): ${alive.guest.join(', ')}`);
-  }
-  for (const pid of alive.guest) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // It exited between the scan and the signal.
-    }
-  }
+  killWindows(liveEditorProcesses().guest, `guest join-stage editors (${reason})`, log);
 }
 
 async function runInstance(
@@ -768,15 +456,9 @@ async function main(): Promise<void> {
 
   phase = 'resolving the VS Code build';
   log(`resolving VS Code ${VSCODE_VERSION} (downloads it the first time that version is used)`);
-  const vscodeExecutablePath = await downloadAndUnzipVSCode({
-    version: VSCODE_VERSION,
-    cachePath: ensureVscodeCache(ROOT),
-  });
+  const vscodeExecutablePath = await vscodeExecutable();
   phase = 'working out the Electron library path';
-  const libraryPath = await nixElectronLibraryPath();
-  process.env['LD_LIBRARY_PATH'] = [libraryPath, process.env['LD_LIBRARY_PATH'] ?? '']
-    .filter((part) => part !== '')
-    .join(':');
+  await inheritElectronLibraries();
   log('VS Code executable:', vscodeExecutablePath);
 
   const hostWorkspace = mkdtempSync(join(scratchDir(), 'selvage-host-'));

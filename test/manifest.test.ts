@@ -132,14 +132,15 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
 });
 
 test('the end-to-end proof launches the build the manifest declares', () => {
-  // The floor is only a claim until something runs it: `test/e2e/run.ts` downloads and launches
-  // one build, and it has to be the one `engines.vscode` promises. Both numbers move together or
-  // this fails; `SELVAGE_E2E_VSCODE_VERSION` is the seam for a run against another build.
-  const source = readFileSync(resolve(ROOT, 'test', 'e2e', 'run.ts'), 'utf8');
+  // The floor is only a claim until something runs it: `test/e2e/electron.ts` resolves one build
+  // for the proof and for the screenshot, and it has to be the one `engines.vscode` promises. Both
+  // numbers move together or this fails; `SELVAGE_E2E_VSCODE_VERSION` is the seam for a run
+  // against another build.
+  const source = readFileSync(resolve(ROOT, 'test', 'e2e', 'electron.ts'), 'utf8');
   const launched = /SELVAGE_E2E_VSCODE_VERSION \?\? '([^']+)'/.exec(source);
   assert.ok(
     launched !== null,
-    'test/e2e/run.ts no longer defaults SELVAGE_E2E_VSCODE_VERSION to a pinned build',
+    'test/e2e/electron.ts no longer defaults SELVAGE_E2E_VSCODE_VERSION to a pinned build',
   );
   const floor = /^\^?(\d+\.\d+\.\d+)$/.exec(manifest.engines?.vscode ?? '');
   assert.ok(floor !== null, `engines.vscode is not an exact floor: ${String(manifest.engines?.vscode)}`);
