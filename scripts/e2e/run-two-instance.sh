@@ -11,7 +11,7 @@
 # `selvaged` it starts itself. It is not in `ci.yml` either. Run it here for a one-off;
 # `.github/workflows/e2e-current.yml` runs this same script unattended on a weekly schedule
 # against the current stable VS Code build, so a VS Code release that breaks the extension is a
-# red run rather than a user report. See `docs/checks.md` for what it proves and its prerequisites.
+# red run rather than a user report.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
