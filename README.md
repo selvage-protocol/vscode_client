@@ -114,16 +114,16 @@ completing command there.
 
 - **Undo is shared.** A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a
   peer's edit; that change is published like any other and the room reconverges.
-- **Format-on-save is published** like any other change, so with peers running formatters a
-  session can echo. Turn format-on-type off while collaborating.
+- **A formatter that edits the document is published** like any other change, so with formatters
+  running on both sides a session can echo. Turn format-on-type off while collaborating.
 - **A big file is not carried.** A document over 1 MiB stays out of the room, and a request for
   one is refused with the reason.
 - **A path the room holds without listing it has no file here**, so it cannot be opened from the
   room; the Neovim client holds such a document in a buffer instead.
 - **Leaving deletes the mirror** from the window. Your own files are untouched: the mirror is a
   cache of the room, never a source of truth.
-- **A change made while the connection is down is not republished** when it comes back; the room
-  learns of it at the next filesystem event and not otherwise.
+- **A host's dropped connection ends its session.** A guest reconnects instead, and an edit it made
+  while the connection was down goes out when the new socket is seated.
 - **The room's folder is its host's.** You do not need to trust it to join, and leaving it in
   Restricted Mode is the safer choice; every command works in a window you have not trusted. The
   mirror does not take the room's `.vscode` directory or its `.code-workspace` files, and a guest
