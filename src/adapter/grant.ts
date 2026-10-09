@@ -785,8 +785,11 @@ async function walkByName(root: string, segments: readonly string[]): Promise<Na
  * A leaf's text, or why this window will not serve it.
  *
  * The type and the size are read by name and then again through the descriptor the bytes are read
- * from, so the name cannot be moved onto another object between the two and the bytes are the
- * object that was measured. A document is one `Y.Text` and a room carries text, so a NUL byte or a
+ * from, so the bytes are the object that was measured, and that object is a plain file of this
+ * folder rather than a link out of it. The open resolves the name a second time, so an ordinary
+ * file that takes the name's place after the lookup is served — its own type, size and bytes, read
+ * through the descriptor that measured it — which is a different file of the same directory and not
+ * an escape. A document is one `Y.Text` and a room carries text, so a NUL byte or a
  * byte sequence that is not valid UTF-8 is not something to put into one (`decodableText`), and a
  * plain file over `MAX_GRANT_FILE_BYTES` is more than a session will carry.
  *
