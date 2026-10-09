@@ -50,7 +50,7 @@ import { pathToFileURL } from 'node:url';
 import type { Uri } from 'vscode';
 import type { GrantRefusal } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES, MAX_GRANT_NODES, MAX_GRANT_PATHS } from '../src/bridge/index.ts';
-import { afterLstat, afterReaddir, beforeOpen } from './helpers/peer-read-seam.ts';
+import { afterLstat, afterReaddir, afterStat, beforeOpen } from './helpers/peer-read-seam.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 /** The module a peer's read is written in, whose own `node:fs/promises` import the seam answers. */
@@ -927,6 +927,63 @@ test('a leaf grown past the bound between the name and the read is refused', asy
 
   assert.deepEqual(await readGrantedText(folders(), 'leaf.txt'), unreadable('too-large'));
   assert.ok(swapped, 'the leaf was not looked up through the seam: this test covers nothing');
+});
+
+test('a leaf grown past the bound after the descriptor measured it is refused', async (t) => {
+  const tree = readTree(t, (put) => {
+    put('leaf.txt', 'small\n');
+  });
+  const leaf = join(tree.folder, 'leaf.txt');
+
+  // The size the descriptor reports and the bytes read through it are two moments, and a writer
+  // writes in the one between them: the file is under the bound when it is measured and over it
+  // when it is read. What a read that runs to the end of the file allocates is then the writer's to
+  // choose, however large; the read stops at the bound instead. The swap above gets behind the
+  // name, and this one gets behind the measurement.
+  let planted = false;
+  afterStat((path) => {
+    if (!path.endsWith('/leaf.txt') || planted) {
+      return;
+    }
+    planted = true;
+    writeFileSync(leaf, 'x'.repeat(MAX_GRANT_FILE_BYTES + 1));
+  });
+  t.after(() => {
+    afterStat(undefined);
+  });
+
+  const answer = await readGrantedText(folders(), 'leaf.txt');
+  assert.ok(planted, 'the descriptor was never measured through the seam: this test covers nothing');
+  assert.deepEqual(answer, unreadable('too-large'));
+});
+
+test('an ignore file over the bound is a refusal, not a folder with no rules', async (t) => {
+  readTree(t, (put) => {
+    // The rules a folder states for itself, in a file this window will not read whole: the first
+    // line drops `kept-out.txt`, and the rest is past the bound.
+    put('.gitignore', `kept-out.txt\n# ${'x'.repeat(MAX_GRANT_FILE_BYTES)}\n`);
+    put('kept-out.txt', 'the file the folder’s own rule leaves out\n');
+    put('notes.txt', 'notes\n');
+  });
+
+  // `undefined` from the ignore read is what every caller reads as "no rules of this directory", so
+  // an ignore file that is there and is not read has to be said as a refusal: answering "no rules"
+  // would serve the names this folder's own rules leave out, which is the whole of what the ignore
+  // layer is for. Both descents read it through the same reader and answer the same way.
+  const was = pinnedSteps();
+  t.after(() => {
+    pinnedSteps(was);
+  });
+  for (const pinned of [true, false]) {
+    pinnedSteps(pinned);
+    for (const path of ['notes.txt', 'kept-out.txt']) {
+      assert.deepEqual(
+        await readGrantedText(folders(), path),
+        unreadable('too-large'),
+        `${path} with the steps pinned=${pinned}`,
+      );
+    }
+  }
 });
 
 test('a peer read of a file this window cannot open is `missing`, not a shape it is not', async (t) => {

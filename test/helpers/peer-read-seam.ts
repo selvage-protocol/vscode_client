@@ -1,6 +1,7 @@
 /**
  * The adapter's own view of `node:fs/promises`, with three points where a test can land a rename
- * between a name being looked up and the step that uses it.
+ * between a name being looked up and the step that uses it, and a fourth where it can land a write
+ * between a descriptor being measured and the bytes being read through it.
  *
  * The read a peer asks for resolves each path component and holds the descriptor it found, so the
  * window a name can change in is *inside* one call and no second call of the test's can land in
@@ -23,6 +24,7 @@ import type { FileHandle } from 'node:fs/promises';
 let seen: ((path: string) => void) | undefined;
 let listed: (() => void) | undefined;
 let opening: ((path: string) => void) | undefined;
+let measuring: ((path: string) => void) | undefined;
 
 /** Runs `observer` on the path of every `lstat` once the lookup has answered; `undefined` clears it. */
 export function afterLstat(observer: ((path: string) => void) | undefined): void {
@@ -37,6 +39,14 @@ export function afterReaddir(observer: (() => void) | undefined): void {
 /** Runs `observer` on the path of every `open` once the name is about to be resolved; `undefined` clears it. */
 export function beforeOpen(observer: ((path: string) => void) | undefined): void {
   opening = observer;
+}
+
+/**
+ * Runs `observer` on the path of every descriptor whose own `stat` has answered, which is where a
+ * file's size is measured before the bytes are read through it; `undefined` clears it.
+ */
+export function afterStat(observer: ((path: string) => void) | undefined): void {
+  measuring = observer;
 }
 
 /** The real `lstat`, with the observation point after it. */
@@ -58,8 +68,24 @@ export async function readdir(
   return entries;
 }
 
-/** The real `open`, with the observation point before the name is resolved. */
+/**
+ * The real `open`, with the observation point before the name is resolved, and the descriptor's own
+ * `stat` watched after the name resolved.
+ */
 export async function open(...args: Parameters<typeof realOpen>): Promise<FileHandle> {
-  opening?.(String(args[0]));
-  return await realOpen(...args);
+  const path = String(args[0]);
+  opening?.(path);
+  const handle = await realOpen(...args);
+  if (measuring === undefined) {
+    return handle;
+  }
+  const stat = handle.stat.bind(handle) as (...rest: unknown[]) => Promise<unknown>;
+  Object.assign(handle, {
+    stat: async (...rest: unknown[]) => {
+      const info = await stat(...rest);
+      measuring?.(path);
+      return info;
+    },
+  });
+  return handle;
 }
