@@ -4,11 +4,12 @@
  * Everything decidable about a listing — which paths it may name, in what order it is written,
  * how a tree is derived from it, and where a walk over a folder stops — is in `src/bridge/`,
  * because all three clients have to agree on it. What is left here is the editor's half: walking
- * folders through `vscode.workspace.fs`, so a remote or virtual workspace is read the way the
- * editor reads it, and resolving a room path back to the file it names. A read a *peer* asked
- * for is the one exception: it resolves and reads in one step, over Node's own file system,
- * because `vscode.workspace.fs` hands back a path rather than a descriptor and a path can be
- * swapped for a link between the walk and the read.
+ * folders through `vscode.workspace.fs`, so a remote or virtual workspace is listed the way the
+ * editor lists it, and resolving a room path back to the file it names. A read a *peer* asked for
+ * in a folder of this machine is the one exception: it resolves and reads in one step, over Node's
+ * own file system, because `vscode.workspace.fs` hands back a path rather than a descriptor and a
+ * path can be swapped for a link between the walk and the read. A folder this process has no path
+ * into keeps the window's own read (`readGrantedUri`), for the same reason.
  */
 
 import * as vscode from 'vscode';
@@ -453,15 +454,15 @@ type NamedFolder =
 /**
  * A file's text, read for a peer, or why this window will not serve it.
  *
- * This is the one place a host reads its own disk because someone else asked rather than because
- * the person at the machine acted, so the path is not resolved and then used: every component is
- * opened with `O_NOFOLLOW` inside the descriptor of the component before it, every name has to be
- * an entry of the directory that holds it spelled exactly as that directory lists it, and the
- * bytes come from the descriptor whose type and size were read. A name checked and then resolved
- * again is two readings of one name — a directory that is a plain directory when it is checked is
- * a link somewhere else by the time the next name is resolved, and the file system reports neither
- * reading to the other — which is how a path a walk refused is read out of the folder on the
- * peer's behalf.
+ * A folder of this machine is the one place a host reads its own disk because someone else asked
+ * rather than because the person at the machine acted, so the path is not resolved and then used:
+ * every component is opened with `O_NOFOLLOW` inside the descriptor of the component before it,
+ * every name has to be an entry of the directory that holds it spelled exactly as that directory
+ * lists it, and the bytes come from the descriptor whose type and size were read. A name checked
+ * and then resolved again is two readings of one name — a directory that is a plain directory when
+ * it is checked is a link somewhere else by the time the next name is resolved, and the file
+ * system reports neither reading to the other — which is how a path a walk refused is read out of
+ * the folder on the peer's behalf.
  *
  * The rules are `grantedFile`'s, in the same order, because the answer a peer gets has to be the
  * one the listing agrees with: `isGrantedPath`'s exclusions and segment rules, then the folder's
@@ -472,6 +473,10 @@ type NamedFolder =
  * file system reports it as a directory, so a step through one is a step through a directory, and
  * only comparing the file systems' identities (`st_dev`) at each step would see it. Planting one
  * takes `CAP_SYS_ADMIN`.
+ *
+ * A folder this process has no path into is the one case with no component to resolve at all: a
+ * virtual workspace, a container, a repository the window reads through the editor. Its read is the
+ * window's own (`readGrantedUri`), behind the same rules and answering the same words.
  */
 export async function readGrantedText(
   folders: readonly vscode.WorkspaceFolder[],
@@ -483,7 +488,10 @@ export async function readGrantedText(
   }
   const root = localPath(resolved.folder);
   if (root === undefined) {
-    return refused('not-a-file');
+    // The rules and the refusals in front of the read below are `grantedFile`'s own, asked of the
+    // same path, so the two halves cannot disagree about what the grant shares.
+    const found = await grantedFile(folders, path);
+    return 'refusal' in found ? refused(found.refusal) : await readGrantedUri(found.uri);
   }
   const segments = resolved.relative.split('/');
   const leaf = segments.pop();
@@ -518,12 +526,49 @@ export async function readGrantedText(
  * The folder on this extension host's own disk, or `undefined` when it is not a `file:` folder.
  *
  * Only a `file:` folder has a descriptor to descend: a virtual scheme is the editor's own view of
- * a store this process cannot resolve a component of, and every rule here is about resolving
- * components. Such a folder is still listed and is refused on a read, which is what `not-a-file`
- * says: this window has no plain file to vouch for.
+ * a store this process cannot resolve a component of, and every rule of the descent is about
+ * resolving components. Such a folder is still listed, and its read is the window's own
+ * (`readGrantedUri`) rather than this process's.
  */
 function localPath(folder: vscode.WorkspaceFolder): string | undefined {
   return folder.uri.scheme === 'file' ? folder.uri.fsPath : undefined;
+}
+
+/**
+ * A granted file's text over the window's own file system, or why this window will not serve it.
+ *
+ * A folder this process has no path into — `vscode-vfs://`, a container, a repository the window
+ * reads through the editor — has no component to resolve, and `vscode.workspace.fs` hands back a
+ * path rather than a descriptor to pin a step inside, so its read is the window's own: the name is
+ * `stat`ed and then read. A link planted in the window between those two readings is followed, and
+ * an ordinary file swapped in there is served; that is the provider's window rather than this
+ * adapter's, because the store is not this machine's disk, which is the one a concurrent local
+ * writer can reach into. The grant's checks still bound the read — they are `grantedFile`'s, asked
+ * of the same path, and the folder's own ignore files are read for it — and the words are the same:
+ * a name the window has not got is `missing`, one that is not a plain file is `not-a-file`, and the
+ * bound and the text decoder are what the descriptor read applies as well.
+ */
+async function readGrantedUri(uri: vscode.Uri): Promise<GrantedRead> {
+  let info: vscode.FileStat;
+  try {
+    info = await vscode.workspace.fs.stat(uri);
+  } catch {
+    return refused('missing');
+  }
+  if (info.type !== vscode.FileType.File) {
+    return refused('not-a-file');
+  }
+  if (info.size > MAX_GRANT_FILE_BYTES) {
+    return refused('too-large');
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(uri);
+  } catch {
+    return refused('missing');
+  }
+  const text = decodableText(bytes);
+  return text === undefined ? refused('binary') : { kind: 'text', text };
 }
 
 /** A name inside a directory that is already open: `/proc/self/fd/<fd>` is that directory. */
