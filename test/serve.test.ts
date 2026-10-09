@@ -46,7 +46,7 @@ import { pathToFileURL } from 'node:url';
 import type { Uri } from 'vscode';
 import type { GrantRefusal } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES, MAX_GRANT_NODES, MAX_GRANT_PATHS } from '../src/bridge/index.ts';
-import { afterLstat } from './helpers/peer-read-seam.ts';
+import { afterLstat, afterReaddir, beforeOpen } from './helpers/peer-read-seam.ts';
 import * as vscodeLoader from './helpers/vscode-loader.ts';
 
 /** The module a peer's read is written in, whose own `node:fs/promises` import the seam answers. */
@@ -948,6 +948,59 @@ test('a peer read reads the folder\u2019s own ignore files, and never a linked o
     kind: 'text',
     text: 'kept unless the linked .git is read\n',
   });
+});
+
+test('a .git that appears after the listing is not read, whichever way the name resolves', async (t) => {
+  const tree = readTree(t, (put) => {
+    put('kept.txt', 'kept\n');
+  });
+
+  // The root is listed before the repository is there, so it is not this folder's repository however
+  // the name resolves a moment later: the read holds that listing, and the entry check is what says
+  // a `.git` the listing never carried is no repository to read.
+  let appeared = false;
+  afterReaddir(() => {
+    if (appeared) {
+      return;
+    }
+    appeared = true;
+    mkdirSync(join(tree.folder, '.git', 'info'), { recursive: true });
+    writeFileSync(join(tree.folder, '.git', 'info', 'exclude'), 'kept.txt\n');
+  });
+  t.after(() => {
+    afterReaddir(undefined);
+  });
+
+  assert.deepEqual(await readGrantedText(folders(), 'kept.txt'), { kind: 'text', text: 'kept\n' });
+  assert.ok(appeared, 'no listing was observed: this test covers nothing');
+});
+
+test('a .git swapped for a link between its entry check and its open is not read', async (t) => {
+  const tree = readTree(t, (put, outside) => {
+    put('kept.txt', 'kept\n');
+    put('.git/config', 'this folder’s own repository\n');
+    mkdirSync(join(outside, 'gitdir', 'info'), { recursive: true });
+    writeFileSync(join(outside, 'gitdir', 'info', 'exclude'), 'kept.txt\n');
+  });
+
+  // The listing carries `.git` as an ordinary directory, so the entry check passes, and the swap
+  // lands after it and before the open that uses the name: that open is `O_NOFOLLOW`, so the link is
+  // refused where a directory has to be, and the repository behind it is not this folder's.
+  let swapped = false;
+  beforeOpen((path) => {
+    if (!path.endsWith('/.git') || swapped) {
+      return;
+    }
+    swapped = true;
+    rmSync(join(tree.folder, '.git'), { recursive: true, force: true });
+    symlinkSync(join(tree.outside, 'gitdir'), join(tree.folder, '.git'), 'dir');
+  });
+  t.after(() => {
+    beforeOpen(undefined);
+  });
+
+  assert.deepEqual(await readGrantedText(folders(), 'kept.txt'), { kind: 'text', text: 'kept\n' });
+  assert.ok(swapped, 'the repository was never opened through the seam: this test covers nothing');
 });
 
 test('a folder the window holds over another scheme is read through the window', async (t) => {
