@@ -66,7 +66,7 @@ registerHooks({
   },
 });
 const vscode = await import('vscode');
-const { enumerateGrant, grantedFile, isShareableFile, readGrantedText } = await import(
+const { enumerateGrant, grantedFile, isShareableFile, pinnedSteps, readGrantedText } = await import(
   '../src/adapter/grant.ts'
 );
 const { WorkspaceEditor } = await import('../src/adapter/documents.ts');
@@ -992,6 +992,104 @@ test('a folder the window holds over another scheme is read through the window',
   assert.deepEqual(await readGrantedText(windowOn(virtual), 'sub'), unreadable('not-a-file'));
   assert.deepEqual(await readGrantedText(windowOn(virtual), 'big.txt'), unreadable('too-large'));
   assert.deepEqual(await readGrantedText(windowOn(virtual), 'latin1.txt'), unreadable('binary'));
+});
+
+// --- the read a platform without `/proc/self/fd` takes -------------------------------
+
+test('a read by name serves and refuses what the descriptor descent does', async (t) => {
+  const tree = readTree(t, (put, outside) => {
+    writeFileSync(join(outside, 'secret.txt'), 'outside\n');
+    put('.git/info/exclude', 'dropped-by-the-repository.txt\n');
+    put('.gitignore', 'dropped.txt\n');
+    put('sub/.gitignore', 'nested.txt\n');
+    put('dropped-by-the-repository.txt', 'dropped by the repository exclude\n');
+    put('dropped.txt', 'dropped by the folder\n');
+    put('sub/nested.txt', 'dropped by the deeper ignore file\n');
+    put('notes.txt', 'notes\n');
+    put('sub/kept.txt', 'kept\n');
+  });
+  symlinkSync(tree.outside, join(tree.folder, 'link'), 'dir');
+  const was = pinnedSteps();
+  pinnedSteps(false);
+  t.after(() => {
+    pinnedSteps(was);
+  });
+
+  // The descent that is not pinned looks every step up by name, which is the one reading of a step
+  // the pinned one never makes: the seam records a step's own path here, so the assertions below
+  // cannot pass because the pinned descent answered instead.
+  let stepsByName = 0;
+  afterLstat((path) => {
+    if (path === join(tree.folder, 'sub')) {
+      stepsByName += 1;
+    }
+  });
+  t.after(() => {
+    afterLstat(undefined);
+  });
+
+  // macOS and Windows read every step by name, and a guest has to be answered there as it is here:
+  // the ignore sources are listed and read by name, so the repository exclude and every `.gitignore`
+  // down the path still bind the read, and a link standing where a directory has to be is refused
+  // (the `lstat` above it reports the link) rather than walked into.
+  assert.deepEqual(await readGrantedText(folders(), 'notes.txt'), { kind: 'text', text: 'notes\n' });
+  assert.deepEqual(await readGrantedText(folders(), 'sub/kept.txt'), { kind: 'text', text: 'kept\n' });
+  assert.deepEqual(await readGrantedText(folders(), 'link/secret.txt'), unreadable('not-a-file'));
+  assert.deepEqual(await readGrantedText(folders(), 'dropped.txt'), unreadable('not-granted'));
+  assert.deepEqual(
+    await readGrantedText(folders(), 'dropped-by-the-repository.txt'),
+    unreadable('not-granted'),
+  );
+  assert.deepEqual(await readGrantedText(folders(), 'sub/nested.txt'), unreadable('not-granted'));
+  assert.deepEqual(await readGrantedText(folders(), '.env'), unreadable('not-granted'));
+  assert.deepEqual(await readGrantedText(folders(), 'absent.txt'), unreadable('missing'));
+  assert.deepEqual(await readGrantedText(folders(), 'sub'), unreadable('not-a-file'));
+  assert.ok(stepsByName > 0, 'the steps were not looked up by name: this test covers nothing');
+});
+
+test('by name, a directory swapped for a link after the check is followed, which is the residual', async (t) => {
+  const tree = readTree(t, (put, outside) => {
+    writeFileSync(join(outside, 'inner.txt'), 'outside\n');
+    put('swap/inner.txt', 'inside\n');
+  });
+
+  // The rename lands where a concurrent local writer's does: after a name was looked up and before
+  // the step that uses it. The descriptor descent never looks a step up by name, so this seam — the
+  // same one the leaf tests use, over the same kind of tree — plants nothing under it.
+  let swapped = false;
+  afterLstat((path) => {
+    if (path !== join(tree.folder, 'swap') || swapped) {
+      return;
+    }
+    swapped = true;
+    rmSync(join(tree.folder, 'swap'), { recursive: true, force: true });
+    symlinkSync(tree.outside, join(tree.folder, 'swap'), 'dir');
+  });
+  t.after(() => {
+    afterLstat(undefined);
+  });
+
+  assert.deepEqual(await readGrantedText(folders(), 'swap/inner.txt'), {
+    kind: 'text',
+    text: 'inside\n',
+  });
+  assert.ok(!swapped, 'the descriptor descent looked a step up by name');
+
+  // The walk by name checks the step with `lstat` and then resolves that name again for the listing
+  // and the read that follow it, so the swap is followed: the file behind the link, which no listing
+  // named and which is outside the folder, is what the peer is served. That is the residual
+  // `docs/mirror-and-fetch.md` states for these platforms, pinned here as the residual it is, so
+  // that closing it is a deliberate change.
+  const was = pinnedSteps();
+  pinnedSteps(false);
+  t.after(() => {
+    pinnedSteps(was);
+  });
+  assert.deepEqual(await readGrantedText(folders(), 'swap/inner.txt'), {
+    kind: 'text',
+    text: 'outside\n',
+  });
+  assert.ok(swapped, 'the walk by name did not look the step up: this test covers nothing');
 });
 
 // --- the bounds a walk stops at -----------------------------------------------------
