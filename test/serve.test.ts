@@ -43,6 +43,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { Uri } from 'vscode';
 import type { GrantRefusal } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES, MAX_GRANT_NODES, MAX_GRANT_PATHS } from '../src/bridge/index.ts';
 import { afterLstat } from './helpers/peer-read-seam.ts';
@@ -487,6 +488,82 @@ function readTree(
 }
 
 /**
+ * The window's file system as a *provider*: a store this process has no path into, which is what a
+ * folder on any scheme but `file:` is read through.
+ *
+ * A virtual workspace is the editor's view of a store elsewhere (`vscode-vfs://`, a container, a
+ * repository the window reads through the editor), so there is no component of it this process can
+ * resolve: the folder is listed through the window, and a read is the window's own `stat` and
+ * `readFile` rather than a descriptor. The store is seeded relative to the folder, and a path it
+ * does not hold is `FileNotFound`, which is how a provider answers for a name it has not got.
+ *
+ * The key is the URI's path with its leading slashes gone: the stub's `Uri.joinPath` names a child
+ * by joining its parent's path (it answers a `file:` URI either way), so that is what a folder and
+ * its children agree on. A path outside the folder is an error rather than a missing file, so a
+ * read that reached past the store fails the test instead of passing it vacuously.
+ */
+function servedWindow(
+  t: TestContext,
+  folder: { readonly path: string },
+  files: Record<string, string | Uint8Array>,
+): void {
+  const key = (uri: unknown): string => String((uri as { path: unknown }).path).replace(/^\/+/, '');
+  const root = key(folder);
+  const held = new Map<string, Uint8Array>(
+    Object.entries(files).map(([name, content]) => [
+      `${root}/${name}`,
+      typeof content === 'string' ? new TextEncoder().encode(content) : content,
+    ]),
+  );
+  const isDirectory = (path: string): boolean =>
+    path === root || [...held.keys()].some((one) => one.startsWith(`${path}/`));
+  const listing = (path: string): Array<[string, number]> => {
+    const names = new Map<string, number>();
+    for (const one of held.keys()) {
+      const rest = one.startsWith(`${path}/`) ? one.slice(path.length + 1) : undefined;
+      if (rest === undefined) {
+        continue;
+      }
+      const slash = rest.indexOf('/');
+      if (slash === -1) {
+        names.set(rest, vscode.FileType.File);
+      } else if (!names.has(rest.slice(0, slash))) {
+        names.set(rest.slice(0, slash), vscode.FileType.Directory);
+      }
+    }
+    return [...names.entries()];
+  };
+  const missing = (path: string): Error => new Error(`vscode-vfs: no such entry: ${path}`);
+
+  const fs = vscode.workspace.fs as unknown as Record<string, unknown>;
+  const original = { ...fs };
+  Object.assign(fs, {
+    readDirectory: (uri: unknown) => {
+      const path = key(uri);
+      return isDirectory(path)
+        ? Promise.resolve(listing(path))
+        : Promise.reject(missing(path));
+    },
+    stat: (uri: unknown) => {
+      const path = key(uri);
+      const bytes = held.get(path);
+      const type = bytes === undefined ? vscode.FileType.Directory : vscode.FileType.File;
+      if (bytes === undefined && !isDirectory(path)) {
+        return Promise.reject(missing(path));
+      }
+      return Promise.resolve({ type, ctime: 0, mtime: 0, size: bytes?.length ?? 0 });
+    },
+    readFile: (uri: unknown) => {
+      const bytes = held.get(key(uri));
+      return bytes === undefined ? Promise.reject(missing(key(uri))) : Promise.resolve(bytes);
+    },
+  });
+  t.after(() => {
+    Object.assign(fs, original);
+  });
+}
+
+/**
  * How much a file outside the folder pads itself: far past what the files of the folder cost
  * together, so that a read of the outside one cannot hide in the bytes this process read.
  */
@@ -873,14 +950,48 @@ test('a peer read reads the folder\u2019s own ignore files, and never a linked o
   });
 });
 
-test('a folder this window holds no descriptor for is refused rather than resolved by name', async () => {
-  // A virtual workspace is the editor's own view of a store this process cannot descend: its
-  // listing still names what it holds, and a read is refused because no component of it can be
-  // resolved inside a descriptor.
-  const virtual = [
-    { uri: vscode.Uri.parse('vscode-vfs://host/folder'), name: 'folder', index: 0 },
-  ];
-  assert.deepEqual(await readGrantedText(virtual, 'notes.txt'), unreadable('not-a-file'));
+test('a folder the window holds over another scheme is read through the window', async (t) => {
+  // A virtual workspace is the editor's own view of a store this process cannot descend: the
+  // listing still names what it holds, and a read has no component to resolve, so it goes through
+  // the window's own file system, with the grant's checks in front of it as for a folder of this
+  // machine's disk. `servedWindow` is that store: the bytes below are what the window serves.
+  const virtual = vscode.Uri.parse('vscode-vfs://host/folder');
+  servedWindow(t, virtual, {
+    'notes.txt': 'notes\n',
+    'sub/inside.txt': 'a directory down\n',
+    '.gitignore': 'ignored.txt\n',
+    'ignored.txt': 'dropped by the folder’s own rule\n',
+    '.env': 'SECRET=1\n',
+    'latin1.txt': new Uint8Array([0x63, 0x61, 0x66, 0xe9]),
+    'big.txt': 'x'.repeat(MAX_GRANT_FILE_BYTES + 1),
+  });
+  const windowOn = (uri: Uri) => [{ uri, name: 'folder', index: 0 }];
+
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'notes.txt'), {
+    kind: 'text',
+    text: 'notes\n',
+  });
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'sub/inside.txt'), {
+    kind: 'text',
+    text: 'a directory down\n',
+  });
+
+  // The grant's own rules bind it before the window is asked for any bytes, and the folder's own
+  // ignore file is read for the path rather than whatever the provider would say about it.
+  for (const path of ['ignored.txt', '.env', '../etc/passwd']) {
+    assert.deepEqual(
+      await readGrantedText(windowOn(virtual), path),
+      unreadable('not-granted'),
+      `${path} was served`,
+    );
+  }
+
+  // And the read's own answers are the ones a folder of this disk gives: a name the window has not
+  // got, something that is not a plain file, and the two bounds a session carries.
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'absent.txt'), unreadable('missing'));
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'sub'), unreadable('not-a-file'));
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'big.txt'), unreadable('too-large'));
+  assert.deepEqual(await readGrantedText(windowOn(virtual), 'latin1.txt'), unreadable('binary'));
 });
 
 // --- the bounds a walk stops at -----------------------------------------------------

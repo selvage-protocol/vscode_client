@@ -32,9 +32,13 @@ that step resolves it is followed: that window is the residual there, and it is 
 Windows have — the more so on Windows, which has no `O_NOFOLLOW` either, so a leaf swapped between
 its own check and its read is followed as well. Planting either takes a concurrent local writer.
 What neither descent can see is a mount point, which the file system reports as an ordinary
-directory and which takes `CAP_SYS_ADMIN` to plant. A folder shared from inside a repository does
-not honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
-other rule outside the folder is read, because those are rules of the person at the machine rather
+directory and which takes `CAP_SYS_ADMIN` to plant. A folder the window holds over another scheme —
+a container, a remote, `vscode-vfs://` — has no component this process can resolve at all, so a
+guest's read goes through the editor's own file system: the grant's checks bound it the same way,
+and the window resolves the name for itself, having no descriptor to keep. A folder shared from
+inside a repository does not honor a `.gitignore` above it, and neither git's user-wide ignore
+(`core.excludesFile`) nor any other rule outside the folder is read, because those are rules of the
+person at the machine rather
 than of the project being shared. A file the host itself opens is the host's own act: the
 name-based excludes bind it and the folder's ignore files do not.
 
