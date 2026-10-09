@@ -701,16 +701,30 @@ async function ignoreByName(
  * folder has no repository exclude — which is what an absent one means, not a fault.
  *
  * `.git` and `info` are opened with `O_NOFOLLOW`, so a `.git` that is a link to a repository
- * elsewhere is refused where a directory has to be rather than read as this folder's repository.
+ * elsewhere is refused where a directory has to be rather than read as this folder's repository,
+ * and each name also has to be an entry of the directory that holds it, spelled exactly as that
+ * directory lists it: that is the check `excludeByName` makes on its side, and it keeps the listing
+ * the read already holds authoritative, so a `.git` such a listing never carried is not read even
+ * if it appears in the folder before the open.
+ *
  * A platform that cannot address an open directory does not come here; it goes through
  * `excludeByName`, which reads the same rule off the root's listing.
  */
-async function excludeInside(directory: FileHandle): Promise<string | undefined> {
+async function excludeInside(
+  directory: FileHandle,
+  entries: readonly WalkEntry[] | undefined,
+): Promise<string | undefined> {
+  if (!holdsKind(entries ?? [], '.git', 'directory')) {
+    return undefined;
+  }
   const git = await open(inside(directory, '.git'), STEP).catch(() => undefined);
   if (git === undefined) {
     return undefined;
   }
   try {
+    if (!holdsKind((await listInside(git)) ?? [], 'info', 'directory')) {
+      return undefined;
+    }
     const info = await open(inside(git, 'info'), STEP).catch(() => undefined);
     if (info === undefined) {
       return undefined;
@@ -759,12 +773,14 @@ async function openInside(root: string, segments: readonly string[]): Promise<Op
   let directory = folder;
   let relative = '';
   const sources: IgnoreSource[] = [];
-  const exclude = await excludeInside(directory);
+  // The root is listed once, before its exclude is read: the entries are what says whether it holds
+  // a `.git` directory, and they are the same ones its own ignore file is read from.
+  let entries = await listInside(directory);
+  const exclude = await excludeInside(directory, entries);
   if (exclude !== undefined) {
     sources.push({ dir: '', text: exclude });
   }
   for (let depth = 0; ; depth += 1) {
-    const entries = await listInside(directory);
     const own = await ignoreInside(directory, IGNORE_FILE, entries);
     if (own !== undefined) {
       sources.push({ dir: relative, text: own });
@@ -786,6 +802,7 @@ async function openInside(root: string, segments: readonly string[]): Promise<Op
     }
     directory = next;
     relative = relative === '' ? segment : `${relative}/${segment}`;
+    entries = await listInside(directory);
   }
 }
 
