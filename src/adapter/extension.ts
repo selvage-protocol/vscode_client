@@ -61,6 +61,7 @@ import { displayNameInput, displayNameRefusal } from './display-name.ts';
 import { WorkspaceEditor } from './documents.ts';
 import { enumerateGrant, grantedFile } from './grant.ts';
 import type { GrantCut, GrantEnumeration } from './grant.ts';
+import { HELD_SCHEME, HeldDocuments, heldRoomUri } from './held.ts';
 import type { Mirror } from './mirror.ts';
 import {
   EVERYONE_LABEL,
@@ -285,6 +286,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('selvage.stopFollowing', () => {
       stopFollowing();
     }),
+  );
+  // A room document the listing names no file for is served at `selvage:` (`held.ts`). The
+  // provider is registered for the window rather than for a session: it reads whichever session
+  // is live, so a document it opened keeps its address across a session ending. It is writable,
+  // because the buffer at that address is the room's document like any other.
+  const held = new HeldDocuments(() => current);
+  context.subscriptions.push(
+    held,
+    vscode.workspace.registerFileSystemProvider(HELD_SCHEME, held, { isReadonly: false }),
   );
   participantsView = new ParticipantsProvider();
   peerBadges = new PeerFileDecorations();
@@ -608,6 +618,12 @@ export class Session {
    * while open, and their mirror file stays until they close.
    */
   private readonly kept = new Map<string, vscode.TextDocument>();
+  /**
+   * Paths this window holds at the `selvage:` address: a room document whose path the listing
+   * does not name, so there is no file for it here. Bounded by what this window has open, and
+   * what `moveToFile` reads when a listing names one of them after all.
+   */
+  private readonly virtual = new Set<string>();
   /** A listing whose application is still owed at the end of the current window. */
   private pendingListing: readonly string[] | undefined;
   /** The window one listing application per burst is spread over. */
@@ -1582,11 +1598,11 @@ export class Session {
   }
 
   /**
-   * The file a room path lives at, for the badges: a guest's mirror file, or a host's
-   * own file under the folders captured at invite time. Synchronous and unchecked
-   * against the file system — a badge on a URI nothing holds is simply never
-   * seen — but never untrusted: a peer names the path, so the grant's shape rule
-   * gates it first, the way `mirrorUri` gates the opens. Without that, `..` in a
+   * The address a room path lives at, for the badges: a guest's document — the mirror's file or
+   * a `selvage:` one — or a host's own file under the folders captured at invite time.
+   * Synchronous and unchecked against the file system — a badge on a URI nothing holds is simply
+   * never seen — but never untrusted: a peer names the path, so the grant's shape rule
+   * gates it first, the way `documentUri` gates the opens. Without it, a `..` in a
    * presence path would badge a real file outside the room.
    */
   private roomFileUri(path: string): vscode.Uri | undefined {
@@ -1595,7 +1611,7 @@ export class Session {
     }
     try {
       if (this.mirror !== undefined) {
-        return this.mirrorUri(path);
+        return this.documentUri(path);
       }
       if (this.folders.length === 1) {
         const folder = this.folders[0];
@@ -1762,16 +1778,70 @@ export class Session {
     if (this.mirror === undefined) {
       return undefined;
     }
-    if (!isGrantedPath(path) || path === MIRROR_MARKER || isWorkspaceConfigPath(path)) {
+    if (!this.addressable(path)) {
       return undefined;
     }
     return vscode.Uri.joinPath(this.mirror.uri, ...path.split('/'));
   }
 
   /**
-   * Opens a room path in an editor: a guest's mirror file, or a host's own file under
-   * the folders captured at invite time. An editor already showing the path is reused, so a
-   * follow that re-lands moves the caret rather than reopening the document.
+   * Whether `path` is one this window may address as a document at all: the grant's shape rule,
+   * less the mirror's own bookkeeping and the workspace configuration the editor would apply
+   * rather than show. A path a peer names is untrusted input, so the gate is here, at the narrow
+   * waist every guest open passes through, rather than at each caller.
+   */
+  private addressable(path: string): boolean {
+    return isGrantedPath(path) && path !== MIRROR_MARKER && !isWorkspaceConfigPath(path);
+  }
+
+  /**
+   * The address a room path's document has in this window: the mirror's file when the room's
+   * listing names the path, and a `selvage:` document when it does not (`held.ts`).
+   *
+   * The two are different things (`§13.3`, `§13.7`): the listing is the host's folder, while the
+   * room's open-document set is the union of the seated peers' holds, and keeping a document is
+   * permitted where offering it is not — so a path can legitimately be held by the room and
+   * named by no listing. The mirror is the listing's shape and does not grow a file for one, so
+   * the document is addressed here instead, which is where the Neovim client puts it too.
+   *
+   * `undefined` is a path this window has no document for at all: a name outside the grant's
+   * shape, and one the room neither lists nor holds.
+   */
+  documentUri(path: string): vscode.Uri | undefined {
+    if (this.mirror === undefined || !this.addressable(path)) {
+      return undefined;
+    }
+    if (this.listed().includes(path)) {
+      return this.mirrorUri(path);
+    }
+    return this.heldWithoutFile(path) ? heldRoomUri(path) : undefined;
+  }
+
+  /**
+   * The room's text at `path` as this replica holds it, empty while nothing has arrived: what
+   * the `selvage:` provider serves, and thereby what a document at that address opens with.
+   */
+  text(path: string): string {
+    return this.engine.text(path);
+  }
+
+  /**
+   * Whether this window may hold `path` at the `selvage:` address: a path the room holds and its
+   * listing does not name, which is the one address this window mints for that (`documentUri`).
+   *
+   * A `selvage:` URI can be typed, pasted or restored from a window's own state, so the provider
+   * asks this before it serves anything: without it, a URI for a path no room holds would take a
+   * hold the room should not have and put a document in a window's set that the room never had.
+   */
+  heldWithoutFile(path: string): boolean {
+    return this.addressable(path) && !this.listed().includes(path) && this.offered().includes(path);
+  }
+
+  /**
+   * Opens a room path in an editor: a guest's document — the mirror's file, or a `selvage:` one
+   * where the listing names no file for the path — or a host's own file under the folders
+   * captured at invite time. An editor already showing the path is reused, so a follow that
+   * re-lands moves the caret rather than reopening the document.
    */
   async openRoomPath(path: string): Promise<vscode.TextEditor | undefined> {
     const active = vscode.window.activeTextEditor;
@@ -1782,11 +1852,11 @@ export class Session {
       if (this.role() !== 'host') {
         // A viewer opens the room's documents where a guest does, out of the mirror
         // (`§13.9`). The path may have come from a peer's presence, so a refusal here reads as
-        // the grant's answer rather than a missing mirror: `mirrorUri` already applied it.
+        // the grant's answer rather than a missing mirror: `documentUri` already applied it.
         if (this.mirror === undefined) {
           throw new Error('this window has no mirror for the room');
         }
-        const uri = this.mirrorUri(path);
+        const uri = this.documentUri(path);
         if (uri === undefined) {
           throw new Error('the path is not one this window shares');
         }
@@ -2097,6 +2167,7 @@ export class Session {
     }
     this.bridge.dispose();
     this.editor.dispose();
+    this.virtual.clear();
     for (const listener of this.listeners) {
       listener.dispose();
     }
@@ -2201,6 +2272,16 @@ export class Session {
       this.dropDocuments([...before].filter((path) => !listed.has(path)));
     }
     const applied = this.mirror.republish(paths, (path) => this.held(path));
+    // A path this window holds at the `selvage:` address that the room's listing now names. The
+    // republish above has just put its file on disk, so the file is where the document lives
+    // from here: `moveToFile` ends the virtual one, which is what keeps one document per room
+    // path. Only a listing that just arrived can name one — `documentUri` never mints that
+    // address for a path the listing names — so this is the transition and not a standing state.
+    for (const path of [...this.virtual]) {
+      if (listed.has(path)) {
+        this.moveToFile(path);
+      }
+    }
     // Workspace configuration is left out on purpose, not for want of a disk, so it is said
     // apart from a failure and once per session: most hosts share a `.vscode/`.
     if (applied.withheld.length > 0 && !this.saidWithheld) {
@@ -2276,6 +2357,45 @@ export class Session {
     }
   }
 
+  /**
+   * A path this window holds at the `selvage:` address that the room's listing now names: the
+   * mirror has put that path's file on disk, so the document is the file now and the virtual
+   * one gives way to it.
+   *
+   * The room's text is not moved with the document — it is the replica's, and a buffer at the
+   * file reads it back through the hold a fresh open takes, which is what the Neovim client does
+   * when a listing names a `selvage://` buffer. What must not stay is both addresses at once:
+   * the virtual document holding the room's text and an empty file of the same name beside it.
+   *
+   * A document with unsaved changes keeps its tab, as one whose path left the room does: closing
+   * it would ask to save or discard what the person typed, and its text is not the file's to be.
+   */
+  private moveToFile(path: string): void {
+    const document = this.editor.document(path);
+    if (document === undefined) {
+      return;
+    }
+    const uri = document.uri.toString();
+    this.close(document);
+    if (document.isDirty) {
+      this.kept.set(path, document);
+      void vscode.window.showWarningMessage(
+        `Selvage: ${path} is now in the room's listing; your unsaved copy is kept but is not the file.`,
+      );
+      return;
+    }
+    const tabs = (vscode.window.tabGroups?.all ?? [])
+      .flatMap((group) => group.tabs)
+      .filter((tab) => (tab.input as { uri?: vscode.Uri } | undefined)?.uri?.toString() === uri);
+    if (tabs.length > 0) {
+      void vscode.window.tabGroups?.close(tabs);
+    }
+    void vscode.window.showWarningMessage(
+      `Selvage: ${path} is now in the room's listing, so it opened as a file.`,
+    );
+    void openRoomDocument(this, path);
+  }
+
   private open(document: vscode.TextDocument): void {
     // A copy kept when its path left the room was said to be no longer shared, and a listing
     // naming the path again does not make its unsaved text the room's.
@@ -2301,6 +2421,9 @@ export class Session {
       return;
     }
     this.bridge.documentOpened(path);
+    if (document.uri.scheme === HELD_SCHEME) {
+      this.virtual.add(path);
+    }
     this.refreshStatus();
   }
 
@@ -2336,6 +2459,7 @@ export class Session {
     }
     const path = this.editor.forget(document.uri);
     if (path !== undefined) {
+      this.virtual.delete(path);
       this.refusedPutBacks.delete(path);
       this.bridge.documentClosed(path);
       this.refreshStatus();
@@ -4006,10 +4130,14 @@ async function fetchCommand(args?: FetchArgs): Promise<void> {
   await session.fetchFromRoom(args?.path);
 }
 
-/** Opens a room path as a guest's mirror file: what the editor reads and tools see. */
+/**
+ * Opens a room path as a guest's document: the mirror's file where the listing names the path,
+ * and a `selvage:` document where it does not — what the editor reads, and what tools see for
+ * the first of those two.
+ */
 async function openRoomDocument(session: Session, path: string): Promise<void> {
   try {
-    const uri = session.mirrorUri(path);
+    const uri = session.documentUri(path);
     if (uri === undefined) {
       throw new Error('the path is not one this window shares');
     }

@@ -62,6 +62,22 @@ export interface Registered {
   /** Every file-badge provider the extension registered, in order. */
   fileDecorationProviders: Array<TestFileDecorationProvider>;
   /**
+   * Every file system provider the extension registered, as `{ scheme, provider, options }`:
+   * what a document with no file behind it is served by, and whether the editor was told the
+   * scheme is writable.
+   */
+  fileSystemProviders: Array<{
+    scheme: string;
+    provider: {
+      readFile(uri: unknown): Uint8Array;
+      writeFile(uri: unknown, content: Uint8Array): Thenable<void> | void;
+      stat(uri: unknown): { type: number; size: number };
+    };
+    options: { isReadonly?: boolean } | undefined;
+  }>;
+  /** Every provider `readFile`, as the URI asked for, in order. */
+  providerReads: string[];
+  /**
    * Holds a directory read until the promise it returns resolves, as `(path, index) => Promise`,
    * so a test can have two republish walks overlap: a walk in a large tree outlasts a later one.
    */

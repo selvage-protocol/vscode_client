@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 
-import { applyChange, diff, render, translucent } from '../bridge/index.ts';
+import { applyChange, diff, isGrantedPath, render, translucent } from '../bridge/index.ts';
 import type {
   Cursor,
   EditorHost,
@@ -20,9 +20,33 @@ import type {
 } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
 import { readGrantedText, roomPathOf } from './grant.ts';
+import { HELD_SCHEME, heldRoomPath } from './held.ts';
 import { MIRROR_MARKER, isWorkspaceConfigPath, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
 import { Cursors } from './decorations.ts';
+
+/**
+ * The room path a guest's document may be shared under at the `selvage:` address, or
+ * `undefined` for a URI that is not one. The address is the client's own mint (`held.ts`), but a
+ * URI can be typed, pasted or restored from a window's state, so the grant's shape rule gates
+ * what reaches the room here exactly as it gates a mirror file. A window with no mirror has no
+ * room to share a document with, and a host's documents are its own files.
+ */
+function heldShareablePath(uri: vscode.Uri, mirrorRoot: string | undefined): string | undefined {
+  if (mirrorRoot === undefined) {
+    return undefined;
+  }
+  const path = heldRoomPath(uri);
+  if (
+    path === undefined ||
+    !isGrantedPath(path) ||
+    path === MIRROR_MARKER ||
+    isWorkspaceConfigPath(path)
+  ) {
+    return undefined;
+  }
+  return path;
+}
 
 export interface WorkspaceEditorOptions {
   role: Role;
@@ -83,6 +107,11 @@ export class WorkspaceEditor implements EditorHost {
   private readonly documents = new Map<string, vscode.TextDocument>();
   private readonly paths = new Map<string, string>();
   /**
+   * Paths this window shares at the `selvage:` address: a document with no mirror leaf behind
+   * it, so the two leaf checks below are about a file that is not this document's.
+   */
+  private readonly mirrorless = new Set<string>();
+  /**
    * Room paths whose mirror leaf is not a regular file, so the refusal is said once rather
    * than on every open event and every save.
    */
@@ -111,11 +140,16 @@ export class WorkspaceEditor implements EditorHost {
    * The room path this document is shared under, or `undefined` when the session does not
    * share it. A host shares the `file:` documents open under a folder it captured — the
    * folder chosen at invite time is the grant (`DESIGN.md` §4.2) — and a guest shares the
-   * `file:` documents under its mirror root, never outside it and never the mirror's own
-   * marker. Recording it here is what makes the reverse lookup in `pathOf` possible.
+   * documents under its mirror root, never outside it and never the mirror's own marker.
+   * A document the room holds and its listing does not name has no file in the mirror and is
+   * shared at the `selvage:` address instead (`held.ts`). Recording it here is what makes the
+   * reverse lookup in `pathOf` possible.
    */
   register(document: vscode.TextDocument): string | undefined {
-    const path = this.roomPath(document.uri);
+    const virtual = document.uri.scheme === HELD_SCHEME;
+    const path = virtual
+      ? heldShareablePath(document.uri, this.mirrorRoot)
+      : this.roomPath(document.uri);
     if (
       path === undefined ||
       this.paths.has(document.uri.toString()) ||
@@ -123,12 +157,14 @@ export class WorkspaceEditor implements EditorHost {
     ) {
       return undefined;
     }
-    // A guest's mirror leaf is read with `lstat` before its text is shared: a link there is
-    // read through by the editor, and its target's bytes would be the room's, which is the
-    // refusal Neovim makes on the same path (`lua/selvage/init.lua`). Anything but a
-    // regular file — a link, a directory, a socket — is refused the way a path outside the
-    // mirror is.
-    if (this.mirrorLeafRefusal(path) !== undefined) {
+    if (virtual) {
+      this.mirrorless.add(path);
+    } else if (this.mirrorLeafRefusal(path) !== undefined) {
+      // A guest's mirror leaf is read with `lstat` before its text is shared: a link there is
+      // read through by the editor, and its target's bytes would be the room's, which is the
+      // refusal Neovim makes on the same path (`lua/selvage/init.lua`). Anything but a
+      // regular file — a link, a directory, a socket — is refused the way a path outside the
+      // mirror is.
       return undefined;
     }
     this.documents.set(path, document);
@@ -144,7 +180,11 @@ export class WorkspaceEditor implements EditorHost {
    * a regular file.
    */
   private mirrorLeafRefusal(path: string): string | undefined {
-    if (this.mirrorRoot === undefined || plainMirrorPath(this.mirrorRoot, path)) {
+    if (
+      this.mirrorRoot === undefined ||
+      this.mirrorless.has(path) ||
+      plainMirrorPath(this.mirrorRoot, path)
+    ) {
       return undefined;
     }
     const refusal = `${path} is not a regular file, so it is not shared`;
@@ -177,6 +217,7 @@ export class WorkspaceEditor implements EditorHost {
     }
     this.paths.delete(uri.toString());
     this.documents.delete(path);
+    this.mirrorless.delete(path);
     return path;
   }
 
@@ -396,6 +437,7 @@ export class WorkspaceEditor implements EditorHost {
     this.cursors.dispose();
     this.documents.clear();
     this.paths.clear();
+    this.mirrorless.clear();
     this.unshareable.clear();
     this.askedFor.clear();
   }
