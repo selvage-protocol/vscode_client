@@ -6,8 +6,8 @@
  * used — the handshake, `doc.open`, sync frames, awareness and reconnect semantics are all
  * the engine's, and what is under test is the adapter's half: seeding, the two directions
  * of the loop, the EOL policy, the save policy and cursor attribution. The editor fake
- * reproduces the one timing that matters (`SPIKES.md`, spike 2): a change this adapter
- * applied itself reports back a few macrotasks later, as a coalesced editor event does.
+ * reproduces the one timing that matters: a change this adapter applied itself reports back
+ * a few macrotasks later, as a coalesced editor event does.
  */
 
 import { test } from 'node:test';

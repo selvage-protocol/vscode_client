@@ -113,7 +113,7 @@ test('the replica holds LF, and a document renders with its own line endings', (
   assert.equal(render('', '\r\n'), '');
 
   // The round trip a CRLF document lives in: its buffer keeps CRLF, the replica never sees
-  // one, and the difference does not make the buffer look like a change (§SPIKES 3).
+  // one, and the difference does not make the buffer look like a change.
   const buffer = 'line one\r\nline two\r\n';
   assert.equal(render(toCrdt(buffer), '\r\n'), buffer);
   assert.equal(matchesReplica(buffer, toCrdt(buffer)), true);

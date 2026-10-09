@@ -1,10 +1,11 @@
 /**
- * Spike 3 (§7 risk 3): EOL and the trailing newline.
+ * Spike 3: EOL and the trailing newline.
  *
  * Both reference extensions needed an explicit policy for this (`YjsNormalizedTextDocument`
- * in OCT, Teamtype's ADR 02), and Selvage's documents say nothing about it. The experiment
- * runs two replicas whose buffers use different line endings against one CRDT, with and
- * without a policy, and measures what diverges.
+ * in OCT, Teamtype's ADR 02). `PROTOCOL.md` §7, *Document content: line endings and the
+ * trailing newline*, is the normative statement; this is where it is measured, over two
+ * replicas whose buffers use different line endings against one CRDT, with and without a
+ * policy.
  */
 
 import { test } from 'node:test';
