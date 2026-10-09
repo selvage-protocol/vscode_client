@@ -166,9 +166,12 @@ async function entryHasKind(
  * this, a `.gitignore` that is a link to a file outside the shared folder is read as the folder's
  * own rule, and a `.git` that is a link to a repository elsewhere supplies its `info/exclude`: both
  * read out of the folder, which is the bound. A name that is not an ordinary file is not an error,
- * it is simply no ignore file. The window between that entry check and the read is `grantedFile`'s
- * own stated residual — it answers a URI the editor resolves again — and not a second one: the
- * read a peer asked for does not come through here (`readGrantedText`).
+ * it is simply no ignore file. The window between that entry check and the read belongs to the
+ * callers that read through the editor's own file system: `grantedFile`, which answers a URI the
+ * editor resolves again, and a folder this process has no path into, which keeps that read for a
+ * peer as well (`readGrantedUri`). A folder of this machine's own disk is not read this way for a
+ * peer: that descent reads the same ignore files inside the directory descriptors it holds
+ * (`ignoreInside`).
  *
  * `listing` is `dir`'s entries when the caller already holds them, so a walk does not read the
  * same directory twice.
