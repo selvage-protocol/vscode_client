@@ -21,16 +21,19 @@ The listing is bounded as well: `PROTOCOL.md` §13.3 holds one to 100 000 paths 
 their UTF-8 bytes, and a folder past either bound is shared in part. There is nothing a peer
 could do about it, so the host is the one told when it binds and a guest is not told at all.
 
-The folder is the bound on what a host reads. A file a guest asks for is resolved one component at
-a time, each component inside the descriptor of the one before it, and its bytes come from the
-descriptor whose type and size were read — so a component a symbolic link replaces between the
-listing and the read is refused rather than followed out of the folder. What that cannot see is a
-mount point, which the file system reports as an ordinary directory and which takes
-`CAP_SYS_ADMIN` to plant. Where the platform offers neither a name for a directory that is already
-open nor `O_NOFOLLOW`, each component is resolved by name and checked before the next step, and a
-name swapped between that check and the step that uses it is the residual there. A folder shared
-from inside a repository does not
-honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
+The folder is the bound on what a host reads. In a folder of this machine, a file a guest asks for
+is resolved one component at a time: each component is opened inside the descriptor of the one
+before it where the platform publishes a name for a directory that is already open — Linux, under
+`/proc/self/fd` — and its bytes come from the descriptor whose type and size were read, so a
+component a symbolic link replaces between the listing and the read is refused rather than followed
+out of the folder. Where the platform publishes no such name each component is instead resolved by
+name and checked before the step that uses it, and a component that is a symbolic link by the time
+that step resolves it is followed: that window is the residual there, and it is the shape macOS and
+Windows have — the more so on Windows, which has no `O_NOFOLLOW` either, so a leaf swapped between
+its own check and its read is followed as well. Planting either takes a concurrent local writer.
+What neither descent can see is a mount point, which the file system reports as an ordinary
+directory and which takes `CAP_SYS_ADMIN` to plant. A folder shared from inside a repository does
+not honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
 other rule outside the folder is read, because those are rules of the person at the machine rather
 than of the project being shared. A file the host itself opens is the host's own act: the
 name-based excludes bind it and the folder's ignore files do not.
