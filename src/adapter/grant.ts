@@ -418,13 +418,23 @@ const STEP = FOLDER | NO_FOLLOW;
 const LEAF = constants.O_RDONLY | NO_FOLLOW;
 
 /**
- * Whether a step can be taken relative to the directory the step before it found. Linux
- * publishes a process's open descriptors under `/proc/self/fd`, and a name under one of those is
- * looked up in the directory that descriptor holds rather than through the name again. Node
- * offers no other way to name the child of a directory that is already open, so a platform
- * without it takes the steps by name and checks each one (`walkByName`).
+ * Whether this process takes each step inside the descriptor of the directory before it.
+ *
+ * Linux publishes a process's open descriptors under `/proc/self/fd`, and a name under one of those
+ * is looked up in the directory that descriptor holds rather than through the name again. Node
+ * offers no other way to name the child of a directory that is already open, so a platform without
+ * it takes the steps by name and checks each one (`walkByName`), which is what macOS and Windows do
+ * and what this host cannot reach: `/proc` is where the descent needs it. Passing `value` sets the
+ * reading and answers with it, so a test can read the way those platforms read.
  */
-const PINNED_STEPS = existsSync('/proc/self/fd');
+const steps = { pinned: existsSync('/proc/self/fd') };
+
+export function pinnedSteps(value?: boolean): boolean {
+  if (value !== undefined) {
+    steps.pinned = value;
+  }
+  return steps.pinned;
+}
 
 /** A refusal, shaped the way the bridge reads one. */
 type Refused = { readonly kind: 'refused'; readonly cause: GrantRefusal };
@@ -501,7 +511,7 @@ export async function readGrantedText(
   if (leaf === undefined) {
     return refused('not-granted');
   }
-  if (PINNED_STEPS) {
+  if (pinnedSteps()) {
     const directory = await openInside(root, segments);
     if ('kind' in directory) {
       return directory;
