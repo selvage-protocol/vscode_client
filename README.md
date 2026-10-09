@@ -5,24 +5,17 @@ share a folder with someone and edit the same files at the same time. It is for 
 working in one checkout, one of whom starts a `selvaged` to hold the room.
 
 Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
-fetch command, the participants view and follow behind it. CI runs the server-free suite; the
-suites that need a built `selvaged` run locally. The two-window end-to-end harness runs locally
-and in a weekly scheduled run of its own against the VS Code build stable users install today.
-[Checks](docs/checks.md) lists every suite and the gate before a push.
+fetch command, the participants view and follow behind it.
 
 ## Get it working
 
 You need:
 
-- VS Code 1.137 or newer. The manifest pins `engines.vscode` at `^1.137.0`, which is also the
-  build the two-window end-to-end proof launches, so the declared floor is the one that gets
-  exercised ([Checks](docs/checks.md)).
+- VS Code 1.137 or newer. The manifest pins `engines.vscode` at `^1.137.0`.
 - A `selvaged` to connect to. The host starts one and notes the address it prints; the guest needs
   just the invite link.
-- Node 24 or newer, if you build or test the extension from a checkout. `engines.node` names the
-  extension host's runtime floor, and VS Code 1.137.0's extension host is Node 24.18.1 — the
-  version CI pins, so the suite runs on the runtime the extension is installed into. The tests are
-  `.ts` files run directly by `node --test`, which needs type stripping.
+- Node 24 or newer, if you build the extension from a checkout. `engines.node` names the
+  extension host's runtime floor, and the `.vsix` you build is bundled for it.
 
 ### Install
 
@@ -117,23 +110,32 @@ completing command there.
 | `Selvage: Follow a participant` | Keep landing where a participant is as they move, until something stops it. The status bar shows who is followed in their caret colour and stops the follow when selected; a local edit of a shared document ends it, and a remote one does not. |
 | `Selvage: Stop following` | Stop following. Says so when no one is followed. |
 
+## What to expect
+
+- **Undo is shared.** A remote edit lands on the buffer's undo stack, so `Ctrl+Z` can undo a
+  peer's edit; that change is published like any other and the room reconverges.
+- **Format-on-save is published** like any other change, so with peers running formatters a
+  session can echo. Turn format-on-type off while collaborating.
+- **A big file is not carried.** A document over 1 MiB stays out of the room, and a request for
+  one is refused with the reason.
+- **A path the room holds without listing it has no file here**, so it cannot be opened from the
+  room; the Neovim client holds such a document in a buffer instead.
+- **Leaving deletes the mirror** from the window. Your own files are untouched: the mirror is a
+  cache of the room, never a source of truth.
+- **A change made while the connection is down is not republished** when it comes back; the room
+  learns of it at the next filesystem event and not otherwise.
+- **The room's folder is its host's.** You do not need to trust it to join, and leaving it in
+  Restricted Mode is the safer choice; every command works in a window you have not trusted. The
+  mirror does not take the room's `.vscode` directory or its `.code-workspace` files, and a guest
+  is told once per session which ones were left out.
+
 ## More
 
-- [Mirror and fetch](docs/mirror-and-fetch.md): what the room is, the mirror a guest holds, and
-  what happens when a file moves out of the folder or goes.
-- [Presence](docs/presence.md): a peer's caret, badge and colour, the participants view, and
-  following.
+- [Mirror and fetch](docs/mirror-and-fetch.md): what the room is, the mirror a guest holds, what
+  happens when a file moves out of the folder or goes, and what a guest's window does not carry.
+- [Presence](docs/presence.md): a peer's caret, badge and colour, the participants view, following,
+  and what a drawn peer cannot do.
 - [Settings](docs/settings.md): how the server address and the display name are resolved.
-- [What is not here](docs/what-is-not-here.md): the limits this client ships with, and what it
-  leaves to the room.
-- [How it is built](docs/how-it-is-built.md): the four layers, the copy the other clients carry,
-  and the engine's `selvage/2` modules.
-- [Sessions at `selvage/2`](docs/sessions.md): host, join and copy-invite on the sealed wire, the
-  roles, and what the specification leaves open.
-- [Run it from a checkout](docs/running-from-a-checkout.md): launch the extension with two windows.
-- [Packaging and publishing](docs/packaging.md): the release workflow, `vsce package`, and the
-  listing icon.
-- [Checks](docs/checks.md): every suite, what CI runs, and the two-window end-to-end harness.
 
 ## Licence
 

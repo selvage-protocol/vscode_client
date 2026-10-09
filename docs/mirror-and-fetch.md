@@ -18,15 +18,8 @@ gets, and a path that does not exist is refused `missing` like any other absent 
 nothing about the ignore rule either.
 
 The listing is bounded as well: `PROTOCOL.md` §13.3 holds one to 100 000 paths and to 4 MiB of
-their UTF-8 bytes, and a walk that reaches either stops there, so a folder past those bounds is
-shared in part. The walk is the bridge's (`src/bridge/listing-walk.ts`), not this editor's own, so
-those stops and that accounting — a directory read and a shareability check are charged for, a
-dropped name is not — are the bridge's rule rather than this editor's, and the browser and the
-companion will read the same rule with the rest of the vendored copy when each re-syncs it. That
-is a bound on one sealed frame rather than a rule about names, and there is nothing a peer could
-do about it, so the host is the one told when it binds and a guest is not told at all. A guest's
-mirror holds as many paths as a listing may carry, so a room a conforming host publishes fits in
-it.
+their UTF-8 bytes, and a folder past either bound is shared in part. There is nothing a peer
+could do about it, so the host is the one told when it binds and a guest is not told at all.
 
 The folder is the bound on what a host reads. A folder shared from inside a repository does not
 honor a `.gitignore` above it, and neither git's user-wide ignore (`core.excludesFile`) nor any
@@ -35,10 +28,11 @@ than of the project being shared. A file the host itself opens is the host's own
 name-based excludes bind it and the folder's ignore files do not.
 
 A guest's window holds the room as a real directory under the extension's global storage, so the
-trees, search and language servers a person already runs work on the room's files. The join
-reloads the window onto that directory, replacing whatever tree was there, and leaving deletes it
-again. `Selvage: Download a file from the room` is how content that nobody has opened yet arrives
-in it, and how a whole project is published to the other side.
+trees, search and language servers a person already runs work on the room's files. A tool that
+reads content sees only what has been fetched, so a project-wide search is partial until the paths
+it covers have been. The join reloads the window onto that directory, replacing whatever tree was
+there, and leaving deletes it again. `Selvage: Download a file from the room` is how content that
+nobody has opened yet arrives in it, and how a whole project is published to the other side.
 
 A file the host deletes or moves out of the folder leaves the room for a guest too. A guest
 document open on it closes, its hold is released and its file goes from the directory, with
