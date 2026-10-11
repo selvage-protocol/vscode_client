@@ -18,6 +18,7 @@ import { SessionBridge } from '../src/bridge/bridge.ts';
 import type { BridgeOptions, Engine } from '../src/bridge/bridge.ts';
 import { MAX_GRANT_FILE_BYTES } from '../src/bridge/grant.ts';
 import type { SessionInfo } from '../src/engine/session.ts';
+import { ProtocolError } from '../src/engine/errors.ts';
 import type { EngineEvent, EngineEventListener } from '../src/engine/events.ts';
 import { FakeEditor } from './helpers/fake-editor.ts';
 import type { FakeServerOptions } from './helpers/fake-server.ts';
@@ -307,4 +308,71 @@ test('a refused open leaves no document, no reconcile and no hold', async (t) =>
   await host.editor.settle();
   assert.equal(session.host.has('.env'), false, 'a later edit published a refused path');
   assert.equal(session.guest.text('.env'), '', 'a refused file reached the guest');
+});
+
+test('failed holds report operation and opaque path without depending on refusal wording', async (t) => {
+  const paths = ['notes/a: b.txt', 'notes/a: b.txt: copy.txt'];
+  const reasons = ['permission denied', 'different wording: "not available": retry later'];
+  for (const [index, path] of paths.entries()) {
+    const { engine: stub } = stubEngine();
+    const opens: string[] = [];
+    const closes: string[] = [];
+    const writes: string[] = [];
+    let refuse = true;
+    let materialized = index !== 0;
+    const engine: Engine = {
+      ...stub,
+      session: () => ({ ...stub.session(), role: 'guest' }),
+      text: () => 'room text\n',
+      has: () => materialized,
+      open: async (requested) => {
+        opens.push(requested);
+        if (refuse) {
+          throw index === 0
+            ? new Error(reasons[index])
+            : new ProtocolError('bad_message', reasons[index]);
+        }
+      },
+      close: async (requested) => {
+        closes.push(requested);
+        throw new Error('release failed: unrelated words');
+      },
+      insert: (requested) => { writes.push(requested); },
+      delete: (requested) => { writes.push(requested); },
+    };
+    const editor = new FakeEditor();
+    const bridge = new SessionBridge({ engine, host: editor, autoSave: false });
+    editor.attach(bridge);
+    t.after(() => { bridge.dispose(); });
+    editor.open(path, 'room text\n');
+    bridge.documentOpened(path);
+    const report = await waitFor('the failed hold report', () =>
+      editor.reportsOf('sessionError')[0] ?? false,
+    );
+    assert.equal(report.operation, 'open');
+    assert.equal(report.path, path);
+    assert.equal(report.code, index === 0 ? 'error' : 'bad_message');
+    assert.equal(report.message, `the server refused to open ${path}: ${reasons[index]}`);
+    assert.deepEqual(bridge.openDocuments(), []);
+    editor.type(path, 'local text after refusal\n');
+    assert.deepEqual(writes, [], 'a refused path published a later edit');
+    bridge.documentClosed(path);
+    assert.deepEqual(closes, [], 'a refused hold was released as though it had succeeded');
+
+    refuse = false;
+    materialized = true;
+    editor.open(path, 'room text\n');
+    bridge.documentOpened(path);
+    bridge.documentClosed(path);
+    await waitFor('the successful hold to be released', () => closes.length === 1);
+    assert.deepEqual(opens, [path, path], 'reopening reused a refused hold');
+    const closeReport = await waitFor('the failed release report', () =>
+      editor.reportsOf('sessionError')[1] ?? false,
+    );
+    assert.equal(closeReport.operation, 'close');
+    assert.equal(closeReport.path, path);
+    assert.equal(closeReport.message, `the server refused to close ${path}: release failed: unrelated words`);
+    assert.deepEqual(bridge.openDocuments(), []);
+    assert.deepEqual(closes, [path]);
+  }
 });

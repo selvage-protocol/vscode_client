@@ -50,11 +50,8 @@ import {
   sessionUrl,
 } from '../engine/index.ts';
 import type {
-  EngineEventListener,
-  OffsetSelection,
   PeerInfo,
   Role,
-  Selection,
   SessionInfo,
 } from '../engine/index.ts';
 import { displayNameInput, displayNameRefusal } from './display-name.ts';
@@ -387,7 +384,7 @@ export function captionPath(path: string): string {
 
 /**
  * What a session drives: the bridge's own slice, plus the room facts an adapter reads and
- * the four things it hands in. {@link roomEngine} wraps the `PeerEngine` into this shape.
+ * the four things it hands in. `PeerEngine` satisfies this shape directly.
  */
 export interface RoomEngine extends Engine {
   session(): SessionInfo;
@@ -436,49 +433,6 @@ function listingSource(paths: readonly string[] = []): ListingSource {
 }
 
 /**
- * The engine in the shape {@link Session} drives.
- *
- * Three of the facts are the relay's own reading rather than the session's, and are read here
- * the way the page's own wrapper reads them: the seats come from the handshake with the roles
- * the applied state gives them, the room's documents are the paths somebody holds (`§13.7`),
- * and the connection's invite is the wire URL with `§5.1`'s fragment on it.
- */
-function roomEngine(engine: PeerEngine): RoomEngine {
-  return {
-    session: () => engine.session(),
-    text: (path: string) => engine.text(path),
-    has: (path: string) => engine.has(path),
-    open: (path: string) => engine.open(path),
-    close: (path: string) => engine.close(path),
-    insert: (path: string, index: number, text: string) => {
-      engine.insert(path, index, text);
-    },
-    delete: (path: string, index: number, length: number) => {
-      engine.delete(path, index, length);
-    },
-    setSelection: (path: string, selection: OffsetSelection) => {
-      engine.setSelection(path, selection);
-    },
-    setAwareness: (state: Parameters<Engine['setAwareness']>[0]) => {
-      engine.setAwareness(state);
-    },
-    presence: () => engine.presence(),
-    resolveSelection: (path: string, selection: Selection) =>
-      engine.resolveSelection(path, selection),
-    on: (listener: EngineEventListener) => engine.on(listener),
-    peers: () => engine.session().peers,
-    documents: () => engine.session().documents,
-    grantedPaths: () => engine.grantedPaths(),
-    grant: (paths: readonly string[]) => engine.grant(paths),
-    rename: (displayName: string) => engine.rename(displayName),
-    closeRoom: () => engine.closeRoom(),
-    disconnect: () => engine.disconnect(),
-    inviteUrl: () => engine.inviteUrl(),
-    appliedRole: () => engine.appliedRole(),
-  };
-}
-
-/**
  * The 32-byte seed a version-2 host signs its states with (`§5.1`, `§7.1`), from the
  * platform's CSPRNG.
  *
@@ -508,15 +462,13 @@ async function hostRoom(options: {
   // No `store`: the key and its `issued` series are this session's, and a run that cannot be
   // resumed has nothing to write them down for. The engine's `HostStore` is the seam a resume
   // hands one to.
-  return roomEngine(
-    await PeerEngine.host({
-      baseUrl: options.baseUrl,
-      displayName: options.displayName,
-      listing: options.listing,
-      hostSeed: mintHostSeed(),
-      client: options.client ?? CLIENT,
-    }),
-  );
+  return PeerEngine.host({
+    baseUrl: options.baseUrl,
+    displayName: options.displayName,
+    listing: options.listing,
+    hostSeed: mintHostSeed(),
+    client: options.client ?? CLIENT,
+  });
 }
 
 /**
@@ -531,13 +483,11 @@ async function joinRoom(options: {
   displayName: string;
   client?: string;
 }): Promise<RoomEngine> {
-  return roomEngine(
-    await PeerEngine.join({
-      invite: options.invite,
-      displayName: options.displayName,
-      ...(options.client === undefined ? {} : { client: options.client }),
-    }),
-  );
+  return PeerEngine.join({
+    invite: options.invite,
+    displayName: options.displayName,
+    ...(options.client === undefined ? {} : { client: options.client }),
+  });
 }
 
 /**
@@ -558,17 +508,13 @@ export class Session {
    */
   private readonly folders: readonly vscode.WorkspaceFolder[];
   /**
-   * The listing the room holds, as this session last established it: what a `grant` was accepted
-   * with, or what a server with no grant answered `unknown_method` to. The engine writes
-   * whatever it is handed and keeps no memory of it, so whether a listing is news is decided
-   * here. Undefined until one has been sent.
+   * The listing last accepted by the engine for signed host state. Undefined until the
+   * first successful grant call; unchanged walks publish nothing.
    */
   private published: string[] | undefined;
   /**
-   * The listing the server last refused. A walk that enumerates the same listing has nothing
-   * new to offer a server that already refused it, so it is neither sent nor reported again; a
-   * listing that differs is offered and reported as usual, which is what lets a folder that
-   * changed back into what was refused be refused out loud a second time.
+   * The listing whose local publication last failed. An unchanged walk is neither sent nor
+   * reported again; a different listing is offered as usual.
    */
   private refusedListing: string[] | undefined;
   /**
@@ -1237,11 +1183,9 @@ export class Session {
   /**
    * Publishes the listing of the folders this session was invited on.
    *
-   * A server that does not know `doc.grant` answers `unknown_method`, which means it has no
-   * grant rather than that anything failed: the session goes on and the room falls back to its
-   * open-document set. Any other refusal is reported and also changes nothing. A listing the
-   * room already holds is not sent; one the server has already refused is neither sent nor
-   * reported again while it says the same thing.
+   * The engine replaces its listing source and publishes signed host state. An unchanged
+   * listing is not sent; a listing whose publication failed is neither sent nor reported
+   * again until the folder changes.
    *
    * A walk can outlast the interval that started it, so a second event during one starts a
    * second walk. Only the walk that started last may publish, and a walk whose session has
@@ -1304,15 +1248,6 @@ export class Session {
       // The session can end while the frame is out, and the closed engine answers rather than
       // the server: there is no room left to be refused by, and nothing to report.
       if (this.finished) {
-        return;
-      }
-      if (isProtocolError(error) && error.code === errCode.unknownMethod) {
-        // A server with no grant stores no listing, so repeating one is a frame per change for
-        // nothing. Remembering it here is the same tolerance the first publication gets.
-        if (attempt === this.grantWalks) {
-          this.published = paths;
-          this.refusedListing = undefined;
-        }
         return;
       }
       // A later walk describes the folder now, and its own send reports its outcome.
@@ -2712,22 +2647,10 @@ export class Session {
         this.documents = report.documents;
         // A seat reports the document set — the first one and every re-seat — so the
         // retry is over whenever this arrives.
-        const reseated = this.reconnecting;
         this.reconnecting = false;
         this.refreshStatus();
         this.rejoinListed();
         this.openFromRoom();
-        if (reseated && this.role() === 'host') {
-          // A host that dropped reclaims its room rather than minting a new one, and the
-          // room kept the listing it had while this window was gone: the folder as it
-          // stands now is published again, so a reclaim with a changed folder moves the
-          // room onto the new listing instead of leaving the dead one advertised. The
-          // last listing is forgotten first, so even an unchanged folder re-asserts
-          // what the room holds — one frame the guests dedupe — rather than staying silent.
-          this.published = undefined;
-          this.refusedListing = undefined;
-          void this.publishGrant();
-        }
         break;
       }
       case 'grant': {
