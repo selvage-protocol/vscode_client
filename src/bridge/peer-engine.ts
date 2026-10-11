@@ -220,6 +220,14 @@ export class PeerEngine implements Engine {
     };
   }
 
+  peers(): PeerInfo[] {
+    return this.session().peers;
+  }
+
+  documents(): string[] {
+    return this.session().documents;
+  }
+
   text(path: string): string {
     return this.relay.text(path);
   }

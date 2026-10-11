@@ -138,7 +138,13 @@ export type Report =
   | { kind: 'hostDetached'; graceMs: number }
   | { kind: 'hostAttached'; peer: PeerInfo }
   | { kind: 'roomGone'; reason: string }
-  | { kind: 'sessionError'; code: string; message: string }
+  | {
+      kind: 'sessionError';
+      code: string;
+      message: string;
+      operation?: 'open' | 'close';
+      path?: string;
+    }
   /** `applyEdit` refused every attempt: the buffer and the room are apart, and stay apart. */
   | { kind: 'applyRefused'; path: string }
   /** The buffer and the replica were apart, and the room's copy is what the buffer is brought to. */
@@ -789,6 +795,8 @@ export class SessionBridge {
     this.host.report({
       kind: 'sessionError',
       code: isProtocolError(error) ? error.code : 'error',
+      operation: what,
+      path,
       message: `the server refused to ${what} ${path}: ${describe(error)}`,
     });
   }

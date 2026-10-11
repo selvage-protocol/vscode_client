@@ -317,6 +317,39 @@ test('selvage/2: the room\'s advertised grace sizes the retry budget', async (t)
   );
 });
 
+test('PeerEngine room getters read current membership and holds with the class receiver', async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => { await server.stop(); });
+  const { host, guest } = await pair(server, false);
+  const engine = new PeerEngine({ relay: guest, displayName: 'Bob' });
+  t.after(() => {
+    engine.dispose();
+    host.disconnect();
+    guest.disconnect();
+  });
+  const room: import('../src/adapter/extension.ts').RoomEngine = engine;
+  await waitFor('the guest to apply the host state', () => room.grantedPaths().length > 0);
+  const before = room.documents();
+  assert.deepEqual(before, []);
+  host.open(PATH);
+  await host.tick();
+  await waitFor('the getter to reflect the new hold', () => room.documents().includes(PATH));
+  assert.deepEqual(before, [], 'a previously read document set changed in place');
+  assert.deepEqual(room.documents(), room.session().documents);
+
+  const peersBefore = room.peers();
+  assert.ok(peersBefore.some((peer) => peer.display_name === 'Ada'));
+  await host.rename('Ada renamed');
+  await waitFor('the getter to reflect the new name', () =>
+    room.peers().some((peer) => peer.display_name === 'Ada renamed'),
+  );
+  assert.ok(peersBefore.some((peer) => peer.display_name === 'Ada'));
+  assert.deepEqual(room.peers(), room.session().peers);
+  host.release(PATH);
+  await host.tick();
+  await waitFor('the getter to reflect the released hold', () => room.documents().length === 0);
+});
+
 test('selvage/2: the retry reaches the bridge an adapter listens to', async (t) => {
   const server = await FakeServer.start();
   t.after(async () => {
