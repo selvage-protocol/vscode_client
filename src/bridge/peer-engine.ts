@@ -221,11 +221,11 @@ export class PeerEngine implements Engine {
   }
 
   peers(): PeerInfo[] {
-    return this.session().peers;
+    return this.relay.peerInfos();
   }
 
   documents(): string[] {
-    return this.session().documents;
+    return this.roomDocuments();
   }
 
   text(path: string): string {
