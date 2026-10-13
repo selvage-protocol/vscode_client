@@ -207,3 +207,82 @@ test('a key pushed out by 256 newer ones is imported again when it is next used'
   });
   assert.equal(imports, 2, 'an evicted key was not imported again, or was never evicted');
 });
+
+/** The bytes as a Node `Buffer` view carved from a larger pooled allocation, as `ws` delivers. */
+function pooledView(bytes: Uint8Array): Uint8Array {
+  const pool = Buffer.alloc(bytes.byteLength + 8, 0xcd);
+  Buffer.from(bytes).copy(pool, 4);
+  return pool.subarray(4, 4 + bytes.byteLength);
+}
+
+/** The bytes as an ordinary `Uint8Array` subarray of a larger backing buffer. */
+function subarrayView(bytes: Uint8Array): Uint8Array {
+  const backing = new Uint8Array(bytes.byteLength + 8).fill(0xcd);
+  backing.set(bytes, 4);
+  return backing.subarray(4, 4 + bytes.byteLength);
+}
+
+test('a pooled Buffer view is the bytes it spans, not the pool, for every primitive', async () => {
+  const key = filled(32, 7);
+  const nonce = filled(12, 9);
+  const plaintext = utf8.encode('a sealed frame payload');
+  const aad = utf8.encode('the room and frame header');
+
+  const keyView = pooledView(key);
+  assert.ok(keyView.byteOffset > 0, 'the view does not start at the pool');
+  assert.ok(keyView.byteLength < keyView.buffer.byteLength, 'the view is shorter than its pool');
+
+  const flatSealed = await webCrypto.aesGcmSeal(key, nonce, plaintext, aad);
+  const viewSealed = await webCrypto.aesGcmSeal(
+    pooledView(key),
+    pooledView(nonce),
+    pooledView(plaintext),
+    pooledView(aad),
+  );
+  assert.ok(flatSealed !== undefined, 'the flat seal is answered');
+  assert.ok(viewSealed !== undefined, 'the view seal is answered');
+  assert.deepEqual(viewSealed, flatSealed, 'the same bytes seal to the same ciphertext');
+  assert.deepEqual(
+    await webCrypto.aesGcmOpen(pooledView(key), pooledView(nonce), pooledView(flatSealed), pooledView(aad)),
+    plaintext,
+  );
+  assert.deepEqual(await webCrypto.sha256(pooledView(plaintext)), await webCrypto.sha256(plaintext));
+  assert.deepEqual(
+    await webCrypto.hkdfSha256(pooledView(key), pooledView(nonce), pooledView(aad), 32),
+    await webCrypto.hkdfSha256(key, nonce, aad, 32),
+  );
+
+  const seed = filled(32, 5);
+  const publicKey = await webCrypto.ed25519PublicFromSeed(seed);
+  const signature = await webCrypto.ed25519Sign(seed, plaintext);
+  assert.ok(publicKey !== undefined, 'the seed names a public key');
+  assert.ok(signature !== undefined, 'the seed signs');
+  assert.deepEqual(await webCrypto.ed25519PublicFromSeed(pooledView(seed)), publicKey);
+  assert.deepEqual(await webCrypto.ed25519Sign(pooledView(seed), pooledView(plaintext)), signature);
+  assert.equal(
+    await webCrypto.ed25519Verify(pooledView(publicKey), pooledView(plaintext), pooledView(signature)),
+    true,
+  );
+});
+
+test('a Uint8Array subarray view is its own bytes, not the buffer behind it', async () => {
+  const key = filled(32, 11);
+  const nonce = filled(12, 13);
+  const plaintext = utf8.encode('a second payload');
+  const aad = new Uint8Array();
+
+  const view = subarrayView(plaintext);
+  assert.ok(view.byteOffset > 0, 'the view does not start at the backing buffer');
+  assert.ok(view.byteLength < view.buffer.byteLength, 'the view is shorter than its backing buffer');
+
+  const flatSealed = await webCrypto.aesGcmSeal(key, nonce, plaintext, aad);
+  const viewSealed = await webCrypto.aesGcmSeal(subarrayView(key), subarrayView(nonce), view, subarrayView(aad));
+  assert.ok(flatSealed !== undefined, 'the flat seal is answered');
+  assert.ok(viewSealed !== undefined, 'the view seal is answered');
+  assert.deepEqual(viewSealed, flatSealed, 'the same bytes seal to the same ciphertext');
+  assert.deepEqual(
+    await webCrypto.aesGcmOpen(subarrayView(key), subarrayView(nonce), viewSealed, subarrayView(aad)),
+    plaintext,
+  );
+  assert.deepEqual(await webCrypto.sha256(view), await webCrypto.sha256(plaintext));
+});
