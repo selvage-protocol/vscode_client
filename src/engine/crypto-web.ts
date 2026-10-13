@@ -121,9 +121,14 @@ export const webCrypto: FrameCrypto = {
   },
 };
 
-/** A copy of the bytes, as an `ArrayBuffer` WebCrypto takes and never sees aliased. */
+/**
+ * A copy of exactly the bytes the view spans, as an `ArrayBuffer` WebCrypto takes and never sees
+ * aliased. `slice()` copies a `Uint8Array` but returns a view for a `Buffer`, whose `buffer` is
+ * then the whole pool and not the view's bytes; constructing the copy from the view keeps the
+ * two in step for every `Uint8Array`, subclass included.
+ */
 function toBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.slice().buffer as ArrayBuffer;
+  return new Uint8Array(bytes).buffer;
 }
 
 /**
