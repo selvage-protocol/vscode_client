@@ -32,6 +32,7 @@ import {
   decodeKey,
   encodeKey,
   mintSessionKey,
+  isContent,
   Reader,
   seal,
 } from './sealed.ts';
@@ -422,8 +423,11 @@ export class PeerSession {
   private roster: Set<string>;
   private readonly reader: Reader;
   private readonly host: HostProducer | undefined;
-  private readonly doc: Y.Doc;
-  private readonly awareness: Awareness;
+  /**
+   * The session replica. A viewer resolution adopts the clean UNKNOWN-role baseline.
+   */
+  private doc: Y.Doc;
+  private awareness: Awareness;
   /** The local awareness state this connection published, so a renewal republishes it (§8.2). */
   private localState: AwarenessState | null = null;
   /** The clock of the renewal that last published the local state (§8.2). */
@@ -490,7 +494,42 @@ export class PeerSession {
    * is held at all), so a vector taken at the first held-back edit would carry their changes out
    * again under this connection's key.
    */
-  private readonly unsent: Uint8Array[] = [];
+  private readonly unsent: Array<{ update: Uint8Array; speculative: boolean; queued: boolean }> = [];
+  /** A clean replica exists only while UNKNOWN-role local edits need a rollback. */
+  private baseline: Y.Doc | undefined;
+
+  private get publicationDoc(): Y.Doc {
+    return this.baseline ?? this.doc;
+  }
+
+  private beginSpeculation(): void {
+    if (this.baseline !== undefined) return;
+    this.baseline = new Y.Doc();
+    Y.applyUpdate(this.baseline, Y.encodeStateAsUpdate(this.doc));
+  }
+
+  private acceptSpeculation(): void {
+    this.baseline?.destroy();
+    this.baseline = undefined;
+    for (const entry of this.unsent) entry.speculative = false;
+  }
+
+  /**
+   * The committed writer keys whose first accepted `SyncStep1` this connection has answered with
+   * its own request, by canonical key spelling.
+   *
+   * One entry per continuous writer eligibility: a duplicate or later request from a key already
+   * here arms nothing, and a state that revokes or demotes the key prunes it so a later promotion
+   * can arm once more. This is the whole of what stops the reciprocal request from echoing for
+   * ever between two peers.
+   */
+  private readonly reciprocalServed = new Set<string>();
+  /** Whether a reciprocal request is owed and not yet on the wire. */
+  private reciprocalPending = false;
+  /** Readiness owed for this local key's renewed continuous writer eligibility. */
+  private localReadinessPending = false;
+  /** The role the last applied state gave this connection's own key, for continuous eligibility. */
+  private roleSeen: string | undefined;
   /**
    * The bytes of the last room state this connection **applied** (§7.1).
    *
@@ -551,7 +590,6 @@ export class PeerSession {
         this.roster.add(options.seat);
       }
     }
-    // §7's document: one `Y.Doc`, one `Y.Text` per path.
     this.doc = new Y.Doc();
     this.awareness = new Awareness(this.doc);
     // y-protocols starts a clock of its own here, renewing at 15 s and expiring at 30 s of wall
@@ -575,10 +613,13 @@ export class PeerSession {
     // read as a participant with no caret.
     this.awareness.setLocalState(null);
     this.wireAwareness();
-    this.doc.on('afterTransaction', (transaction: Y.Transaction) => {
-      this.noteTouched(transaction);
-    });
+    this.doc.on('afterTransaction', this.onTransaction);
   }
+
+  /** Retained across baseline adoption. */
+  private readonly onTransaction = (transaction: Y.Transaction): void => {
+    this.noteTouched(transaction);
+  };
 
   /**
    * The paths whose text a transaction changed, local or applied, kept until
@@ -624,31 +665,32 @@ export class PeerSession {
    * it touched, which is what §8.2's renewal is too: the same state on a newer clock.
    */
   private wireAwareness(): void {
-    this.awareness.on(
-      'update',
-      (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
-        if (origin !== 'local') {
-          this.noteRemoteAwareness(changes);
-          return;
-        }
-        const clients = [...changes.added, ...changes.updated, ...changes.removed];
-        if (clients.length === 0) {
-          return;
-        }
-        void this.serial(async () => {
-          // §13.1's step 4 holds every frame but the announcement back until a state commits
-          // this key; §13.9 lets a `viewer` publish its awareness, so role decides nothing here.
-          if (!this.mayPublish()) {
-            // The state is already in `localState`; what the gate holds is its frame. The state
-            // that commits this key publishes it, without waiting a renewal window for it.
-            this.awarenessHeld = true;
-            return;
-          }
-          await this.publishAwareness(clients);
-        });
-      },
-    );
+    this.awareness.on('update', this.onAwareness);
   }
+
+  private readonly onAwareness = (
+    changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown,
+  ): void => {
+    if (origin !== 'local') {
+      this.noteRemoteAwareness(changes);
+      return;
+    }
+    const clients = [...changes.added, ...changes.updated, ...changes.removed];
+    if (clients.length === 0) {
+      return;
+    }
+    void this.serial(async () => {
+      // §13.1's step 4 holds every frame but the announcement back until a state commits
+      // this key; §13.9 lets a `viewer` publish its awareness, so role decides nothing here.
+      if (!this.mayPublish()) {
+        // The state is already in `localState`; what the gate holds is its frame. The state
+        // that commits this key publishes it, without waiting a renewal window for it.
+        this.awarenessHeld = true;
+        return;
+      }
+      await this.publishAwareness(clients);
+    });
+  };
 
   /** One awareness frame for `clients`, with §8.2's renewal clock re-based on it. */
   private async publishAwareness(clients: number[]): Promise<void> {
@@ -856,6 +898,14 @@ export class PeerSession {
   }
 
   /**
+   * The publication history's Yjs state vector; excludes unresolved local speculation.
+   * Diagnostic only: deletion-set equality also requires comparing content or a full update.
+   */
+  stateVector(): Uint8Array {
+    return Y.encodeStateVector(this.publicationDoc);
+  }
+
+  /**
    * Whether a document for this path is here (§13.5): one the room sent — an empty one
    * included, which is what a file that is genuinely empty is answered with, so that a reader
    * can tell it from a path nothing has arrived for — or one this window wrote into. A path
@@ -1021,6 +1071,15 @@ export class PeerSession {
         soonest = due;
       }
     }
+    // A refusal re-sync or a reciprocal request owed and not yet due on the request clock: a
+    // caller's timer runs on the renewal grid anyway, but stating the deadline keeps a request
+    // that becomes due inside a window from waiting a whole one for it.
+    if (this.mayPublish() && (this.resyncFrom !== undefined || this.reciprocalPending || this.localReadinessPending)) {
+      const due = (this.handshakenAt ?? 0) + this.renew;
+      if (soonest === undefined || due < soonest) {
+        soonest = due;
+      }
+    }
     return soonest;
   }
 
@@ -1096,6 +1155,7 @@ export class PeerSession {
   destroy(): void {
     this.awareness.destroy();
     this.doc.destroy();
+    this.baseline?.destroy();
   }
 
   /**
@@ -1212,6 +1272,12 @@ export class PeerSession {
       this.handshakenAt = undefined;
       this.resyncFrom = undefined;
       this.holdsAnnouncedAt = undefined;
+      // §9.1: the reciprocal census belongs to the connection, not the replica — a fresh key
+      // starts eligible again, and the marks the receiver keeps for room frames are untouched.
+      this.reciprocalServed.clear();
+      this.reciprocalPending = false;
+      this.localReadinessPending = false;
+      this.roleSeen = undefined;
       this.ending = undefined;
       this.fault = undefined;
       // `CANONICAL.md` §6.1: a host's return costs its count the absence charge, because the
@@ -1290,8 +1356,8 @@ export class PeerSession {
    * one that had to wait for a seal would compute the same keystroke a second time. What is
    * serialized is the publication, in the order the calls came.
    *
-   * Returns whether anything went out: §13.5 and §13.9 have a `viewer` keep its edit and not
-   * send it, and §13.1's step 4 has any peer keep it until a state commits its key.
+   * Returns whether the delta was queued. Known viewers refuse the mutation; UNKNOWN-role
+   * edits are held until a state resolves their eligibility.
    *
    * An empty text into a path this replica holds no document for **publishes the document** —
    * the room's only way of saying that a path exists and its text is empty — and an empty text
@@ -1299,6 +1365,12 @@ export class PeerSession {
    * by {@link EMPTY_DOCUMENT_MARK}.
    */
   insert(path: string, index: number, text: string): Promise<boolean> {
+    // Refuse before creating CRDT history that a later promotion could export.
+    if (this.role() === 'viewer') {
+      return Promise.resolve(false);
+    }
+    const speculative = !this.isWriter();
+    if (speculative) this.beginSpeculation();
     const publishing = text === '' && !this.doc.share.has(path);
     const update = this.editLocally(path, (handle) => {
       // An index past the end of the text is the caller's bug, and `yjs` answers one by writing
@@ -1314,11 +1386,16 @@ export class PeerSession {
       }
       handle.insert(index, text);
     });
-    return this.publishEdit(update);
+    return this.publishEdit(update, speculative);
   }
 
   /** A local deletion, published exactly as {@link PeerSession.insert} publishes an insertion. */
   remove(path: string, index: number, length: number): Promise<boolean> {
+    if (this.role() === 'viewer') {
+      return Promise.resolve(false);
+    }
+    const speculative = !this.isWriter();
+    if (speculative) this.beginSpeculation();
     const update = this.editLocally(path, (handle) => {
       if (index < 0 || length < 0 || index + length > handle.length) {
         throw new Error(
@@ -1327,7 +1404,7 @@ export class PeerSession {
       }
       handle.delete(index, length);
     });
-    return this.publishEdit(update);
+    return this.publishEdit(update, speculative);
   }
 
   /**
@@ -1360,23 +1437,57 @@ export class PeerSession {
   }
 
   /** Puts one local edit's update on the wire, or holds it back, in call order. */
-  private publishEdit(update: Uint8Array | undefined): Promise<boolean> {
+  private publishEdit(update: Uint8Array | undefined, speculative: boolean): Promise<boolean> {
+    if (update === undefined) return Promise.resolve(false);
+    const entry = { update, speculative, queued: false };
+    this.unsent.push(entry);
     return this.serial(async () => {
-      if (update === undefined) {
-        return false;
-      }
-      if (!this.mayPublish() || this.role() === 'viewer') {
-        // §13.9: a `viewer`'s edit is its own and never the room's, so there is nothing to send
-        // later. Anyone else's is held back by §13.1's step 4 and sent by
-        // {@link PeerSession.flushHeldBackEdits} once a state commits this key.
-        if (this.role() !== 'viewer') {
-          this.unsent.push(update);
-        }
-        return false;
-      }
-      await this.publish('content', encodeUpdate(update));
+      if (!this.unsent.includes(entry)) return entry.queued;
+      if (!this.mayPublish() || !this.isWriter()) return false;
+      this.acceptSpeculation();
+      if (!await this.publish('content', encodeUpdate(update))) return false;
+      entry.queued = true;
+      this.unsent.splice(this.unsent.indexOf(entry), 1);
       return true;
     });
+  }
+
+  /** Whether the applied state gives this connection's own key a publishing role (§13.4). */
+  private isWriter(): boolean {
+    const role = this.role();
+    return role === 'host' || role === 'guest';
+  }
+
+  /** Adopts the clean history rather than inverse-deleting speculative structs. */
+  private discardSpeculative(): void {
+    for (let i = this.unsent.length - 1; i >= 0; i -= 1) {
+      if (this.unsent[i]?.speculative) this.unsent.splice(i, 1);
+    }
+    const next = this.baseline;
+    if (next === undefined) return;
+    this.baseline = undefined;
+    const previous = this.doc;
+    const oldAwareness = this.awareness;
+    oldAwareness.off('update', this.onAwareness);
+    this.doc.off('afterTransaction', this.onTransaction);
+    this.doc = next;
+    next.on('afterTransaction', this.onTransaction);
+    this.awareness = new Awareness(next);
+    clearInterval(this.awareness._checkInterval);
+    this.awareness.clientID = oldAwareness.clientID;
+    this.awareness.states.clear();
+    this.awareness.meta.clear();
+    for (const [id, value] of oldAwareness.states) this.awareness.states.set(id, value);
+    for (const [id, value] of oldAwareness.meta) this.awareness.meta.set(id, { ...value });
+    this.wireAwareness();
+    if (this.localState?.path !== undefined && this.localState.selection !== undefined &&
+        this.resolveSelection(this.localState.path, this.localState.selection) === undefined) {
+      this.setAwareness({ path: this.localState.path });
+    }
+    oldAwareness.destroy();
+    for (const path of previous.share.keys()) this.touched.add(path);
+    for (const path of next.share.keys()) this.touched.add(path);
+    previous.destroy();
   }
 
   // --- presence -----------------------------------------------------------------
@@ -1553,7 +1664,7 @@ export class PeerSession {
         await this.hearAnnouncement(clock, payload.key, payload.role);
         break;
       case 'content':
-        await this.applyContent(verdict.plaintext);
+        await this.applyContent(verdict.plaintext, verdict.verified);
         break;
       default:
         break;
@@ -1566,10 +1677,26 @@ export class PeerSession {
     this.host?.verifiedState(issued);
     this.refreshHostAway(clock, true);
     this.dropDepartedHolds();
+    this.pruneReciprocal();
+    const role = this.role();
+    if (role === 'host' || role === 'guest') {
+      if (this.handshakenAt !== undefined && this.roleSeen !== 'host' && this.roleSeen !== 'guest') {
+        this.localReadinessPending = true;
+      }
+    } else {
+      this.localReadinessPending = false;
+    }
+    this.roleSeen = role;
     // §13.1's steps 6 and 4: a state that commits this key is where the handshake belongs, and
     // one that does not is what a re-announcement is for — the renewal clock alone would wait a
     // whole window for it.
     if (this.commitsOurs()) {
+      // Resolve UNKNOWN-role history before encoding any request or reply.
+      if (role === 'viewer') {
+        this.discardSpeculative();
+      } else if (this.isWriter()) {
+        this.acceptSpeculation();
+      }
       await this.handshakeOnce(clock);
       await this.flushHeldBackEdits();
       await this.flushHeldBackAwareness();
@@ -1585,6 +1712,46 @@ export class PeerSession {
   }
 
   /**
+   * Retires the reciprocal census entries for keys the applied state no longer commits as writers.
+   *
+   * §13.3 replaces the room's keys wholesale, so a revoked or demoted key is no longer eligible
+   * and a later promotion of it may arm one request again. A key that stays continuously committed
+   * keeps its served mark, which is what stops a duplicate or later `SyncStep1` from re-arming.
+   */
+  private pruneReciprocal(): void {
+    for (const spelling of [...this.reciprocalServed]) {
+      const entry = this.reader.committed.get(spelling);
+      if (entry === undefined || (entry.role !== 'host' && entry.role !== 'guest')) {
+        this.reciprocalServed.delete(spelling);
+      }
+    }
+  }
+
+  /**
+   * Arms one reciprocal request for the first accepted `SyncStep1` from a continuously committed
+   * writer key.
+   *
+   * §13.1's step 6 asks the room for what this replica lacks; a peer's own request is evidence
+   * that it has applied a committing state and can answer, so answering it with our own request
+   * is what makes the exchange reciprocal. A request from a `viewer` is not one: a viewer sends no
+   * content, so reciprocating would solicit nothing (and §13.9 forbids the content anyway).
+   */
+  private armReciprocal(verified: string | undefined): void {
+    if (verified === undefined || !this.commitsOurs()) {
+      return;
+    }
+    const entry = this.reader.committed.get(verified);
+    if (entry === undefined || (entry.role !== 'host' && entry.role !== 'guest')) {
+      return;
+    }
+    if (this.reciprocalServed.has(verified)) {
+      return;
+    }
+    this.reciprocalServed.add(verified);
+    this.reciprocalPending = true;
+  }
+
+  /**
    * Publishes the edits this connection made before a state committed its key.
    *
    * §13.1's step 4 held them in the replica, and a client that kept them there would leave the
@@ -1596,11 +1763,19 @@ export class PeerSession {
    * not make.
    */
   private async flushHeldBackEdits(): Promise<void> {
-    const held = this.unsent.splice(0, this.unsent.length);
-    if (held.length === 0 || this.role() === 'viewer') {
+    if (!this.isWriter() || this.unsent.length === 0) return;
+    const held = this.unsent.splice(0);
+    const merged = Y.mergeUpdates(held.map((entry) => entry.update));
+    this.acceptSpeculation();
+    if (!this.mayPublish()) {
+      this.unsent.push(...held);
       return;
     }
-    await this.publish('content', encodeUpdate(Y.mergeUpdates(held)));
+    if (await this.publish('content', encodeUpdate(merged))) {
+      for (const entry of held) entry.queued = true;
+    } else {
+      this.unsent.unshift(...held);
+    }
   }
 
   /**
@@ -1626,24 +1801,41 @@ export class PeerSession {
   }
 
   /** §13.2 and §13.3: a `kind = 0` plaintext, applied to the session document and answered. */
-  private async applyContent(plaintext: Uint8Array): Promise<void> {
+  private async applyContent(
+    plaintext: Uint8Array,
+    verified: string | undefined,
+  ): Promise<void> {
     if (!this.stateHeld()) {
       return;
     }
-    let replies: Uint8Array[];
+    // §13.9: a `viewer` publishes its SyncStep1, its awareness and its holds, and nothing else
+    // — a SyncStep2 is document content (§13.5) and is not its to send. An uncommitted key is the
+    // same: nothing it would answer with is publishable yet.
+    const answers = this.mayPublish() && this.isWriter();
+    let requested = false;
+    let replies: Uint8Array[] = [];
     try {
-      replies = applyFrame(plaintext, this.doc, this.awareness, APPLIED_ORIGIN).replies;
+      // While speculating, replies must use the clean history.
+      const effect = applyFrame(plaintext, this.publicationDoc, this.awareness, APPLIED_ORIGIN, {
+        answer: answers,
+      });
+      requested = effect.requested;
+      replies = effect.replies;
     } catch {
       // A stream no replica decodes is a sender's bug: what was applied before the bad message
       // stays, its replies are not sent, and the session goes on.
-      return;
     }
-    // §13.9: a `viewer` publishes its SyncStep1, its awareness and its holds, and nothing else
-    // — a SyncStep2 is document content (§13.5) and is not its to send.
-    if (this.role() === 'viewer') {
-      return;
+    if (this.baseline !== undefined) {
+      try {
+        applyFrame(plaintext, this.doc, this.awareness, APPLIED_ORIGIN, { answer: false });
+      } catch {
+        // The successfully decoded prefix still stands.
+      }
     }
-    if (!this.commitsOurs()) {
+    if (requested) {
+      this.armReciprocal(verified);
+    }
+    if (!answers) {
       return;
     }
     for (const reply of replies) {
@@ -1979,32 +2171,38 @@ export class PeerSession {
    */
   private async handshakeOnce(clock: number): Promise<void> {
     if (this.handshakenAt === undefined) {
-      await this.syncStep1(clock);
+      if (!await this.syncStep1(clock)) this.reciprocalPending = true;
     }
   }
 
   /**
    * §13.1's step 6: a `SyncStep1` with this replica's state vector, so the room can tell a
    * client that has been refusing frames from one that has been applying them.
+   *
+   * The vector is the publication replica's: §13.9 keeps a viewer's own history out of it, so the
+   * room is asked for what the room-safe history lacks and never told this client already holds
+   * content it may not export.
    */
-  private async syncStep1(clock: number): Promise<void> {
-    await this.publish('sync', encodeSyncStep1(this.doc));
+  private async syncStep1(clock: number): Promise<boolean> {
+    if (!await this.publish('sync', encodeSyncStep1(this.publicationDoc))) return false;
     this.handshakenAt = clock;
+    this.resyncFrom = undefined;
+    this.reciprocalPending = false;
+    this.localReadinessPending = false;
+    return true;
   }
 
   /**
-   * §13.6: a client that refused a content frame re-syncs, and no more than once per renewal
-   * interval however many it refused — the lower bound is what keeps a peer that floods refused
-   * frames from being answered frame for frame.
+   * Refusal, reciprocal and local readiness obligations share the successful request clock:
+   * at most one locally generated `SyncStep1` per renewal interval, whichever asked for it.
    */
   private async resync(clock: number): Promise<void> {
-    if (this.resyncFrom === undefined || !this.mayPublish()) {
+    if ((this.resyncFrom === undefined && !this.reciprocalPending && !this.localReadinessPending) || !this.mayPublish()) {
       return;
     }
     const due =
       this.handshakenAt === undefined || clock - this.handshakenAt >= this.renew;
     if (due) {
-      this.resyncFrom = undefined;
       await this.syncStep1(clock);
     }
   }
@@ -2017,26 +2215,24 @@ export class PeerSession {
    * This is the one place every authored frame passes through; {@link mayPublish} is the caller's
    * own check of the same rule.
    */
-  private async publish(what: Publication, plaintext: Uint8Array): Promise<void> {
-    if (this.ending !== undefined || this.roomFrames >= this.frameBudget) {
-      return;
-    }
+  private async publish(what: Publication, plaintext: Uint8Array): Promise<boolean> {
+    const allowed = (): boolean =>
+      !this.detached && this.ending === undefined &&
+      (what === 'announcement' || (this.mayPublish() && (!isContent(plaintext) || this.isWriter())));
+    if (!allowed() || this.roomFrames >= this.frameBudget) return false;
     this.counter += 1;
+    // Reserve the frame-key budget before asynchronous crypto; canceled seals cannot reuse it.
+    this.countFrame();
     const bytes = await this.sealedFrame(KIND_OF[what], plaintext);
     if (bytes === undefined) {
-      // A CSPRNG that will not read, or an AEAD that refuses its own inputs. Neither happens
-      // in practice, and a session that kept quiet about one would look like a client with
-      // nothing to say.
       this.fault = `a ${what} frame could not be sealed`;
-      return;
+      return false;
     }
-    this.countFrame();
+    if (!allowed()) return false;
     this.outbound.push(bytes);
-    if (what === 'sync') {
-      this.handshake += 1;
-    } else {
-      this.published += 1;
-    }
+    if (what === 'sync') this.handshake += 1;
+    else this.published += 1;
+    return true;
   }
 
   /** One frame's bytes, sealed under the frame key and signed by the session key. */
