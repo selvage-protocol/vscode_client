@@ -538,6 +538,14 @@ export interface Verdict {
   reason?: DropReason;
   /** The key id whose signature verified, or the one the frame claimed. */
   sender?: string;
+  /**
+   * The canonical spelling of the public key whose signature actually verified, when one did.
+   *
+   * A key id is an index and not an identity (§6.1): two keys can share one, so a caller that
+   * needs to name *which* key sent a frame cannot use {@link sender} or an id lookup. This is the
+   * key that verified, spelled the way a state names it.
+   */
+  verified?: string;
   kind?: number;
   counter?: number;
   plaintext: Uint8Array;
@@ -929,6 +937,7 @@ export class Reader {
     sender: string,
     plaintext: Uint8Array,
     payload: Payload,
+    verified: string,
   ): Promise<Verdict> {
     if (envelope.kind === 0 || envelope.kind === 3) {
       this.advance(sender, envelope.counter);
@@ -944,6 +953,7 @@ export class Reader {
     return {
       ok: true,
       sender,
+      verified,
       kind: envelope.kind,
       counter: envelope.counter,
       plaintext,
@@ -1098,7 +1108,7 @@ export class Reader {
     }
     // The sender's id is the envelope's own: a candidate is only ever a key whose id is `id`
     // (the host key when it is the host's id, or a committed key `byKeyId` found under it).
-    return await this.accept(envelope, id, plaintext, payload);
+    return await this.accept(envelope, id, plaintext, payload, encodeKey(sender));
   }
 }
 

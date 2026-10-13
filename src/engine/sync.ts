@@ -13,7 +13,7 @@ import * as encoding from 'lib0/encoding';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as syncProtocol from 'y-protocols/sync';
 import type { Awareness } from 'y-protocols/awareness';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 
 export const MESSAGE_SYNC = 0;
 export const MESSAGE_AWARENESS = 1;
@@ -36,6 +36,26 @@ const MAX_REPLIES_PER_FRAME = 1;
 /** The replies a frame asked for, in the order the messages appeared. */
 export interface FrameEffect {
   replies: Uint8Array[];
+  /**
+   * Whether the frame carried a `SyncStep1` message, read and past, whatever the cap did with it.
+   *
+   * A `SyncStep1` is the one message that asks the receiver to publish its own history, so its
+   * presence is what a caller arms a reciprocal request on; a `SyncStep2` or an `Update` is
+   * content and never asks for one. Detection is separate from the answer so a frame that carried
+   * a request past the reply cap is still seen as one, and so a caller whose own reply is not
+   * permitted still recognises the request.
+   */
+  requested: boolean;
+}
+
+/** What a caller allows the frame to draw: see {@link applyFrame}. */
+export interface FrameOptions {
+  /**
+   * Whether a `SyncStep1` may be answered with the replica-sized `SyncStep2` diff. `false` reads
+   * and drops the request's state vector instead of computing a diff, which is what a `viewer` or
+   * an uncommitted key would not publish anyway; the rest of the frame is applied either way.
+   */
+  answer?: boolean;
 }
 
 /** SyncStep1 with this replica's state vector: the catch-up handshake of §7. */
@@ -73,72 +93,81 @@ export function encodeAwareness(
  * not define. A `message_type` above 3 or a `sync_type` above 2 has no length to read past, so
  * reading stops there, and the messages before it stand with the replies they asked for.
  *
- * Throws when a message the table defines cannot be read, which is a truncated or malformed
- * frame. The messages before that one have already been applied and are not rolled back; what
- * the throw loses is the rest of the frame and the replies. The caller keeps the session: a
- * payload it cannot decode is a peer bug, not a reason to end a working connection (the
- * reference client does the same).
+ * A parse error the reader propagates — a truncated frame, or a SyncStep1 with a malformed state
+ * vector — also ends reading. Successfully applied prefix content and its readiness/replies stand,
+ * and no message after the offending one is read. A SyncStep2 or Update is not one of those:
+ * y-protocols catches a body it cannot decode inside its own reader and logs it.
+ * A payload that cannot be decoded does not end a working connection.
  */
 export function applyFrame(
   frame: Uint8Array,
   doc: Y.Doc,
   awareness: Awareness,
   origin: unknown,
+  options: FrameOptions = {},
 ): FrameEffect {
+  const answer = options.answer ?? true;
   const decoder = decoding.createDecoder(frame);
   const replies: Uint8Array[] = [];
+  let requested = false;
 
   reading: while (decoding.hasContent(decoder)) {
-    const messageType = decoding.readVarUint(decoder);
-    switch (messageType) {
-      case MESSAGE_SYNC: {
-        // The sync sub-type is read here rather than left to `readSyncMessage`, because the
-        // answer to a SyncStep1 is a whole diff of the document: past the cap that diff is not
-        // computed at all. The readers are y-protocols' own, so what is applied is theirs.
-        const syncType = decoding.readVarUint(decoder);
-        if (syncType === syncProtocol.messageYjsSyncStep1) {
-          if (replies.length >= MAX_REPLIES_PER_FRAME) {
-            decoding.readVarUint8Array(decoder);
-            break;
+    try {
+      const messageType = decoding.readVarUint(decoder);
+      switch (messageType) {
+        case MESSAGE_SYNC: {
+          // The sync sub-type is read here rather than left to `readSyncMessage`, because the
+          // answer to a SyncStep1 is a whole diff of the document: past the cap that diff is not
+          // computed at all. The readers are y-protocols' own, so what is applied is theirs.
+          const syncType = decoding.readVarUint(decoder);
+          if (syncType === syncProtocol.messageYjsSyncStep1) {
+            if (!answer || replies.length >= MAX_REPLIES_PER_FRAME) {
+              Y.decodeStateVector(decoding.readVarUint8Array(decoder));
+              requested = true;
+              break;
+            }
+            const encoder = encoding.createEncoder();
+            syncProtocol.readSyncStep1(decoder, encoder, doc);
+            requested = true;
+            if (encoding.length(encoder) > 0) {
+              replies.push(wrap(MESSAGE_SYNC, encoding.toUint8Array(encoder)));
+            }
+          } else if (
+            syncType === syncProtocol.messageYjsSyncStep2 ||
+            syncType === syncProtocol.messageYjsUpdate
+          ) {
+            syncProtocol.readSyncStep2(decoder, doc, origin);
+          } else {
+            break reading;
           }
-          const encoder = encoding.createEncoder();
-          syncProtocol.readSyncStep1(decoder, encoder, doc);
-          if (encoding.length(encoder) > 0) {
-            replies.push(wrap(MESSAGE_SYNC, encoding.toUint8Array(encoder)));
-          }
-        } else if (
-          syncType === syncProtocol.messageYjsSyncStep2 ||
-          syncType === syncProtocol.messageYjsUpdate
-        ) {
-          syncProtocol.readSyncStep2(decoder, doc, origin);
-        } else {
+          break;
+        }
+        case MESSAGE_AWARENESS: {
+          awarenessProtocol.applyAwarenessUpdate(
+            awareness,
+            decoding.readVarUint8Array(decoder),
+            origin,
+          );
+          break;
+        }
+        // Unused by Selvage and read and dropped here: see the header. Nothing is
+        // consumed for it — a query carries no payload — and nothing is written back.
+        case MESSAGE_QUERY_AWARENESS: {
+          break;
+        }
+        case MESSAGE_AUTH: {
+          skipAuth(decoder);
+          break;
+        }
+        default: {
           break reading;
         }
-        break;
       }
-      case MESSAGE_AWARENESS: {
-        awarenessProtocol.applyAwarenessUpdate(
-          awareness,
-          decoding.readVarUint8Array(decoder),
-          origin,
-        );
-        break;
-      }
-      // Unused by Selvage and read and dropped here: see the header. Nothing is
-      // consumed for it — a query carries no payload — and nothing is written back.
-      case MESSAGE_QUERY_AWARENESS: {
-        break;
-      }
-      case MESSAGE_AUTH: {
-        skipAuth(decoder);
-        break;
-      }
-      default: {
-        break reading;
-      }
+    } catch {
+      break;
     }
   }
-  return { replies };
+  return { replies, requested };
 }
 
 /**

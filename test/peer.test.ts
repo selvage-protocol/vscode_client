@@ -357,7 +357,7 @@ test("a committed viewer's content is refused, its holds are applied, and its ow
   assert.equal(peer.takeOutbound().length, 0, 'once per interval');
 });
 
-test('a viewer keeps its own edit, sends nothing, and still publishes its holds', async () => {
+test('a viewer discards its own edit, sends nothing, and still publishes its holds', async () => {
   const now = await room();
   const peer = await session();
   await peer.tick(0);
@@ -367,8 +367,10 @@ test('a viewer keeps its own edit, sends nothing, and still publishes its holds'
   );
   peer.takeOutbound();
 
+  // §13.9's policy here: a viewer's local change is discarded rather than kept locally, so it can
+  // never enter room history on a later promotion or key rotation.
   assert.equal(await peer.insert('README.md', 0, 'hello'), false);
-  assert.equal(peer.text('README.md'), 'hello', 'its own replica holds it');
+  assert.equal(peer.text('README.md'), '', 'the disallowed edit is not even locally visible');
   assert.equal(peer.publishedCount, 1, 'and the room never hears it');
 
   peer.open('README.md');
@@ -1020,13 +1022,16 @@ test("a delta is this connection's change and not a peer's deletion", async () =
   theirs.destroy();
 });
 
-test("a viewer's held-back edit is kept and never published", async () => {
+test('an edit held before a viewer state is discarded, never published and never visible', async () => {
   const now = await room();
   const peer = await session();
   await peer.tick(0);
   peer.takeOutbound();
 
+  // The edit is made before any state says which role this key has, so it is held back; the state
+  // that arrives makes it a viewer's, and §13.9 says it is not the room's.
   assert.equal(await peer.insert('README.md', 0, 'hello'), false);
+  assert.equal(peer.text('README.md'), 'hello', 'held locally while the role is unknown');
   assert.deepEqual(
     await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self']])),
     { status: 'applied', kind: 1 },
@@ -1036,7 +1041,7 @@ test("a viewer's held-back edit is kept and never published", async () => {
   assert.equal(out.length, 1, 'only the handshake: §13.9 keeps a viewer edit local');
   assert.equal(peer.handshakeCount, 1);
   assert.equal(peer.publishedCount, 1);
-  assert.equal(peer.text('README.md'), 'hello');
+  assert.equal(peer.text('README.md'), '', 'the disallowed history is gone, not tombstoned');
 });
 
 /**
@@ -1627,4 +1632,944 @@ test('a frame that is not an envelope is refused without ending the session', as
     parseEnvelope(encodeEnvelope({ keyId: new Uint8Array(8), kind: 0, epoch: 0, counter: 1, nonce: new Uint8Array(12), ciphertext: new Uint8Array(0), signature: new Uint8Array(64) }))?.kind,
     0,
   );
+});
+
+// --- the reciprocal request: one bounded obligation per eligible writer key -----------
+
+/** The sync subtype of a published `kind = 0` frame: 0 is a `SyncStep1`, 1 a `SyncStep2`. */
+async function syncSubtypeOf(bytes: Uint8Array): Promise<number | undefined> {
+  const { kind, payload } = await publishedFrame(bytes);
+  if (kind !== 0 || !Array.isArray(payload)) {
+    return undefined;
+  }
+  return readVaruint(Uint8Array.from(payload), 1)?.[0];
+}
+
+/** The first `SyncStep2` among a set of published frames, or `undefined`. */
+async function step2Of(frames: readonly Uint8Array[]): Promise<Uint8Array | undefined> {
+  for (const bytes of frames) {
+    if ((await syncSubtypeOf(bytes)) === 1) {
+      return bytes;
+    }
+  }
+  return undefined;
+}
+
+test('one reciprocal obligation per eligible writer key, and the census stops the echo', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  // The initial handshake, at clock 1: the request clock every later request is measured from.
+  assert.equal((await syncSubtypeOf(peer.takeOutbound()[0] as Uint8Array)), 0);
+
+  // The first `SyncStep1` from a committed writer is answered with a Step2 and remembered.
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  const answer = peer.takeOutbound();
+  assert.equal(answer.length, 1, 'one Step2 for the request');
+  assert.equal(await syncSubtypeOf(answer[0] as Uint8Array), 1);
+
+  // The request clock was set by the handshake at clock 1, so the window opens at 301.
+  await peer.tick(1 + RENEW_MS - 1);
+  assert.equal(peer.takeOutbound().length, 0, 'not before the request clock');
+  await peer.tick(1 + RENEW_MS);
+  const reciprocal = peer.takeOutbound();
+  assert.equal(reciprocal.length, 1, 'one coalesced reciprocal request');
+  assert.equal(await syncSubtypeOf(reciprocal[0] as Uint8Array), 0);
+
+  // A duplicate or later request from the same continuously eligible key draws its Step2 and
+  // nothing else.
+  await peer.deliver(1 + RENEW_MS + 1, await frame(now.peer, 0, 2, encodeSyncStep1(new Y.Doc())));
+  const second = peer.takeOutbound();
+  assert.equal(second.length, 1, 'one Step2 per inbound frame');
+  assert.equal(await syncSubtypeOf(second[0] as Uint8Array), 1);
+  await peer.tick(1 + RENEW_MS * 2);
+  await peer.tick(1 + RENEW_MS * 3);
+  assert.equal(peer.takeOutbound().length, 0, 'the served census stops the echo');
+});
+
+test("a viewer's request does not arm a reciprocal request", async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'viewer', 'p-viewer'],
+    ]),
+  );
+  peer.takeOutbound();
+
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  assert.equal(await syncSubtypeOf(peer.takeOutbound()[0] as Uint8Array), 1, 'the request is answered');
+  await peer.tick(2 + RENEW_MS);
+  await peer.tick(2 + RENEW_MS * 2);
+  assert.equal(peer.takeOutbound().length, 0, 'a viewer sends no content, so there is nothing to ask for');
+});
+
+test('a Step2 or an Update never arms a reciprocal request', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+
+  // A peer's Step2 and a peer's Update are content, not requests.
+  const scratch = new Y.Doc();
+  scratch.getText('README.md').insert(0, 'theirs');
+  const step2 = encodeUpdate(Y.encodeStateAsUpdate(scratch));
+  await peer.deliver(2, await frame(now.peer, 0, 1, step2));
+  await peer.deliver(3, await frame(now.peer, 0, 2, step2));
+  await peer.tick(3 + RENEW_MS);
+  await peer.tick(3 + RENEW_MS * 2);
+  assert.equal(peer.takeOutbound().length, 0, 'content never asks for a request');
+  scratch.destroy();
+});
+
+test('several new writer keys in one window draw one broadcast request', async () => {
+  const now = await room();
+  const peer = await session();
+  const third = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(17))) as SessionKeypair;
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+      [third, 'guest', 'p-third'],
+    ]),
+  );
+  peer.takeOutbound();
+
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  await peer.deliver(3, await frame(third, 0, 1, encodeSyncStep1(new Y.Doc())));
+  const answers = peer.takeOutbound();
+  assert.equal(answers.length, 2, 'each request is answered with its own Step2');
+  await peer.tick(3 + RENEW_MS);
+  const requests = peer.takeOutbound();
+  assert.equal(requests.length, 1, 'the two new keys coalesce into one request');
+  assert.equal(await syncSubtypeOf(requests[0] as Uint8Array), 0);
+});
+
+test('a re-seat clears the reciprocal census, so the fresh key is eligible again', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(2 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 1, 'the first eligibility armed once');
+
+  peer.detach();
+  await peer.reseat('p-new', ['p-host'], 0);
+  const recommit = await frame(
+    now.host,
+    1,
+    2,
+    utf8({
+      issued: 2,
+      listing: ['README.md'],
+      peers: {
+        [encodeKey(peer.sessionKey)]: { peer_id: 'p-new', role: 'guest' },
+        [encodeKey(now.peer.public)]: { peer_id: 'p-other', role: 'guest' },
+      },
+    }),
+  );
+  await peer.deliver(2, recommit);
+  peer.takeOutbound();
+  await peer.deliver(3, await frame(now.peer, 0, 2, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(3 + RENEW_MS);
+  const fresh = peer.takeOutbound();
+  assert.equal(fresh.length, 1, 'a fresh key is a new eligibility');
+  assert.equal(await syncSubtypeOf(fresh[0] as Uint8Array), 0);
+});
+
+// --- §13.9: viewer history never becomes room content --------------------------------
+
+/** The update a published `kind = 0` `SyncStep2` carries, applied to a fresh replica. */
+async function carriedStep2Text(bytes: Uint8Array): Promise<string> {
+  const { kind, payload } = await publishedFrame(bytes);
+  assert.equal(kind, 0);
+  const update = updateOf(payload as number[]);
+  const replica = new Y.Doc();
+  const watching = new Awareness(replica);
+  try {
+    applyFrame(encodeUpdate(update), replica, watching, 'corpus');
+    return replica.getText('README.md').toString();
+  } finally {
+    watching.destroy();
+    replica.destroy();
+  }
+}
+
+test('a viewer makes no room history and exports none on promotion', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'viewer', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+
+  assert.equal(await peer.insert('README.md', 0, 'secret'), false);
+  assert.equal(await peer.remove('README.md', 0, 1), false);
+  assert.equal(await peer.insert('README.md', 0, 'x'), false);
+  assert.equal(await peer.remove('README.md', 0, 1), false);
+  assert.equal(peer.text('README.md'), '', 'none of it is even locally visible');
+  await peer.whenIdle();
+  assert.equal(peer.takeOutbound().length, 0, 'and none of it went out');
+
+  // Promotion to a writer with the same key: the room-safe history is all there is to answer from.
+  await peer.deliver(
+    2,
+    await state(now.host, 2, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  const answer = await step2Of(peer.takeOutbound());
+  assert.ok(answer !== undefined, 'the promoted writer answers the request');
+  assert.equal(await carriedStep2Text(answer as Uint8Array), '', 'no viewer history is exported');
+});
+
+test('an edit made before a viewer state is discarded and never exported on re-promotion', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  assert.equal(await peer.insert('README.md', 0, 'spec'), false, 'held while the role is unknown');
+  assert.equal(peer.text('README.md'), 'spec');
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'viewer', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  await peer.whenIdle();
+  assert.equal(peer.text('README.md'), '', 'the viewer state discards the speculative edit');
+  peer.takeOutbound();
+
+  await peer.deliver(
+    2,
+    await state(now.host, 2, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  const answer = await step2Of(peer.takeOutbound());
+  assert.ok(answer !== undefined);
+  assert.equal(await carriedStep2Text(answer), '', 'the discarded edit never returns');
+});
+
+test('a demoted viewer keeps its writer history and exports no later viewer edits', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  assert.equal(await peer.insert('README.md', 0, 'legit'), true);
+
+  await peer.deliver(
+    2,
+    await state(now.host, 2, [
+      [now.ours, 'viewer', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  assert.equal(await peer.insert('README.md', 5, 'bad'), false);
+  assert.equal(peer.text('README.md'), 'legit', 'the viewer edit is discarded');
+
+  await peer.deliver(
+    3,
+    await state(now.host, 3, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(4, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  const answer = await step2Of(peer.takeOutbound());
+  assert.ok(answer !== undefined);
+  assert.equal(await carriedStep2Text(answer), 'legit', 'the writer history is preserved');
+});
+
+test('a demotion and re-promotion rearms exactly one request for the new eligibility', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 1, 'the first eligibility armed once');
+
+  // A state that demotes the key retires its census entry; a state that promotes it again makes
+  // a new continuous eligibility, whose first request arms once more.
+  await peer.deliver(
+    1 + RENEW_MS + 1,
+    await state(now.host, 2, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'viewer', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(
+    1 + RENEW_MS + 2,
+    await state(now.host, 3, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(1 + RENEW_MS + 3, await frame(now.peer, 0, 2, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS * 2);
+  const rearmed = peer.takeOutbound();
+  assert.equal(rearmed.length, 1, 'the new eligibility armed once');
+  assert.equal(await syncSubtypeOf(rearmed[0] as Uint8Array), 0);
+});
+
+test('a repeated state with the same writer set does not rearm a served key', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  const peers = [
+    [now.ours, 'guest', 'p-self'],
+    [now.peer, 'guest', 'p-other'],
+  ] as Array<[SessionKeypair, string, string]>;
+  await peer.deliver(1, await state(now.host, 1, peers));
+  peer.takeOutbound();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 1, 'the first request armed once');
+
+  // A listing-only edition and a repeated-equal state replace the room's state and must not make
+  // the same continuously committed key eligible again.
+  await peer.deliver(1 + RENEW_MS + 1, await state(now.host, 2, peers, ['README.md', 'other.md']));
+  peer.takeOutbound();
+  await peer.deliver(1 + RENEW_MS + 2, await state(now.host, 3, peers));
+  peer.takeOutbound();
+  await peer.deliver(1 + RENEW_MS + 3, await frame(now.peer, 0, 2, encodeSyncStep1(new Y.Doc())));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal(peer.takeOutbound().length, 0, 'a repeated state rearmed a served key');
+});
+
+for (const initialRole of [undefined, 'guest'] as const) {
+  test(`queued viewer classification preserves mutation-time ${initialRole ?? 'UNKNOWN'} eligibility`, async () => {
+    const now = await room();
+    const peer = await session();
+    const receiver = await session({ sessionSeed: now.peer.seed, seat: 'p-other' });
+    const entries = (role: string): Array<[SessionKeypair, string, string]> => [
+      [now.ours, role, 'p-self'], [now.peer, 'guest', 'p-other'],
+    ];
+    if (initialRole !== undefined) {
+      const committed = await state(now.host, 1, entries(initialRole));
+      await peer.deliver(0, committed);
+      await receiver.deliver(0, committed);
+      peer.takeOutbound();
+      peer.detach();
+    }
+    const demotion = await state(now.host, 2, entries('viewer'), ['README.md'], 2);
+    const applying = peer.deliver(1, demotion);
+    const editing = peer.insert('README.md', 0, 'secret');
+    assert.equal(peer.text('README.md'), 'secret', 'mutation is synchronous');
+    await applying;
+    assert.equal(await editing, false);
+    assert.equal(peer.text('README.md'), initialRole === undefined ? '' : 'secret');
+    peer.takeOutbound();
+
+    if (initialRole !== undefined) {
+      await peer.reseat('p-return', ['p-return', 'p-other'], 19);
+    }
+    const promoted = await state(now.host, 3, [
+      [ { ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'],
+      [now.peer, 'guest', 'p-other'],
+    ], ['README.md'], 3);
+    await peer.deliver(2, promoted);
+    await receiver.deliver(2, promoted);
+    // Publication includes retained writer history, never UNKNOWN/viewer history.
+    for (const bytes of peer.takeOutbound()) await receiver.deliver(3, bytes);
+    assert.equal(await peer.insert('README.md', peer.text('README.md').length, '!'), true);
+    for (const bytes of peer.takeOutbound()) await receiver.deliver(4, bytes);
+    assert.equal(receiver.text('README.md'), initialRole === undefined ? '!' : 'secret!');
+    assert.deepEqual(receiver.stateVector(), peer.stateVector());
+  });
+}
+
+for (const ownRole of ['guest', 'viewer']) {
+  for (const malformed of [Uint8Array.of(0, 0, 1, 128), Uint8Array.of(0, 0, 2, 0), Uint8Array.of(0, 9, 0, 0, 1, 0)]) {
+    test(`suppressed Step1 validates inner vector and stream stop ${[...malformed]} for local ${ownRole}`, async () => {
+      const now = await room();
+      const peer = await session();
+      await peer.deliver(0, await state(now.host, 1, [[now.ours, ownRole, 'p-self'], [now.peer, 'guest', 'p-other']]));
+      peer.takeOutbound();
+      await peer.deliver(1, await frame(now.peer, 0, 1, malformed));
+      assert.equal(peer.takeOutbound().length, 0, 'invalid first message must not be answered');
+      await peer.tick(RENEW_MS);
+      assert.equal(peer.takeOutbound().length, 0, 'malformed request must not arm readiness');
+      const doc = new Y.Doc();
+      await peer.deliver(RENEW_MS + 1, await frame(now.peer, 0, 2, encodeSyncStep1(doc)));
+      doc.destroy();
+      const replies = peer.takeOutbound();
+      assert.equal(replies.length, ownRole === 'guest' ? 1 : 0);
+      await peer.tick(RENEW_MS + 1);
+      const queued = peer.takeOutbound();
+      assert.equal(queued.length, 1, 'valid first request still eligible');
+      assert.equal(await syncSubtypeOf(queued[0] as Uint8Array), 0);
+    });
+  }
+}
+
+for (const ownRole of ['guest', 'viewer']) {
+  for (const [suffix, bad] of [
+    ['inner', Uint8Array.of(0, 0, 1, 128)],
+    ['outer', Uint8Array.of(0, 0, 2, 0)],
+  ] as const) {
+    test(`valid prefix readiness survives malformed ${suffix} suffix for local ${ownRole}`, async () => {
+      const now = await room();
+      const peer = await session();
+      await peer.deliver(0, await state(now.host, 1, [[now.ours, ownRole, 'p-self'], [now.peer, 'guest', 'p-other']]));
+      peer.takeOutbound();
+      const plaintext = Uint8Array.from([0, 0, 1, 0, ...bad]);
+      assert.equal((await peer.deliver(1, await frame(now.peer, 0, 1, plaintext))).status, 'applied');
+      const replies = peer.takeOutbound();
+      await peer.tick(RENEW_MS - 1);
+      assert.equal(peer.takeOutbound().length, 0);
+      await peer.tick(RENEW_MS);
+      const request = peer.takeOutbound();
+      assert.equal(request.length, 1, 'the valid prefix still owes readiness');
+      assert.equal(await syncSubtypeOf(request[0] as Uint8Array), 0);
+      assert.equal(replies.length, ownRole === 'guest' ? 1 : 0, 'preserve only the permitted prefix reply');
+      if (replies.length > 0) assert.equal(await syncSubtypeOf(replies[0] as Uint8Array), 1);
+      await peer.tick(RENEW_MS + 1);
+      assert.equal(peer.takeOutbound().length, 0);
+      await peer.tick(RENEW_MS * 3);
+      assert.equal(peer.takeOutbound().length, 0, 'no refused repair or repeated readiness');
+    });
+  }
+}
+
+for (const ownRole of ['guest', 'viewer']) {
+  test(`valid prefix content and reply cap survive a malformed suffix for local ${ownRole}`, async (t) => {
+    const now = await room();
+    const peer = await session();
+    await peer.deliver(0, await state(now.host, 1, [[now.ours, ownRole, 'p-self'], [now.peer, 'guest', 'p-other']]));
+    peer.takeOutbound();
+    const prefix = new Y.Doc();
+    const unread = new Y.Doc();
+    t.after(() => { prefix.destroy(); unread.destroy(); });
+    prefix.getText('README.md').insert(0, 'prefix');
+    unread.getText('unread.md').insert(0, 'suffix');
+    const plaintext = Uint8Array.from([
+      ...encodeUpdate(Y.encodeStateAsUpdate(prefix)),
+      0, 0, 1, 0, 0, 0, 1, 0,
+      0, 0, 1, 128,
+      ...encodeUpdate(Y.encodeStateAsUpdate(unread)),
+    ]);
+    assert.equal((await peer.deliver(1, await frame(now.peer, 0, 1, plaintext))).status, 'applied');
+    assert.equal(peer.text('README.md'), 'prefix');
+    assert.equal(peer.text('unread.md'), '', 'no messages after the malformed vector are read');
+    const replies = peer.takeOutbound();
+    assert.equal(replies.length, ownRole === 'guest' ? 1 : 0);
+    if (replies.length > 0) assert.equal(await carriedStep2Text(replies[0] as Uint8Array), 'prefix');
+    await peer.tick(RENEW_MS);
+    assert.equal(peer.takeOutbound().length, 1, 'valid prefix content cannot erase readiness');
+  });
+}
+test('reciprocal and refusal obligations survive a failed seal and share only a queued request clock', async () => {
+  const now = await room();
+  let failing = false;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  const initial = parseEnvelope(peer.takeOutbound()[0] as Uint8Array);
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  peer.takeOutbound();
+  await peer.deliver(2, await frame(now.peer, 0, 1, Uint8Array.of(0, 0, 1, 0))); // replay => refusal
+  await peer.tick(RENEW_MS - 1);
+  assert.equal(peer.takeOutbound().length, 0);
+  failing = true;
+  await peer.tick(RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 0);
+  assert.match(peer.failure ?? '', /could not be sealed/);
+  failing = false;
+  await peer.tick(RENEW_MS + 1);
+  const retried = peer.takeOutbound();
+  assert.equal(retried.length, 1, 'failed sealing consumed the obligation or advanced the request clock');
+  assert.equal(await syncSubtypeOf(retried[0] as Uint8Array), 0);
+  assert.ok((parseEnvelope(retried[0] as Uint8Array)?.counter ?? 0) > (initial?.counter ?? 0) + 1, 'failed nonce/counter was reused');
+  for (let window = 2; window <= 5; window += 1) {
+    await peer.tick(RENEW_MS * window);
+    assert.equal(peer.takeOutbound().length, 0, 'coalesced obligations rearmed');
+  }
+});
+
+test('detached retained writer answers neither requests nor detached state handshake', async () => {
+  const now = await room();
+  const peer = await session();
+  peer.detach();
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  assert.equal(peer.takeOutbound().length, 0, 'detached state queued handshake');
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'detached peer answered Step1');
+});
+
+test('detach during asynchronous seal queues nothing and retains the permitted delta', async () => {
+  const now = await room();
+  let pause = false;
+  let entered!: () => void;
+  let resume!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const barrier = new Promise<void>((resolve) => { resume = resolve; });
+  const peer = await session({ crypto: { ...nodeCrypto, aesGcmSeal: async (...args) => {
+    if (pause) { entered(); await barrier; }
+    return nodeCrypto.aesGcmSeal(...args);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self']]));
+  peer.takeOutbound();
+  pause = true;
+  const editing = peer.insert('README.md', 0, 'offline');
+  await started;
+  peer.detach();
+  resume();
+  assert.equal(await editing, false, 'canceled queue must not claim success');
+  assert.equal(peer.takeOutbound().length, 0, 'seal completed into a detached queue');
+  pause = false;
+  await peer.reseat('p-return', ['p-return'], 20);
+  await peer.deliver(2, await state(now.host, 2, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return']], ['README.md'], 2));
+  assert.ok((await step2Of(peer.takeOutbound())) === undefined); // only our request + retained Update
+  const receiver = await session({ sessionSeed: now.peer.seed });
+  await receiver.deliver(2, await state(now.host, 3, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-self']], ['README.md'], 3));
+  await peer.deliver(3, await state(now.host, 3, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-self']], ['README.md'], 3));
+  for (const bytes of receiver.takeOutbound()) await peer.deliver(4, bytes);
+  for (const bytes of peer.takeOutbound()) await receiver.deliver(5, bytes);
+  assert.equal(receiver.text('README.md'), 'offline');
+});
+
+test('UNKNOWN insert-delete rollback leaves full history clean while accepted remote history and anchors survive', async () => {
+  const now = await room();
+  const peer = await session({ awarenessClientId: 31 });
+  const remote = new Y.Doc();
+  remote.getText('README.md').insert(0, 'abc');
+  await peer.deliver(0, await state(now.host, 1, [[now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeUpdate(Y.encodeStateAsUpdate(remote))));
+  peer.setSelection('README.md', { anchor: 1, head: 2 });
+  await peer.insert('secret.txt', 0, 'secret');
+  await peer.remove('secret.txt', 0, 6);
+  const before = Y.encodeStateVector(remote);
+  remote.getText('README.md').insert(3, '!');
+  await peer.deliver(2, await frame(now.peer, 0, 2, encodeUpdate(Y.encodeStateAsUpdate(remote, before))));
+  await peer.deliver(3, await state(now.host, 2, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  assert.equal(peer.text('README.md'), 'abc!');
+  assert.equal(peer.has('secret.txt'), false);
+  const local = peer.presence([], { peer_id: 'p-self', display_name: 'self', role: 'viewer', awareness_client_id: 31 }).find((p) => p.clientId === 31);
+  assert.ok(local?.state?.selection !== undefined);
+  assert.deepEqual(peer.resolveSelection('README.md', local.state.selection), { anchor: 1, head: 2 });
+  await peer.reseat('p-return', ['p-return', 'p-other'], 32);
+  await peer.deliver(4, await state(now.host, 3, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-other']], ['README.md'], 3));
+  peer.takeOutbound();
+  const empty = new Y.Doc();
+  await peer.deliver(5, await frame(now.peer, 0, 3, encodeSyncStep1(empty)));
+  const exported = await step2Of(peer.takeOutbound());
+  assert.ok(exported !== undefined);
+  const awareness = new Awareness(empty); clearInterval(awareness._checkInterval);
+  const { payload } = await publishedFrame(exported);
+  assert.ok(Array.isArray(payload));
+  applyFrame(Uint8Array.from(payload), empty, awareness, 'peer');
+  assert.deepEqual(Y.encodeStateAsUpdate(empty), Y.encodeStateAsUpdate(remote), 'speculation left structs or deletion history');
+  awareness.destroy(); empty.destroy(); remote.destroy();
+});
+
+test('offline writer insert and delete survive demotion fresh-key reseat and promotion', async () => {
+  const now = await room();
+  const peer = await session();
+  const receiver = await session({ sessionSeed: now.peer.seed, seat: 'p-other' });
+  const initial = await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]);
+  await peer.deliver(0, initial); await receiver.deliver(0, initial);
+  peer.takeOutbound(); receiver.takeOutbound();
+  await peer.insert('README.md', 0, 'abc');
+  for (const bytes of peer.takeOutbound()) await receiver.deliver(1, bytes);
+  peer.detach();
+  await peer.insert('README.md', 0, 'off');
+  await peer.remove('README.md', 4, 1);
+  assert.equal(peer.text('README.md'), 'offac');
+  await peer.deliver(2, await state(now.host, 2, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  assert.equal(await peer.insert('README.md', 0, 'forbidden'), false);
+  assert.equal(peer.text('README.md'), 'offac');
+  await peer.reseat('p-return', ['p-return', 'p-other'], 32);
+  const promoted = await state(now.host, 3, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-other']], ['README.md'], 3);
+  await receiver.deliver(3, promoted); await peer.deliver(3, promoted);
+  for (const bytes of peer.takeOutbound()) await receiver.deliver(4, bytes);
+  assert.equal(receiver.text('README.md'), 'offac');
+  assert.deepEqual(receiver.stateVector(), peer.stateVector());
+  await peer.insert('README.md', 5, '!');
+  for (const bytes of peer.takeOutbound()) await receiver.deliver(5, bytes);
+  assert.equal(receiver.text('README.md'), 'offac!');
+});
+
+for (const ownRole of ['guest', 'viewer']) {
+  test(`normal ${ownRole} session applies accepted history only once`, async (t) => {
+    const now = await room();
+    const peer = await session();
+    await peer.deliver(0, await state(now.host, 1, [[now.ours, ownRole, 'p-self'], [now.peer, 'guest', 'p-other']]));
+    peer.takeOutbound();
+    const remote = new Y.Doc(); remote.getText('README.md').insert(0, 'once');
+    const bytes = await frame(now.peer, 0, 1, encodeUpdate(Y.encodeStateAsUpdate(remote)));
+    remote.destroy();
+    const originalEmit = Y.Doc.prototype.emit;
+    let applied = 0;
+    Y.Doc.prototype.emit = function (name, args) {
+      if (name === 'afterTransaction' && (args[0] as Y.Transaction).local === false) applied += 1;
+      return originalEmit.call(this, name, args);
+    };
+    t.after(() => { Y.Doc.prototype.emit = originalEmit; });
+    await peer.deliver(1, bytes);
+    assert.equal(applied, 1, 'ordinary session paid for a permanent second replica');
+    assert.equal(peer.text('README.md'), 'once');
+  });
+}
+
+for (const ownRole of ['guest', 'viewer']) {
+  test(`packed Step1 stays aligned and caps answers for local ${ownRole}`, async () => {
+    const now = await room();
+    const peer = await session();
+    await peer.deliver(0, await state(now.host, 1, [[now.ours, ownRole, 'p-self'], [now.peer, 'guest', 'p-other']]));
+    peer.takeOutbound();
+    const remote = new Y.Doc();
+    remote.getText('README.md').insert(0, 'packed');
+    const awareness = new Awareness(remote); clearInterval(awareness._checkInterval);
+    awareness.setLocalState({ path: 'README.md' });
+    const parts = [encodeSyncStep1(remote), encodeSyncStep1(remote), encodeUpdate(Y.encodeStateAsUpdate(remote)), encodeAwareness(awareness, [awareness.clientID])];
+    const packed = new Uint8Array(parts.reduce((length, p) => length + p.length, 0));
+    let offset = 0;
+    for (const part of parts) { packed.set(part, offset); offset += part.length; }
+    await peer.deliver(1, await frame(now.peer, 0, 1, packed));
+    const replies = peer.takeOutbound();
+    assert.equal(replies.length, ownRole === 'guest' ? 1 : 0);
+    if (replies.length > 0) assert.equal(await syncSubtypeOf(replies[0] as Uint8Array), 1);
+    assert.equal(peer.text('README.md'), 'packed');
+    const record = { peer_id: 'p-other', display_name: 'other', role: 'guest' as const, awareness_client_id: awareness.clientID };
+    assert.ok(peer.presence([record], { ...record, peer_id: 'p-self', awareness_client_id: 100 }).some((p) => p.state?.path === 'README.md'));
+    await peer.tick(RENEW_MS);
+    assert.equal(peer.takeOutbound().length, 1, 'packed requests coalesce into one readiness request');
+    await peer.tick(RENEW_MS * 2);
+    assert.equal(peer.takeOutbound().length, 0);
+    awareness.destroy(); remote.destroy();
+  });
+}
+
+test('failed request seal cannot reuse its reserved frame-key budget', async () => {
+  const now = await room();
+  let failing = false;
+  let attempts = 0;
+  const peer = await session({ frameBudget: 4, crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing) { attempts += 1; throw new Error('unavailable'); }
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  const empty = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(empty)));
+  empty.destroy();
+  failing = true;
+  await peer.tick(RENEW_MS);
+  assert.equal(attempts, 1);
+  assert.equal(peer.takeOutbound().length, 0);
+  await peer.tick(RENEW_MS + 1);
+  assert.equal(peer.end, 'frame-budget');
+  assert.equal(attempts, 1, 'reserved budget was reused');
+});
+
+for (const initialRole of [undefined, 'guest'] as const) {
+  test(`queued viewer deletion preserves mutation-time ${initialRole ?? 'UNKNOWN'} eligibility`, async () => {
+    const now = await room();
+    const peer = await session();
+    const receiver = await session({ sessionSeed: now.peer.seed, seat: 'p-other' });
+    const entries = (role?: string): Array<[SessionKeypair, string, string]> => [
+      ...role === undefined ? [] : [[now.ours, role, 'p-self'] as [SessionKeypair, string, string]],
+      [now.peer, 'guest', 'p-other'],
+    ];
+    const initial = await state(now.host, 1, entries(initialRole));
+    await peer.deliver(0, initial); await receiver.deliver(0, initial);
+    const remote = new Y.Doc(); remote.getText('README.md').insert(0, 'abc');
+    const seed = await frame(now.peer, 0, 1, encodeUpdate(Y.encodeStateAsUpdate(remote)));
+    remote.destroy();
+    await peer.deliver(1, seed); await receiver.deliver(1, seed);
+    peer.takeOutbound(); receiver.takeOutbound();
+    if (initialRole !== undefined) peer.detach();
+    const demotion = await state(now.host, 2, entries('viewer'), ['README.md'], 2);
+    const applying = peer.deliver(2, demotion);
+    const editing = peer.remove('README.md', 1, 1);
+    assert.equal(peer.text('README.md'), 'ac');
+    await applying; assert.equal(await editing, false);
+    const expected = initialRole === undefined ? 'abc' : 'ac';
+    assert.equal(peer.text('README.md'), expected);
+    peer.takeOutbound();
+    if (initialRole !== undefined) await peer.reseat('p-return', ['p-return', 'p-other'], 33);
+    const promoted = await state(now.host, 3, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-other']], ['README.md'], 3);
+    await peer.deliver(3, promoted); await receiver.deliver(3, promoted);
+    for (const bytes of peer.takeOutbound()) await receiver.deliver(4, bytes);
+    await peer.insert('README.md', expected.length, '!');
+    for (const bytes of peer.takeOutbound()) await receiver.deliver(5, bytes);
+    assert.equal(receiver.text('README.md'), expected + '!');
+    assert.deepEqual(receiver.stateVector(), peer.stateVector());
+  });
+}
+
+test('rollback retires the speculative document and Awareness owner without rotating announced identity', async (t) => {
+  const now = await room();
+  const peer = await session({ awarenessClientId: 42 });
+  let speculativeDoc: Y.Doc | undefined;
+  let retiredAwareness: Awareness | undefined;
+  const emit = Y.Doc.prototype.emit;
+  const destroyAwareness = Awareness.prototype.destroy;
+  const setLocalState = Awareness.prototype.setLocalState;
+  let oldClock = -1;
+  Awareness.prototype.setLocalState = function (state) {
+    setLocalState.call(this, state);
+    if (this.doc === speculativeDoc && state !== null) oldClock = this.meta.get(42)?.clock ?? -1;
+  };
+  Y.Doc.prototype.emit = function (name, args) {
+    const root = this.share.get('secret.txt');
+    if (name === 'afterTransaction' && root instanceof Y.Text && root.toString() === 'secret') speculativeDoc = this;
+    return emit.call(this, name, args);
+  };
+  Awareness.prototype.destroy = function () {
+    if (this.doc === speculativeDoc) retiredAwareness = this;
+    return destroyAwareness.call(this);
+  };
+  t.after(() => { Y.Doc.prototype.emit = emit; Awareness.prototype.destroy = destroyAwareness; Awareness.prototype.setLocalState = setLocalState; });
+  await peer.insert('secret.txt', 0, 'secret');
+  peer.setSelection('secret.txt', { anchor: 3, head: 3 });
+  await peer.whenIdle();
+  assert.ok(oldClock >= 1, 'local clock captured before adoption');
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'viewer', 'p-self']]));
+  assert.ok(speculativeDoc !== undefined);
+  assert.equal(speculativeDoc.isDestroyed, true, 'old speculative Doc still retained alive');
+  assert.ok(retiredAwareness !== undefined, 'old Awareness owner not retired');
+  assert.equal(retiredAwareness.getLocalState(), null);
+  const record = peer.presence([], { peer_id: 'p-self', display_name: 'self', role: 'viewer', awareness_client_id: 42 }).find((p) => p.clientId === 42);
+  assert.deepEqual(record?.state, { path: 'secret.txt' });
+  const frames = peer.takeOutbound();
+  let observedClock = -1;
+  for (const bytes of frames) {
+    const published = await publishedFrame(bytes);
+    if (published.kind !== 0 || !Array.isArray(published.payload) || published.payload[0] !== 1) continue;
+    const decoder = decoding.createDecoder(Uint8Array.from(published.payload));
+    decoding.readVarUint(decoder);
+    const update = decoding.createDecoder(decoding.readVarUint8Array(decoder));
+    assert.equal(decoding.readVarUint(update), 1);
+    assert.equal(decoding.readVarUint(update), 42);
+    observedClock = decoding.readVarUint(update);
+  }
+  assert.ok(observedClock > oldClock, 'adoption reused the local awareness clock');
+});
+
+for (const interval of ['viewer', undefined]) {
+  for (const renewedRole of ['host', 'guest']) {
+    test(`local continuous writer eligibility renews after ${interval ?? 'omission'} into ${renewedRole} only once`, async () => {
+      const now = await room();
+      const peer = await session();
+      const entries = (role?: string): Array<[SessionKeypair, string, string]> => [
+        ...(role === undefined ? [] : [[now.ours, role, 'p-self'] as [SessionKeypair, string, string]]),
+        [now.peer, 'guest', 'p-other'],
+      ];
+      const apply = async (issued: number, role?: string, listing = ['README.md']): Promise<void> => {
+        assert.equal((await peer.deliver(issued <= 4 ? issued : RENEW_MS * (issued - 3) - 1, await state(now.host, issued, entries(role), listing, issued))).status, 'applied');
+      };
+      await peer.deliver(0, await state(now.host, 1, entries('guest')));
+      const initial = peer.takeOutbound();
+      assert.equal(initial.length, 1, 'first commitment owes the immediate initial request only');
+      assert.equal(await syncSubtypeOf(initial[0] as Uint8Array), 0);
+      await peer.tick(1);
+      assert.equal(peer.takeOutbound().length, 0, 'first commitment must not add another obligation');
+      await apply(2, interval);
+      peer.takeOutbound();
+      await apply(3, renewedRole);
+      await apply(4, renewedRole, ['README.md', 'listing-only.md']);
+      assert.equal(peer.takeOutbound().length, 0, 're-entry and listing edition only coalesce readiness');
+      await peer.tick(RENEW_MS - 1);
+      assert.equal(peer.takeOutbound().length, 0);
+      await peer.tick(RENEW_MS);
+      const renewed = peer.takeOutbound();
+      assert.equal(renewed.length, 1);
+      assert.equal(await syncSubtypeOf(renewed[0] as Uint8Array), 0);
+      await peer.tick(RENEW_MS + 1);
+      assert.equal(peer.takeOutbound().length, 0);
+      for (let issued = 5; issued <= 8; issued += 1) {
+        await apply(issued, issued % 2 === 0 ? 'host' : 'guest', ['README.md', `${issued}.md`]);
+        await peer.tick(RENEW_MS * (issued - 3));
+        assert.equal(peer.takeOutbound().length, 0, 'uninterrupted host/guest and listing changes never re-arm');
+      }
+    });
+  }
+}
+
+for (const retirement of ['viewer', undefined]) {
+  test(`local readiness retires if writer eligibility ends by ${retirement ?? 'omission'} before service`, async () => {
+    const now = await room();
+    const peer = await session();
+    const entries = (role?: string): Array<[SessionKeypair, string, string]> => role === undefined ? [] : [[now.ours, role, 'p-self']];
+    await peer.deliver(0, await state(now.host, 1, entries('guest')));
+    peer.takeOutbound();
+    await peer.deliver(1, await state(now.host, 2, entries('viewer'), ['README.md'], 2));
+    await peer.deliver(2, await state(now.host, 3, entries('guest'), ['README.md'], 3));
+    assert.equal(peer.takeOutbound().length, 0);
+    await peer.tick(RENEW_MS - 1);
+    assert.equal(peer.takeOutbound().length, 0);
+    await peer.deliver(RENEW_MS - 1, await state(now.host, 4, entries(retirement), ['README.md'], 4));
+    peer.takeOutbound();
+    if (retirement === undefined) {
+      await peer.deliver(RENEW_MS - 1, await state(now.host, 5, entries('viewer'), ['README.md'], 5));
+      peer.takeOutbound();
+    }
+    for (const clock of [RENEW_MS, RENEW_MS + 1, RENEW_MS * 3]) {
+      await peer.tick(clock);
+      assert.equal(peer.takeOutbound().length, 0, 'retired local readiness leaked into a non-writer interval');
+    }
+  });
+}
+
+for (const repair of ['remote', 'refusal', 'both']) {
+  test(`local readiness retirement preserves unrelated ${repair} repair obligation`, async () => {
+    const now = await room();
+    const peer = await session();
+    const entries = (role: string): Array<[SessionKeypair, string, string]> => [[now.ours, role, 'p-self'], [now.peer, 'guest', 'p-other']];
+    await peer.deliver(0, await state(now.host, 1, entries('guest')));
+    peer.takeOutbound();
+    await peer.deliver(1, await state(now.host, 2, entries('viewer'), ['README.md'], 2));
+    await peer.deliver(2, await state(now.host, 3, entries('guest'), ['README.md'], 3));
+    const remote = await frame(now.peer, 0, 1, Uint8Array.of(0, 0, 1, 0));
+    if (repair !== 'refusal') assert.equal((await peer.deliver(3, remote)).status, 'applied');
+    if (repair !== 'remote') {
+      const replay = repair === 'both' ? remote : await frame(now.host, 0, 1, Uint8Array.of(0, 0, 1, 0));
+      assert.equal((await peer.deliver(4, replay)).status, 'dropped');
+    }
+    peer.takeOutbound();
+    await peer.deliver(5, await state(now.host, 4, entries('viewer'), ['README.md'], 4));
+    assert.equal(peer.takeOutbound().length, 0);
+    await peer.tick(RENEW_MS - 1);
+    assert.equal(peer.takeOutbound().length, 0);
+    await peer.tick(RENEW_MS);
+    const request = peer.takeOutbound();
+    assert.equal(request.length, 1, 'retirement erased an unrelated obligation');
+    assert.equal(await syncSubtypeOf(request[0] as Uint8Array), 0);
+    await peer.tick(RENEW_MS + 1);
+    assert.equal(peer.takeOutbound().length, 0);
+    await peer.tick(RENEW_MS * 3);
+    assert.equal(peer.takeOutbound().length, 0);
+  });
+}
+
+for (const role of ['host', 'guest', 'viewer']) {
+  test(`first ${role} commitment sends immediate initial readiness without a renewal obligation`, async () => {
+    const now = await room();
+    const peer = await session();
+    await peer.deliver(0, await state(now.host, 1, [[now.ours, role, 'p-self']]));
+    const initial = peer.takeOutbound();
+    assert.equal(initial.length, 1);
+    assert.equal(await syncSubtypeOf(initial[0] as Uint8Array), 0);
+    for (const clock of [RENEW_MS - 1, RENEW_MS, RENEW_MS + 1, RENEW_MS * 3]) {
+      await peer.tick(clock);
+      assert.equal(peer.takeOutbound().length, 0, 'initial success left a redundant local readiness obligation');
+    }
+  });
+}
+
+test('local readiness coalesces across re-entries and survives failed sealing on the success clock', async () => {
+  const now = await room();
+  let failing = false;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  const entries = (role?: string): Array<[SessionKeypair, string, string]> => role === undefined ? [] : [[now.ours, role, 'p-self']];
+  await peer.deliver(0, await state(now.host, 1, entries('guest')));
+  peer.takeOutbound();
+  for (const [index, role] of ['viewer', 'guest', undefined, 'host', 'guest'].entries()) {
+    const issued = index + 2;
+    assert.equal((await peer.deliver(index + 1, await state(now.host, issued, entries(role), ['README.md'], issued))).status, 'applied');
+    const frames = peer.takeOutbound();
+    assert.deepEqual(await kindsOf(frames), role === undefined ? [4] : [], 'states cannot send immediate renewed readiness');
+  }
+  assert.equal(peer.nextDeadline(), RENEW_MS);
+  await peer.tick(RENEW_MS - 1);
+  assert.equal(peer.takeOutbound().length, 0);
+  failing = true;
+  await peer.tick(RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 0);
+  assert.match(peer.failure ?? '', /could not be sealed/);
+  failing = false;
+  await peer.tick(RENEW_MS + 1);
+  const request = peer.takeOutbound();
+  assert.equal(request.length, 1, 'failed seal consumed local readiness or moved its success clock');
+  assert.equal(await syncSubtypeOf(request[0] as Uint8Array), 0);
+  for (let window = 2; window <= 5; window += 1) {
+    await peer.tick(RENEW_MS * window);
+    assert.equal(peer.takeOutbound().length, 0, 'multiple eligibility changes left multiple obligations');
+  }
 });

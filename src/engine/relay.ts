@@ -592,6 +592,16 @@ export class RelaySession {
   }
 
   /**
+   * The seated session's publication state vector, or an empty one while none is seated.
+   *
+   * A diagnostic seam: the real-server reconnect test compares histories and not only texts, and
+   * neither this relay nor the session exposed a vector before.
+   */
+  stateVector(): Uint8Array {
+    return this.session?.stateVector() ?? new Uint8Array(0);
+  }
+
+  /**
    * The paths whose text changed since the last call, or `undefined` when no session is seated
    * to say, in which case a reader treats every path as changed.
    */

@@ -374,7 +374,8 @@ export class PeerEngine implements Engine {
         return;
       }
       case 'state': {
-        // §13.4: the roles are the applied state's word, this connection's own included.
+        // A role resolution can replace speculative text with the clean history.
+        this.scanTexts();
         this.refresh();
         return;
       }
