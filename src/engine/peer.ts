@@ -468,6 +468,18 @@ export class PeerSession {
   /** §13.6's interval: the clock of the first content frame refused since the last `SyncStep1`. */
   private resyncFrom: number | undefined;
   private handshakenAt: number | undefined;
+  /**
+   * The clock at which the last failed `SyncStep1` publication completed, stamped by the caller
+   * after the tick or delivery that produced it.
+   *
+   * A failed attempt reserves its counter and room frame count and keeps every obligation
+   * (§13.6's refusal, the reciprocal request, local readiness). Measured from the clock the tick
+   * was given, the next automatic tick would find the same request clock overdue and retry a
+   * millisecond later; measured from the attempt's completion it waits a renewal window.
+   */
+  private step1FailedAt: number | undefined;
+  /** Whether a `SyncStep1` publication failed since the caller last stamped its completion. */
+  private step1FailurePending = false;
   private stateIssued: number | undefined;
   private hostAwaySince: number | undefined;
   private published = 0;
@@ -524,8 +536,14 @@ export class PeerSession {
    * ever between two peers.
    */
   private readonly reciprocalServed = new Set<string>();
-  /** Whether a reciprocal request is owed and not yet on the wire. */
-  private reciprocalPending = false;
+  /**
+   * The committed writer keys whose first accepted `SyncStep1` owes this connection a request.
+   *
+   * One entry per key, added only for a first valid request in that key's continuous writer
+   * eligibility and retired with the census entry when a state ends it. One coalesced request
+   * serves the whole set (§13.6), so a failed publication leaves it exactly as it was.
+   */
+  private readonly reciprocalPending = new Set<string>();
   /** Readiness owed for this local key's renewed continuous writer eligibility. */
   private localReadinessPending = false;
   /** The role the last applied state gave this connection's own key, for continuous eligibility. */
@@ -1032,7 +1050,35 @@ export class PeerSession {
    * has to remember to call it at the join.
    */
   tick(clock: number): Promise<void> {
-    return this.serial(() => this.tickOne(clock));
+    return this.serial(() => this.tickOne(clock, false));
+  }
+
+  /**
+   * One tick of the session's own clocks, as this connection's own timer runs it.
+   *
+   * It differs from {@link tick} in one way: a repair request left owed by a failed `SyncStep1`
+   * publication waits a renewal window from the attempt's completion, so a persistent seal
+   * failure draws one automatic attempt a window rather than one per pump. A caller driving the
+   * clocks by hand keeps the immediate retry §13.6's request clock allows.
+   */
+  autoTick(clock: number): Promise<void> {
+    return this.serial(() => this.tickOne(clock, true));
+  }
+
+  /**
+   * Stamps the clock at which a failed `SyncStep1` publication completed.
+   *
+   * A caller that owns the monotone clock reads it after the tick or delivery that failed
+   * returned, because the clock the operation was given is the moment it started and a serial
+   * queue or an awaited seal can leave it older than a renewal window. A no-op when no attempt
+   * failed, and it never refunds the counter or the reserved room frame count.
+   */
+  noteStep1Failure(clock: number): void {
+    if (!this.step1FailurePending) {
+      return;
+    }
+    this.step1FailurePending = false;
+    this.step1FailedAt = clock;
   }
 
   /**
@@ -1071,11 +1117,16 @@ export class PeerSession {
         soonest = due;
       }
     }
-    // A refusal re-sync or a reciprocal request owed and not yet due on the request clock: a
-    // caller's timer runs on the renewal grid anyway, but stating the deadline keeps a request
-    // that becomes due inside a window from waiting a whole one for it.
-    if (this.mayPublish() && (this.resyncFrom !== undefined || this.reciprocalPending || this.localReadinessPending)) {
-      const due = (this.handshakenAt ?? 0) + this.renew;
+    // §13.1's first request, a refusal re-sync, or a reciprocal request owed and not yet due on
+    // the request clock: a caller's timer runs on the renewal grid anyway, but stating the
+    // deadline keeps a request that becomes due inside a window from waiting a whole one for it.
+    if (this.mayPublish() && this.owesRequest()) {
+      let due = (this.handshakenAt ?? 0) + this.renew;
+      // A failed attempt is not due again until a window after it completed, so a persistent
+      // seal failure draws one automatic request a window rather than one per pump.
+      if (this.step1FailedAt !== undefined && this.step1FailedAt + this.renew > due) {
+        due = this.step1FailedAt + this.renew;
+      }
       if (soonest === undefined || due < soonest) {
         soonest = due;
       }
@@ -1083,7 +1134,7 @@ export class PeerSession {
     return soonest;
   }
 
-  private async tickOne(clock: number): Promise<void> {
+  private async tickOne(clock: number, automatic: boolean): Promise<void> {
     this.clockOfLastMove = clock;
     this.host?.flushFrames(clock);
     this.expireLeases(clock);
@@ -1100,7 +1151,7 @@ export class PeerSession {
     }
     await this.publishState(clock, 'announcement');
     await this.reannounce(clock);
-    await this.resync(clock);
+    await this.resync(clock, automatic);
     await this.announceHolds(clock);
     this.renewAwareness(clock);
   }
@@ -1271,11 +1322,15 @@ export class PeerSession {
       this.announcedAt = undefined;
       this.handshakenAt = undefined;
       this.resyncFrom = undefined;
+      // The failure pacing belonged to the connection that died; the fresh key starts clear.
+      this.step1FailedAt = undefined;
+      this.step1FailurePending = false;
       this.holdsAnnouncedAt = undefined;
-      // §9.1: the reciprocal census belongs to the connection, not the replica — a fresh key
-      // starts eligible again, and the marks the receiver keeps for room frames are untouched.
+      // §9.1: the reciprocal census and the request it owes belong to the connection, not the
+      // replica — a fresh key starts eligible again, and the marks the receiver keeps are
+      // untouched.
       this.reciprocalServed.clear();
-      this.reciprocalPending = false;
+      this.reciprocalPending.clear();
       this.localReadinessPending = false;
       this.roleSeen = undefined;
       this.ending = undefined;
@@ -1712,19 +1767,34 @@ export class PeerSession {
   }
 
   /**
-   * Retires the reciprocal census entries for keys the applied state no longer commits as writers.
+   * Retires the reciprocal entries for keys the applied state no longer commits as writers.
    *
    * §13.3 replaces the room's keys wholesale, so a revoked or demoted key is no longer eligible
    * and a later promotion of it may arm one request again. A key that stays continuously committed
    * keeps its served mark, which is what stops a duplicate or later `SyncStep1` from re-arming.
+   *
+   * The census and the owed request are pruned together: an obligation that no longer has an
+   * eligible key is not work this connection still has, and §13.6 retires it even while
+   * publication is gated. Nothing else is touched — a refusal and the local readiness cause are
+   * this connection's own, not a remote key's.
    */
   private pruneReciprocal(): void {
     for (const spelling of [...this.reciprocalServed]) {
-      const entry = this.reader.committed.get(spelling);
-      if (entry === undefined || (entry.role !== 'host' && entry.role !== 'guest')) {
+      if (!this.committedWriter(spelling)) {
         this.reciprocalServed.delete(spelling);
       }
     }
+    for (const spelling of [...this.reciprocalPending]) {
+      if (!this.committedWriter(spelling)) {
+        this.reciprocalPending.delete(spelling);
+      }
+    }
+  }
+
+  /** Whether the applied state commits `spelling` as a writer, which is what a request needs. */
+  private committedWriter(spelling: string): boolean {
+    const entry = this.reader.committed.get(spelling);
+    return entry !== undefined && (entry.role === 'host' || entry.role === 'guest');
   }
 
   /**
@@ -1735,20 +1805,26 @@ export class PeerSession {
    * that it has applied a committing state and can answer, so answering it with our own request
    * is what makes the exchange reciprocal. A request from a `viewer` is not one: a viewer sends no
    * content, so reciprocating would solicit nothing (and §13.9 forbids the content anyway).
+   *
+   * The cause belongs to the **remote** key's continuous writer eligibility, so recording it does
+   * not depend on this connection's own key: a state that omits the local key can arrive between a
+   * peer's request and its answer, and §13.6 gates the publication, not the obligation. Whether a
+   * request may go out is §13.1's step 4 question, answered by {@link publish} and
+   * {@link mayPublish} — recording readiness that cannot yet be served is what keeps the peer's
+   * work from being lost for good while this key is away.
    */
   private armReciprocal(verified: string | undefined): void {
-    if (verified === undefined || !this.commitsOurs()) {
+    if (verified === undefined) {
       return;
     }
-    const entry = this.reader.committed.get(verified);
-    if (entry === undefined || (entry.role !== 'host' && entry.role !== 'guest')) {
+    if (!this.committedWriter(verified)) {
       return;
     }
     if (this.reciprocalServed.has(verified)) {
       return;
     }
     this.reciprocalServed.add(verified);
-    this.reciprocalPending = true;
+    this.reciprocalPending.add(verified);
   }
 
   /**
@@ -2171,7 +2247,11 @@ export class PeerSession {
    */
   private async handshakeOnce(clock: number): Promise<void> {
     if (this.handshakenAt === undefined) {
-      if (!await this.syncStep1(clock)) this.reciprocalPending = true;
+      // §13.6's first commitment owes its own immediate request, and a failed one stays owed: the
+      // success clock says nothing went out, which is this obligation and not a remote key's. A
+      // later state that commits this key tries again here, and the tick path below retries it on
+      // its own clock once the caller's timer is due.
+      await this.syncStep1(clock);
     }
   }
 
@@ -2184,11 +2264,17 @@ export class PeerSession {
    * content it may not export.
    */
   private async syncStep1(clock: number): Promise<boolean> {
-    if (!await this.publish('sync', encodeSyncStep1(this.publicationDoc))) return false;
+    if (!await this.publish('sync', encodeSyncStep1(this.publicationDoc))) {
+      this.step1FailurePending = true;
+      return false;
+    }
     this.handshakenAt = clock;
     this.resyncFrom = undefined;
-    this.reciprocalPending = false;
+    // One queued request serves every cause pending when it went out, remote keys included.
+    this.reciprocalPending.clear();
     this.localReadinessPending = false;
+    this.step1FailedAt = undefined;
+    this.step1FailurePending = false;
     return true;
   }
 
@@ -2196,15 +2282,42 @@ export class PeerSession {
    * Refusal, reciprocal and local readiness obligations share the successful request clock:
    * at most one locally generated `SyncStep1` per renewal interval, whichever asked for it.
    */
-  private async resync(clock: number): Promise<void> {
-    if ((this.resyncFrom === undefined && !this.reciprocalPending && !this.localReadinessPending) || !this.mayPublish()) {
+  private async resync(clock: number, automatic: boolean): Promise<void> {
+    if (!this.owesRequest() || !this.mayPublish()) {
       return;
     }
     const due =
       this.handshakenAt === undefined || clock - this.handshakenAt >= this.renew;
-    if (due) {
+    // An automatic tick waits a window after a failed attempt completed, which is what keeps an
+    // overdue request clock from driving a request a millisecond after every failed pump. The
+    // check is here as well as in `nextDeadline`, because an earlier ordinary deadline can reach
+    // this. A caller driving the clocks by hand keeps its immediate retry.
+    //
+    // An automatic tick also waits for the failure's own completion to be stamped: the relay that
+    // owns this session stamps it after the tick or delivery that failed returned, and an
+    // automatic tick can already be queued behind that delivery, so an unstamped failure is one
+    // whose completion clock this tick cannot know yet.
+    const paced =
+      !automatic ||
+      (!this.step1FailurePending &&
+        (this.step1FailedAt === undefined || clock - this.step1FailedAt >= this.renew));
+    if (due && paced) {
       await this.syncStep1(clock);
     }
+  }
+
+  /**
+   * Whether a locally authored request is owed at all: §13.1's first one for this key — owed until
+   * one is actually queued, which is what `handshakenAt` records — a refusal interval, a remote
+   * writer's recorded request, or this key's own renewed readiness.
+   */
+  private owesRequest(): boolean {
+    return (
+      this.handshakenAt === undefined ||
+      this.resyncFrom !== undefined ||
+      this.reciprocalPending.size > 0 ||
+      this.localReadinessPending
+    );
   }
 
   /**

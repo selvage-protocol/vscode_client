@@ -2011,6 +2011,327 @@ test('a repeated state with the same writer set does not rearm a served key', as
   assert.equal(peer.takeOutbound().length, 0, 'a repeated state rearmed a served key');
 });
 
+/** The `SyncStep1` frames among a set of published frames: the repair clock's own output. */
+async function requestsIn(frames: readonly Uint8Array[]): Promise<Uint8Array[]> {
+  const requests: Uint8Array[] = [];
+  for (const bytes of frames) {
+    if ((await syncSubtypeOf(bytes)) === 0) {
+      requests.push(bytes);
+    }
+  }
+  return requests;
+}
+
+test('a revoked or demoted remote request retires the cause it owes, not only its census entry', async () => {
+  const now = await room();
+  for (const [retirement, retiring] of [
+    ['removes', (): Array<[SessionKeypair, string, string]> => [[now.ours, 'guest', 'p-self']]],
+    [
+      'demotes to viewer',
+      (): Array<[SessionKeypair, string, string]> => [
+        [now.ours, 'guest', 'p-self'],
+        [now.peer, 'viewer', 'p-other'],
+      ],
+    ],
+  ] as const) {
+    const peer = await session();
+    await peer.tick(0);
+    peer.takeOutbound();
+    await peer.deliver(
+      1,
+      await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]),
+    );
+    assert.equal(await syncSubtypeOf(peer.takeOutbound()[0] as Uint8Array), 0, 'the initial request');
+
+    // W's first valid request arms exactly one reciprocal cause, answered with its Step2.
+    const request = new Y.Doc();
+    await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+    request.destroy();
+    const answered = peer.takeOutbound();
+    assert.equal(answered.length, 1, `${retirement}: the request drew its Step2`);
+    assert.equal(await syncSubtypeOf(answered[0] as Uint8Array), 1);
+
+    // The state that ends W's writer eligibility retires the cause with the census entry.
+    await peer.deliver(3, await state(now.host, 2, retiring(), ['README.md'], 2));
+    peer.takeOutbound();
+    assert.equal(peer.nextDeadline(), undefined, `${retirement}: a retired cause still stated a deadline`);
+
+    // The request clock was set by the handshake at 1, so the window opens at 301.
+    await peer.tick(1 + RENEW_MS);
+    assert.equal(peer.takeOutbound().length, 0, `${retirement}: the retired cause still drew a request`);
+    await peer.tick(1 + RENEW_MS * 2);
+    assert.equal(peer.takeOutbound().length, 0, `${retirement}: the retired cause rearmed`);
+  }
+});
+
+test('retiring one of two owed remote keys leaves the other its one coalesced request', async () => {
+  const now = await room();
+  const third = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(17))) as SessionKeypair;
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'guest', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+      [third, 'guest', 'p-third'],
+    ]),
+  );
+  peer.takeOutbound();
+
+  const first = new Y.Doc();
+  const second = new Y.Doc();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(first)));
+  await peer.deliver(3, await frame(third, 0, 1, encodeSyncStep1(second)));
+  first.destroy();
+  second.destroy();
+  assert.equal(peer.takeOutbound().length, 2, 'each request is answered with its own Step2');
+
+  // W1 retires; W2's cause is the one left, and one request serves it.
+  await peer.deliver(
+    4,
+    await state(now.host, 2, [[now.ours, 'guest', 'p-self'], [third, 'guest', 'p-third']], ['README.md'], 2),
+  );
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the remaining owed key did not draw exactly one request');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served remaining key rearmed');
+});
+
+test('a refusal survives an unrelated remote request’s retirement', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]),
+  );
+  peer.takeOutbound();
+
+  // A remote request arms a cause, and a replay from the same key opens §13.6's refusal interval.
+  const request = new Y.Doc();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+  request.destroy();
+  peer.takeOutbound();
+  await peer.deliver(3, await frame(now.peer, 0, 1, Uint8Array.of(0, 0, 1, 0)));
+  assert.equal(peer.takeOutbound().length, 0, 'a refused frame drew no reply');
+
+  // The state that removes W must not retire the refusal with it.
+  await peer.deliver(4, await state(now.host, 2, [[now.ours, 'guest', 'p-self']], ['README.md'], 2));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the refusal was retired with the unrelated remote cause');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served refusal rearmed');
+});
+
+test('local readiness survives an unrelated remote request’s retirement', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]),
+  );
+  peer.takeOutbound();
+
+  // L is demoted, so the state that promotes it again begins a new local writer eligibility.
+  await peer.deliver(
+    2,
+    await state(now.host, 2, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']], ['README.md'], 2),
+  );
+  peer.takeOutbound();
+  const request = new Y.Doc();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+  request.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'a viewer answered a request with a Step2');
+
+  // L promotes back to writer — readiness — while the same state retires W's cause.
+  await peer.deliver(4, await state(now.host, 3, [[now.ours, 'guest', 'p-self']], ['README.md'], 3));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the local readiness cause was retired with the remote one');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served readiness cause rearmed');
+});
+
+test('a first commitment’s failed request stays owed after an unrelated remote key retires', async () => {
+  const now = await room();
+  let failing = true;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.tick(0);
+  peer.takeOutbound();
+
+  // The first state commits L as a `viewer`: its own immediate request fails, and no remote
+  // writer's cause exists yet. That obligation is L's own key's, not a remote census entry.
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  assert.match(peer.failure ?? '', /could not be sealed/);
+  peer.takeOutbound();
+
+  // W's own request arrives and arms a remote cause too, but a viewer answers it with no Step2.
+  const request = new Y.Doc();
+  await peer.deliver(2, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+  request.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'a viewer answered a remote request');
+
+  // Retiring W must leave L's own failed first request owed.
+  await peer.deliver(3, await state(now.host, 2, [[now.ours, 'viewer', 'p-self']], ['README.md'], 2));
+  peer.takeOutbound();
+  failing = false;
+  await peer.tick(RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the first commitment’s failed request was retired with the remote cause');
+});
+
+test('a remote request received while the local key is absent is served once on that key’s return', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  // §13.1's step 6 at the first commitment: L as a `viewer`, W as a guest writer.
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  assert.equal(await syncSubtypeOf(peer.takeOutbound()[0] as Uint8Array), 0, 'the initial request');
+
+  // A state that omits L keeps W: the local key is gone, so nothing publishes under it.
+  await peer.deliver(2, await state(now.host, 2, [[now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the absent key published a request');
+
+  // W's first authenticated, valid request while L is absent: no reply, and the cause is W's.
+  const request = new Y.Doc();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+  request.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'a gated key answered a remote request');
+  await peer.tick(100);
+  assert.equal(peer.takeOutbound().length, 0, 'a request went out while the local key was absent');
+
+  // The SAME L key returns as `viewer`, W still retained: the recorded cause is due exactly once.
+  await peer.deliver(
+    4,
+    await state(now.host, 3, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']], ['README.md'], 3),
+  );
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the returned key did not owe exactly W’s recorded request');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served remote cause rearmed');
+});
+
+test('two remote requests received while the local key is absent retire to the one key left', async () => {
+  const now = await room();
+  const third = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(17))) as SessionKeypair;
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(
+    1,
+    await state(now.host, 1, [
+      [now.ours, 'viewer', 'p-self'],
+      [now.peer, 'guest', 'p-other'],
+      [third, 'guest', 'p-third'],
+    ]),
+  );
+  peer.takeOutbound();
+  await peer.deliver(
+    2,
+    await state(now.host, 2, [[now.peer, 'guest', 'p-other'], [third, 'guest', 'p-third']], ['README.md'], 2),
+  );
+  peer.takeOutbound();
+
+  const first = new Y.Doc();
+  const second = new Y.Doc();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(first)));
+  await peer.deliver(4, await frame(third, 0, 1, encodeSyncStep1(second)));
+  first.destroy();
+  second.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'a gated key answered or requested');
+
+  // W1 retires while L is still absent; W2's recorded cause is the one left.
+  await peer.deliver(5, await state(now.host, 3, [[third, 'guest', 'p-third']], ['README.md'], 3));
+  peer.takeOutbound();
+  await peer.deliver(
+    6,
+    await state(now.host, 4, [[now.ours, 'viewer', 'p-self'], [third, 'guest', 'p-third']], ['README.md'], 4),
+  );
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the gated causes did not coalesce to the one key still eligible');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served remaining cause rearmed');
+});
+
+test('a remote key retired while the local key is absent owes nothing on its return', async () => {
+  const now = await room();
+  const peer = await session();
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  await peer.deliver(2, await state(now.host, 2, [[now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  peer.takeOutbound();
+
+  // W's request is recorded while L is absent, and W is retired before L comes back.
+  const request = new Y.Doc();
+  await peer.deliver(3, await frame(now.peer, 0, 1, encodeSyncStep1(request)));
+  request.destroy();
+  peer.takeOutbound();
+  await peer.deliver(4, await state(now.host, 3, [], ['README.md'], 3));
+  peer.takeOutbound();
+
+  await peer.deliver(
+    5,
+    await state(now.host, 4, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']], ['README.md'], 4),
+  );
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  assert.equal(peer.takeOutbound().length, 0, 'a retired remote cause drew a request after its return');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal(peer.takeOutbound().length, 0, 'the retired cause rearmed');
+});
+
+test('a refusal recorded while the local key is absent survives an unrelated retirement', async () => {
+  const now = await room();
+  const peer = await session();
+  const stranger = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(23))) as SessionKeypair;
+  await peer.tick(0);
+  peer.takeOutbound();
+  await peer.deliver(1, await state(now.host, 1, [[now.ours, 'viewer', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  await peer.deliver(2, await state(now.host, 2, [[now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  peer.takeOutbound();
+
+  // §13.6's interval opens on a refused content frame even while this key may not publish.
+  const strangerFrame = new Y.Doc();
+  await peer.deliver(3, await frame(stranger, 0, 1, encodeSyncStep1(strangerFrame)));
+  strangerFrame.destroy();
+  assert.equal(peer.takeOutbound().length, 0, 'a gated key answered an uncommitted request');
+  const wanted = new Y.Doc();
+  await peer.deliver(4, await frame(now.peer, 0, 1, encodeSyncStep1(wanted)));
+  wanted.destroy();
+  peer.takeOutbound();
+  await peer.deliver(5, await state(now.host, 3, [], ['README.md'], 3));
+  peer.takeOutbound();
+
+  await peer.deliver(6, await state(now.host, 4, [[now.ours, 'viewer', 'p-self']], ['README.md'], 4));
+  peer.takeOutbound();
+  await peer.tick(1 + RENEW_MS);
+  const requests = await requestsIn(peer.takeOutbound());
+  assert.equal(requests.length, 1, 'the gated refusal was retired with the remote cause');
+  await peer.tick(1 + RENEW_MS * 2);
+  assert.equal((await requestsIn(peer.takeOutbound())).length, 0, 'the served refusal rearmed');
+});
+
 for (const initialRole of [undefined, 'guest'] as const) {
   test(`queued viewer classification preserves mutation-time ${initialRole ?? 'UNKNOWN'} eligibility`, async () => {
     const now = await room();
@@ -2163,6 +2484,136 @@ test('reciprocal and refusal obligations survive a failed seal and share only a 
     await peer.tick(RENEW_MS * window);
     assert.equal(peer.takeOutbound().length, 0, 'coalesced obligations rearmed');
   }
+});
+
+test('a failed automatic request waits a window from its completion, not from the tick clock', async () => {
+  const now = await room();
+  let failing = false;
+  let attempts = 0;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) { attempts += 1; throw new Error('unavailable'); }
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  peer.takeOutbound();
+  failing = true;
+  await peer.autoTick(RENEW_MS);
+  assert.equal(attempts, 1, 'the automatic attempt did not run');
+  // The caller owns the clock and reads it after the failed attempt settled; the tick's own
+  // clock is stale by whatever the serial queue and the awaited seal took.
+  peer.noteStep1Failure(RENEW_MS + 40);
+  assert.equal(peer.nextDeadline(), RENEW_MS + 40 + RENEW_MS, 'the deadline ignored the failure');
+  await peer.autoTick(RENEW_MS + 40 + RENEW_MS - 1);
+  assert.equal(attempts, 1, 'an automatic tick retried inside the failure window');
+  await peer.autoTick(RENEW_MS + 40 + RENEW_MS);
+  assert.equal(attempts, 2, 'the failure window closed and no automatic attempt ran');
+});
+
+test('a caller-driven tick keeps the immediate retry the automatic path paces', async () => {
+  const now = await room();
+  let failing = false;
+  let attempts = 0;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) { attempts += 1; throw new Error('unavailable'); }
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  peer.takeOutbound();
+  failing = true;
+  await peer.autoTick(RENEW_MS);
+  peer.noteStep1Failure(RENEW_MS);
+  failing = false;
+  // One millisecond after the failure, and only §13.6's successful-request clock allows it: a
+  // caller driving the clocks by hand is not the automatic timer and keeps its immediate retry.
+  await peer.tick(RENEW_MS + 1);
+  const retried = peer.takeOutbound();
+  assert.equal(retried.length, 1, 'a caller-driven tick was paced like an automatic one');
+  assert.equal(await syncSubtypeOf(retried[0] as Uint8Array), 0);
+  assert.equal(peer.nextDeadline(), undefined, 'the successful retry left a repair deadline');
+});
+
+test('one successful request serves every owed cause and clears the failure pacing', async () => {
+  const now = await room();
+  let failing = false;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  await peer.deliver(2, await frame(now.peer, 0, 1, Uint8Array.of(0, 0, 1, 0))); // replay => refusal
+  peer.takeOutbound();
+  failing = true;
+  await peer.autoTick(RENEW_MS);
+  peer.noteStep1Failure(RENEW_MS);
+  failing = false;
+  await peer.autoTick(RENEW_MS * 2);
+  const served = peer.takeOutbound();
+  assert.equal(served.length, 1, 'the owed causes drew more than one request');
+  assert.equal(await syncSubtypeOf(served[0] as Uint8Array), 0);
+  for (let window = 3; window <= 5; window += 1) {
+    await peer.autoTick(RENEW_MS * window);
+    assert.equal(peer.takeOutbound().length, 0, 'a served cause or the failure pacing rearmed');
+  }
+});
+
+test('a fresh-key reseat clears a failed attempt’s pacing', async () => {
+  const now = await room();
+  let failing = false;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  peer.takeOutbound();
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  peer.takeOutbound();
+  failing = true;
+  await peer.autoTick(RENEW_MS);
+  peer.noteStep1Failure(RENEW_MS);
+  await peer.reseat('p-return', ['p-return'], 20);
+  await peer.deliver(400, await state(now.host, 2, [[{ ...now.ours, public: peer.sessionKey }, 'guest', 'p-return'], [now.peer, 'guest', 'p-other']], ['README.md'], 2));
+  // The fresh key's failed handshake owes a request on the success clock alone; the dead
+  // connection's failure window does not pace it.
+  assert.equal(peer.nextDeadline(), RENEW_MS, 'the reseat kept the old failure pacing');
+});
+
+test('a paced failure does not refund its counter, and a detached session states no deadline', async () => {
+  const now = await room();
+  let failing = false;
+  const peer = await session({ crypto: { ...nodeCrypto, randomBytes: (length) => {
+    if (failing && length === 12) throw new Error('unavailable');
+    return nodeCrypto.randomBytes(length);
+  } } });
+  await peer.deliver(0, await state(now.host, 1, [[now.ours, 'guest', 'p-self'], [now.peer, 'guest', 'p-other']]));
+  const initial = parseEnvelope(peer.takeOutbound()[0] as Uint8Array);
+  const doc = new Y.Doc();
+  await peer.deliver(1, await frame(now.peer, 0, 1, encodeSyncStep1(doc)));
+  doc.destroy();
+  peer.takeOutbound();
+  failing = true;
+  await peer.autoTick(RENEW_MS);
+  peer.noteStep1Failure(RENEW_MS);
+  failing = false;
+  await peer.autoTick(RENEW_MS * 2);
+  const retried = peer.takeOutbound();
+  assert.equal(retried.length, 1);
+  assert.ok((parseEnvelope(retried[0] as Uint8Array)?.counter ?? 0) > (initial?.counter ?? 0) + 1, 'the failed nonce/counter was reused');
+  peer.detach();
+  assert.equal(peer.nextDeadline(), undefined, 'a detached session stated a repair deadline');
 });
 
 test('detached retained writer answers neither requests nor detached state handshake', async () => {

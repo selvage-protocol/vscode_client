@@ -15,17 +15,20 @@ import type { TestContext } from 'node:test';
 
 import { MISSING_FRAGMENT, parseInvite } from '../src/engine/peer.ts';
 import * as encoding from 'lib0/encoding';
+import * as Y from 'yjs';
 
 import { encodeKey, frameKey, mintSessionKey, seal } from '../src/engine/sealed.ts';
 import type { SessionKeypair } from '../src/engine/sealed.ts';
-import { MESSAGE_AWARENESS } from '../src/engine/sync.ts';
+import { MESSAGE_AWARENESS, encodeSyncStep1, encodeUpdate } from '../src/engine/sync.ts';
 import { MAX_INBOX_FRAMES, RelaySession, wireInvite } from '../src/engine/relay.ts';
 import type { RelayEvent } from '../src/engine/relay.ts';
 import { isProtocolError } from '../src/engine/errors.ts';
 import { isTerminalCode } from '../src/engine/envelope.ts';
 import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { nodeCrypto } from '../src/node/crypto.ts';
+import type { FrameCrypto } from '../src/engine/crypto.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
+import { FakeTimers } from './helpers/fake-timers.ts';
 import { waitFor } from './helpers/wait.ts';
 import type { WebSocketFactory } from '../src/engine/transport.ts';
 
@@ -345,6 +348,10 @@ interface SealedRoom {
   relay: RelaySession;
   /** The awareness client id this connection announced in its `session.hello`. */
   ownAwareness: number;
+  /** The host keypair the room's states are signed with. */
+  host: SessionKeypair;
+  /** Seals one frame under the room's frame key, as a server would relay it. */
+  seal(signer: SessionKeypair, kind: number, plaintext: Uint8Array): Promise<Uint8Array>;
   /** Delivers a `kind = 0` frame from `signer` carrying one awareness message. */
   awareness(signer: SessionKeypair, entries: Array<[number, number, unknown]>): Promise<void>;
 }
@@ -360,6 +367,7 @@ async function sealedRoom(
   t: TestContext,
   committed: Array<[SessionKeypair, string]>,
   peers: (ownAwareness: number) => Array<{ peer_id: string; awareness_client_id: number }>,
+  options: { crypto?: FrameCrypto; ownRole?: string } = {},
 ): Promise<SealedRoom> {
   const roomKey = new Uint8Array(32).fill(7);
   const host = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(3))) as SessionKeypair;
@@ -388,10 +396,13 @@ async function sealedRoom(
   const seated = RelaySession.join({
     invite,
     displayName: 'Bo',
-    crypto: nodeCrypto,
+    crypto: options.crypto ?? nodeCrypto,
     webSocketFactory: () => socket,
     keepalive: KEEPALIVE,
     handshakeTimeoutMs: 5_000,
+    // No `/meta` fetch: the socket is the test's own, and a real fetch leaves undici's own
+    // timers behind, which a test driving the relay's timers cannot tell from the relay's.
+    reconnect: false,
   });
   await attach(socket);
   const hello = JSON.parse(socket.sent[0] as string) as { params: { awareness_client_id: number } };
@@ -419,6 +430,11 @@ async function sealedRoom(
   for (const [peer, seat] of committed) {
     entries[encodeKey(peer.public)] = { peer_id: seat, role: 'guest' };
   }
+  // The relay mints its own session key, so a state that commits it can only be built after the
+  // seat. A committed writer is what §13.1's step 6 handshake and §13.6's repair request need.
+  if (options.ownRole !== undefined) {
+    entries[encodeKey(relay.sessionKey())] = { peer_id: 'p-self', role: options.ownRole };
+  }
   const state = { issued: 1, listing: ['README.md'], peers: entries };
   socket.deliverBinary(await sealed(host, 1, new TextEncoder().encode(JSON.stringify(state))));
   await waitFor("the host's state to be applied", () => relay.listing().length > 0);
@@ -427,6 +443,8 @@ async function sealedRoom(
     socket,
     relay,
     ownAwareness,
+    host,
+    seal: (signer, kind, plaintext) => sealed(signer, kind, plaintext),
     async awareness(signer, states) {
       const update = encoding.createEncoder();
       encoding.writeVarUint(update, states.length);
@@ -513,3 +531,293 @@ test('peer.left keeps a state while a seated peer still claims its id, this conn
   await leave(room, 'p-bea');
   assert.equal(clientsIn(room.relay).includes(200), false, 'the last claimant left and the state stayed');
 });
+
+// --- the automatic repair timer, on the test's own clock --------------------------------
+
+/** A frame crypto whose seals fail on demand, counting each attempt at a nonce. */
+function failingSeals(): { crypto: FrameCrypto; fail(): void; attempts(): number } {
+  let failing = false;
+  let attempts = 0;
+  const crypto: FrameCrypto = {
+    ...nodeCrypto,
+    randomBytes(length: number): Uint8Array {
+      if (failing && length === 12) {
+        attempts += 1;
+        throw new Error('the platform CSPRNG is unavailable');
+      }
+      return nodeCrypto.randomBytes(length);
+    },
+  };
+  return {
+    crypto,
+    fail: () => {
+      failing = true;
+    },
+    attempts: () => attempts,
+  };
+}
+
+test('a persistent seal failure draws one automatic request a window, not a millisecond chain', async (t) => {
+  const timers = new FakeTimers();
+  timers.install();
+  t.after(() => {
+    timers.restore();
+  });
+  const seals = failingSeals();
+  const other = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(31))) as SessionKeypair;
+  const room = await sealedRoom(t, [[other, 'p-other']], () => [], {
+    crypto: seals.crypto,
+    ownRole: 'guest',
+  });
+  // A committed writer's own request arms §13.1's step 6 reciprocal obligation.
+  const empty = new Y.Doc();
+  room.socket.deliverBinary(await room.seal(other, 0, encodeSyncStep1(empty)));
+  empty.destroy();
+  // The frame is delivered asynchronously; its own answer is what shows the cause was recorded.
+  const answered = room.socket.sentBinary.length;
+  await waitFor('the remote request to be answered', () => room.socket.sentBinary.length > answered, {
+    describe: () => room.socket.sentBinary.length,
+  });
+  assert.equal(timers.nextDelay(), KEEPALIVE.awareness_renew_ms, 'the repair was not armed on the request clock');
+
+  seals.fail();
+  await timers.advance(KEEPALIVE.awareness_renew_ms, {
+    settled: () => seals.attempts() >= 1 && timers.nextDelay() !== undefined,
+    label: 'the first automatic request and the delay it armed',
+  });
+  assert.equal(seals.attempts(), 1, 'the first automatic request did not run');
+  // The attempt completed now, so the next one is a whole window away and not a millisecond.
+  assert.ok(
+    (timers.nextDelay() ?? 0) >= KEEPALIVE.awareness_renew_ms,
+    `the failed attempt left a ${timers.nextDelay()}ms retry, so the timer self-chains`,
+  );
+
+  for (let attempt = 2; attempt <= 3; attempt += 1) {
+    await timers.advance(KEEPALIVE.awareness_renew_ms, {
+      settled: () => seals.attempts() >= attempt && timers.nextDelay() !== undefined,
+      label: `the automatic request at attempt ${attempt} and the delay it armed`,
+    });
+  }
+  assert.equal(seals.attempts(), 3, `three windows drew ${seals.attempts()} automatic attempts`);
+  assert.equal(room.relay.end, undefined, 'a persistent seal failure ended the session');
+  assert.match(room.relay.failure ?? '', /could not be sealed/);
+});
+
+test('an ordinary grid deadline does not drive a paced repair early', async (t) => {
+  const timers = new FakeTimers();
+  timers.install();
+  t.after(() => {
+    timers.restore();
+  });
+  const seals = failingSeals();
+  const room = await sealedRoom(t, [], () => [], { crypto: seals.crypto });
+  // The first state commits no local key, so the handshake waits for the second one.
+  await timers.advance(100);
+  seals.fail();
+  const peers = { [encodeKey(room.relay.sessionKey())]: { peer_id: 'p-self', role: 'guest' } };
+  const state = new TextEncoder().encode(JSON.stringify({ issued: 2, listing: ['README.md'], peers }));
+  room.socket.deliverBinary(await room.seal(room.host, 1, state));
+  await waitFor('the committing state to drive its one failed handshake', () => seals.attempts() === 1, {
+    describe: () => seals.attempts(),
+  });
+  const failedHandshake = seals.attempts();
+  assert.equal(failedHandshake, 1, 'the committing state did not drive its one failed handshake');
+
+  // The grid tick is due at 300 and the failure completed at 100, so its window opens at 400.
+  await timers.advance(200, {
+    settled: () => timers.nextDelay() !== undefined,
+    label: 'the ordinary grid tick at 300 to return and re-arm',
+  });
+  assert.equal(timers.now, 300, 'the grid tick is due at 300');
+  assert.equal(seals.attempts(), failedHandshake, 'the ordinary grid deadline drove a paced repair early');
+  await timers.advance(100, {
+    settled: () => seals.attempts() > failedHandshake,
+    label: 'the paced repair at 400',
+  });
+  assert.equal(seals.attempts(), failedHandshake + 1, 'the paced deadline did not draw its one attempt');
+});
+
+test('a repair attempt that completes a window late paces from its completion, not its start', async (t) => {
+  const timers = new FakeTimers();
+  timers.install();
+  t.after(() => {
+    timers.restore();
+  });
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let slow = false;
+  let attempts = 0;
+  const crypto: FrameCrypto = {
+    ...nodeCrypto,
+    async aesGcmSeal(...args): Promise<Uint8Array | undefined> {
+      if (slow) {
+        attempts += 1;
+        await barrier;
+        return undefined;
+      }
+      return nodeCrypto.aesGcmSeal(...args);
+    },
+  };
+  const other = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(31))) as SessionKeypair;
+  const room = await sealedRoom(t, [[other, 'p-other']], () => [], { crypto, ownRole: 'guest' });
+  const empty = new Y.Doc();
+  room.socket.deliverBinary(await room.seal(other, 0, encodeSyncStep1(empty)));
+  empty.destroy();
+  // The frame is delivered asynchronously; its own answer is what shows the cause was recorded.
+  const answered = room.socket.sentBinary.length;
+  await waitFor('the remote request to be answered', () => room.socket.sentBinary.length > answered, {
+    describe: () => room.socket.sentBinary.length,
+  });
+
+  slow = true;
+  await timers.advance(KEEPALIVE.awareness_renew_ms, {
+    settled: () => attempts === 1,
+    label: 'the automatic attempt at its deadline to start',
+  });
+  assert.equal(attempts, 1, 'the automatic attempt did not start at its deadline');
+  // The seal outlives the window it started in, so the attempt completes two windows later.
+  await timers.advance(KEEPALIVE.awareness_renew_ms * 2);
+  release();
+  await waitFor(
+    'the late completion to pace the next attempt from its completion',
+    () => (timers.nextDelay() ?? 0) >= KEEPALIVE.awareness_renew_ms,
+    { describe: () => ({ attempts, delay: timers.nextDelay() }) },
+  );
+  assert.ok(
+    (timers.nextDelay() ?? 0) >= KEEPALIVE.awareness_renew_ms,
+    `a late completion left a ${timers.nextDelay()}ms retry, so the stale start clock paced it`,
+  );
+});
+
+test('sessionKey answers a copy of the key the announcement names', async (t) => {
+  const room = await sealedRoom(t, [], () => []);
+  const announced = Uint8Array.from(room.relay.sessionKey());
+  assert.ok(announced.length > 0, 'the relay minted no session key to read');
+  const returned = room.relay.sessionKey();
+  returned.fill(0);
+  assert.deepEqual(
+    [...room.relay.sessionKey()],
+    [...announced],
+    'the diagnostic answer is the session’s live public key',
+  );
+});
+
+/**
+ * A delivery failure that has completed but that its owning relay has not stamped yet must not be
+ * retried by a tick already queued behind it. The relay stamps a delivery failure only after its
+ * whole inbox drains, and a binary frame sits behind the queued tick in the session's serial
+ * chain — so the tick can reach `resync` with the failure complete and unstamped.
+ */
+for (const host of ['no host is identified', 'a named host is present'] as const) {
+  test(`a queued automatic tick does not retry an unstamped delivery failure (${host})`, async (t) => {
+    const timers = new FakeTimers();
+    timers.install();
+    t.after(() => {
+      timers.restore();
+    });
+
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let hold = false;
+    let attempts = 0;
+    let completions = 0;
+    const isStep1 = (plaintext: Uint8Array): boolean => plaintext[0] === 0 && plaintext[1] === 0;
+    const crypto: FrameCrypto = {
+      ...nodeCrypto,
+      async aesGcmSeal(key, nonce, plaintext, aad): Promise<Uint8Array | undefined> {
+        if (!isStep1(plaintext)) {
+          return nodeCrypto.aesGcmSeal(key, nonce, plaintext, aad);
+        }
+        attempts += 1;
+        if (hold) {
+          hold = false;
+          entered();
+          await barrier;
+          completions += 1;
+          return undefined;
+        }
+        return nodeCrypto.aesGcmSeal(key, nonce, plaintext, aad);
+      },
+    };
+
+    const other = (await mintSessionKey(nodeCrypto, new Uint8Array(32).fill(31))) as SessionKeypair;
+    const namedHost = host === 'a named host is present';
+    const room = await sealedRoom(
+      t,
+      [[other, 'p-other']],
+      () => [
+        { peer_id: 'p-other', awareness_client_id: 201 },
+        ...(namedHost ? [{ peer_id: 'p-host', awareness_client_id: 202 }] : []),
+      ],
+      { crypto },
+    );
+    await timers.advance(100);
+
+    // A signed state commits this connection's key: §13.1's immediate step 6 handshake enters a
+    // seal that will resolve `undefined`.
+    hold = true;
+    const peers: Record<string, unknown> = {
+      [encodeKey(room.relay.sessionKey())]: { peer_id: 'p-self', role: 'guest' },
+      [encodeKey(other.public)]: { peer_id: 'p-other', role: 'guest' },
+    };
+    if (namedHost) {
+      peers[encodeKey(room.host.public)] = { peer_id: 'p-host', role: 'host' };
+    }
+    const committing = new TextEncoder().encode(JSON.stringify({ issued: 2, listing: ['README.md'], peers }));
+    room.socket.deliverBinary(await room.seal(room.host, 1, committing));
+    await started;
+
+    // The grid timer is due at 300 and fires while that seal is open: its pump queues the
+    // automatic tick behind the committing state's own serial task.
+    await timers.advance(200);
+    assert.equal(timers.now, 300, 'the grid tick is due at 300');
+
+    // A binary tail behind the state: an authenticated Update from a writer the state commits.
+    const remote = new Y.Doc();
+    remote.getText('README.md').insert(0, 'tail');
+    const update = encodeUpdate(Y.encodeStateAsUpdate(remote));
+    remote.destroy();
+    room.socket.deliverBinary(await room.seal(other, 0, update));
+
+    // The seal fails at 600, with the automatic tick still ahead of the tail.
+    await timers.advance(300);
+    assert.equal(timers.now, 600, 'the queued automatic tick runs at 600');
+    release();
+
+    // The tail is delivered behind the automatic tick in the session's serial chain, so the state
+    // it lands in is proof that the tick has already run.
+    await waitFor(
+      'the tail frame to be applied after the queued automatic tick',
+      () => room.relay.text('README.md') === 'tail',
+      { describe: () => ({ attempts, completions, delay: timers.nextDelay() }) },
+    );
+    assert.equal(completions, 1, 'the committing state’s handshake had not completed');
+    assert.equal(attempts, 1, 'the queued automatic tick retried a failure its relay had not stamped');
+
+    // The completion paces the next automatic attempt a window from the completion, not the tick.
+    await waitFor(
+      'the relay to pace the next attempt from the completion',
+      () => (timers.nextDelay() ?? 0) >= KEEPALIVE.awareness_renew_ms,
+      { describe: () => ({ attempts, delay: timers.nextDelay() }) },
+    );
+    await timers.advance(KEEPALIVE.awareness_renew_ms - 1, {
+      settled: () => timers.nextDelay() !== undefined,
+      label: 'whatever the ordinary grid tick inside the window does',
+    });
+    assert.equal(attempts, 1, 'an automatic attempt ran inside the completion window');
+    await timers.advance(1, {
+      settled: () => attempts > 1,
+      label: 'the automatic attempt at the paced deadline',
+    });
+    assert.equal(attempts, 2, 'the paced deadline did not draw its one attempt');
+    assert.equal(room.relay.end, undefined, 'a fixture window ended the session');
+  });
+}
