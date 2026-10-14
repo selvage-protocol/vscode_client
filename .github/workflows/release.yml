@@ -102,7 +102,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: github.event_name == 'workflow_dispatch'
         with:
           node-version: "24.18.1"
@@ -260,7 +260,7 @@ jobs:
           # its output empty so this falls back to the event's own ref.
           ref: ${{ needs.bump.outputs.sha || github.ref }}
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.18.1"
           cache: npm
@@ -322,7 +322,7 @@ jobs:
           vsix="selvage-${{ steps.version.outputs.version }}.vsix"
           echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsix
           path: ${{ steps.package.outputs.vsix }}
@@ -336,7 +336,7 @@ jobs:
       - name: record the commit the package was built from
         run: git rev-parse HEAD > packaged-commit.txt
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-commit
           path: packaged-commit.txt
@@ -353,7 +353,7 @@ jobs:
           vsce_version=$(node -p "require('./package-lock.json').packages['node_modules/@vscode/vsce'].version")
           npm install --prefix vsce-publish --no-save --no-audit --no-fund "@vscode/vsce@${vsce_version}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsce-publish
           path: vsce-publish
@@ -368,7 +368,7 @@ jobs:
         run: |
           npm install --prefix ovsx-publish --no-save --no-audit --no-fund "ovsx@${OVSX_VERSION}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ovsx-publish
           path: ovsx-publish
@@ -409,27 +409,27 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.build.outputs.commit }}
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vsix
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vsce-publish
           path: vsce-publish
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ovsx-publish
           path: ovsx-publish
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-commit
 
       # Node to run the `vsce` entry point downloaded above; nothing is installed with it.
       # It stands ahead of tagging and the Marketplace login so the check below can use it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.18.1"
 
