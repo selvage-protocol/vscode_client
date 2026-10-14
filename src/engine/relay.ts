@@ -524,7 +524,7 @@ export class RelaySession {
     // already in the outbound queue, so both go out on this tick rather than on a timer the
     // caller would wait a whole renewal window for.
     await this.drain();
-    await this.pump();
+    await this.pump(true);
   }
 
   private random(length: number, what: string): Uint8Array {
@@ -602,6 +602,19 @@ export class RelaySession {
   }
 
   /**
+   * This connection's session public key, which its announcement names, or empty bytes while
+   * none is seated.
+   *
+   * A diagnostic seam: the unit-level timer regression seats a committed writer by committing
+   * this key in the host's state, and nothing else the relay exposes names it. The answer is a
+   * copy of the key's public bytes, which the session signs with; a caller that kept the live
+   * array could otherwise reseat this connection's identity by mutating what it read.
+   */
+  sessionKey(): Uint8Array {
+    return Uint8Array.from(this.session?.sessionKey ?? []);
+  }
+
+  /**
    * The paths whose text changed since the last call, or `undefined` when no session is seated
    * to say, in which case a reader treats every path as changed.
    */
@@ -633,13 +646,13 @@ export class RelaySession {
     this.session?.open(path);
     // §13.7 asks for the whole held set when it changes rather than at the next renewal, so the
     // hold goes out on the session's own clocks now instead of waiting a whole window.
-    void this.pump();
+    void this.pump(true);
   }
 
   /** Releases a path, or every path when given none (`§13.7`). */
   release(path?: string): void {
     this.session?.release(path);
-    void this.pump();
+    void this.pump(true);
   }
 
   /** One local insert. Returns whether it was published — a `viewer`'s is not (`§13.9`). */
@@ -827,7 +840,7 @@ export class RelaySession {
 
   /** Runs the session's clocks once, which is what a caller with its own timer calls. */
   async tick(): Promise<void> {
-    await this.pump();
+    await this.pump(false);
   }
 
   /** Ends the session: the socket closed, the clock stopped, the document released. */
@@ -1042,7 +1055,7 @@ export class RelaySession {
     }
     this.emit({ type: 'seated' });
     await this.drain();
-    await this.pump();
+    await this.pump(true);
   }
 
   /** Sets this session's ending, once, and reports it. */
@@ -1095,10 +1108,14 @@ export class RelaySession {
     }
     this.report();
     this.drainOutbound();
+    // A state applied here can fail §13.1's step 6 handshake; stamp its completion before the
+    // timer is armed from a deadline measured against it.
+    const now = this.clock();
+    this.session?.noteStep1Failure(now);
     // A frame can be what changes what the session owes — an announcement it cannot answer yet
     // is folded into §7.1's window as it is delivered — so the tick is armed again here and not
     // only after a tick, or the deadline that fold just set would wait for the old one.
-    this.arm(this.clock());
+    this.arm(now);
   }
 
   private async process(frame: QueuedFrame): Promise<void> {
@@ -1185,13 +1202,15 @@ export class RelaySession {
   }
 
   /** One tick of the session's own clocks, then whatever it published. */
-  private async pump(): Promise<void> {
+  private async pump(automatic: boolean): Promise<void> {
     const session = this.session;
     if (session === undefined || this.ending !== undefined) {
       return;
     }
-    await session.tick(this.clock());
+    await (automatic ? session.autoTick(this.clock()) : session.tick(this.clock()));
     this.fault ??= session.failure;
+    // The tick's own clock is the moment it started; the failed attempt completed now.
+    session.noteStep1Failure(this.clock());
     this.report();
     this.drainOutbound();
     const now = this.clock();
@@ -1224,7 +1243,7 @@ export class RelaySession {
     const at = deadline === undefined || deadline > this.tickAt ? this.tickAt : deadline;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.pump();
+      void this.pump(true);
     }, Math.max(1, at - clock));
     unrefTimer(this.timer);
   }
