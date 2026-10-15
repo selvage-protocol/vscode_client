@@ -84,7 +84,7 @@ case "${1:-all}" in
   client) job_client ;;
   lint) job_lint ;;
   links) job_links ;;
-  all) job_lint && job_client && job_links ;;
+  all) job_lint; job_client; job_links ;;
   *)
     printf 'usage: %s [client|lint|links|all]\n' "$0" >&2
     exit 2
