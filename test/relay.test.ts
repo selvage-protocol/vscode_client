@@ -225,6 +225,152 @@ function seatReply(): string {
   });
 }
 
+// --- a request promise: the reply's `id`, not the send --------------------------------------
+
+/**
+ * The keepalive a rename round trip is read under: long, so the relay's ordinary grid puts no
+ * timer inside the one the request itself is bound by.
+ */
+const STILL_KEEPALIVE = {
+  ping_interval_ms: 30_000,
+  awareness_renew_ms: 30_000,
+  awareness_expire_ms: 90_000,
+};
+
+/** The seat, with {@link STILL_KEEPALIVE} in force. */
+function stillReply(): string {
+  return JSON.stringify({
+    v: 'selvage/2',
+    id: 1,
+    event: 'room.joined',
+    params: {
+      room_id: 'r-corr',
+      self: { peer_id: 'p-guest', display_name: 'Bo' },
+      peers: [],
+      capabilities: [],
+      keepalive: STILL_KEEPALIVE,
+    },
+  });
+}
+
+test('a rename resolves on the reply its id names, a refusal by its code', async (t) => {
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+
+  const answered = relay.rename('Robert');
+  const frame = JSON.parse(socket.sent[socket.sent.length - 1]) as {
+    id: number;
+    method: string;
+  };
+  assert.equal(frame.method, 'session.rename', 'the rename was not sent as its method');
+  assert.equal(frame.id, 2, 'the rename did not send under the request id after the hello');
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: 2, result: {} }));
+  await answered;
+
+  const refused = relay.rename('Robert').then(
+    () => 'resolved' as const,
+    (error: unknown) => error,
+  );
+  socket.deliver(
+    JSON.stringify({
+      v: 'selvage/2',
+      id: 3,
+      error: { code: 'bad_params', message: 'the display_name is blank or over the bound' },
+    }),
+  );
+  const error = await refused;
+  assert.ok(isProtocolError(error, 'bad_params'), `the refusal was not the server's code: ${String(error)}`);
+  assert.equal(
+    error instanceof Error && error.message,
+    'the display_name is blank or over the bound',
+    'the refusal lost the sentence the server sent',
+  );
+});
+
+test('an unanswered rename gives up on its own bound and frees the request', async (t) => {
+  const timers = new FakeTimers();
+  timers.install();
+  t.after(() => {
+    timers.restore();
+  });
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+
+  let settled: string | false = false;
+  const renamed = relay.rename('Robert').then(
+    () => {
+      settled = 'resolved';
+    },
+    (error: unknown) => {
+      settled = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+    },
+  );
+  await timers.advance(9_999);
+  assert.equal(settled, false, 'the rename promised something before its bound was out');
+  await timers.advance(1, {
+    settled: () => settled !== false,
+    label: 'the rename to give up on its bound',
+  });
+  assert.equal(
+    settled,
+    'rejected: the server did not answer the rename within 10000 ms',
+    'the rename gave up with no word of why',
+  );
+  void renamed;
+
+  // The freed request is gone: a reply that arrives for its id settles nothing, and the next
+  // rename sends under the next id and answers on its own.
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: 2, result: {} }));
+  await new Promise<void>((fluent) => setImmediate(fluent));
+  assert.equal(settled, 'rejected: the server did not answer the rename within 10000 ms');
+  const again = relay.rename('Roberta').then(
+    () => 'resolved' as const,
+    (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  const frame = JSON.parse(socket.sent[socket.sent.length - 1]) as { id: number };
+  assert.equal(frame.id, 3, 'the next rename did not take the next request id');
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: 3, result: {} }));
+  assert.equal(await again, 'resolved', 'the rename after the timeout did not answer on its own id');
+});
+
+test('a rename still out when the socket drops fails on the drop', async (t) => {
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+
+  let settled: string | false = false;
+  void relay.rename('Robert').then(
+    () => {
+      settled = 'resolved';
+    },
+    (error: unknown) => {
+      settled = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+    },
+  );
+  socket.fromPeer(1006, 'the server went away');
+  await waitFor('the drop to tell the rename', () => settled !== false, {
+    describe: () => settled,
+  });
+  assert.equal(settled, 'rejected: the connection ended (1006 the server went away)');
+});
+
 test('a refused handshake keeps the server’s code, terminal or not', async (t) => {
   for (const [code, terminal] of [
     // A refusal in the reserved namespace is terminal whatever it names: that is the whole of
