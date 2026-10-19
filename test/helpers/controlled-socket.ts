@@ -15,12 +15,20 @@ export class ControlledSocket implements WebSocketLike {
 
   /** Text frames this socket was asked to send. */
   readonly sent: string[] = [];
+  /**
+   * Makes the next `send` throw, as a transport whose buffer is gone does. `ws` raises here when
+   * the socket is not open, and a custom factory may raise for its own reasons.
+   */
+  throwOnSend: Error | undefined = undefined;
   /** Binary frames this socket was asked to send, as the bytes given it. */
   readonly sentBinary: Uint8Array[] = [];
   /** How many times it was closed, by either end. */
   closes = 0;
 
   send(data: string | Uint8Array): void {
+    if (this.throwOnSend !== undefined) {
+      throw this.throwOnSend;
+    }
     if (typeof data === 'string') {
       this.sent.push(data);
     } else {

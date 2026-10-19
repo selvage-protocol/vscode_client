@@ -825,10 +825,24 @@ export class RelaySession {
    * answers is the reply, not the send: the `id` it went under is what settles it, a refusal
    * reaching the caller as a {@link ProtocolError}, and a reply that never comes frees itself
    * after {@link REQUEST_TIMEOUT_MS} instead of promising success for ever.
+   *
+   * A send that throws settles the request on the spot, and the caller sees the transport's own
+   * error. Nothing else would: the reply the request waits for cannot arrive on a socket that
+   * refused to write, and the drop that would have failed it may be a close this relay never
+   * sees — `§4.2`'s `id` correlation has no other way to learn the frame never left.
    */
   async rename(displayName: string): Promise<void> {
     const socket = this.socket;
     if (socket === undefined || !socket.isOpen) {
+      throw new Error('the session is not connected');
+    }
+    // `handshaking` is a socket this relay has opened but not been seated on: a guest's retry
+    // between its `session.hello` and the room's answer (`§9.1`). The session it would rename is
+    // the one being re-seated, the name is already carried by the hello this attempt sent, and a
+    // request written now is one the server answers `already_seated` before the hello that seats
+    // it — so it is refused rather than sent, and the caller is told the session is not
+    // connected, which it is not until the re-seat lands.
+    if (this.handshaking) {
       throw new Error('the session is not connected');
     }
     if (this.ending !== undefined) {
@@ -849,14 +863,22 @@ export class RelaySession {
       };
       unrefTimer(pending.timer);
       this.pendingRequests.set(id, pending);
-      socket.sendText(
-        JSON.stringify({
-          v: WIRE_VERSION,
-          id,
-          method: 'session.rename',
-          params: { display_name: displayName },
-        }),
-      );
+      try {
+        socket.sendText(
+          JSON.stringify({
+            v: WIRE_VERSION,
+            id,
+            method: 'session.rename',
+            params: { display_name: displayName },
+          }),
+        );
+      } catch (error) {
+        // The frame never left, so no reply can settle this `id`: the request is freed here
+        // rather than left to its bound, and the caller is handed what the transport said.
+        this.pendingRequests.delete(id);
+        clearTimeout(pending.timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 

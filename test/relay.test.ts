@@ -179,8 +179,15 @@ function fault(code: string, message: string): string {
   return JSON.stringify({ v: 'selvage/2', event: 'session.error', params: { code, message } });
 }
 
-/** A relay whose socket the test drives, opened and handed a host's reading of `session.hello`. */
-async function handDriven(t: TestContext): Promise<{
+/**
+ * A relay whose socket the test drives, opened and handed a host's reading of `session.hello`.
+ * `keepalive` is the session's own renewal window, which a case that reads the timers armed
+ * beside a request sets long so the two cannot be confused.
+ */
+async function handDriven(
+  t: TestContext,
+  keepalive: typeof KEEPALIVE = KEEPALIVE,
+): Promise<{
   socket: ControlledSocket;
   join(): Promise<RelaySession>;
 }> {
@@ -197,7 +204,7 @@ async function handDriven(t: TestContext): Promise<{
         displayName: 'Bo',
         crypto: nodeCrypto,
         webSocketFactory: factory,
-        keepalive: KEEPALIVE,
+        keepalive,
         handshakeTimeoutMs: 5_000,
       }),
   };
@@ -238,8 +245,11 @@ const STILL_KEEPALIVE = {
   awareness_expire_ms: 90_000,
 };
 
+/** The relay's own bound on a request with no reply, which its timeout message names. */
+const REQUEST_BOUND_MS = 10_000;
+
 /** The seat, with {@link STILL_KEEPALIVE} in force. */
-function stillReply(): string {
+function stillReply(keepalive: typeof KEEPALIVE = STILL_KEEPALIVE): string {
   return JSON.stringify({
     v: 'selvage/2',
     id: 1,
@@ -249,7 +259,7 @@ function stillReply(): string {
       self: { peer_id: 'p-guest', display_name: 'Bo' },
       peers: [],
       capabilities: [],
-      keepalive: STILL_KEEPALIVE,
+      keepalive,
     },
   });
 }
@@ -406,6 +416,145 @@ test("a rename still out when the session's own end is observed fails on it", as
   await host.tick();
   assert.equal(settled !== false, true, 'the rename was not told');
   assert.equal(settled, 'rejected: the session ended (closing)');
+});
+
+test('a rename whose send throws is refused with that error and frees its request', async (t) => {
+  const timers = new FakeTimers();
+  timers.install();
+  t.after(() => {
+    timers.restore();
+  });
+  const { socket, join } = await handDriven(t, STILL_KEEPALIVE);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply(STILL_KEEPALIVE));
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+  // Read before the send, so what is armed after it is the send's own doing. The earliest delay
+  // cannot answer this: the session's own renewal is sooner than a request's bound, so a request
+  // left armed hides behind it.
+  const scheduledBefore = timers.scheduled;
+
+  // The socket this relay writes through is open, so the connected check passes, and the write
+  // itself is what fails — the one path where the request is registered and then has no frame
+  // out, which no reply and no close would ever settle.
+  const failure = new Error('the socket is not open');
+  socket.throwOnSend = failure;
+  let settled: string | false = false;
+  await relay.rename('Robert').then(
+    () => {
+      settled = 'resolved';
+    },
+    (error: unknown) => {
+      settled = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+    },
+  );
+  assert.equal(settled, 'rejected: the socket is not open', 'the caller did not see the send fail');
+  assert.equal(
+    socket.sent.filter((frame) => frame.includes('session.rename')).length,
+    0,
+    'the refused write was recorded as a frame that went out',
+  );
+  // The request's clock went with the request. A timer still armed for it would be due at its
+  // bound, ahead of the session's own renewal, which is the leak the settle has to close.
+  assert.equal(
+    timers.scheduled,
+    scheduledBefore,
+    'the failed send left its request clock armed, so the request was not freed',
+  );
+
+  // The request is gone rather than merely rejected: its clock was cleared, so the bound it would
+  // have given up on never fires a second settle, and the next rename sends under the next id and
+  // answers on its own.
+  socket.throwOnSend = undefined;
+  await timers.advance(REQUEST_BOUND_MS + 1);
+  assert.equal(settled, 'rejected: the socket is not open');
+  const again = relay.rename('Roberta').then(
+    () => 'resolved' as const,
+    (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  const frame = JSON.parse(socket.sent[socket.sent.length - 1] as string) as { id: number };
+  assert.equal(frame.id, 3, 'the next rename did not take the next request id');
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: 3, result: {} }));
+  assert.equal(await again, 'resolved', 'the rename after the failed send did not answer on its own id');
+});
+
+test('a rename asked for during a reconnect handshake is refused, not sent', async (t) => {
+  // A factory the test owns, one socket per dial: the first seats the guest, and the retry's is
+  // the one the handshake is held open on. No `/meta` is reachable from this address, which the
+  // relay treats as no word about the room's grace and nothing more.
+  const sockets: ControlledSocket[] = [];
+  const factory: WebSocketFactory = () => {
+    const socket = new ControlledSocket();
+    sockets.push(socket);
+    return socket;
+  };
+  const joining = RelaySession.join({
+    invite: WIRE,
+    displayName: 'Bo',
+    crypto: nodeCrypto,
+    webSocketFactory: factory,
+    keepalive: STILL_KEEPALIVE,
+    handshakeTimeoutMs: 5_000,
+    reconnect: { initialDelayMs: 10, maxDelayMs: 20 },
+  });
+  await waitFor('the relay to attach its handlers', () => sockets[0]?.onmessage != null);
+  const first = sockets[0];
+  assert.ok(first !== undefined);
+  t.after(() => {
+    first.close();
+  });
+  await attach(first);
+  first.deliver(stillReply());
+  const relay = await joining;
+  t.after(() => {
+    relay.disconnect();
+  });
+  const seatedAgain = new Promise<void>((resolve) => {
+    relay.on((event) => {
+      if (event.type === 'seated') {
+        resolve();
+      }
+    });
+  });
+
+  // The drop starts the retry, which dials a second socket. Until the room answers the
+  // `session.hello` that socket carries, this relay is handshaking: the socket is open, and the
+  // session being renamed is the one the handshake has yet to re-seat.
+  first.fromPeer(1006, 'the server went away');
+  await waitFor('the retry to dial', () => sockets[1] ?? false);
+  const second = sockets[1];
+  assert.ok(second !== undefined);
+  t.after(() => {
+    second.close();
+  });
+  await attach(second);
+
+  const refused = relay.rename('Bobby').then(
+    () => 'resolved' as const,
+    (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  assert.equal(
+    await refused,
+    'rejected: the session is not connected',
+    'a rename in the reconnect handshake was accepted by a socket that cannot answer it',
+  );
+  assert.equal(
+    second.sent.filter((frame) => frame.includes('session.rename')).length,
+    0,
+    'a rename went out on a socket the handshake had not yet been seated on',
+  );
+
+  // The refusal is the handshake's, not the session's: once the re-seat lands a rename goes out
+  // and answers as it always did.
+  second.deliver(stillReply());
+  await seatedAgain;
+  const renamed = relay.rename('Bobby');
+  const frame = JSON.parse(second.sent[second.sent.length - 1] as string) as { id: number };
+  second.deliver(JSON.stringify({ v: 'selvage/2', id: frame.id, result: {} }));
+  assert.equal(await renamed, undefined, 'the rename after the re-seat did not answer');
 });
 
 test('a refused handshake keeps the server’s code, terminal or not', async (t) => {
