@@ -28,6 +28,7 @@ import { PeerEngine } from '../src/bridge/peer-engine.ts';
 import { nodeCrypto } from '../src/node/crypto.ts';
 import type { FrameCrypto } from '../src/engine/crypto.ts';
 import { ControlledSocket } from './helpers/controlled-socket.ts';
+import { FakeServer } from './helpers/fake-server.ts';
 import { FakeTimers } from './helpers/fake-timers.ts';
 import { waitFor } from './helpers/wait.ts';
 import type { WebSocketFactory } from '../src/engine/transport.ts';
@@ -369,6 +370,42 @@ test('a rename still out when the socket drops fails on the drop', async (t) => 
     describe: () => settled,
   });
   assert.equal(settled, 'rejected: the connection ended (1006 the server went away)');
+});
+
+test("a rename still out when the session's own end is observed fails on it", async (t) => {
+  const server = await FakeServer.start();
+  t.after(async () => {
+    await server.stop();
+  });
+  // The reply is withheld this time: the request sits until the session ends it, which is the
+  // path where the ending arrives with the room's own word (`§13.10`) rather than a socket's.
+  server.holdRenames = true;
+  const host = await RelaySession.host({
+    baseUrl: server.wsBase,
+    displayName: 'Ada',
+    listing: () => [],
+  });
+  t.after(() => {
+    host.disconnect();
+  });
+
+  let settled: string | false = false;
+  void host.rename('Robert').then(
+    () => {
+      settled = 'resolved';
+    },
+    (error: unknown) => {
+      settled = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+    },
+  );
+  assert.equal(settled, false, 'the rename settled with no end and no reply in sight');
+
+  // §7.1's closing: the host publishes it, the session stamps its own end, and the report that
+  // reads that state fails the request still out instead of leaving it to its bound.
+  assert.ok(await host.closeRoom(), 'the host could not publish its closing');
+  await host.tick();
+  assert.equal(settled !== false, true, 'the rename was not told');
+  assert.equal(settled, 'rejected: the session ended (closing)');
 });
 
 test('a refused handshake keeps the server’s code, terminal or not', async (t) => {

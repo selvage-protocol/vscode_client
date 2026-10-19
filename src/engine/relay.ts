@@ -1368,8 +1368,9 @@ export class RelaySession {
     }
     const end = session.end;
     if (end !== undefined && this.ending === undefined) {
-      this.ending = end;
-      this.emit({ type: 'ended', ending: end });
+      // The one ending path, through `endWith`: the session's own word says the room is done,
+      // so a request still out is failed with it rather than left to wait out its bound.
+      this.endWith(end);
     }
     const peers = this.peers();
     if (peers.length !== this.lastPeers.length || peers.some((peer, at) => peerLabel(peer) !== peerLabel(this.lastPeers[at]))) {
