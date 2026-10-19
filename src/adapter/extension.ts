@@ -491,6 +491,59 @@ async function joinRoom(options: {
 }
 
 /**
+ * A timer a session arms and cancels through one handle: a queued republish, a listing window,
+ * the `Copied` flip, a caret flush, the host-away countdown.
+ *
+ * The bare `setTimeout`/`clearTimeout` pairs this replaces each spelled out the same three
+ * rules — one arm at a time, no handle left pointing at a callback that has run, and a cancel
+ * that leaves nothing behind — and each call site could forget one. Here they hold by
+ * construction: arming cancels what was armed, the slot is cleared before the callback runs, and
+ * `cancel` drops it. `pending` is what a call site reads where it used to test a handle for
+ * `undefined`.
+ */
+class Timer {
+  private stop: (() => void) | undefined;
+
+  pending(): boolean {
+    return this.stop !== undefined;
+  }
+
+  /**
+   * Runs `run` once, after `delayMs`. A callback that arms again replaces this arm, and the slot
+   * that arm took is not cleared from under it.
+   */
+  after(delayMs: number, run: () => void): void {
+    this.cancel();
+    let armed: (() => void) | undefined;
+    const handle = setTimeout(() => {
+      if (this.stop === armed) {
+        this.stop = undefined;
+      }
+      run();
+    }, delayMs);
+    armed = () => {
+      clearTimeout(handle);
+    };
+    this.stop = armed;
+  }
+
+  /** Runs `run` every `delayMs` until `cancel`. */
+  every(delayMs: number, run: () => void): void {
+    this.cancel();
+    const handle = setInterval(run, delayMs);
+    this.stop = () => {
+      clearInterval(handle);
+    };
+  }
+
+  cancel(): void {
+    const stop = this.stop;
+    this.stop = undefined;
+    stop?.();
+  }
+}
+
+/**
  * One session in one window: the engine, the bridge, this window's editor, and the status
  * the user watches.
  */
@@ -530,7 +583,7 @@ export class Session {
    */
   private listingCut: GrantCut | undefined;
   /** A filesystem event whose republish has not run yet. */
-  private grantTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly grantTimer = new Timer();
   /** What makes the listing follow the folders, live only while this session hosts. */
   private readonly grantWatchers: vscode.Disposable[] = [];
   private peers: PeerInfo[] = [];
@@ -573,7 +626,7 @@ export class Session {
   /** A listing whose application is still owed at the end of the current window. */
   private pendingListing: readonly string[] | undefined;
   /** The window one listing application per burst is spread over. */
-  private listingTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly listingTimer = new Timer();
   /** Whether a listing application is holding the window open for what arrives next. */
   private listingWindowOpen = false;
   /**
@@ -583,14 +636,14 @@ export class Session {
    */
   private detachedDeadline: number | undefined;
   /** Recomputes the countdown while the host is away; cleared with the deadline. */
-  private detachedTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly detachedTimer = new Timer();
   /** The host's name as last seen in membership: `hostDetached` names only the grace. */
   private hostName = '';
   /** The host's grace, as the detach frame gave it: what the countdown is read against. */
   private detachedGraceMs = 0;
   /** The invite control, and the timer that turns its `Copied` back. */
   private readonly copyItem: vscode.StatusBarItem;
-  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly copiedTimer = new Timer();
   /** The open people pickers, each redrawn when the room's membership moves. */
   private readonly pickers = new Map<() => void, () => void>();
   /** The socket dropped and the engine's bounded retry is running. */
@@ -634,7 +687,7 @@ export class Session {
   /** Whether it has said that the room listed more files than this mirror holds. */
   private saidOverCapacity = false;
   /** The one flush the interval allows, while one is armed. */
-  private selectionTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly selectionTimer = new Timer();
   /**
    * The peer this window follows, by id. A local view state, never advertised: nothing on
    * the wire carries it, so no other client sees it beyond this window's own caret.
@@ -847,14 +900,16 @@ export class Session {
       return;
     }
     this.leaving = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timer = new Timer();
     await Promise.race([
       this.engine.closeRoom().catch(() => false),
       new Promise((resolve) => {
-        timer = setTimeout(resolve, CLOSING_WAIT_MS);
+        timer.after(CLOSING_WAIT_MS, () => {
+          resolve(undefined);
+        });
       }),
     ]);
-    clearTimeout(timer);
+    timer.cancel();
   }
 
   role(): Role {
@@ -1129,14 +1184,14 @@ export class Session {
       let opened = false;
       let contentSeen = false;
       let stop: () => void = () => undefined;
-      let timer: ReturnType<typeof setTimeout>;
+      const timer = new Timer();
       const finish = (): void => {
         if (settled) {
           return;
         }
         settled = true;
         stop();
-        clearTimeout(timer);
+        timer.cancel();
         resolve();
       };
       const giveUp = (): void => {
@@ -1145,7 +1200,7 @@ export class Session {
         }
         settled = true;
         stop();
-        clearTimeout(timer);
+        timer.cancel();
         if (
           opened &&
           !contentSeen &&
@@ -1170,7 +1225,7 @@ export class Session {
           finish();
         }
       });
-      timer = setTimeout(giveUp, FETCH_TIMEOUT_MS);
+      timer.after(FETCH_TIMEOUT_MS, giveUp);
       void this.engine
         .open(path)
         .then(() => {
@@ -1315,13 +1370,12 @@ export class Session {
    * stands then rather than what each event saw.
    */
   private scheduleGrant(): void {
-    if (this.grantTimer !== undefined) {
+    if (this.grantTimer.pending()) {
       return;
     }
-    this.grantTimer = setTimeout(() => {
-      this.grantTimer = undefined;
+    this.grantTimer.after(GRANT_REFRESH_INTERVAL_MS, () => {
       void this.publishGrant();
-    }, GRANT_REFRESH_INTERVAL_MS);
+    });
   }
 
   private stopWatching(): void {
@@ -1521,15 +1575,12 @@ export class Session {
 
   /** Flips the invite control to `Copied` for as long as the web's pill stands. */
   showCopied(): void {
-    if (this.copiedTimer !== undefined) {
-      clearTimeout(this.copiedTimer);
-    }
+    this.copiedTimer.cancel();
     this.copyItem.text = `$(check) ${COPIED_LABEL}`;
     this.copyItem.show();
-    this.copiedTimer = setTimeout(() => {
-      this.copiedTimer = undefined;
+    this.copiedTimer.after(COPIED_STAND_MS, () => {
       this.copyItem.text = `$(link) ${COPY_INVITE_LABEL}`;
-    }, COPIED_STAND_MS);
+    });
   }
 
   /**
@@ -2021,17 +2072,14 @@ export class Session {
     this.clearHostAway();
     this.detachedGraceMs = Math.max(0, graceMs);
     this.detachedDeadline = Date.now() + this.detachedGraceMs;
-    this.detachedTimer = setInterval(() => {
+    this.detachedTimer.every(1000, () => {
       this.refreshStatus();
-    }, 1000);
+    });
     this.refreshStatus();
   }
 
   private clearHostAway(): void {
-    if (this.detachedTimer !== undefined) {
-      clearInterval(this.detachedTimer);
-      this.detachedTimer = undefined;
-    }
+    this.detachedTimer.cancel();
     this.detachedDeadline = undefined;
   }
 
@@ -2041,10 +2089,7 @@ export class Session {
     }
     this.finished = true;
     this.clearHostAway();
-    if (this.copiedTimer !== undefined) {
-      clearTimeout(this.copiedTimer);
-      this.copiedTimer = undefined;
-    }
+    this.copiedTimer.cancel();
     this.copyItem.dispose();
     // A picker left open would offer people in a room this window has left.
     for (const hide of [...this.pickers.values()]) {
@@ -2059,16 +2104,10 @@ export class Session {
     this.followStatus?.dispose();
     this.followStatus = undefined;
     // A queued republish is dropped rather than sent: the room is not this window's any more.
-    if (this.grantTimer !== undefined) {
-      clearTimeout(this.grantTimer);
-      this.grantTimer = undefined;
-    }
+    this.grantTimer.cancel();
     // A queued listing application goes with it: the mirror it would shape is being
     // removed, and a walk that ran after that would put the directory back.
-    if (this.listingTimer !== undefined) {
-      clearTimeout(this.listingTimer);
-      this.listingTimer = undefined;
-    }
+    this.listingTimer.cancel();
     this.pendingListing = undefined;
     this.stopWatching();
     // The position the interval was still holding reaches the room before the session ends.
@@ -2182,18 +2221,17 @@ export class Session {
     } else {
       this.pendingListing = paths;
     }
-    if (this.listingTimer !== undefined) {
+    if (this.listingTimer.pending()) {
       return;
     }
-    this.listingTimer = setTimeout(() => {
-      this.listingTimer = undefined;
+    this.listingTimer.after(GRANT_REFRESH_INTERVAL_MS, () => {
       this.listingWindowOpen = false;
       const pending = this.pendingListing;
       this.pendingListing = undefined;
       if (pending !== undefined && !this.finished) {
         this.applyListing(pending);
       }
-    }, GRANT_REFRESH_INTERVAL_MS);
+    });
   }
 
   /**
@@ -2603,13 +2641,12 @@ export class Session {
    */
   private scheduleSelection(): void {
     this.selectionDirty = true;
-    if (this.selectionTimer !== undefined) {
+    if (this.selectionTimer.pending()) {
       return;
     }
-    this.selectionTimer = setTimeout(() => {
-      this.selectionTimer = undefined;
+    this.selectionTimer.after(SELECTION_INTERVAL_MS, () => {
       this.flushSelection();
-    }, SELECTION_INTERVAL_MS);
+    });
   }
 
   /**
@@ -2617,10 +2654,7 @@ export class Session {
    * session ends: the final position must not be lost to a timer that will never run.
    */
   private flushSelection(): void {
-    if (this.selectionTimer !== undefined) {
-      clearTimeout(this.selectionTimer);
-      this.selectionTimer = undefined;
-    }
+    this.selectionTimer.cancel();
     if (!this.selectionDirty) {
       return;
     }
@@ -3844,12 +3878,13 @@ async function roomSettled(engine: RoomEngine, timeoutMs = 750): Promise<void> {
   }
   await new Promise<void>((resolve) => {
     let done = false;
+    const timer = new Timer();
     const finish = (): void => {
       if (done) {
         return;
       }
       done = true;
-      clearTimeout(timer);
+      timer.cancel();
       stop();
       resolve();
     };
@@ -3858,7 +3893,7 @@ async function roomSettled(engine: RoomEngine, timeoutMs = 750): Promise<void> {
         finish();
       }
     });
-    const timer = setTimeout(finish, timeoutMs);
+    timer.after(timeoutMs, finish);
   });
 }
 
