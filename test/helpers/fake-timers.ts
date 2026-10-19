@@ -90,6 +90,15 @@ export class FakeTimers {
     return this.current;
   }
 
+  /**
+   * How many timers are armed right now. A test that reads the earliest delay cannot see a timer
+   * armed past it, so a leak is read here: the count a call leaves is the count it found, unless
+   * it armed something.
+   */
+  get scheduled(): number {
+    return this.armed.size;
+  }
+
   /** The delay the earliest armed timer is due after the current clock, or `undefined`. */
   nextDelay(): number | undefined {
     let soonest: number | undefined;

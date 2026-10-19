@@ -124,6 +124,12 @@ export class FakeServer {
    * accepted count, so a case sets it to `acceptedConnections` to refuse the next dial.
    */
   refuseFull: { after: number; code: number; reason: string } | undefined = undefined;
+  /**
+   * When set, a `session.rename` is recorded and left unanswered, as a server that read the
+   * frame and went quiet: the shape of a request with no reply, for a test to drive the settle
+   * paths by hand rather than through a name the fake server decides for itself.
+   */
+  holdRenames = false;
 
   private readonly options: Required<
     Pick<FakeServerOptions, 'metaWireVersions'>
@@ -462,6 +468,9 @@ export class FakeServer {
         const displayName =
           typeof params.display_name === 'string' ? params.display_name : '';
         this.renames.push({ peerId: client.id, displayName });
+        if (this.holdRenames) {
+          return;
+        }
         // The bound is the handshake's, counted in UTF-16 code units, and a bad one is a
         // seated `bad_params` error response: the connection stays open (§5).
         if (displayName.trim() === '' || displayName.length > 32) {

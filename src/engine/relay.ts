@@ -44,6 +44,14 @@ import type { PeerInfo, Role } from './envelope.ts';
 /** How long the upgrade and the handshake may take together before the connection is abandoned. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
+/**
+ * How long a request this relay sends waits for the reply its `id` names. A reply is one round
+ * trip on a socket that is already open, so this is a bound on a socket gone quiet, not on the
+ * session's clocks (`§13.8`): the same number the handshake waits in, and it frees anything
+ * still out rather than stranding it.
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
+
 /** A peer as `selvage/2` records it: `PROTOCOL.md` §6.1's `PeerInfo` without `role`. */
 export interface RelayPeer {
   peer_id: string;
@@ -161,6 +169,13 @@ interface QueuedFrame {
   binary?: Uint8Array;
 }
 
+/** A text request whose settle the reply's `id` owns, until the timeout or the socket says otherwise. */
+interface PendingRequest {
+  resolve(): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 /**
  * One `selvage/2` connection: a socket, a {@link PeerSession} and the clocks between them.
  *
@@ -240,7 +255,34 @@ export class RelaySession {
   /** The next `id` a text request carries: the hello is 1, and a rename follows it. */
   private requestId = 1;
 
-  /** The server base this connection dialled, which a reply cannot name itself. */
+  /**
+   * The text requests this relay has out and has not heard back for, by the `id` each was sent
+   * under. A reply's `id` (`§4.2`) settles the request it names, whether it comes back a result
+   * or an `error` object; one that never comes back removes itself on a timer, so a request
+   * cannot promise what only an answer can know.
+   */
+  private readonly pendingRequests = new Map<number, PendingRequest>();
+
+  /**
+   * The renames this connection has been asked for, one link per call: `§5` allows one request
+   * in flight, so a call's turn comes when the one before it has settled.
+   */
+  private renames: Promise<void> = Promise.resolve();
+
+  /**
+   * How many of those calls have not settled yet — the one out and every call waiting behind it.
+   * A call that finds this at zero has the connection to itself and writes at once, which is what
+   * keeps the ordinary, one-rename-at-a-time case on the same turn it was always written on.
+   *
+   * Counting the calls and not the requests out is what makes this exact: a reply deletes the
+   * request in the turn it arrives, one turn before the call waiting behind it is written, and an
+   * idle test that read the requests would let a third call slip between the two.
+   */
+  private renamesOut = 0;
+
+  /**
+   * The server base this connection dialled, which a reply cannot name itself.
+   */
   private dialled: SessionBase | undefined;
   /** The role this connection declared, which the applied state is what assigns. */
   private readonly ownRole: 'guest' | 'viewer' | undefined;
@@ -798,22 +840,107 @@ export class RelaySession {
    * to the whole room as `peer.renamed`, the mover included: a roster follows that event, and
    * this connection's {@link ownName} does too, so what the room calls this seat and what a
    * re-hello carries agree. Nothing is adopted on the strength of the send alone, because a
-   * rename the server refuses changes no name (`§11`'s `bad_params`).
+   * rename the server refuses changes no name (`§11`'s `bad_params`). So the promise the call
+   * answers is the reply, not the send: the `id` it went under is what settles it, a refusal
+   * reaching the caller as a {@link ProtocolError}, and a reply that never comes frees itself
+   * after {@link REQUEST_TIMEOUT_MS} instead of promising success for ever.
+   *
+   * A send that throws settles the request on the spot, and the caller sees the transport's own
+   * error. Nothing else would: the reply the request waits for cannot arrive on a socket that
+   * refused to write, and the drop that would have failed it may be a close this relay never
+   * sees — `§4.2`'s `id` correlation has no other way to learn the frame never left.
+   *
+   * **One at a time.** `§5` allows at most one request in flight on a connection, because a
+   * seated `session.error` carries no `id` and a client that pipelined could not tell which
+   * request it sank. A call made while one is out waits for it to settle — answered or refused —
+   * and only then asks, on the connection as it stands by then; a call made with nothing out
+   * goes at once, as it always did.
    */
   async rename(displayName: string): Promise<void> {
+    this.requireConnection();
+    const turn =
+      this.renamesOut === 0
+        ? this.sendRename(displayName)
+        : this.renames.then(
+            () => this.sendRename(displayName),
+            () => this.sendRename(displayName),
+          );
+    this.renamesOut += 1;
+    // The tail resolves a turn after this call has settled, with the count back down, so the call
+    // after this one sees the queue as it then is. It never rejects: one rename's failure is not
+    // the next one's reason for failing, and nothing is left holding an unobserved rejection.
+    this.renames = turn.then(
+      () => {
+        this.renamesOut -= 1;
+      },
+      () => {
+        this.renamesOut -= 1;
+      },
+    );
+    return turn;
+  }
+
+  /**
+   * One `session.rename` on the wire. The connection is judged again here and not only at the
+   * call: a queued rename comes due after whatever the call was queued behind, and the socket or
+   * the session may be gone by then.
+   */
+  private sendRename(displayName: string): Promise<void> {
+    const socket = this.requireConnection();
+    const id = ++this.requestId;
+    return new Promise<void>((resolve, reject) => {
+      // Registered before it is sent, so a reply that is read in the same turn it is written
+      // finds what settles it. The clock is the process's own; `unrefTimer` keeps a session
+      // whose relay is forgotten from holding its process open on a request nobody awaits.
+      const pending: PendingRequest = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.pendingRequests.delete(id);
+          reject(new Error(`the server did not answer the rename within ${REQUEST_TIMEOUT_MS} ms`));
+        }, REQUEST_TIMEOUT_MS),
+      };
+      unrefTimer(pending.timer);
+      this.pendingRequests.set(id, pending);
+      try {
+        socket.sendText(
+          JSON.stringify({
+            v: WIRE_VERSION,
+            id,
+            method: 'session.rename',
+            params: { display_name: displayName },
+          }),
+        );
+      } catch (error) {
+        // The frame never left, so no reply can settle this `id`: the request is freed here
+        // rather than left to its bound, and the caller is handed what the transport said.
+        this.pendingRequests.delete(id);
+        clearTimeout(pending.timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  /**
+   * The socket a request may be written on, or a refusal.
+   *
+   * Not connected is all three of: no open socket; a socket this relay has opened but not been
+   * seated on, which is a guest's retry between its `session.hello` and the room's answer
+   * (`§9.1`) — the session being renamed is the one that handshake has yet to re-seat; and a
+   * session that has ended, which answers nothing further (`§13.10`).
+   */
+  private requireConnection(): OpenSocket {
     const socket = this.socket;
     if (socket === undefined || !socket.isOpen) {
       throw new Error('the session is not connected');
     }
-    this.requestId += 1;
-    socket.sendText(
-      JSON.stringify({
-        v: WIRE_VERSION,
-        id: this.requestId,
-        method: 'session.rename',
-        params: { display_name: displayName },
-      }),
-    );
+    if (this.handshaking) {
+      throw new Error('the session is not connected');
+    }
+    if (this.ending !== undefined) {
+      throw new Error('the session is not connected');
+    }
+    return socket;
   }
 
   /** The host's listing changed: the whole tree as it now is (`§7.1`). */
@@ -857,6 +984,7 @@ export class RelaySession {
     // A dial in flight is this connection's own; superseding it keeps its socket from being
     // read as a live session's when it lands after the caller has left.
     this.generation += 1;
+    this.failRequests(new Error('the session is not connected'));
     this.socket?.close();
     this.socket = undefined;
     this.session?.destroy();
@@ -947,6 +1075,10 @@ export class RelaySession {
     }
     const said = `the connection ended (${code}${reason === '' ? '' : ` ${reason}`})`;
     this.socket = undefined;
+    // Whatever was still out asked on a socket that will never write again, and even a reseat
+    // (§9.1) opens a session the room answers as a new one, so a reply for the old `id`s
+    // cannot come: the requests go now, on the drop's own account.
+    this.failRequests(new Error(said));
     // A host has no resume on this wire (no host store; §9.1's host return is unwired), so its
     // drop is the end of the session and is said as one. A guest's is recoverable (§9.1).
     if (!this.canReconnect || !this.reconnect.enabled || this.session === undefined) {
@@ -1065,6 +1197,9 @@ export class RelaySession {
     }
     this.ending = ending;
     this.clearRetry();
+    // A session that has ended answers nothing further, whatever its socket still writes:
+    // `roomGone` is announced before the server has replied to anything still out.
+    this.failRequests(new Error(`the session ended (${ending})`));
     this.emit({ type: 'ended', ending });
   }
 
@@ -1072,6 +1207,24 @@ export class RelaySession {
     if (this.retryTimer !== undefined) {
       clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
+    }
+  }
+
+  /**
+   * Fails every request still out and frees its timer. Called when the socket drops or the
+   * session ends: the `id`s a new socket or session would answer are not the old ones' (`§9.1`
+   * reseats a guest as a new peer), so the caller learns of the failure instead of waiting out
+   * {@link REQUEST_TIMEOUT_MS} against a reply that can no longer come.
+   */
+  private failRequests(error: Error): void {
+    if (this.pendingRequests.size === 0) {
+      return;
+    }
+    const out = [...this.pendingRequests.values()];
+    this.pendingRequests.clear();
+    for (const pending of out) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
     }
   }
 
@@ -1142,6 +1295,23 @@ export class RelaySession {
     if (message === undefined) {
       return;
     }
+    if (message.id !== undefined) {
+      const pending = this.pendingRequests.get(message.id);
+      if (pending !== undefined) {
+        // The `id` is the whole of the correlation (`§4.2`): a result settles it and an `error`
+        // object is the refusal it answers with. A broadcast carries no `id`, so one matching a
+        // request out is a reply and nothing else.
+        this.pendingRequests.delete(message.id);
+        clearTimeout(pending.timer);
+        if (message.error !== undefined) {
+          pending.reject(new ProtocolError(message.error.code, message.error.message));
+        } else {
+          pending.resolve();
+        }
+        // A reply is not an event the session layer reads; the settle is the whole of it.
+        return;
+      }
+    }
     switch (message.event) {
       case eventName.peerJoined: {
         const peer = peerOf(message.params);
@@ -1194,6 +1364,10 @@ export class RelaySession {
         const fault = this.sessionFault(message.params);
         this.fault = fault.message;
         this.emit({ type: 'failed', code: fault.code, reason: fault.message });
+        // `§5`: a seated `session.error` carries no `id` — which is the whole reason only one
+        // request may be in flight — so the request that is out is the one it sank, and waiting
+        // for an answer that is not coming is not a way to learn that. It is failed now.
+        this.failRequests(new Error(`the session reported a fault (${fault.code})`));
         break;
       }
       default:
@@ -1281,8 +1455,9 @@ export class RelaySession {
     }
     const end = session.end;
     if (end !== undefined && this.ending === undefined) {
-      this.ending = end;
-      this.emit({ type: 'ended', ending: end });
+      // The one ending path, through `endWith`: the session's own word says the room is done,
+      // so a request still out is failed with it rather than left to wait out its bound.
+      this.endWith(end);
     }
     const peers = this.peers();
     if (peers.length !== this.lastPeers.length || peers.some((peer, at) => peerLabel(peer) !== peerLabel(this.lastPeers[at]))) {
