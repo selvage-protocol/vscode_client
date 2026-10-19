@@ -481,6 +481,113 @@ test('a rename whose send throws is refused with that error and frees its reques
   assert.equal(await again, 'resolved', 'the rename after the failed send did not answer on its own id');
 });
 
+test('a rename waits for the one in flight rather than pipelining', async (t) => {
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+  const requests = (): Array<{ id: number }> =>
+    socket.sent
+      .map((frame) => JSON.parse(frame) as { id: number; method?: string })
+      .filter((frame) => frame.method === 'session.rename');
+
+  // §5: at most one request is in flight on a connection, because a seated `session.error`
+  // carries no `id` and a client that pipelined could not tell which request it sank.
+  const first = relay.rename('Robert');
+  const second = relay.rename('Roberta');
+  const third = relay.rename('Roberto');
+  await waitFor('the first request to go out', () => requests().length >= 1, {
+    describe: () => socket.sent,
+  });
+  // A turn of the loop, so a write that ran with the call has happened by the time it is read.
+  await new Promise<void>((fluent) => setImmediate(fluent));
+  assert.equal(requests().length, 1, 'a second rename was written beside the one in flight');
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: requests()[0]?.id, result: {} }));
+  await first;
+  await waitFor('the second rename to take its turn', () => requests().length === 2, {
+    describe: () => socket.sent,
+  });
+  // The id the reply names is gone from the map by the turn the next request is written on, so
+  // the queue is what keeps the third from overtaking the second.
+  await new Promise<void>((fluent) => setImmediate(fluent));
+  assert.equal(requests().length, 2, 'a third rename was written beside the one in flight');
+  const frames = requests();
+  assert.equal(frames[1]?.id, (frames[0]?.id ?? 0) + 1, 'the queued rename did not take the next id');
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: frames[1]?.id, result: {} }));
+  await second;
+  await waitFor('the third rename to take its turn', () => requests().length === 3, {
+    describe: () => socket.sent,
+  });
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: requests()[2]?.id, result: {} }));
+  await third;
+});
+
+test('a rename whose predecessor failed still takes its turn', async (t) => {
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+  const requests = (): Array<{ id: number }> =>
+    socket.sent
+      .map((frame) => JSON.parse(frame) as { id: number; method?: string })
+      .filter((frame) => frame.method === 'session.rename');
+
+  // A refusal is a settle: the rename queued behind one is sent on its own turn rather than
+  // inheriting the failure of the call before it.
+  const first = relay.rename('Robert').then(
+    () => 'resolved',
+    (error: unknown) => (isProtocolError(error, 'bad_params') ? 'refused' : 'other'),
+  );
+  const second = relay.rename('Roberta');
+  socket.deliver(
+    JSON.stringify({
+      v: 'selvage/2',
+      id: requests()[0]?.id,
+      error: { code: 'bad_params', message: 'the display_name is blank or over the bound' },
+    }),
+  );
+  assert.equal(await first, 'refused');
+  await waitFor('the queued rename to take its turn', () => requests().length === 2, {
+    describe: () => socket.sent,
+  });
+  socket.deliver(JSON.stringify({ v: 'selvage/2', id: requests()[1]?.id, result: {} }));
+  assert.equal(await second, undefined, 'the queued rename did not answer on its own id');
+});
+
+test('a seated fault fails the rename in flight rather than its bound', async (t) => {
+  // The bound is left at its production length: the fault has to settle the request before the
+  // fake clock could, which is the whole of what is asserted.
+  const { socket, join } = await handDriven(t);
+  const seated = join();
+  await attach(socket);
+  socket.deliver(stillReply());
+  const relay = await seated;
+  t.after(() => {
+    relay.disconnect();
+  });
+
+  const renamed = relay.rename('Robert').then(
+    () => 'resolved',
+    (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  // A seated `session.error` has no `id` (§5), so `bad_message` is the one frame that can strand
+  // a request whose reply will never come.
+  socket.deliver(fault('bad_message', 'not a session envelope'));
+  assert.equal(
+    await renamed,
+    'rejected: the session reported a fault (bad_message)',
+    'the rename was left to its bound by the fault that sank its frame',
+  );
+});
+
 test('a rename asked for during a reconnect handshake is refused, not sent', async (t) => {
   // A factory the test owns, one socket per dial: the first seats the guest, and the retry's is
   // the one the handshake is held open on. No `/meta` is reachable from this address, which the

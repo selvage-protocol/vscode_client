@@ -263,7 +263,26 @@ export class RelaySession {
    */
   private readonly pendingRequests = new Map<number, PendingRequest>();
 
-  /** The server base this connection dialled, which a reply cannot name itself. */
+  /**
+   * The renames this connection has been asked for, one link per call: `§5` allows one request
+   * in flight, so a call's turn comes when the one before it has settled.
+   */
+  private renames: Promise<void> = Promise.resolve();
+
+  /**
+   * How many of those calls have not settled yet — the one out and every call waiting behind it.
+   * A call that finds this at zero has the connection to itself and writes at once, which is what
+   * keeps the ordinary, one-rename-at-a-time case on the same turn it was always written on.
+   *
+   * Counting the calls and not the requests out is what makes this exact: a reply deletes the
+   * request in the turn it arrives, one turn before the call waiting behind it is written, and an
+   * idle test that read the requests would let a third call slip between the two.
+   */
+  private renamesOut = 0;
+
+  /**
+   * The server base this connection dialled, which a reply cannot name itself.
+   */
   private dialled: SessionBase | undefined;
   /** The role this connection declared, which the applied state is what assigns. */
   private readonly ownRole: 'guest' | 'viewer' | undefined;
@@ -830,26 +849,46 @@ export class RelaySession {
    * error. Nothing else would: the reply the request waits for cannot arrive on a socket that
    * refused to write, and the drop that would have failed it may be a close this relay never
    * sees — `§4.2`'s `id` correlation has no other way to learn the frame never left.
+   *
+   * **One at a time.** `§5` allows at most one request in flight on a connection, because a
+   * seated `session.error` carries no `id` and a client that pipelined could not tell which
+   * request it sank. A call made while one is out waits for it to settle — answered or refused —
+   * and only then asks, on the connection as it stands by then; a call made with nothing out
+   * goes at once, as it always did.
    */
   async rename(displayName: string): Promise<void> {
-    const socket = this.socket;
-    if (socket === undefined || !socket.isOpen) {
-      throw new Error('the session is not connected');
-    }
-    // `handshaking` is a socket this relay has opened but not been seated on: a guest's retry
-    // between its `session.hello` and the room's answer (`§9.1`). The session it would rename is
-    // the one being re-seated, the name is already carried by the hello this attempt sent, and a
-    // request written now is one the server answers `already_seated` before the hello that seats
-    // it — so it is refused rather than sent, and the caller is told the session is not
-    // connected, which it is not until the re-seat lands.
-    if (this.handshaking) {
-      throw new Error('the session is not connected');
-    }
-    if (this.ending !== undefined) {
-      throw new Error('the session is not connected');
-    }
+    this.requireConnection();
+    const turn =
+      this.renamesOut === 0
+        ? this.sendRename(displayName)
+        : this.renames.then(
+            () => this.sendRename(displayName),
+            () => this.sendRename(displayName),
+          );
+    this.renamesOut += 1;
+    // The tail resolves a turn after this call has settled, with the count back down, so the call
+    // after this one sees the queue as it then is. It never rejects: one rename's failure is not
+    // the next one's reason for failing, and nothing is left holding an unobserved rejection.
+    this.renames = turn.then(
+      () => {
+        this.renamesOut -= 1;
+      },
+      () => {
+        this.renamesOut -= 1;
+      },
+    );
+    return turn;
+  }
+
+  /**
+   * One `session.rename` on the wire. The connection is judged again here and not only at the
+   * call: a queued rename comes due after whatever the call was queued behind, and the socket or
+   * the session may be gone by then.
+   */
+  private sendRename(displayName: string): Promise<void> {
+    const socket = this.requireConnection();
     const id = ++this.requestId;
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       // Registered before it is sent, so a reply that is read in the same turn it is written
       // finds what settles it. The clock is the process's own; `unrefTimer` keeps a session
       // whose relay is forgotten from holding its process open on a request nobody awaits.
@@ -880,6 +919,28 @@ export class RelaySession {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /**
+   * The socket a request may be written on, or a refusal.
+   *
+   * Not connected is all three of: no open socket; a socket this relay has opened but not been
+   * seated on, which is a guest's retry between its `session.hello` and the room's answer
+   * (`§9.1`) — the session being renamed is the one that handshake has yet to re-seat; and a
+   * session that has ended, which answers nothing further (`§13.10`).
+   */
+  private requireConnection(): OpenSocket {
+    const socket = this.socket;
+    if (socket === undefined || !socket.isOpen) {
+      throw new Error('the session is not connected');
+    }
+    if (this.handshaking) {
+      throw new Error('the session is not connected');
+    }
+    if (this.ending !== undefined) {
+      throw new Error('the session is not connected');
+    }
+    return socket;
   }
 
   /** The host's listing changed: the whole tree as it now is (`§7.1`). */
@@ -1303,6 +1364,10 @@ export class RelaySession {
         const fault = this.sessionFault(message.params);
         this.fault = fault.message;
         this.emit({ type: 'failed', code: fault.code, reason: fault.message });
+        // `§5`: a seated `session.error` carries no `id` — which is the whole reason only one
+        // request may be in flight — so the request that is out is the one it sank, and waiting
+        // for an answer that is not coming is not a way to learn that. It is failed now.
+        this.failRequests(new Error(`the session reported a fault (${fault.code})`));
         break;
       }
       default:
