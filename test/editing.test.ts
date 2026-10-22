@@ -20,8 +20,8 @@ import {
 import { peerColour, translucent } from '../src/bridge/cursors.ts';
 
 /**
- * The positions in `text` that are one half of an astral character without the other — the
- * code units no editor, no JSON decoder and no CRDT index can be handed on their own.
+ * The positions in `text` that hold unpaired surrogate code units rather than Unicode scalar
+ * values. This oracle walks code units independently of the production Unicode-mode regexp.
  */
 function loneSurrogates(text: string): number[] {
   const found: number[] = [];
@@ -52,25 +52,22 @@ function splitsPair(text: string, offset: number): boolean {
 }
 
 /**
- * Everything wrong with the change `diff` worked out for this pair: it has to be applicable,
- * neither of its ends may be inside a character of either text, its `text` may not hold a
- * lone surrogate that `to` does not already hold itself, and — when both texts are whole —
- * no end of it may give up more than it has to. Only a `to` that holds half a character
- * leaves more than one well-formed change that gets there.
+ * Everything wrong with a change between well-formed texts: it must reproduce the target,
+ * keep both boundaries outside surrogate pairs, carry no lone surrogates and give up no more
+ * common context than necessary.
  */
 function faults(from: string, to: string): string[] {
   const change = diff(from, to);
   const endTo = change.start + change.text.length;
   const found: string[] = [];
-  const whole = loneSurrogates(from).length === 0 && loneSurrogates(to).length === 0;
   if (applyChange(from, change) !== to) found.push('does not reproduce the second text');
   if (change.text !== to.slice(change.start, endTo)) found.push('text is not from the second text');
   if (splitsPair(from, change.start)) found.push('start inside a character of the first text');
   if (splitsPair(from, change.end)) found.push('end inside a character of the first text');
   if (splitsPair(to, change.start)) found.push('start inside a character of the second text');
   if (splitsPair(to, endTo)) found.push('text ends inside a character of the second text');
-  if (whole && loneSurrogates(change.text).length > 0) found.push('text holds a lone surrogate');
-  if (whole && change.text.length > 0) {
+  if (loneSurrogates(change.text).length > 0) found.push('text holds a lone surrogate');
+  if (change.text.length > 0) {
     if (
       change.start < change.end &&
       from[change.start] === to[change.start] &&
@@ -171,15 +168,13 @@ test('a change is never cut through the middle of a surrogate pair', () => {
   // at neither, because the range already covers the whole character.
   assert.deepEqual(diff('a\u{1F600}b', 'a\u{1F601}\u{1F600}b'), { start: 1, end: 3, text: '\u{1F601}\u{1F600}' });
   assert.deepEqual(diff('a\u{1F600}\u{1F601}b', 'a\u{1F600}b'), { start: 3, end: 5, text: '' });
-  // A pair the second text completes: the first ends in half a character, and the change
-  // carries the whole one.
-  assert.deepEqual(diff('a\ud83d', 'a\u{1F601}'), { start: 1, end: 2, text: '\u{1F601}' });
+  // Shared low surrogates exercise the suffix boundary as well as the shared-high prefix.
+  assert.deepEqual(diff('a\u{10000}b', 'a\u{10400}b'), { start: 1, end: 3, text: '\u{10400}' });
+  assert.deepEqual(diff('a\u{1F600}b', 'a\u{1F600}b'), { start: 0, end: 0, text: '' });
 });
 
-test('every pair of texts over a small alphabet gets a whole-character change', () => {
-  // Exhaustive rather than sampled, and each half of an emoji is an alphabet symbol on its
-  // own: every way a boundary can land inside a character is in here, including the ones a
-  // text that has already lost half of one produces.
+test('every pair of texts over a small alphabet is rejected or gets a whole-character change', () => {
+  // Individual halves also combine into valid pairs: judge the completed strings, not symbols.
   const symbols = ['a', 'b', '\u{1F600}', '\u{1F601}', '\ud83d', '\ude00'];
   const texts = [''];
   for (let length = 1; length <= 3; length += 1) {
@@ -197,7 +192,11 @@ test('every pair of texts over a small alphabet gets a whole-character change', 
   assert.equal(texts.length, 259, 'the sweep is smaller than it reads');
   for (const from of texts) {
     for (const to of texts) {
-      assert.deepEqual(faults(from, to), [], `${JSON.stringify(from)} → ${JSON.stringify(to)}`);
+      if (loneSurrogates(from).length > 0 || loneSurrogates(to).length > 0) {
+        assert.throws(() => diff(from, to), RangeError, `${JSON.stringify(from)} → ${JSON.stringify(to)}`);
+      } else {
+        assert.deepEqual(faults(from, to), [], `${JSON.stringify(from)} → ${JSON.stringify(to)}`);
+      }
     }
   }
 });
@@ -235,15 +234,20 @@ test('random pairs of texts, astral characters included, get a whole-character c
   assert.equal(pairs, 2000);
 });
 
-test('half a character the second text holds is carried, and nothing claims otherwise', () => {
-  // The one shape the invariant cannot cover, stated rather than left to be discovered: `to`
-  // holds a lone surrogate, so any change that gets the buffer there carries it. No editor
-  // here produces such a text, and a peer's cannot cross the wire — the y-protocols encoder
-  // has no encoding for half a character and writes U+FFFD instead.
-  const change = diff('ab\n', 'a\ud83db\n');
-  assert.deepEqual(change, { start: 1, end: 1, text: '\ud83d' });
-  assert.equal(applyChange('ab\n', change), 'a\ud83db\n');
-  assert.deepEqual(loneSurrogates(change.text), [0]);
+test('diff refuses malformed UTF-16 in either input, including equal malformed texts', () => {
+  const malformed = [
+    '\ud800', '\udbff', '\udc00', '\udfff',
+    'a\ud83db\n', '\ude00suffix', 'prefix\ud83d',
+    '\ud83d\ud83d', '\ude00\ud83d', 'a\ud83d' + '\u{1F600}b',
+  ];
+  for (const text of malformed) {
+    for (const [from, to] of [[text, 'valid'], ['valid', text], [text, text], [text, `${text}!`]]) {
+      assert.throws(() => diff(from, to), {
+        name: 'RangeError',
+        message: 'cannot diff text containing an unpaired UTF-16 surrogate',
+      });
+    }
+  }
 });
 
 test('a buffer that already holds the replica is not a change, in either line ending', () => {

@@ -25,7 +25,7 @@ import type {
 
 import { cursorFor } from './cursors.ts';
 import type { Cursor } from './cursors.ts';
-import { diff, hasCarriageReturn, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
+import { diff, hasCarriageReturn, hasLoneSurrogate, matchesReplica, render, toBufferOffset, toCrdt, toReplicaOffset } from './editing.ts';
 import type { LineEnding, TextChange } from './editing.ts';
 import { MAX_GRANT_FILE_BYTES, isGrantedPath, overFileBound } from './grant.ts';
 
@@ -252,7 +252,8 @@ export class SessionBridge {
   private readonly unarrived = new Set<string>();
   /** The paths this client holds open on the server, as opposed to asked it to open. */
   private readonly held = new Set<string>();
-  private readonly saves = new Map<string, () => void>();
+  /** An outstanding remote write; undefined means its deadline is paused, not forgiven. */
+  private readonly saves = new Map<string, (() => void) | undefined>();
   private readonly backstops = new Map<string, () => void>();
   /** One entry per document with an apply in flight: what it should leave, and from where. */
   private readonly inFlight = new Map<
@@ -366,6 +367,7 @@ export class SessionBridge {
     }
     const replica = this.engine.text(path);
     if (matchesReplica(text, replica)) {
+      this.resumeSave(path);
       return;
     }
     const flight = this.inFlight.get(path);
@@ -374,6 +376,7 @@ export class SessionBridge {
       // the apply — a rebased change can land the merge back on the pre-apply text — so the
       // flight records the movement itself, not just the text it started from.
       flight.moved = true;
+      this.pauseSave(path);
       this.pending.add(path);
       return;
     }
@@ -456,6 +459,7 @@ export class SessionBridge {
       return;
     }
     if (this.inFlight.has(path)) {
+      this.pauseSave(path);
       this.pending.add(path);
       return;
     }
@@ -464,9 +468,20 @@ export class SessionBridge {
       return;
     }
     const rendered = render(this.engine.text(path), this.host.lineEnding(path));
+    if (hasLoneSurrogate(buffer) || hasLoneSurrogate(rendered)) {
+      this.pauseSave(path);
+      this.cancelBackstop(path);
+      this.host.report({
+        kind: 'sessionError',
+        code: 'error',
+        message: `will not apply the room's text to ${path}: text contains an unpaired UTF-16 surrogate`,
+      });
+      return;
+    }
     if (rendered === buffer) {
       this.attempts.delete(path);
       this.cancelBackstop(path);
+      this.resumeSave(path);
       return;
     }
     this.issue(path, diff(buffer, rendered), rendered);
@@ -538,7 +553,7 @@ export class SessionBridge {
     }
     this.stops.length = 0;
     for (const cancel of this.saves.values()) {
-      cancel();
+      cancel?.();
     }
     this.saves.clear();
     for (const cancel of this.backstops.values()) {
@@ -810,8 +825,12 @@ export class SessionBridge {
    * refused seed does, rather than scheduling the convergence that would wipe it.
    */
   private publish(path: string, bufferText: string, replica: string): boolean {
-    const refusal = seedRefusal(path, bufferText);
+    const refusal = seedRefusal(path, bufferText) ?? (
+      hasLoneSurrogate(replica) ? 'the room text contains an unpaired UTF-16 surrogate' : undefined
+    );
     if (refusal !== undefined) {
+      this.pauseSave(path);
+      this.cancelBackstop(path);
       if (!this.refusedSeeds.has(path)) {
         this.refusedSeeds.add(path);
         this.host.report({
@@ -869,6 +888,7 @@ export class SessionBridge {
         if (this.pending.delete(path)) {
           this.reconcile(path);
         }
+        this.resumeSave(path);
       });
   }
 
@@ -882,6 +902,7 @@ export class SessionBridge {
     }
     if (!applied) {
       this.refuse(path, flight?.moved ?? false);
+      this.resumeSave(path);
       return;
     }
     this.attempts.delete(path);
@@ -923,6 +944,7 @@ export class SessionBridge {
     // drawn against text it fits in. A reconcile just above may have issued another apply,
     // which is the same reason to wait again.
     if (!this.inFlight.has(path)) {
+      this.resumeSave(path);
       this.host.renderCursors(this.cursors());
     }
   }
@@ -974,6 +996,10 @@ export class SessionBridge {
       return;
     }
     const rendered = render(this.engine.text(path), this.host.lineEnding(path));
+    if (hasLoneSurrogate(buffer) || hasLoneSurrogate(rendered)) {
+      this.reconcile(path);
+      return;
+    }
     if (rendered === buffer) {
       return;
     }
@@ -996,10 +1022,15 @@ export class SessionBridge {
     }
     this.cancelSave(path);
     const cancel = this.timers.after(this.saveSettleMs, () => {
-      this.saves.delete(path);
-      if (this.host.text(path) === undefined) {
+      this.pauseSave(path);
+      const buffer = this.host.text(path);
+      if (
+        buffer === undefined || this.inFlight.has(path) ||
+        hasLoneSurrogate(buffer) || hasLoneSurrogate(this.engine.text(path))
+      ) {
         return;
       }
+      this.cancelSave(path);
       this.write(path);
     });
     this.saves.set(path, cancel);
@@ -1008,6 +1039,17 @@ export class SessionBridge {
   /** A local edit inside the window moves the write rather than racing it. */
   private moveSave(path: string): void {
     if (this.saves.has(path)) {
+      this.scheduleSave(path);
+    }
+  }
+
+  private resumeSave(path: string): void {
+    const buffer = this.host.text(path);
+    if (
+      this.saves.has(path) && this.saves.get(path) === undefined &&
+      !this.inFlight.has(path) && buffer !== undefined &&
+      !hasLoneSurrogate(buffer) && !hasLoneSurrogate(this.engine.text(path))
+    ) {
       this.scheduleSave(path);
     }
   }
@@ -1025,12 +1067,16 @@ export class SessionBridge {
       });
   }
 
-  private cancelSave(path: string): void {
-    const cancel = this.saves.get(path);
-    if (cancel !== undefined) {
-      cancel();
-      this.saves.delete(path);
+  private pauseSave(path: string): void {
+    if (this.saves.has(path)) {
+      this.saves.get(path)?.();
+      this.saves.set(path, undefined);
     }
+  }
+
+  private cancelSave(path: string): void {
+    this.saves.get(path)?.();
+    this.saves.delete(path);
   }
 
   private scheduleBackstop(path: string): void {
@@ -1148,14 +1194,15 @@ function refusalSentence(cause: GrantRefusal): string | undefined {
 
 /**
  * Why a locally-opened file must not enter the room's replica, or `undefined` when it
- * may. The grant's shape rule and the session's size bound: the gates a peer's request
- * passes through, applied to the buffer rather than the disk. The editor holds decoded
- * text, so readability and decodability are what opening established; a file the window
- * has not saved yet is still shareable while it is otherwise grantable.
+ * may. The grant's shape rule, well-formed UTF-16 and the session's size bound gate buffers
+ * and disk reads alike. Unsaved text is shareable while it passes those checks.
  */
 function seedRefusal(path: string, bufferText: string): string | undefined {
   if (!isGrantedPath(path)) {
     return 'it is not a path the room shares (excluded from the grant, or escaping the folder)';
+  }
+  if (hasLoneSurrogate(bufferText)) {
+    return 'text contains an unpaired UTF-16 surrogate';
   }
   if (overFileBound(bufferText)) {
     return `it is over the ${MAX_GRANT_FILE_BYTES} bytes a session will carry`;

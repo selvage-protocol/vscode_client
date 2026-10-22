@@ -325,10 +325,11 @@ export class WorkspaceEditor implements EditorHost {
   async putBack(path: string, document: vscode.TextDocument, text: string): Promise<boolean> {
     const held = document.getText();
     const room = render(text, this.lineEnding(path));
+    const change = diff(held, room);
     if (held === room) {
       return true;
     }
-    return this.offer(path, document, diff(held, room), false);
+    return this.offer(path, document, change, false);
   }
 
   /**
