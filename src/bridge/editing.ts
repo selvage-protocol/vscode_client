@@ -56,9 +56,17 @@ function splitsPair(text: string, offset: number): boolean {
   return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
 }
 
+/** In Unicode mode a valid surrogate pair is one code point, outside this range. */
+export function hasLoneSurrogate(text: string): boolean {
+  return /[\uD800-\uDFFF]/u.test(text);
+}
+
 /**
  * The smallest replacement that turns `from` into `to`: the common prefix and suffix are
  * left alone, and no end of the range is left between the two halves of a surrogate pair.
+ *
+ * Both inputs must be well-formed UTF-16, including when equal. An unpaired surrogate
+ * throws RangeError before any change is produced; neither input is silently normalized.
  *
  * A whole-document replacement is the same edit with `start = 0`, and it is what the
  * cheapest implementation does. It is worth the extra scan to avoid: it collapses undo
@@ -67,6 +75,9 @@ function splitsPair(text: string, offset: number): boolean {
  * `start === end`, `text === ''` — means the texts already agree.
  */
 export function diff(from: string, to: string): TextChange {
+  if (hasLoneSurrogate(from) || hasLoneSurrogate(to)) {
+    throw new RangeError('cannot diff text containing an unpaired UTF-16 surrogate');
+  }
   if (from === to) {
     return { start: 0, end: 0, text: '' };
   }

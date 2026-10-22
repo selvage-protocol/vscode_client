@@ -246,6 +246,35 @@ class UnansweringEditor extends FakeEditor {
   }
 }
 
+class SaveObservedEditor extends QueuedEditor {
+  draws = 0;
+
+  override renderCursors(cursors: Cursor[]): void {
+    super.renderCursors(cursors);
+    this.draws += 1;
+  }
+}
+
+class HeldFailureEditor extends SaveObservedEditor {
+  holdFailures = false;
+  readonly failures: Array<(reject: boolean) => void> = [];
+
+  override applyChange(path: string, change: TextChange): Promise<boolean> {
+    if (!this.holdFailures) {
+      return super.applyChange(path, change);
+    }
+    return new Promise((resolve, reject) => {
+      this.failures.push((rejected) => {
+        if (rejected) {
+          reject(new Error('held apply failed'));
+        } else {
+          resolve(false);
+        }
+      });
+    });
+  }
+}
+
 /** A peer presence record carrying a caret, for the cursor tests. */
 function peerCaret(path: string): Presence {
   const peer: PeerInfo = { peer_id: 'p-bob', display_name: 'Bob', role: 'guest' };
@@ -255,6 +284,391 @@ function peerCaret(path: string): Presence {
   };
   return { clientId: 2, peer, state: { path, selection } };
 }
+
+test('malformed local text is refused without publishing, replacing or saving the buffer', (t) => {
+  const engine = new EngineStub();
+  const editor = new FakeEditor();
+  const timers = new ManualTimers();
+  const bridge = new SessionBridge({ engine, host: editor, timers });
+  editor.attach(bridge);
+  t.after(() => bridge.dispose());
+  editor.open(PATH, 'base');
+  bridge.documentOpened(PATH);
+  engine.inserted.length = 0;
+
+  editor.type(PATH, 'valid local edit');
+  assert.ok(timers.delays().length > 0, 'the prior edit did not arm the backstop');
+  engine.inserted.length = 0;
+  engine.deleted.length = 0;
+  editor.type(PATH, 'a\ud83db');
+  assert.equal(editor.text(PATH), 'a\ud83db');
+  assert.equal(engine.text(PATH), 'valid local edit');
+  assert.deepEqual(engine.inserted, []);
+  assert.deepEqual(engine.deleted, []);
+  assert.deepEqual(editor.changes.get(PATH), []);
+  assert.deepEqual(timers.delays(), []);
+  assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+  timers.fire();
+  assert.deepEqual(editor.saves, []);
+
+  editor.type(PATH, 'repaired \u{1F600}');
+  assert.equal(engine.text(PATH), 'repaired \u{1F600}');
+});
+
+test('a held apply cannot save malformed local text at the remote save deadline', async (t) => {
+  for (const route of ['change', 'reconcile', 'deadline']) {
+    const engine = new EngineStub();
+    const editor = new QueuedEditor();
+    const timers = new ManualTimers();
+    const bridge = new SessionBridge({ engine, host: editor, timers, reconcileSettleMs: 0 });
+    editor.attach(bridge);
+    t.after(() => bridge.dispose());
+    editor.open(PATH, 'base');
+    bridge.documentOpened(PATH);
+    engine.texts.set(PATH, 'room');
+    bridge.reconcile(PATH);
+    assert.deepEqual(timers.saveDelays(), [500]);
+
+    editor.documents.set(PATH, { text: 'bad\ud83d', eol: '\n' });
+    if (route === 'change') {
+      bridge.documentChanged(PATH);
+    } else if (route === 'reconcile') {
+      bridge.reconcile(PATH);
+    }
+    if (route !== 'deadline') {
+      assert.deepEqual(timers.saveDelays(), [], `${route} left the old deadline armed`);
+    }
+    timers.fire();
+    assert.deepEqual(editor.saves, [], `${route} saved text while an apply was held`);
+    assert.equal(editor.text(PATH), 'bad\ud83d');
+
+    // The pending apply refuses without altering the malformed buffer.
+    editor.accepts = false;
+    editor.pump();
+    await waitFor('the held apply to reach malformed-text refusal', () =>
+      editor.reportsOf('sessionError').length === 1,
+    );
+    assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+    assert.deepEqual(editor.saves, []);
+    assert.deepEqual(timers.delays(), []);
+    assert.equal(engine.text(PATH), 'room');
+    editor.type(PATH, 'room');
+    assert.deepEqual(timers.saveDelays(), [500], 'equal repair lost the outstanding write');
+    timers.fire();
+    assert.deepEqual(editor.savedText, ['room']);
+  }
+});
+
+test('a save deadline waits for a held valid apply and resumes when it settles', async (t) => {
+  const engine = new EngineStub();
+  const editor = new SaveObservedEditor();
+  const timers = new ManualTimers();
+  const bridge = new SessionBridge({ engine, host: editor, timers, reconcileSettleMs: 0 });
+  editor.attach(bridge);
+  t.after(() => bridge.dispose());
+  editor.open(PATH, 'base');
+  bridge.documentOpened(PATH);
+  engine.texts.set(PATH, 'room');
+  bridge.reconcile(PATH);
+  timers.fire();
+  assert.deepEqual(editor.savedText, [], 'the deadline saved the pre-apply buffer');
+  assert.equal(editor.text(PATH), 'base');
+  assert.deepEqual(timers.delays(), []);
+  editor.pump();
+  await waitFor('the held valid apply to settle', () => editor.draws === 1);
+  assert.deepEqual(timers.saveDelays(), [500], 'settlement lost the outstanding write');
+  timers.fire();
+  assert.deepEqual(editor.savedText, ['room']);
+});
+
+for (const outcome of ['terminal refusal', 'rejection']) {
+  test(`a paused remote save resumes after ${outcome} without retrying`, async (t) => {
+    const engine = new EngineStub();
+    const editor = new HeldFailureEditor();
+    const timers = new ManualTimers();
+    const bridge = new SessionBridge({ engine, host: editor, timers, reconcileSettleMs: 0 });
+    editor.attach(bridge);
+    t.after(() => bridge.dispose());
+    editor.open(PATH, 'base');
+    bridge.documentOpened(PATH);
+    engine.texts.set(PATH, 'room A');
+    bridge.reconcile(PATH);
+    editor.pump();
+    await waitFor('remote A to settle with an outstanding save', () => editor.draws === 1);
+    assert.deepEqual(timers.saveDelays(), [500]);
+
+    editor.holdFailures = true;
+    engine.texts.set(PATH, 'room B');
+    bridge.reconcile(PATH);
+    const count = outcome === 'terminal refusal' ? DEFAULT_MAX_APPLY_ATTEMPTS : 1;
+    for (let attempt = 0; attempt < count; attempt += 1) {
+      await waitFor('the next held apply', () => editor.failures.length === attempt + 1);
+      timers.fire();
+      assert.deepEqual(editor.savedText, [], 'a held apply saved before it settled');
+      const fail = editor.failures[attempt];
+      assert.ok(fail);
+      fail(outcome === 'rejection');
+    }
+    await waitFor('the final failure to be reported', () => outcome === 'terminal refusal'
+      ? editor.reportsOf('applyRefused').length === 1
+      : editor.reportsOf('sessionError').length === 1);
+    assert.equal(editor.text(PATH), 'room A');
+    assert.equal(engine.text(PATH), 'room B');
+    assert.deepEqual(timers.saveDelays(), [500], 'final failure stranded the paused remote save');
+    timers.fire();
+    assert.deepEqual(editor.savedText, ['room A']);
+    timers.fire();
+    assert.deepEqual(editor.savedText, ['room A'], 'final failure caused duplicate saves');
+    assert.equal(editor.failures.length, count, 'final failure restarted the apply loop');
+    assert.deepEqual(timers.delays(), []);
+  });
+}
+
+test('failed held applies keep remote saves paused for malformed buffer or replica', async (t) => {
+  for (const rejected of [false, true]) {
+    for (const side of ['buffer', 'replica']) {
+      const engine = new EngineStub();
+      const editor = new HeldFailureEditor();
+      const timers = new ManualTimers();
+      const bridge = new SessionBridge({
+        engine, host: editor, timers, reconcileSettleMs: 0, maxApplyAttempts: 1,
+      });
+      editor.attach(bridge);
+      t.after(() => bridge.dispose());
+      editor.open(PATH, 'base');
+      bridge.documentOpened(PATH);
+      engine.texts.set(PATH, 'room A');
+      bridge.reconcile(PATH);
+      editor.pump();
+      await waitFor('remote A to settle before a malformed failure', () => editor.draws === 1);
+      editor.holdFailures = true;
+      engine.texts.set(PATH, 'room B');
+      bridge.reconcile(PATH);
+      timers.fire();
+      if (side === 'buffer') {
+        editor.documents.set(PATH, { text: 'bad\ud83d', eol: '\n' });
+      } else {
+        engine.texts.set(PATH, 'bad\ude00');
+      }
+      const fail = editor.failures[0];
+      assert.ok(fail);
+      fail(rejected);
+      await waitFor('the malformed held apply to finish failing', () => rejected
+        ? editor.reportsOf('sessionError').length === 1
+        : editor.reportsOf('applyRefused').length === 1);
+      assert.deepEqual(timers.delays(), [], 'failure rearmed a malformed write');
+      timers.fire();
+      assert.deepEqual(editor.savedText, []);
+      assert.equal(editor.failures.length, 1);
+    }
+  }
+});
+
+test('a remote save survives malformed refusal and valid equal or different repair', async (t) => {
+  for (const route of ['publish', 'reconcile']) {
+    for (const repair of ['room', 'different \u{1F600}']) {
+      const engine = new EngineStub();
+      const editor = new SaveObservedEditor();
+      const timers = new ManualTimers();
+      const bridge = new SessionBridge({ engine, host: editor, timers });
+      editor.attach(bridge);
+      t.after(() => bridge.dispose());
+      editor.open(PATH, 'base');
+      bridge.documentOpened(PATH);
+      engine.texts.set(PATH, 'room');
+      bridge.reconcile(PATH);
+      editor.pump();
+      await waitFor('the remote apply to settle', () => editor.draws === 1);
+      assert.deepEqual(timers.saveDelays(), [500]);
+      engine.inserted.length = 0;
+      engine.deleted.length = 0;
+
+      editor.documents.set(PATH, { text: 'bad\ud83d', eol: '\n' });
+      if (route === 'publish') {
+        bridge.documentChanged(PATH);
+      } else {
+        bridge.reconcile(PATH);
+      }
+      assert.equal(editor.reportsOf('sessionError').length, 1);
+      assert.deepEqual(engine.inserted, []);
+      assert.deepEqual(engine.deleted, []);
+      assert.deepEqual(timers.delays(), []);
+      timers.fire();
+      assert.deepEqual(editor.savedText, []);
+
+      editor.documents.set(PATH, { text: repair, eol: '\n' });
+      if (route === 'publish') {
+        bridge.documentChanged(PATH);
+      } else {
+        bridge.reconcile(PATH);
+        if (repair !== 'room') {
+          editor.pump();
+          await waitFor('the repaired buffer apply to settle', () => editor.draws === 2);
+        }
+      }
+      const expected = route === 'publish' ? repair : 'room';
+      assert.equal(editor.text(PATH), expected);
+      assert.equal(engine.text(PATH), expected);
+      assert.deepEqual(timers.saveDelays(), [500], `${route} repair lost the outstanding write`);
+      timers.fire();
+      assert.deepEqual(editor.savedText, [expected]);
+      timers.fire();
+      assert.deepEqual(editor.savedText, [expected], 'repair queued a duplicate write');
+    }
+  }
+});
+
+test('closing a document clears a paused remote save before reopening', (t) => {
+  const engine = new EngineStub();
+  const editor = new QueuedEditor();
+  const timers = new ManualTimers();
+  const bridge = new SessionBridge({ engine, host: editor, timers, reconcileSettleMs: 0 });
+  editor.attach(bridge);
+  t.after(() => bridge.dispose());
+  editor.open(PATH, 'base');
+  bridge.documentOpened(PATH);
+  engine.texts.set(PATH, 'room');
+  bridge.reconcile(PATH);
+  editor.type(PATH, 'bad\ud83d');
+  assert.deepEqual(timers.delays(), []);
+  bridge.documentClosed(PATH);
+  editor.close(PATH);
+  editor.open(PATH, 'room');
+  bridge.documentOpened(PATH);
+  assert.deepEqual(timers.delays(), [], 'the reopened document inherited a paused write');
+  timers.fire();
+  assert.deepEqual(editor.savedText, []);
+});
+
+test('the save callback refuses silently malformed text and retains the remote write', async (t) => {
+  for (const side of ['buffer', 'replica']) {
+    const engine = new EngineStub();
+    const editor = new SaveObservedEditor();
+    const timers = new ManualTimers();
+    const bridge = new SessionBridge({ engine, host: editor, timers, reconcileSettleMs: 0 });
+    editor.attach(bridge);
+    t.after(() => bridge.dispose());
+    editor.open(PATH, 'base');
+    bridge.documentOpened(PATH);
+    engine.texts.set(PATH, 'room');
+    bridge.reconcile(PATH);
+    editor.pump();
+    await waitFor('the remote apply to settle before the deadline', () => editor.draws === 1);
+    if (side === 'buffer') {
+      editor.documents.set(PATH, { text: 'bad\ud83d', eol: '\n' });
+    } else {
+      engine.texts.set(PATH, 'bad\ude00');
+    }
+    timers.fire();
+    assert.deepEqual(editor.savedText, [], `${side} was malformed at the deadline`);
+    assert.deepEqual(timers.delays(), []);
+    bridge.documentChanged(PATH);
+    timers.fire();
+    assert.deepEqual(editor.savedText, [], 'an invalid change rearmed a writable deadline');
+    editor.documents.set(PATH, { text: 'room', eol: '\n' });
+    engine.texts.set(PATH, 'room');
+    bridge.documentChanged(PATH);
+    assert.deepEqual(timers.saveDelays(), [500]);
+    timers.fire();
+    assert.deepEqual(editor.savedText, ['room']);
+  }
+});
+
+test('malformed host seeds are refused without opening or rewriting the document', (t) => {
+  const engine = new EngineStub();
+  const editor = new FakeEditor();
+  const bridge = new SessionBridge({ engine, host: editor, timers: new ManualTimers() });
+  t.after(() => bridge.dispose());
+  editor.open(PATH, '\ude00');
+  bridge.documentOpened(PATH);
+  assert.deepEqual(engine.inserted, []);
+  assert.deepEqual(bridge.openDocuments(), []);
+  assert.equal(editor.text(PATH), '\ude00');
+  assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+});
+
+test('reconcile refuses malformed buffer or replica text, even when the texts agree', (t) => {
+  for (const [buffer, replica] of [['bad\ud83d', 'room'], ['buffer', 'bad\ude00'], ['\ud800', '\ud800']]) {
+    const engine = new EngineStub();
+    engine.role = 'guest';
+    engine.texts.set(PATH, replica);
+    const editor = new FakeEditor();
+    editor.open(PATH, buffer);
+    const timers = new ManualTimers();
+    const bridge = new SessionBridge({ engine, host: editor, timers });
+    t.after(() => bridge.dispose());
+    assert.doesNotThrow(() => bridge.documentOpened(PATH));
+    assert.deepEqual(editor.changes.get(PATH), []);
+    assert.deepEqual(engine.inserted, []);
+    assert.deepEqual(engine.deleted, []);
+    assert.equal(editor.text(PATH), buffer);
+    assert.equal(engine.text(PATH), replica);
+    assert.deepEqual(timers.delays(), []);
+    assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+  }
+});
+
+test('a valid local buffer cannot publish through a malformed replica', (t) => {
+  const engine = new EngineStub();
+  engine.role = 'guest';
+  engine.texts.set(PATH, 'base');
+  const editor = new FakeEditor();
+  const bridge = new SessionBridge({ engine, host: editor, timers: new ManualTimers() });
+  editor.attach(bridge);
+  t.after(() => bridge.dispose());
+  editor.open(PATH, 'base');
+  bridge.documentOpened(PATH);
+  engine.texts.set(PATH, 'bad\ud83d');
+  assert.doesNotThrow(() => editor.type(PATH, 'local'));
+  assert.deepEqual(engine.inserted, []);
+  assert.deepEqual(engine.deleted, []);
+  assert.equal(editor.text(PATH), 'local');
+  assert.equal(engine.text(PATH), 'bad\ud83d');
+  assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+});
+
+test('a backstop armed before text becomes malformed cannot send a whole-document replacement', (t) => {
+  for (const malformedSide of ['buffer', 'replica']) {
+    const engine = new EngineStub();
+    const editor = new FakeEditor();
+    const timers = new ManualTimers();
+    const bridge = new SessionBridge({ engine, host: editor, timers });
+    editor.attach(bridge);
+    t.after(() => bridge.dispose());
+    editor.open(PATH, 'base');
+    bridge.documentOpened(PATH);
+    editor.type(PATH, 'local');
+    assert.ok(timers.delays().length > 0);
+    if (malformedSide === 'buffer') {
+      editor.documents.set(PATH, { text: '\ud83d', eol: '\n' });
+    } else {
+      engine.texts.set(PATH, '\ude00');
+    }
+    const buffer = editor.text(PATH);
+    const replica = engine.text(PATH);
+    assert.doesNotThrow(() => timers.fire());
+    assert.deepEqual(editor.changes.get(PATH), []);
+    assert.deepEqual(editor.saves, []);
+    assert.equal(editor.text(PATH), buffer);
+    assert.equal(engine.text(PATH), replica);
+    assert.deepEqual(timers.delays(), []);
+    assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+  }
+});
+
+test('malformed requested file content is refused rather than seeded', async (t) => {
+  const engine = new EngineStub();
+  const editor = new FakeEditor();
+  const bridge = new SessionBridge({ engine, host: editor, timers: new ManualTimers() });
+  t.after(() => bridge.dispose());
+  editor.disk.set(PATH, 'bad\ud83d');
+  engine.emit({ type: 'documentsChanged', documents: [PATH] });
+  await waitFor('the malformed file refusal', () => editor.reportsOf('sessionError').length === 1);
+  assert.deepEqual(editor.reads, [PATH]);
+  assert.deepEqual(engine.inserted, []);
+  assert.equal(engine.has(PATH), false);
+  assert.match(editor.reportsOf('sessionError')[0]?.message ?? '', /unpaired UTF-16 surrogate/);
+});
 
 test('a host seeds an open file into the replica and offers it to the room', async (t) => {
   const { session, host, guest } = await twoWindows(t);

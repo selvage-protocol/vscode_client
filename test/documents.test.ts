@@ -281,6 +281,33 @@ function stubRoom(initial: string): {
   };
 }
 
+test('malformed text during a refused apply rejects rebasing and reaches the bridge report', async (t) => {
+  const window = seat(t, 'base\n', (window) => {
+    window.type('bad\ud83d\n');
+    return Promise.resolve(false);
+  });
+  window.peer((text) => `${text}REMOTE\n`);
+  await window.drain();
+  assert.equal(window.offered.length, 1, 'the malformed buffer was offered another edit');
+  assert.equal(window.text(), 'bad\ud83d\n');
+  assert.equal(window.room(), 'base\nREMOTE\n');
+  assert.ok(window.reports.some((report) =>
+    report.kind === 'sessionError' && /cannot diff text containing an unpaired UTF-16 surrogate/.test(report.message),
+  ));
+});
+
+test('put-back rejects malformed text in either input, including equal malformed texts', async () => {
+  const editor = new WorkspaceEditor({ role: 'guest', folders: [], report: () => undefined });
+  for (const [held, room] of [['\ud83d', 'room'], ['buffer', '\ude00'], ['\ud800', '\ud800']]) {
+    const document = { getText: () => held } as unknown as Parameters<typeof editor.putBack>[1];
+    await assert.rejects(editor.putBack(PATH, document, room), {
+      name: 'RangeError',
+      message: 'cannot diff text containing an unpaired UTF-16 surrogate',
+    });
+    assert.equal(document.getText(), held);
+  }
+});
+
 test('a keystroke typed while a peer’s edit is applied is merged with it, not dropped', async (t) => {
   const window = seat(t, 'base\n', (window) => {
     if (window.offered.length === 1) {
