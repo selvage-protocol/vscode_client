@@ -30,12 +30,16 @@ name: release
 #
 # `package.json:4` carries the version the run asserts against.
 #
-# Three jobs, not two: `bump` holds `contents: write` for the one push it makes to `main`,
-# and it runs the gate `ci.yml` runs before that push, because a commit pushed with this
-# workflow's own `GITHUB_TOKEN` starts no workflow run: a bump pull request would carry no
-# checks at all. `id-token: write` is held only by `publish`, which installs nothing, so an
-# install script that misbehaves in `bump` can push this repository's history but cannot mint
-# the Marketplace credential — the one identity only this workflow can use. `npm ci`, the
+# Four jobs. `plan` resolves the run read-only: it refuses a dispatch that is not at `main` or
+# whose manifest version is not released, derives the version the bump would cut with
+# `scripts/bump-version.sh --dry-run` (which prints it and writes nothing), and prints the plan a
+# `dry_run` stops at — all under `contents: read` and a checkout that keeps no credential. `bump`
+# holds `contents: write` for the one push it makes to `main`, and it runs the gate `ci.yml` runs
+# before that push, because a commit pushed with this workflow's own `GITHUB_TOKEN` starts no
+# workflow run: a bump pull request would carry no checks at all. `id-token: write` is held only
+# by `publish`, which installs nothing, so an install script that misbehaves in `bump` can push
+# this repository's history but cannot mint the Marketplace credential — the one identity only
+# this workflow can use. `npm ci`, the
 # build, the test suite and the standalone install of `@vscode/vsce` also run in `build`,
 # which holds neither permission; the `.vsix` and both installed publishers cross into
 # `publish` as artifacts, and `publish` only runs the `vsce` and `ovsx` binaries it
@@ -77,36 +81,30 @@ permissions:
   contents: read
 
 jobs:
-  # A dispatch computes its own version here: it refuses unless the version `package.json` carries
-  # is already released, derives the next one, runs the gate `ci.yml` runs against the bumped tree,
-  # and commits and pushes the result to `main`. The gate is before the push because a commit
-  # pushed with this workflow's own `GITHUB_TOKEN` starts no workflow run, so the commit that
-  # reaches `main` gets its checks here or nowhere.
-  #
-  # That push is why this job holds `contents: write`. `id-token: write` stays with `publish`, so
-  # the `npm ci` below cannot reach the Marketplace federation.
-  #
-  # On a tag push there is nothing to compute — the tag names the version and `build` reads it from
-  # there — so every step here is skipped and the job reports green having done nothing.
-  bump:
+  # The read-only half of a dispatch, and the plan it rehearses with. It holds `contents: read`,
+  # keeps no credential in the checkout, and resolves the run — the main-refusal, the
+  # released-manifest guard and the version the bump would cut — writing nothing on the runner or
+  # the remote. It is the plan `scripts/check_dry_run_gating.py` gates the rest of the file
+  # against, and `bump` below takes the one version from it.
+  plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.target.outputs.version }}
-      sha: ${{ steps.commit.outputs.sha }}
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'workflow_dispatch'
         with:
           persist-credentials: false
 
+      # The released-manifest guard reads `package.json` through `node`, so a dispatch needs the
+      # runner's Node; nothing is installed with it and no dependency cache is written.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: github.event_name == 'workflow_dispatch'
         with:
           node-version: "24.18.1"
-          cache: npm
 
       # A bump is a commit on `main` and nothing else. The push below is not forced, so a dispatch
       # from a ref that is behind `main` is refused by the remote; this refuses the other direction,
@@ -148,7 +146,9 @@ jobs:
       # `scripts/bump-version.sh --dry-run` names the files it would write and prints the version it
       # would write as the last line of stdout — the one line this run takes its tag, its Release
       # and its commit subject from. The word is the dispatch input, applied to whatever the
-      # manifest carries now.
+      # manifest carries now. It writes nothing, so this job stays read-only; the version leaves as
+      # a job output rather than through the environment, so no second line can ride into
+      # `$GITHUB_ENV`.
       - name: derive the version this bump cuts
         if: github.event_name == 'workflow_dispatch'
         id: target
@@ -186,6 +186,39 @@ jobs:
             - tagged v${TARGET}, created its GitHub Release, and published the .vsix to the VS Code
               Marketplace and to Open VSX
           EOF
+
+  # The one write half of a dispatch. `plan` above has already refused a run that is not at `main`
+  # or whose manifest version is not released; this job takes the version it derived, runs the gate
+  # `ci.yml` runs against the bumped tree, and commits and pushes the result to `main`. The gate is
+  # before the push because a commit pushed with this workflow's own `GITHUB_TOKEN` starts no
+  # workflow run, so the commit that reaches `main` gets its checks here or nowhere.
+  #
+  # That push is why this job holds `contents: write`. `id-token: write` stays with `publish`, so
+  # the `npm ci` below cannot reach the Marketplace federation.
+  #
+  # On a tag push there is nothing to compute — the tag names the version and `build` reads it from
+  # there — so every step here is skipped and the job reports green having done nothing.
+  bump:
+    needs: plan
+    if: inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ needs.plan.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          node-version: "24.18.1"
+          cache: npm
 
       - name: bump the version
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
@@ -233,7 +266,7 @@ jobs:
         id: commit
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET: ${{ steps.target.outputs.version }}
+          TARGET: ${{ needs.plan.outputs.version }}
         run: |
           git config user.name "DontBlameMe"
           git config user.email "dontblameme@noreply.codeberg.org"
