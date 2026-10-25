@@ -237,7 +237,7 @@ export function roomPathOf(
 }
 
 /** `path` as it reads inside `base`, or `undefined` when it is not inside it. */
-function relativeWithin(base: string, path: string): string | undefined {
+export function relativeWithin(base: string, path: string): string | undefined {
   const prefix = base.endsWith('/') ? base : `${base}/`;
   return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
 }

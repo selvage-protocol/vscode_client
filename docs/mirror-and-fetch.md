@@ -67,4 +67,9 @@ nothing: it waits one listing window and yields to the listing that follows. A h
 tab.
 
 A document the room changes is saved once the room settles, because the host's working copy is
-the room's truth.
+the room's truth. A file this window watched disappear is the exception: a document the host
+deleted is not written back when a peer's next change settles, so the file stays gone and the
+document keeps its tab and its unsaved text. That guard is the window's own observation of the
+deletion, not a lock on the path — a save already in flight when the file went, or a change that
+settles before the deletion has been seen, can still be written — and the person's own save
+recreates the file as usual, after which the room's changes are written again.

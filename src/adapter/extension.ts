@@ -1351,14 +1351,24 @@ export class Session {
         return;
       }
       // A content change is one of the three: a file that grows past what a session will carry
-      // leaves the listing, and one that shrinks back into it returns.
+      // leaves the listing, and one that shrinks back into it returns. Create and change also
+      // clear a recorded deletion; a delete records one.
       const refresh = (): void => {
         this.scheduleGrant();
       };
       this.grantWatchers.push(
-        watcher.onDidCreate(refresh),
-        watcher.onDidChange(refresh),
-        watcher.onDidDelete(refresh),
+        watcher.onDidCreate((uri) => {
+          this.editor.observedPresence(uri);
+          refresh();
+        }),
+        watcher.onDidChange((uri) => {
+          this.editor.observedPresence(uri);
+          refresh();
+        }),
+        watcher.onDidDelete((uri) => {
+          this.editor.observedDeletion(uri);
+          refresh();
+        }),
         watcher,
       );
     }
