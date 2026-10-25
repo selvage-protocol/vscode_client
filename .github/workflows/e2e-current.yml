@@ -14,7 +14,9 @@ name: e2e-current
 #
 # No `pull_request` trigger: what moves here is VS Code's release cadence and not our diffs, so
 # this is not the feedback path a pull request waits on. Weekly, an order of magnitude nearer a
-# stable build's arrival than a commit's.
+# stable build's arrival than a commit's. An ordinary pull request gets the server-free suite in
+# `ci.yml`; the four suites that need a real `selvaged`, and the native two-window proof, run here
+# on the schedule and on a manual dispatch rather than on every pull request.
 #
 # It is also the one workflow here that puts another repository beside this checkout: the proof
 # starts a real `selvaged`, `test/helpers/selvaged.ts` looks for it at `../reference_server`, and
@@ -54,8 +56,8 @@ jobs:
       # resolves the input against the workspace and refuses anything not under it — so the
       # checkout lands inside the workspace and the step below moves it one level up. What reads
       # it is `../reference_server`: `test/helpers/selvaged.ts` and `test/e2e/run.ts` resolve
-      # that from this repository's root, and `scripts/e2e/run-two-instance.sh` runs
-      # `nix develop ../reference_server`.
+      # that from this repository's root, and `scripts/e2e/run-two-instance.sh` enters the server
+      # flake's dev shell from that checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: selvage-protocol/reference_server
@@ -64,6 +66,14 @@ jobs:
 
       - name: move the server checkout to the sibling the proof reads
         run: mv .reference_server ../reference_server
+
+      # The server checkout has no `ref`, so it is the repository's default branch at the moment
+      # of the run and not a pinned revision; the cohort that actually ran is recorded rather than
+      # asserted. The client commit is the one the schedule or the dispatch names.
+      - name: the client and server revisions under test
+        run: |
+          echo "client $(git rev-parse HEAD)"
+          echo "server $(git -C ../reference_server rev-parse HEAD) on $(git -C ../reference_server rev-parse --abbrev-ref HEAD)"
 
       # Copied from `reference_server`'s `ci.yml`, where it is copied from that repository's own
       # `nightly.yml`: the preinstalled toolchains nothing here uses, each removal non-fatal and
@@ -113,9 +123,28 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
       # `test/helpers/selvaged.ts` looks for the binary in the sibling's target tree and fails the
-      # proof with this command when it is missing, so it is built the way the helper names.
+      # proof with this command when it is missing, so it is built the way the helper names. The
+      # shell is entered with the server as the working directory, so its `shellHook` installs its
+      # hooks there and not in this client checkout.
       - name: build the server the proof starts
-        run: nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvaged'
+        working-directory: ../reference_server
+        run: nix develop . -c cargo build -p selvaged
+
+      # The interop suite drives `reference_server`'s `interop_peer` example as a guest, and
+      # `test/helpers/interop_peer.ts` looks for it in the sibling's target tree and fails the
+      # suite with this command when it is missing.
+      - name: build the interop peer the interop suite drives
+        working-directory: ../reference_server
+        run: nix develop . -c cargo build -p selvage-harness --example interop_peer
+
+      # The four suites that need a built `selvaged` — the same four `npm test` runs — in one
+      # command: `test:relay-selvaged`, `test:selvage2` (two files) and `test:interop`. Both
+      # binaries above are already built, and `SELVAGE_WAIT_MS` is the deadline `ci.yml` gives its
+      # suite.
+      - name: the four real-server suites
+        env:
+          SELVAGE_WAIT_MS: "30000"
+        run: npm run test:server
 
       # The local command, unmodified, with the one variable that moves the editor: `stable`
       # resolves through `@vscode/test-electron` to whatever the update service calls stable at
@@ -130,11 +159,13 @@ jobs:
       # logs: `@vscode/test-electron` reports a child's exit code and nothing it printed, and a
       # build whose `code` binary never starts never reaches the extension host, so the proof's own
       # failure carries no cause. Printed only when something above failed, and it can turn nothing
-      # red into green.
+      # red into green. The suites above leave no `.log` here, so a run with none prints nothing
+      # rather than failing on the pattern.
       - name: the editors' own output, when the proof fails
         if: failure()
         run: |
           for log in .tmp/e2e-run/*.log; do
+            [ -e "${log}" ] || continue
             echo "===== ${log}"
             tail -n 80 "${log}"
           done

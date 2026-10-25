@@ -12,6 +12,14 @@
 # `.github/workflows/e2e-current.yml` runs this same script unattended on a weekly schedule
 # against the current stable VS Code build, so a VS Code release that breaks the extension is a
 # red run rather than a user report.
+#
+# The proof runs from the sibling `reference_server` flake's dev shell, entered from that
+# checkout: `nix develop` runs the shell's `shellHook` in the working directory, so entering it
+# from here would install the server shell's Rust git hooks here. The Node that runs the harness
+# is this checkout's own — the version `engines.node` names and `ci.yml` pins — asked of the
+# caller's `node` as its `process.execPath` before the shell boundary rather than taken from the
+# server shell, whose Node differs. `run.ts` resolves its roots from the file, not the working
+# directory, so both it and the Node are named by absolute path.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -20,8 +28,18 @@ cd "$repo_root"
 export TMPDIR="$repo_root/.tmp"
 mkdir -p "$TMPDIR"
 
-reference_server="${SELVAGE_REFERENCE_SERVER:-../reference_server}"
+# Before the server shell, the caller's Node: the pinned version runs the harness, not the
+# version the server flake carries. Validated as an absolute executable, and passed on absolutely
+# so the shell that runs it cannot substitute its own.
+node_bin=$(node -e 'process.stdout.write(process.execPath)')
+if [[ "$node_bin" != /* || ! -x "$node_bin" ]]; then
+  echo "the caller's node did not resolve to an absolute executable (got '$node_bin')" >&2
+  exit 1
+fi
 
-nix shell nixpkgs#xvfb-run -c bash -c "
-  xvfb-run -a nix develop '$reference_server' -c node test/e2e/run.ts
-"
+reference_server=$(cd -- "${SELVAGE_REFERENCE_SERVER:-$repo_root/../reference_server}" && pwd)
+run_ts="$repo_root/test/e2e/run.ts"
+
+cd "$reference_server"
+nix shell nixpkgs#xvfb-run -c \
+  xvfb-run -a nix develop . -c "$node_bin" "$run_ts"

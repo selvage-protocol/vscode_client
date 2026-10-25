@@ -333,6 +333,7 @@
     "test:relay-selvaged": "node --test test/relay-selvaged.test.ts",
     "test:selvage2": "node --test test/selvage2-selvaged.test.ts test/selvage2-reconnect-selvaged.test.ts",
     "test:interop": "node --test test/interop-v2.test.ts",
+    "test:server": "npm run build && npm run test:relay-selvaged && npm run test:selvage2 && npm run test:interop",
     "test:peer-corpus": "node --test test/peer-corpus.test.ts",
     "subject": "node test/helpers/selvage-subject.ts",
     "test:spikes": "node --test test/spikes/*.test.ts",

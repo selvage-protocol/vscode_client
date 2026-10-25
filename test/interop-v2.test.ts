@@ -10,9 +10,11 @@
  * engine's `src/engine/relay.ts`, `src/engine/peer.ts` and `src/bridge/peer-engine.ts`, and
  * `reference_server`'s `selvage-client` — so what this file proves is that they agree on it.
  *
- * It needs the sibling `reference_server` checkout and an `interop_peer` built from a branch
- * that teaches that example `selvage/2` (`SELVAGE_INTEROP_PEER` names one), so it is not in CI
- * and not in `test:fast`: `npm run test:interop` runs it, and so does `npm test`.
+ * It needs the sibling `reference_server` checkout and its `interop_peer` example, built from the
+ * same checkout (`SELVAGE_INTEROP_PEER` names one), so it is not in `test:fast`: `npm run
+ * test:interop` runs it, `npm run test:server` runs it with the other real-server suites, and so
+ * does `npm test`. `.github/workflows/e2e-current.yml` builds the `interop_peer`, and `selvaged`
+ * beside it, on its schedule.
  *
  * **What cannot be asserted on this wire, and is not asserted here.**
  *
