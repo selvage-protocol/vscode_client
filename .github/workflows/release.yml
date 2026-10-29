@@ -220,6 +220,25 @@ jobs:
           node-version: "24.18.1"
           cache: npm
 
+      # A job retry can reuse a successful plan after remote tags have changed. Recheck both
+      # conditions on every attempt, while package.json still carries the pre-bump version.
+      - name: recheck release preconditions before bumping
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TARGET: ${{ needs.plan.outputs.version }}
+        run: |
+          current=$(node -p "require('./package.json').version")
+          remote=$(git ls-remote --refs origin "refs/tags/v${current}")
+          if [ -z "$remote" ]; then
+            printf 'refusing: current tag v%s no longer exists on the remote; plan again before bumping\n' "$current" >&2
+            exit 1
+          fi
+          remote=$(git ls-remote --refs origin "refs/tags/v${TARGET}")
+          if [ -n "$remote" ]; then
+            printf 'refusing: planned tag v%s already exists on the remote; plan again before bumping\n' "$TARGET" >&2
+            exit 1
+          fi
+
       - name: bump the version
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
         env:

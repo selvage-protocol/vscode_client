@@ -56,8 +56,8 @@ job_client() {
   local system
   system=$(nix eval --raw --impure --expr builtins.currentSystem)
   # The guard around a workflow's `dry_run` input reads `.github/workflows`, so none of the suites
-  # below covers it. The flake check runs the same two files `ci.yml` runs, with the flake's Python
-  # supplying the PyYAML that job installs.
+  # below covers it. The flake check also runs the retry-precondition suite, with Node and the
+  # flake's Python supplying the PyYAML that `ci.yml` installs.
   say "client: the release workflow's dry_run gating"
   nix build ".#checks.${system}.dry-run-gating" --no-link --print-build-logs
   say "client: install"
