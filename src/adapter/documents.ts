@@ -19,7 +19,7 @@ import type {
   TextChange,
 } from '../bridge/index.ts';
 import type { Role } from '../engine/index.ts';
-import { readGrantedText, roomPathOf } from './grant.ts';
+import { readGrantedText, relativeWithin, roomPathOf } from './grant.ts';
 import { HELD_SCHEME, heldRoomPath } from './held.ts';
 import { MIRROR_MARKER, isWorkspaceConfigPath, mirrorRelative, plainMirrorPath } from './mirror.ts';
 
@@ -116,6 +116,16 @@ export class WorkspaceEditor implements EditorHost {
    * than on every open event and every save.
    */
   private readonly unshareable = new Set<string>();
+  /**
+   * Room paths of open documents whose own file this window's watcher saw disappear, whether the
+   * event named the file or a directory above it. Keyed by open document, so the set stays the
+   * open documents' size, and only a leaf's own presence event clears it: a directory that
+   * reappears says nothing about a document still gone under it. A peer's edit is not license to
+   * write a path the person deleted, so this is what skips the autosave it would otherwise
+   * schedule. The observation is the window's own, not a lock on the path: a save already in
+   * flight when the file went can still land.
+   */
+  private readonly vanished = new Set<string>();
   /**
    * The text each in-flight *bridge* apply of this window's asked its document to hold, by room
    * path: what tells a change event whether it is the room's own edit landing or a keystroke
@@ -218,7 +228,57 @@ export class WorkspaceEditor implements EditorHost {
     this.paths.delete(uri.toString());
     this.documents.delete(path);
     this.mirrorless.delete(path);
+    this.pruneVanished();
     return path;
+  }
+
+  /** Drops a recorded deletion for a document this window no longer shares. */
+  private pruneVanished(): void {
+    for (const gone of this.vanished) {
+      if (!this.documents.has(gone)) {
+        this.vanished.delete(gone);
+      }
+    }
+  }
+
+  /**
+   * The window's watcher saw `uri` disappear: every open document whose own file is at or under
+   * it is recorded, because the event names a directory as often as a file. The containment is
+   * the document's real file rather than a room-path prefix, so it holds however the captured
+   * folders assigned the path its namespace — two overlapping folders included.
+   */
+  observedDeletion(uri: vscode.Uri): void {
+    for (const [path, document] of this.documents) {
+      if (this.deletionNames(uri, document.uri)) {
+        this.vanished.add(path);
+      }
+    }
+  }
+
+  /** Whether a watched deletion of `uri` names the file `document` is shared from. */
+  private deletionNames(uri: vscode.Uri, document: vscode.Uri): boolean {
+    return (
+      uri.scheme === document.scheme &&
+      (uri.path === document.path || relativeWithin(uri.path, document.path) !== undefined)
+    );
+  }
+
+  /**
+   * The window's watcher saw `uri` present: only that leaf is cleared. A directory that
+   * reappears says nothing about an open document still gone under it, so a recreated leaf does
+   * not unguard its absent sibling.
+   */
+  observedPresence(uri: vscode.Uri): void {
+    const path = this.roomPath(uri);
+    if (path === undefined) {
+      return;
+    }
+    this.vanished.delete(path);
+  }
+
+  /** Whether this window watched `path` disappear and has seen no event for it since. */
+  private goneFromDisk(path: string): boolean {
+    return this.vanished.has(path);
   }
 
   // -- EditorHost ------------------------------------------------------------
@@ -373,6 +433,10 @@ export class WorkspaceEditor implements EditorHost {
     if (document === undefined || !document.isDirty) {
       return true;
     }
+    // The person deleted the file; a peer's edit is not a reason to write it back.
+    if (this.goneFromDisk(path)) {
+      return true;
+    }
     // A guest's mirror file holds what the room already holds — the keystrokes went first,
     // so the save writes the room's own text. The call is also what clears the dirty
     // marker. A host's save is the same ordinary write. `false` means the write failed and
@@ -441,6 +505,7 @@ export class WorkspaceEditor implements EditorHost {
     this.mirrorless.clear();
     this.unshareable.clear();
     this.askedFor.clear();
+    this.vanished.clear();
   }
 
   private roomPath(uri: vscode.Uri): string | undefined {

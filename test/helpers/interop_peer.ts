@@ -22,7 +22,7 @@ const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const REFERENCE_SERVER = resolve(REPO_ROOT, '..', 'reference_server');
 
 export const BUILD_HINT =
-  "nix develop ../reference_server -c sh -c 'cd ../reference_server && cargo build -p selvage-harness --example interop_peer'";
+  "cd ../reference_server && nix develop . -c cargo build -p selvage-harness --example interop_peer";
 
 /**
  * Joining two processes is slower than one round trip; only the first report gets this.

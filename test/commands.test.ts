@@ -1453,6 +1453,369 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
   );
 });
 
+/**
+ * One open host file in the deletion tests: a real file under the host's folder, a buffer that
+ * starts at `text` (dirty when it differs from `diskText`), and a document whose apply lands
+ * through the conversion below. A range comes in line/character coordinates, so the endpoints
+ * are read back through `offsetAt` rather than treated as the stub's own four-number range.
+ */
+function openHostDocument(
+  bundle: LoadedExtension,
+  root: string,
+  path: string,
+  diskText: string,
+  text: string,
+) {
+  const absolute = join(root, path);
+  const buffer = { text, dirty: text !== diskText, saves: [] as string[] };
+  const document = {
+    uri: bundle.stub.Uri.file(absolute),
+    eol: 1,
+    get isDirty(): boolean {
+      return buffer.dirty;
+    },
+    getText: (): string => buffer.text,
+    positionAt: (offset: number): { line: number; character: number } => {
+      const lines = buffer.text.slice(0, offset).split('\n');
+      return { line: lines.length - 1, character: lines[lines.length - 1].length };
+    },
+    offsetAt: (position: { line: number; character: number }): number =>
+      buffer.text.split('\n').slice(0, position.line).reduce((offset, line) => offset + line.length + 1, 0) +
+        position.character,
+    save: (): Promise<boolean> => {
+      buffer.saves.push(buffer.text);
+      writeFileSync(absolute, buffer.text);
+      buffer.dirty = false;
+      bundle.stub.fire('saveTextDocument', document);
+      bundle.stub.watchEvent('change', absolute);
+      return Promise.resolve(true);
+    },
+  };
+  return { path, absolute, buffer, document };
+}
+
+type HostFile = ReturnType<typeof openHostDocument>;
+
+/**
+ * A host window with `entries` open over a real folder, a fake server and a joined peer. The
+ * deletion tests differ only in the order events arrive in, so the staging is shared: the real
+ * files let the host's own watcher and a peer's read see one tree, and the peer can be driven
+ * through the room like any other seat.
+ */
+async function deletionRoom(
+  t: TestContext,
+  entries: ReadonlyArray<{ path: string; diskText: string; text?: string }>,
+): Promise<{
+  bundle: LoadedExtension;
+  folder: ReturnType<typeof testHostFolder>;
+  files: Map<string, HostFile>;
+  peer: LiveSession;
+  observed: () => unknown;
+}> {
+  const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
+  t.after(async () => {
+    await server.stop();
+  });
+  const { bundle } = activated(t);
+  const folder = testHostFolder(bundle, t);
+  const files = new Map<string, HostFile>();
+  for (const entry of entries) {
+    folder.put(entry.path, entry.diskText);
+    files.set(entry.path, openHostDocument(bundle, folder.folder, entry.path, entry.diskText, entry.text ?? entry.diskText));
+  }
+  bundle.stub.registered.applyEditImpl = async (edit: unknown) => {
+    for (const change of (edit as {
+      edits: Array<{
+        uri: { toString(): string };
+        range: { start: { line: number; character: number }; end: { line: number; character: number } };
+        text: string;
+      }>;
+    }).edits) {
+      const file = [...files.values()].find((candidate) => candidate.document.uri.toString() === change.uri.toString());
+      assert.ok(file !== undefined, `an edit addressed an unknown document: ${change.uri}`);
+      file.buffer.text = file.buffer.text.slice(0, file.document.offsetAt(change.range.start)) + change.text +
+        file.buffer.text.slice(file.document.offsetAt(change.range.end));
+      file.buffer.dirty = true;
+      bundle.stub.fire('changeTextDocument', { document: file.document });
+    }
+    return true;
+  };
+
+  await bundle.stub.commands.executeCommand('selvage.host', {
+    serverUrl: server.wsBase,
+    displayName: 'Ada',
+  });
+  const invite = await inviteOf(bundle);
+  for (const file of files.values()) {
+    bundle.stub.registered.textDocuments.push(file.document);
+    bundle.stub.fire('openTextDocument', file.document);
+  }
+  const peer = await LiveSession.join(wireOf(invite), 'Bob', OPTIONS);
+  t.after(async () => {
+    await peer.disconnect();
+  });
+  const observed = () => ({
+    grant: peer.grantedPaths(),
+    holds: peer.peerDocuments(),
+    buffers: [...files.values()].map((file) => file.buffer),
+    onDisk: Object.fromEntries([...files].map(([path, file]) => [path, existsSync(file.absolute)])),
+    errors: bundle.stub.registered.errors,
+  });
+  return { bundle, folder, files, peer, observed };
+}
+
+/** Waits for the peer to hold every path, opens them, and waits for their text to arrive. */
+async function peerOpens(
+  peer: LiveSession,
+  expected: ReadonlyArray<readonly [path: string, text: string]>,
+  observed: () => unknown,
+): Promise<void> {
+  await waitFor('both open host files to reach the peer', () =>
+    expected.every(([path]) => peer.grantedPaths().includes(path) && peer.peerDocuments().includes(path)),
+    { describe: observed });
+  for (const [path] of expected) {
+    await peer.open(path);
+  }
+  await waitFor('the peer to receive the host buffers, including unsaved work', () =>
+    expected.every(([path, text]) => peer.text(path) === text),
+    { describe: observed });
+}
+
+/** Deletes the file or directory and tells the host's own watcher, as the editor would. */
+function dropFromDisk(bundle: LoadedExtension, absolute: string): void {
+  rmSync(absolute, { recursive: true, force: true });
+  bundle.stub.watchEvent('delete', absolute);
+}
+
+/** Waits until `path`'s autosave has written once, the deadline the deletion guard is read past. */
+async function witnessAutosave(
+  file: HostFile,
+  expected: string,
+  observed: () => unknown,
+): Promise<void> {
+  await waitFor('the unaffected autosave to reach its deadline', () =>
+    file.buffer.saves.length === 1 && !file.buffer.dirty,
+    { describe: observed });
+  assert.equal(readFileSync(file.absolute, 'utf8'), expected);
+}
+
+test('a host-deleted open file is not recreated by a later remote autosave', async (t) => {
+  const localText = 'the host has unsaved work\n';
+  const remoteText = 'a later peer edit\n';
+  const { bundle, files, peer, observed } = await deletionRoom(t, [
+    { path: 'deleted.md', diskText: 'the last disk copy\n', text: localText },
+    { path: 'kept.md', diskText: 'still on disk\n' },
+  ]);
+  const deleted = files.get('deleted.md');
+  const kept = files.get('kept.md');
+  assert.ok(deleted !== undefined && kept !== undefined);
+  await peerOpens(peer, [['deleted.md', localText], ['kept.md', 'still on disk\n']], observed);
+  const tab = { input: { uri: deleted.document.uri } };
+  bundle.stub.window.tabGroups.all.push({ tabs: [tab] });
+
+  dropFromDisk(bundle, deleted.absolute);
+  await waitFor('the deletion to leave the published grant', () =>
+    !peer.grantedPaths().includes('deleted.md') && peer.grantedPaths().includes('kept.md'),
+    { describe: observed },
+  );
+
+  peer.insert('deleted.md', localText.length, remoteText);
+  // A retired host binding need not apply this edit; a save-only guard may still apply it.
+  await waitFor('the retained edit to land or the deleted host binding to retire', () =>
+    deleted.buffer.text === localText + remoteText || !peer.peerDocuments().includes('deleted.md'),
+    { describe: observed },
+  );
+  // This edit arms its save after the deleted file's edit. Its actual write witnesses the
+  // autosave deadline passing even when deletion correctly prevents the earlier write.
+  peer.insert('kept.md', 'still on disk\n'.length, remoteText);
+  await witnessAutosave(kept, 'still on disk\n' + remoteText, observed);
+  assert.equal(existsSync(deleted.absolute), false, 'remote autosave recreated the host-deleted file');
+  assert.deepEqual(deleted.buffer.saves, [], 'remote autosave tried to save the deleted document');
+  assert.ok(deleted.buffer.text.startsWith(localText), 'the host lost its unsaved text');
+  assert.equal(deleted.document.isDirty, true, 'the host lost its unsaved marker');
+  assert.deepEqual(bundle.stub.registered.closedTabs, [], 'the host tab was closed');
+  assert.ok(bundle.stub.window.tabGroups.all.some((group) => group.tabs.includes(tab)));
+  assert.equal(peer.has('deleted.md'), true, 'deletion discarded the retained replica');
+  assert.equal(peer.text('deleted.md'), localText + remoteText, 'deletion discarded retained history');
+  assert.ok(!peer.grantedPaths().includes('deleted.md'), 'autosave republished the deleted path');
+});
+
+test('a pending autosave is not written after the host deletes its file', async (t) => {
+  const localText = 'an unsaved draft\n';
+  const remoteText = 'a peer edit\n';
+  const { bundle, files, peer, observed } = await deletionRoom(t, [
+    { path: 'draft.md', diskText: 'on disk\n', text: localText },
+    { path: 'kept.md', diskText: 'still on disk\n' },
+  ]);
+  const draft = files.get('draft.md');
+  const kept = files.get('kept.md');
+  assert.ok(draft !== undefined && kept !== undefined);
+  await peerOpens(peer, [['draft.md', localText], ['kept.md', 'still on disk\n']], observed);
+
+  // The peer's edit arms the host's save before the deletion is seen, so the deadline is
+  // already pending when the file goes: it must not be written when it fires.
+  peer.insert('draft.md', localText.length, remoteText);
+  await waitFor('the host buffer to take the peer edit', () => draft.buffer.text === localText + remoteText, { describe: observed });
+  dropFromDisk(bundle, draft.absolute);
+  peer.insert('kept.md', 'still on disk\n'.length, remoteText);
+  await witnessAutosave(kept, 'still on disk\n' + remoteText, observed);
+
+  assert.equal(existsSync(draft.absolute), false, 'a pending autosave recreated the host-deleted file');
+  assert.deepEqual(draft.buffer.saves, [], 'the pending save wrote the deleted document');
+  assert.ok(draft.buffer.text.startsWith(localText), 'the host lost its unsaved text');
+  assert.equal(draft.document.isDirty, true, 'the host lost its unsaved marker');
+});
+
+test('the deletion guard holds while the host grant refresh is held', async (t) => {
+  const localText = 'unsaved while held\n';
+  const remoteText = 'a peer edit\n';
+  const { bundle, files, peer, observed } = await deletionRoom(t, [
+    { path: 'gone.md', diskText: 'on disk\n', text: localText },
+    { path: 'kept.md', diskText: 'still on disk\n' },
+  ]);
+  const gone = files.get('gone.md');
+  const kept = files.get('kept.md');
+  assert.ok(gone !== undefined && kept !== undefined);
+  await peerOpens(peer, [['gone.md', localText], ['kept.md', 'still on disk\n']], observed);
+
+  // Hold the host's own folder walk, so the listing still names the deleted path when the
+  // autosave deadline passes: the guard, not the refresh, is what has to stop the write.
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  bundle.stub.registered.readHold = () => held;
+  dropFromDisk(bundle, gone.absolute);
+  peer.insert('gone.md', localText.length, remoteText);
+  peer.insert('kept.md', 'still on disk\n'.length, remoteText);
+  await witnessAutosave(kept, 'still on disk\n' + remoteText, observed);
+
+  assert.ok(peer.grantedPaths().includes('gone.md'), 'the refresh was not held');
+  assert.equal(existsSync(gone.absolute), false, 'the held refresh let the autosave recreate the file');
+  assert.deepEqual(gone.buffer.saves, []);
+  release();
+});
+
+test('deleting a host directory guards its descendants but not a lookalike sibling', async (t) => {
+  const insideText = 'inside the directory\n';
+  const peerText = 'a peer edit\n';
+  const { bundle, folder, files, peer, observed } = await deletionRoom(t, [
+    { path: 'docs/a.md', diskText: 'a on disk\n', text: insideText },
+    { path: 'docs-other.md', diskText: 'not under docs\n' },
+  ]);
+  const inside = files.get('docs/a.md');
+  const lookalike = files.get('docs-other.md');
+  assert.ok(inside !== undefined && lookalike !== undefined);
+  await peerOpens(peer, [['docs/a.md', insideText], ['docs-other.md', 'not under docs\n']], observed);
+
+  // The watcher names the directory, not each file, so the guard has to stand for the whole
+  // subtree — and must not catch `docs-other.md`, whose name only starts the same.
+  dropFromDisk(bundle, join(folder.folder, 'docs'));
+  peer.insert('docs/a.md', insideText.length, peerText);
+  peer.insert('docs-other.md', 'not under docs\n'.length, peerText);
+  await witnessAutosave(lookalike, 'not under docs\n' + peerText, observed);
+
+  assert.equal(existsSync(inside.absolute), false, 'an open descendant recreated the deleted directory');
+  assert.deepEqual(inside.buffer.saves, [], 'the deleted directory was not guarded');
+  assert.ok(inside.buffer.text.startsWith(insideText), 'the host lost its unsaved text');
+  assert.equal(files.get('docs-other.md')?.buffer.saves.length, 1, 'the lookalike sibling was guarded too');
+});
+
+test('a host recreation first saved by hand lets a later remote autosave write again', async (t) => {
+  const localText = 'kept by the person\n';
+  const first = 'an earlier peer edit\n';
+  const second = 'a later peer edit\n';
+  const { bundle, files, peer, observed } = await deletionRoom(t, [
+    { path: 'note.md', diskText: 'on disk\n', text: localText },
+    { path: 'kept.md', diskText: 'still on disk\n' },
+  ]);
+  const note = files.get('note.md');
+  const kept = files.get('kept.md');
+  assert.ok(note !== undefined && kept !== undefined);
+  await peerOpens(peer, [['note.md', localText], ['kept.md', 'still on disk\n']], observed);
+
+  dropFromDisk(bundle, note.absolute);
+  peer.insert('note.md', localText.length, first);
+  peer.insert('kept.md', 'still on disk\n'.length, first);
+  await witnessAutosave(kept, 'still on disk\n' + first, observed);
+  assert.equal(existsSync(note.absolute), false);
+
+  // The person recreates the file with their own save; the watcher sees it present and the
+  // listing names it again, so the peer's next edit is written as usual.
+  await note.document.save();
+  await waitFor('the recreated path to be regranted', () => peer.grantedPaths().includes('note.md'), { describe: observed });
+  peer.insert('note.md', note.buffer.text.length, second);
+  await waitFor('the later autosave to write the recreated file', () =>
+    note.buffer.saves.length === 2 && !note.buffer.dirty, { describe: observed });
+  assert.equal(readFileSync(note.absolute, 'utf8'), localText + first + second);
+  assert.ok(peer.text('note.md').startsWith(localText));
+});
+
+test('recreating one child of a deleted host directory leaves its absent sibling guarded', async (t) => {
+  const aText = 'the a file draft\n';
+  const bText = 'the b file draft\n';
+  const first = 'an earlier peer edit\n';
+  const second = 'a later peer edit\n';
+  const { bundle, folder, files, peer, observed } = await deletionRoom(t, [
+    { path: 'docs/a.md', diskText: 'a on disk\n', text: aText },
+    { path: 'docs/b.md', diskText: 'b on disk\n', text: bText },
+    { path: 'docs-other.md', diskText: 'not under docs\n' },
+  ]);
+  const a = files.get('docs/a.md');
+  const b = files.get('docs/b.md');
+  const lookalike = files.get('docs-other.md');
+  assert.ok(a !== undefined && b !== undefined && lookalike !== undefined);
+  await peerOpens(peer, [
+    ['docs/a.md', aText],
+    ['docs/b.md', bText],
+    ['docs-other.md', 'not under docs\n'],
+  ], observed);
+
+  // Hold the host's own folder walk so the deleted paths stay in the listing: the guard, not
+  // the withdrawn listing, is what has to stop the writes.
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  bundle.stub.registered.readHold = () => held;
+
+  // The watcher names the directory, not each file.
+  dropFromDisk(bundle, join(folder.folder, 'docs'));
+
+  // Only the directory comes back. A parent's presence says nothing about an open document
+  // still gone under it, and the lookalike's save witnesses the sibling's deadline passing.
+  mkdirSync(join(folder.folder, 'docs'), { recursive: true });
+  bundle.stub.watchEvent('create', join(folder.folder, 'docs'));
+  peer.insert('docs/b.md', bText.length, first);
+  await waitFor('the absent sibling to take the peer edit', () => b.buffer.text === bText + first, { describe: observed });
+  peer.insert('docs-other.md', 'not under docs\n'.length, first);
+  await witnessAutosave(lookalike, 'not under docs\n' + first, observed);
+  assert.equal(existsSync(b.absolute), false, 'a parent directory presence cleared the absent child guard');
+  assert.deepEqual(b.buffer.saves, [], 'the absent child was written after the parent reappeared');
+
+  // One child is recreated too. Its own presence clears its guard, and its peer edit is written
+  // as usual; the sibling that is still gone stays guarded. The recreated leaf is on disk before
+  // the create event, the order the editor reports one in.
+  writeFileSync(a.absolute, aText);
+  bundle.stub.watchEvent('create', a.absolute);
+  peer.insert('docs/a.md', aText.length, second);
+  await waitFor('the recreated child autosave to write', () =>
+    a.buffer.saves.length === 1 && !a.buffer.dirty, { describe: observed });
+  assert.equal(readFileSync(a.absolute, 'utf8'), aText + second, 'the recreated child was not written');
+  peer.insert('docs/b.md', (bText + first).length, second);
+  await waitFor('the absent sibling to take the later edit', () => b.buffer.text === bText + first + second, { describe: observed });
+  peer.insert('docs-other.md', ('not under docs\n' + first).length, second);
+  await waitFor('the unaffected lookalike to save again', () =>
+    lookalike.buffer.saves.length === 2 && !lookalike.buffer.dirty, { describe: observed });
+
+  assert.equal(existsSync(b.absolute), false, 'recreating one child recreated its deleted sibling');
+  assert.deepEqual(b.buffer.saves, [], 'the absent sibling was written');
+  assert.ok(b.buffer.text.startsWith(bText), 'the host lost its unsaved text');
+  assert.equal(b.document.isDirty, true, 'the host lost its unsaved marker');
+  assert.equal(readFileSync(lookalike.absolute, 'utf8'), 'not under docs\n' + first + second);
+  release();
+});
+
 test('a folder larger than one listing carries is said to the host, once', async (t) => {
   const server = await FakeServer.start({ keepalive: { awareness_renew_ms: 300, awareness_expire_ms: 900 } });
   t.after(async () => {

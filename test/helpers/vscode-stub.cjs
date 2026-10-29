@@ -797,13 +797,15 @@ module.exports = {
         registered.listings += 1;
         if (mounted !== null) {
           // A link is reported as a link and never followed here: the walk refuses it, and a
-          // `readDirectory` through one would be the escape the mount exists to test.
-          return Promise.resolve(
-            readdirSync(realPath(path), { withFileTypes: true }).map((entry) => [
-              entry.name,
-              entry.isSymbolicLink() ? 64 : entry.isDirectory() ? 2 : 1,
-            ]),
-          );
+          // `readDirectory` through one would be the escape the mount exists to test. The
+          // entries are taken now and the answer may be withheld through `readHold` the same
+          // way the working-copy branch below withholds one, so a mounted walk can be held too.
+          const entries = readdirSync(realPath(path), { withFileTypes: true }).map((entry) => [
+            entry.name,
+            entry.isSymbolicLink() ? 64 : entry.isDirectory() ? 2 : 1,
+          ]);
+          const held = registered.readHold === undefined ? undefined : registered.readHold(path, index);
+          return held === undefined ? Promise.resolve(entries) : held.then(() => entries);
         }
         if (disk.unreadable.has(resolved(path))) {
           return Promise.reject(new Error(`cannot read ${path}`));

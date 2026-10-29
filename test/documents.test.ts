@@ -613,6 +613,147 @@ test('a guest shares no mirror leaf a link stands in for', async (t) => {
   assert.equal(readFileSync(written, 'utf8'), 'the person’s own text\n', 'the room wrote outside the mirror');
 });
 
+/**
+ * A host's deletion guard follows the open documents, not the path the watcher happened to
+ * name. A deleted directory stands for every open document at or under it, and only a leaf's
+ * own presence event clears one: a directory that reappears — the shared folder's root
+ * included, whose room path is no path at all — says nothing about a document still gone under
+ * it. The autosave is skipped, so the unsaved copy and its tab stay as a deletion leaves them.
+ */
+test('a host deletion guards the open documents under the path the watcher named', async () => {
+  type EditorUri = Parameters<InstanceType<typeof WorkspaceEditor>['observedDeletion']>[0];
+  const uri = (fsPath: string): EditorUri =>
+    ({
+      scheme: 'file',
+      path: fsPath,
+      fsPath,
+      query: '',
+      toString: () => `file://${fsPath}`,
+    }) as unknown as EditorUri;
+  type Options = ConstructorParameters<typeof WorkspaceEditor>[0];
+  const editor = new WorkspaceEditor({
+    role: 'host',
+    folders: [{ uri: uri('/work'), name: 'work', index: 0 } as unknown as Options['folders'][number]],
+    report: () => undefined,
+  });
+  const saves: Record<string, number> = { 'docs/a.md': 0, 'docs/b.md': 0 };
+  const doc = (path: string): Parameters<typeof editor.register>[0] =>
+    ({
+      uri: uri(`/work/${path}`),
+      eol: 1,
+      isDirty: true,
+      getText: () => 'draft\n',
+      save: () => {
+        saves[path] = (saves[path] ?? 0) + 1;
+        return Promise.resolve(true);
+      },
+    }) as unknown as Parameters<typeof editor.register>[0];
+  assert.equal(editor.register(doc('docs/a.md')), 'docs/a.md');
+  assert.equal(editor.register(doc('docs/b.md')), 'docs/b.md');
+
+  // A deleted directory stands for both open documents under it.
+  editor.observedDeletion(uri('/work/docs'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(await editor.save('docs/b.md'), true);
+  assert.deepEqual(saves, { 'docs/a.md': 0, 'docs/b.md': 0 }, 'a deleted directory was written through');
+
+  // The directory reappears: neither descendant is cleared by its presence.
+  editor.observedPresence(uri('/work/docs'));
+  assert.equal(await editor.save('docs/b.md'), true);
+  assert.equal(saves['docs/b.md'], 0, 'a directory presence cleared an absent descendant');
+
+  // A leaf's presence clears that leaf and nothing else.
+  editor.observedPresence(uri('/work/docs/a.md'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(saves['docs/a.md'], 1, 'the recreated leaf was not written again');
+  assert.equal(await editor.save('docs/b.md'), true);
+  assert.equal(saves['docs/b.md'], 0, 'a sibling leaf presence cleared an absent sibling');
+
+  // The shared folder's own root is no room path, but its deletion guards what it holds, and
+  // its reappearance does not clear them.
+  editor.observedDeletion(uri('/work'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(await editor.save('docs/b.md'), true);
+  assert.deepEqual(saves, { 'docs/a.md': 1, 'docs/b.md': 0 }, 'a deleted folder root left its documents unguarded');
+  editor.observedPresence(uri('/work'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(await editor.save('docs/b.md'), true);
+  assert.deepEqual(saves, { 'docs/a.md': 1, 'docs/b.md': 0 }, 'a folder root presence cleared its documents');
+});
+
+/**
+ * Overlapping folders: a file under both a nested folder and the folder enclosing it is shared
+ * under whichever namespace the captured order assigns it, and the watcher can name either
+ * folder's root. The guard follows the open document's own file, so it holds whichever root the
+ * event names — and the identifiers only the room path shares must not be caught by it.
+ */
+test('a host deletion guards actual descendants across overlapping folders', async () => {
+  type EditorUri = Parameters<InstanceType<typeof WorkspaceEditor>['observedDeletion']>[0];
+  const uri = (fsPath: string): EditorUri =>
+    ({
+      scheme: 'file',
+      path: fsPath,
+      fsPath,
+      query: '',
+      toString: () => `file://${fsPath}`,
+    }) as unknown as EditorUri;
+  type Options = ConstructorParameters<typeof WorkspaceEditor>[0];
+  const folders = [
+    { uri: uri('/work/docs'), name: 'docs', index: 0 },
+    { uri: uri('/work'), name: 'work', index: 1 },
+    { uri: uri('/elsewhere'), name: 'elsewhere', index: 2 },
+  ] as unknown as Options['folders'];
+  const editor = new WorkspaceEditor({ role: 'host', folders, report: () => undefined });
+  const saves: Record<string, number> = {
+    'docs/a.md': 0,
+    'work/other.md': 0,
+    'work/docs-other.md': 0,
+    'elsewhere/c.md': 0,
+  };
+  const doc = (fsPath: string, key: string): Parameters<typeof editor.register>[0] =>
+    ({
+      uri: uri(fsPath),
+      eol: 1,
+      isDirty: true,
+      getText: () => 'draft\n',
+      save: () => {
+        saves[key] = (saves[key] ?? 0) + 1;
+        return Promise.resolve(true);
+      },
+    }) as unknown as Parameters<typeof editor.register>[0];
+  const under = (fsPath: string) => `/work/${fsPath}`;
+  assert.equal(editor.register(doc(under('docs/a.md'), 'docs/a.md')), 'docs/a.md');
+  assert.equal(editor.register(doc(under('other.md'), 'work/other.md')), 'work/other.md');
+  assert.equal(editor.register(doc(under('docs-other.md'), 'work/docs-other.md')), 'work/docs-other.md');
+  assert.equal(editor.register(doc('/elsewhere/c.md', 'elsewhere/c.md')), 'elsewhere/c.md');
+
+  // The nested folder's own root is deleted: every open document really under it is guarded,
+  // whichever namespace it was assigned, while the outer-only file, the lookalike and the
+  // disjoint root are written as usual.
+  editor.observedDeletion(uri('/work/docs'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(saves['docs/a.md'], 0, 'the nested root left its real descendant unguarded');
+  assert.equal(await editor.save('work/other.md'), true);
+  assert.equal(await editor.save('work/docs-other.md'), true);
+  assert.equal(await editor.save('elsewhere/c.md'), true);
+  assert.deepEqual(saves, { 'docs/a.md': 0, 'work/other.md': 1, 'work/docs-other.md': 1, 'elsewhere/c.md': 1 });
+
+  // The enclosing root is deleted: its real descendants under either folder are guarded, the
+  // lookalike with it, and the disjoint root is untouched.
+  editor.observedDeletion(uri('/work'));
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(await editor.save('work/other.md'), true);
+  assert.equal(await editor.save('work/docs-other.md'), true);
+  assert.equal(await editor.save('elsewhere/c.md'), true);
+  assert.deepEqual(saves, { 'docs/a.md': 0, 'work/other.md': 1, 'work/docs-other.md': 1, 'elsewhere/c.md': 2 });
+
+  // Forgetting a document drops its recorded deletion: re-registering it and saving writes again.
+  assert.equal(editor.forget(uri('/work/docs/a.md')), 'docs/a.md');
+  assert.equal(editor.register(doc(under('docs/a.md'), 'docs/a.md')), 'docs/a.md');
+  assert.equal(await editor.save('docs/a.md'), true);
+  assert.equal(saves['docs/a.md'], 1, 'a forgotten document stayed guarded after re-registration');
+});
+
 /** A small deterministic generator, so a failure here replays from the same seed exactly. */
 function mulberry32(seed: number): () => number {
   let a = seed;
