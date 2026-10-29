@@ -62,6 +62,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runTests } from '@vscode/test-electron';
 
 import { RealServer } from '../helpers/selvaged.ts';
+import { exitAfterCleanup, stopServerAndEditors } from './cleanup.ts';
 import { DISPLAY_ONLY_ENV, VSCODE_VERSION, inheritElectronLibraries, vscodeExecutable } from './electron.ts';
 import { mintStash, stashedMirror } from './mirrors.ts';
 import { killWindows, windowsFor } from './windows.ts';
@@ -189,18 +190,13 @@ function killEmptyEditors(reason: string): void {
 async function stopWhatThisRunStarted(reason: string): Promise<void> {
   const server = activeServer;
   activeServer = undefined;
-  if (server !== undefined) {
-    // `stop` escalates to SIGKILL on its own; the race is what makes the wait bounded even if
-    // that never lands, since the process is leaving either way.
-    await Promise.race([server.stop(), delay(SERVER_STOP_GRACE_MS)]);
-  }
-  killLiveEditors(reason);
+  // `stop` escalates to SIGKILL; the grace period bounds even a stop that never settles.
+  await stopServerAndEditors(server, () => killLiveEditors(reason), SERVER_STOP_GRACE_MS);
 }
 
 /** Stop, then leave with this code: the body of every failing ending. */
 async function stopAndExit(code: number): Promise<void> {
-  await stopWhatThisRunStarted(`stop-and-exit(${code})`);
-  process.exit(code);
+  await exitAfterCleanup(code, () => stopWhatThisRunStarted(`stop-and-exit(${code})`));
 }
 
 /**

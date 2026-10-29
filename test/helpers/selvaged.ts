@@ -43,15 +43,21 @@ export class RealServer {
   readonly address: string;
 
   private readonly child: ChildProcessByStdio<null, Readable, Readable>;
-  private stopped = false;
+  private stopping: Promise<void> | undefined;
+  private readonly stderr: string[];
+  private readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 
   private constructor(
     child: ChildProcessByStdio<null, Readable, Readable>,
     address: string,
+    stderr: string[],
+    closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
   ) {
     this.child = child;
     this.address = address;
     this.wsBase = baseOf(`ws://${address}`);
+    this.stderr = stderr;
+    this.closed = closed;
   }
 
   /**
@@ -64,8 +70,14 @@ export class RealServer {
     const child = spawn(binary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((settle) => {
+      child.once('close', (code, signal) => {
+        settle({ code, signal });
+      });
+    });
     return new Promise<RealServer>((resolve_, reject) => {
       const stderr: string[] = [];
+      child.stderr.setEncoding('utf8');
       let stdout = '';
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -80,13 +92,13 @@ export class RealServer {
         const match = /ws:\/\/([0-9.]+:[0-9]+)\/session/.exec(stdout);
         if (match !== null) {
           clearTimeout(timer);
-          resolve_(new RealServer(child, match[1]));
+          resolve_(new RealServer(child, match[1], stderr, closed));
         }
       });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr.push(chunk.toString());
+      child.stderr.on('data', (chunk: string) => {
+        stderr.push(chunk);
       });
-      child.on('exit', (code, signal) => {
+      child.on('close', (code, signal) => {
         clearTimeout(timer);
         reject(
           new Error(
@@ -103,24 +115,37 @@ export class RealServer {
   }
 
   async stop(): Promise<void> {
-    if (this.stopped) {
-      return;
+    this.stopping ??= this.stopOnce();
+    await this.stopping;
+  }
+
+  private async stopOnce(): Promise<void> {
+    const requestedStop = this.child.exitCode === null && this.child.signalCode === null;
+    if (requestedStop) {
+      this.child.kill('SIGTERM');
     }
-    this.stopped = true;
-    // Already gone: `exit` has fired, so waiting for it again would wait for ever.
-    if (this.child.exitCode !== null || this.child.signalCode !== null) {
-      return;
-    }
-    const exited = new Promise<void>((resolve_) => {
-      this.child.once('exit', () => {
-        resolve_();
-      });
+    let forced: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      forced = setTimeout(() => {
+        reject(new Error(
+          `selvaged did not close within 2s: code ${this.child.exitCode} signal ${this.child.signalCode}\n` +
+            `stderr: ${this.stderr.join('')}`,
+        ));
+        this.child.kill('SIGKILL');
+        this.child.stdout.destroy();
+        this.child.stderr.destroy();
+      }, 2000);
     });
-    this.child.kill('SIGTERM');
-    const forced = setTimeout(() => {
-      this.child.kill('SIGKILL');
-    }, 2000);
-    await exited;
-    clearTimeout(forced);
+    try {
+      // `close` drains both pipes, but an inherited pipe can outlive the child.
+      const { code, signal } = await Promise.race([this.closed, deadline]);
+      const stderr = this.stderr.join('');
+      if (/\bpanicked (?:at|with)\b/.test(stderr) ||
+          (code !== 0 && !(requestedStop && signal === 'SIGTERM'))) {
+        throw new Error(`selvaged failed: code ${code} signal ${signal}\nstderr: ${stderr}`);
+      }
+    } finally {
+      clearTimeout(forced);
+    }
   }
 }
