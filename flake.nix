@@ -88,12 +88,13 @@
           # a step added below the plan with no condition bumps the version the plan said it
           # would not. `actionlint` lints that file clean, because the defect is the condition a
           # step does *not* carry. The retry suite also executes the workflow's pre-bump guard
-          # with Node and a Git stub; neither suite needs node_modules. The sandbox's own
-          # `TMPDIR` takes the scratch.
+          # with Node, a Git stub and a local bare remote; neither suite needs node_modules.
+          # The sandbox's own `TMPDIR` takes the scratch.
           dry-run-gating =
             pkgs.runCommand "vscode-client-dry-run-gating" {
               nativeBuildInputs = [
                 node
+                pkgs.git
                 (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
               ];
             } ''
