@@ -33,7 +33,7 @@ jobs:
       # and job after it carries the same test negated, which is the whole of what keeps a
       # rehearsal from cutting a release. `actionlint` cannot see a condition that is *missing*
       # from a step, so nothing else reads that. This runs the guard's own suite and then the
-      # guard over the workflows here; `scripts/ci-local.sh client` builds the same two files as
+      # guard over the workflows here; `scripts/ci-local.sh client` builds the same checks as
       # the flake check `dry-run-gating`, whose Python supplies the PyYAML pinned below.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -53,6 +53,9 @@ jobs:
         with:
           node-version: "24.18.1"
           cache: npm
+
+      - name: the release workflow's retry preconditions
+        run: python3 -B scripts/test_release_retry_guard.py
 
       - run: npm ci
 

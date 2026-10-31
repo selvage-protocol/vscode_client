@@ -87,13 +87,19 @@
           # test negated, which is the whole of what keeps a rehearsal from cutting a release:
           # a step added below the plan with no condition bumps the version the plan said it
           # would not. `actionlint` lints that file clean, because the defect is the condition a
-          # step does *not* carry. Python and PyYAML only, so none of the Node tree above is
-          # built for it, and the sandbox's own `TMPDIR` takes the suite's scratch.
+          # step does *not* carry. The retry suite also executes the workflow's pre-bump guard
+          # with Node, a Git stub and a local bare remote; neither suite needs node_modules.
+          # The sandbox's own `TMPDIR` takes the scratch.
           dry-run-gating =
             pkgs.runCommand "vscode-client-dry-run-gating" {
-              nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
+              nativeBuildInputs = [
+                node
+                pkgs.git
+                (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              ];
             } ''
               python3 -B ${self}/scripts/test_check_dry_run_gating.py
+              python3 -B ${self}/scripts/test_release_retry_guard.py
               python3 -B ${self}/scripts/check_dry_run_gating.py ${self}/.github/workflows
               touch $out
             '';

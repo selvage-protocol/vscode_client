@@ -129,8 +129,10 @@ jobs:
       - name: refuse unless the manifest version is released
         if: github.event_name == 'workflow_dispatch'
         run: |
+          # ls-remote patterns match ref-name tails, even when fully qualified.
           current=$(node -p "require('./package.json').version")
           remote=$(git ls-remote --tags origin "refs/tags/v${current}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${current}" '$2 == ref')
           if [ -z "$remote" ]; then
             cat >&2 <<EOF
           refusing: package.json carries ${current}, and there is no tag v${current} on the remote.
@@ -159,6 +161,7 @@ jobs:
           printf '%s\n' "$report"
           target=$(printf '%s\n' "$report" | tail -n1)
           remote=$(git ls-remote --tags origin "refs/tags/v${target}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${target}" '$2 == ref')
           if [ -n "$remote" ]; then
             cat >&2 <<EOF
           refusing: tag v${target} already exists on the remote, so this bump would cut a version
@@ -219,6 +222,27 @@ jobs:
         with:
           node-version: "24.18.1"
           cache: npm
+
+      # A job retry can reuse a successful plan after remote tags have changed. Recheck both
+      # conditions on every attempt, while package.json still carries the pre-bump version.
+      - name: recheck release preconditions before bumping
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TARGET: ${{ needs.plan.outputs.version }}
+        run: |
+          current=$(node -p "require('./package.json').version")
+          remote=$(git ls-remote --refs origin "refs/tags/v${current}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${current}" '$2 == ref')
+          if [ -z "$remote" ]; then
+            printf 'refusing: current tag v%s no longer exists on the remote; plan again before bumping\n' "$current" >&2
+            exit 1
+          fi
+          remote=$(git ls-remote --refs origin "refs/tags/v${TARGET}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${TARGET}" '$2 == ref')
+          if [ -n "$remote" ]; then
+            printf 'refusing: planned tag v%s already exists on the remote; plan again before bumping\n' "$TARGET" >&2
+            exit 1
+          fi
 
       - name: bump the version
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
@@ -520,11 +544,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+          remote_refs=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v${RELEASE_VERSION}" '$2 == ref || $2 == (ref "^{}")')
           if [ -z "$remote_refs" ]; then
             git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
             if ! git push origin "v${RELEASE_VERSION}"; then
               echo "push of v${RELEASE_VERSION} was rejected; another run may have created it first"
               remote_refs=$(git ls-remote origin "refs/tags/v${RELEASE_VERSION}" "refs/tags/v${RELEASE_VERSION}^{}" 2>/dev/null)
+              remote_refs=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v${RELEASE_VERSION}" '$2 == ref || $2 == (ref "^{}")')
+              if [ -z "$remote_refs" ]; then
+                printf 'refusing: tag v%s does not exist on the remote after the rejected push\n' "$RELEASE_VERSION" >&2
+                exit 1
+              fi
             fi
           fi
           if [ -n "$remote_refs" ]; then
