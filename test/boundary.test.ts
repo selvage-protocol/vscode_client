@@ -1,8 +1,6 @@
 /**
- * The seam, enforced rather than intended: `DESIGN.md` §6 puts the sync engine
- * and the editor adapter in one process but on opposite sides of an interface, and the
- * study's §6 makes "engine/ has no `vscode` import" the one thing that has to survive for
- * a sidecar or a second editor to be a move rather than a rewrite.
+ * The sync engine and editor adapter share a process, not dependencies. Keeping editor
+ * imports out of the engine lets a sidecar or another editor reuse it without a rewrite.
  *
  * The adapter landed on the same seam, one layer further out: `src/bridge/` is the half of
  * the adapter that knows nothing about an editor, `src/adapter/` is the part that imports

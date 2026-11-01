@@ -1,7 +1,7 @@
 /**
  * The room's seats, and the colour each one wears.
  *
- * `DESIGN.md` §4.3 leaves a peer's colour to the adapter. `peerColour` derives one from the peer id
+ * A peer's color is local presentation. `peerColour` derives one from the peer id
  * and repeats past eight, so a six-person room can show three faces in one fill and no seat is
  * reliably the host's. A client that knows the room's seat order colours the *seat* instead, so a
  * room of thirteen or fewer gives every person a fill of their own, and the host is always Mauve.

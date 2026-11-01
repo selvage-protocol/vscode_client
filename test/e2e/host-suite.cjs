@@ -91,7 +91,7 @@ function assertInviteNamesServer(invite) {
   return invite;
 }
 
-/** Bounded polling of a real predicate, per AGENTS.md §5: never sleep-and-hope. */
+/** Poll a predicate to a deadline so failures report the last observed state. */
 async function waitFor(label, check, deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   let last;

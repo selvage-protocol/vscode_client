@@ -60,7 +60,7 @@ export interface WorkspaceEditorOptions {
   /**
    * The folders this session shares, captured when it started. The window's own folder list can
    * change under a session — a folder added, another closed — and what the room shares must not
-   * change with it: the grant is the folder chosen at invite time (`DESIGN.md` §4.2).
+   * change with it: the grant is the folder chosen at invite time.
    */
   folders: readonly vscode.WorkspaceFolder[];
 }
@@ -149,7 +149,7 @@ export class WorkspaceEditor implements EditorHost {
   /**
    * The room path this document is shared under, or `undefined` when the session does not
    * share it. A host shares the `file:` documents open under a folder it captured — the
-   * folder chosen at invite time is the grant (`DESIGN.md` §4.2) — and a guest shares the
+   * folder chosen at invite time is the grant — and a guest shares the
    * documents under its mirror root, never outside it and never the mirror's own marker.
    * A document the room holds and its listing does not name has no file in the mirror and is
    * shared at the `selvage:` address instead (`held.ts`). Recording it here is what makes the

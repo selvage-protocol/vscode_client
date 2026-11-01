@@ -3,8 +3,8 @@
  *
  * The two clients are different editors, not different products: the same intent is the same
  * English sentence in both, and only the presentation around it — the `Selvage: … .` wrapper, the
- * buttons, the modal, the quick pick — is the editor's own business (`AGENTS.md` §4, `DESIGN.md`
- * §4.3). A sentence that drifts on one side and not the other is what this file exists to stop.
+ * buttons, the modal, the quick pick — is the editor's own business. A sentence that drifts
+ * on one side and not the other is what this file exists to stop.
  *
  * Pinned here is the vocabulary itself: the palette titles the manifest contributes, and every
  * sentence this client can put in front of a user. Which sentence is shown at *which* moment, at

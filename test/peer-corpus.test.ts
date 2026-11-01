@@ -11,8 +11,8 @@
  * `test/helpers/selvage-subject.ts`, the program
  * `specification/runner/run_peer.py --subject` drives.
  *
- * It needs the sibling `specification` checkout, so it is not in CI and not in `test:fast`:
- * `npm run test:peer-corpus` runs it, and so does `npm test`.
+ * It needs the sibling `specification` checkout, so it runs in `e2e-current.yml`, not in
+ * `test:fast`: `npm run test:peer-corpus` runs it, and so does `npm test`.
  */
 
 import { test } from 'node:test';

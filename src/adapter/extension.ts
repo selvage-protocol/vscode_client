@@ -228,8 +228,8 @@ let lastDisplayName: string | undefined;
 const LAST_DISPLAY_NAME_KEY = 'selvage.lastDisplayName';
 
 /**
- * The server a window hosts on when nothing was set or remembered: the public demo, whose
- * live state is `ai_notes/docs/runbook-prod-demo.md`. The value is a bare domain on purpose —
+ * The server a window hosts on when nothing was set or remembered: the public demo.
+ * The value is a bare domain on purpose —
  * it is what a person would type, and what they read in the setting and the README — and
  * `normaliseServerUrl` is what makes it a connection: a bare domain means the secure server,
  * `wss://selvage-demo.dontblameme.dev`, on the port TLS uses. An overridable prefill, never a
@@ -3055,7 +3055,7 @@ async function host(
     }
     inSession.dispose();
   }
-  // A room is a grant of the folder the host has open (`DESIGN.md` §4.2): the listing is the folder,
+  // A room grants the folder the host selected: the listing is the folder,
   // and a host shares the `file:` documents under it. A window with no folder therefore has
   // nothing to grant and nothing to share — a room minted here would hand the guest a link that
   // reloads their own window onto an empty folder. So it is refused here, before a server is

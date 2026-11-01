@@ -9,9 +9,9 @@
 # run, needs Xvfb to run it headless, needs `nix` for the shared-library path an
 # Electron binary built outside nix needs on NixOS, and needs a real network path to the
 # `selvaged` it starts itself. It is not in `ci.yml` either. Run it here for a one-off;
-# `.github/workflows/e2e-current.yml` runs this same script unattended on a weekly schedule
-# against the current stable VS Code build, so a VS Code release that breaks the extension is a
-# red run rather than a user report.
+# `.github/workflows/e2e-current.yml` runs this same script for candidate PRs at the declared
+# editor floor, and weekly or on dispatch against stable, so an upstream editor regression is
+# a red run rather than a user report.
 #
 # The proof runs from the sibling `reference_server` flake's dev shell, entered from that
 # checkout: `nix develop` runs the shell's `shellHook` in the working directory, so entering it

@@ -18,8 +18,9 @@
 # a built `selvaged` from the sibling `reference_server` checkout — `test/relay-selvaged.test.ts`,
 # `test/selvage2-selvaged.test.ts`, `test/selvage2-reconnect-selvaged.test.ts` and
 # `test/interop-v2.test.ts` — are not in `npm run test:fast`, and nothing here builds that server.
-# The scheduled and manually dispatched `e2e-current.yml` checks out that repository and runs all
-# four with `npm run test:server` beside the two-window proof; the same command runs them from
+# `e2e-current.yml` checks out that repository and runs all four with `npm run test:server`
+# beside the peer corpus and two-window proof on candidate PRs, weekly, and on dispatch;
+# the same server-suite command runs them from
 # here once the server is built. The interop suite needs an `interop_peer` from that checkout as
 # well (`cargo build -p selvage-harness --example interop_peer`, or `SELVAGE_INTEROP_PEER` at one).
 # `npm test` runs every suite and `npm run test:server` runs the four real-server ones, with a

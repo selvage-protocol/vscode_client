@@ -142,6 +142,7 @@ completing command there.
 - [Presence](docs/presence.md): a peer's caret, badge and colour, the participants view, following,
   and what a drawn peer cannot do.
 - [Settings](docs/settings.md): how the server address and the display name are resolved.
+- [Publishing](docs/publishing.md): registry identities, release authorization, and retry recovery.
 
 ## Licence
 
