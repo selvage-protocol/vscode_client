@@ -7,11 +7,6 @@ working in one checkout, one of whom starts a `selvaged` to hold the room.
 Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
 fetch command, the participants view and follow behind it. The extension is feature-frozen at that
 state: no further feature lands here while the release is prepared.
-[The recording](docs/images/selvage-demo.mp4) is one run of the demo:
-`reference_server/scripts/demo/demo.sh` starts a server, this client, a second client, a browser
-page and an agent in one room. It is one command, and `reference_server/docs/demo.md` says
-what it starts.
-
 
 ![VS Code hosting a session: Grace's caret and selection are drawn in Ada's editor with her initials in the gutter, Sharing “taskboard” is in the status bar, and the Participants view lists both of them](docs/images/marketplace/host-editing.png)
 
