@@ -5,8 +5,7 @@ share a folder with someone and edit the same files at the same time. It is for 
 working in one checkout, one of whom starts a `selvaged` to hold the room.
 
 Hosting and joining a `selvage/2` room against a real `selvaged` works today, with the mirror, the
-fetch command, the participants view and follow behind it. The extension is feature-frozen at that
-state: no further feature lands here while the release is prepared.
+fetch command, the participants view and follow behind it.
 
 ![VS Code hosting a session: Grace's caret and selection are drawn in Ada's editor with her initials in the gutter, Sharing “taskboard” is in the status bar, and the Participants view lists both of them](docs/images/marketplace/host-editing.png)
 
