@@ -177,6 +177,26 @@ function seed(value: string): Uint8Array {
   return raw;
 }
 
+/**
+ * The link as the engine reads it: a page link names the server by its origin, and §5.1's
+ * receiver derives the endpoint from it, so the query and the fragment are handed over as they
+ * were written and only the path is added. A `ws://` or `wss://` link is already the wire's.
+ */
+function wireFormOf(link: string): string {
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return link;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return link;
+  }
+  const scheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  const base = `${scheme}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+  return `${base}/session${url.search}${url.hash}`;
+}
+
 /** Seats a session: the invite's two keys, the session's clock, and the seats the relay showed. */
 async function join(command: Command): Promise<void> {
   if (command['offline'] !== true) {
@@ -187,7 +207,7 @@ async function join(command: Command): Promise<void> {
   }
   const invite = text(command, 'invite');
   // §5.1: a fragment missing either key is refused locally, by the name of the missing one.
-  const read = parseInvite(invite);
+  const read = parseInvite(wireFormOf(invite));
   if (!read.ok) {
     if (linkMutations.has('accept-partial-fragment') && invite.includes('#')) {
       clear = true;
