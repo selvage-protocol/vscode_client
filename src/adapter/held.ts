@@ -50,7 +50,7 @@ export interface HeldRoom {
  *
  * It is a `FileSystemProvider` rather than a read-only content provider because the document is
  * a real one: the room's open-document set is the union of the seated peers' holds, and every
- * holder of the invite token edits the session (`DESIGN.md` §4.2). A read-only view would show
+ * seated writer can edit the session. A read-only view would show
  * the room's text and refuse every keystroke, which is a different product from the Neovim
  * client's writable `selvage://` buffer. Edits reach the room through the ordinary document
  * path (`../bridge/bridge.ts` `documentChanged`), exactly as a mirror file's do, because the

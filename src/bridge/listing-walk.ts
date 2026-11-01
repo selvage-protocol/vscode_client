@@ -4,7 +4,7 @@
  *
  * `PROTOCOL.md` §13.3 holds one listing to 100 000 paths and to 4 MiB of their UTF-8 bytes, and
  * a host imposes a work budget of its own on top. The stops and the charge points are the same
- * rule whichever editor enumerates (`DESIGN.md` §4.2), so they live here rather than in each
+ * rule whichever editor enumerates, so they live here rather than in each
  * adapter, and an adapter is a seam: it reads a directory, reads one ignore file, and answers
  * whether one candidate is shareable, in its own file system's words.
  *

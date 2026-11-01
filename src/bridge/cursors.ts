@@ -3,7 +3,7 @@
  *
  * The protocol carries a peer's document and two CRDT anchors and no identity and no
  * colour: identity is the session layer's (`PeerInfo.awareness_client_id`, §8.4) and
- * `DESIGN.md` §4.3 leaves colour to the client. Picking one locally is not the same as
+ * colour is a local presentation choice. Picking one locally is not the same as
  * picking one *arbitrarily*: a colour derived from the peer id is the same on every client
  * in the room, where one handed out in join order paints the same peer differently in two
  * windows.

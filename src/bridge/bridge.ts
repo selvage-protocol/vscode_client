@@ -1,8 +1,8 @@
 /**
  * The bridge: the half of the editor adapter that knows nothing about an editor.
  *
- * `DESIGN.md` §6 splits a client into a sync engine and an editor adapter, and both halves live
- * in the extension host behind a module seam. This is the seam's editor-independent half. It
+ * The sync engine and editor adapter share a process but not editor dependencies.
+ * This is the seam's editor-independent half. It
  * decides *what* has to happen to a document — which bytes enter the replica, which change an
  * editor must apply, when a document is written — and the adapter decides *how*.
  *
@@ -200,7 +200,7 @@ export interface BridgeOptions {
   maxApplyAttempts?: number;
   /**
    * Whether a document the room changed is written. A remote edit leaves a buffer dirty
-   * and its file on disk stale, and the host's working copy is the truth (`DESIGN.md` §5),
+   * and its file on disk stale, and the host supplies content from its working copy,
    * so the default is to save it. A guest's document is virtual and its `save` is a no-op;
    * the call is still made, because that is what clears the editor's dirty marker.
    */
@@ -572,7 +572,7 @@ export class SessionBridge {
   // -- internals -------------------------------------------------------------
 
   /**
-   * A host supplies document content: its working copy is the truth (`DESIGN.md` §5). It
+   * A host supplies document content from its working copy. It
    * seeds a path once, and only into a replica that has received nothing for it. A path a
    * peer has already edited is not something to overwrite with whatever happens to be on
    * this disk, and a file reopened later is already in the room.
@@ -622,7 +622,7 @@ export class SessionBridge {
 
   /**
    * The room now holds a path this window does not. A host supplies document content — its
-   * working copy is the truth (`DESIGN.md` §4.2) — so it reads the file and seeds the replica
+   * working copy supplies the initial text — so it reads the file and seeds the replica
    * once.
    *
    * This is the only place a host reads its disk because a peer asked rather than because the

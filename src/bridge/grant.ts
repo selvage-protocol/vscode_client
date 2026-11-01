@@ -4,8 +4,8 @@
  *
  * The rules here are the host's, and they are deliberately editor-free: the two clients are
  * different editors, not different products, so what a session shares — the folder, the names
- * it leaves out, the file it will not carry — has to be the same on both sides (`DESIGN.md`
- * §4.2, `PROTOCOL.md` §5). A host enumerates its own working copy; a receiver never resolves a
+ * it leaves out, the file it will not carry — has to be the same on both sides. The listing
+ * is carried by `PROTOCOL.md` §5. A host enumerates its working copy; a receiver never resolves a
  * path against anything, it derives.
  */
 
@@ -384,7 +384,7 @@ export function isBinaryNamedPath(path: string): boolean {
  *
  * Workspace-relative and `/`-separated, with no leading slash, no `.` or `..` segment and no
  * backslash: a grant is a list of names the host chose, and a name that resolves somewhere
- * else is not one of them. `.git/**` and `.env` are the defaults `DESIGN.md` §4.2 names.
+ * else is not one of them. `.git/**` and `.env` are excluded to avoid sharing metadata and secrets.
  *
  * `platform` is the host's (`process.platform` when omitted): the directory and secret-name
  * excludes fold case only where the filesystem does, and tests pass it explicitly to pin

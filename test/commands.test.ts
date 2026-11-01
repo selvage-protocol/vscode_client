@@ -1423,7 +1423,7 @@ test('a host publishes the listing of the folder it was invited on', async (t) =
   bundle.stub.put('README.md', 'the readme\n');
   bundle.stub.put('src/main.rs', 'fn main() {}\n');
   bundle.stub.put('docs/guide/intro.md', 'intro\n');
-  // What a working copy should not share: the defaults `DESIGN.md` §4.2 names, dependency
+  // What a working copy should not share: secrets and repository metadata, dependency
   // trees and build outputs, a symbolic link, and a file too large for one `Y.Text`.
   bundle.stub.put('.env', 'SECRET=1\n');
   bundle.stub.put('.git/config', '[core]\n');
@@ -4290,8 +4290,7 @@ test('a path the room holds and its listing does not name opens as a `selvage:` 
     bundle.stub.registered.opened.includes(uri) ? true : false,
   );
   assert.equal(bundle.stub.registered.errors.length, 0, 'the open was refused');
-  // A document the editor may type into, not a read-only view of the room's text: `DESIGN.md`
-  // §4.2 has every holder of the invite token edit the session.
+  // A room document stays editable even when it is absent from the current listing.
   assert.equal(heldFiles(bundle).options?.isReadonly, false, 'the address was registered read-only');
   assert.deepEqual(bundle.stub.registered.providerReads, [uri], 'the document was served elsewhere');
   // The live session's own gate, and not only the provider's stand-in: a `selvage:` URI a person

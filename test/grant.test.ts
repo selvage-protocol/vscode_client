@@ -53,7 +53,7 @@ test('a granted path is workspace-relative, and one that could resolve elsewhere
   }
 });
 
-test('the defaults DESIGN.md names are excluded, and so is the tree that makes a walk pathological', () => {
+test('secrets and repository metadata are excluded, as are pathological directory trees', () => {
   for (const excluded of [
     '.git/config',
     '.git',

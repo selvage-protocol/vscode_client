@@ -16,8 +16,8 @@
  * peer id is chosen per line.
  *
  * A caret is a zero-width range with an `after` attachment. `DecorationOptions` says the
- * range must not be empty; both extensions the study read use one anyway and it renders, so
- * this follows them rather than the comment (`ai_notes/docs/studies/vscode-plugin.md` §3).
+ * range must not be empty; the attachment needs a zero-width range to mark the caret without
+ * decorating an adjacent character. This relies on editor behavior beyond that API contract.
  *
  * What that attachment looks like — nothing, a floating box above the caret, or a chip inside
  * the line — is `labels.ts`'s, and `selvage.cursorLabel` chooses. Nothing is the default: a
