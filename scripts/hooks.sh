@@ -39,6 +39,23 @@ run_pre_commit() {
   fi
 }
 
+# `pre-commit install` refuses to run while `core.hooksPath` is set, and the dev shell leaves it
+# set to the default `.git/hooks`, where the install would go anyway. Drop that local setting
+# before a hook path is resolved, because `git rev-parse --git-path hooks` answers with the
+# override, and `.git/hooks` is not a directory in a linked worktree.
+hooks_path=$(git config --get core.hooksPath || true)
+if [ "$hooks_path" = ".git/hooks" ]; then
+  git config --local --unset-all core.hooksPath >/dev/null 2>&1 || true
+  hooks_path=''
+fi
+
+# Anything else is another repository's hook directory, so the cleanup below or an install would
+# reach outside this checkout. `pre-commit` refuses the setting itself, so stop first.
+if [ -n "$hooks_path" ]; then
+  printf "core.hooksPath is %s, not this checkout's hook directory: leaving the hooks alone\n" "$hooks_path" >&2
+  exit 1
+fi
+
 hooks_dir=$(git rev-parse --git-path hooks)
 
 # A dev shell entered from this checkout lands the whole set. Drop the stages this repository
@@ -50,14 +67,6 @@ for hook in pre-commit commit-msg; do
     printf 'removed %s: only the pre-push stage applies here\n' "$file"
   fi
 done
-
-# `pre-commit install` refuses to run while `core.hooksPath` is set, and the dev shell leaves it
-# set to the default `.git/hooks`, where the install would go anyway. Drop that local setting
-# rather than let it block the install. A value from a global or system config stays, and
-# `pre-commit` itself reports it.
-if [ "$(git config --get core.hooksPath || true)" = ".git/hooks" ]; then
-  git config --local --unset-all core.hooksPath >/dev/null 2>&1 || true
-fi
 
 run_pre_commit install --hook-type pre-push
 
