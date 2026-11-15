@@ -1,0 +1,9 @@
+dist/extension.js
+dist/package.json
+flake.lock
+flake.nix
+images/icon.png
+LICENSE-APACHE
+LICENSE-MIT
+package.json
+README.md

@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -22,6 +23,32 @@ import { waitFor } from './helpers/wait.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(here, '..');
 const ADAPTER = resolve(ROOT, 'src', 'adapter');
+
+// Run the package's own entry point rather than the `.bin` shim, so there is no shell and no
+// platform-specific name between this and `vsce`.
+const VSCE = resolve(ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
+const VSCE_LS = resolve(ROOT, 'test', 'fixtures', 'vsce-ls.txt');
+
+// One line per path that the two lists disagree on, `-` for the snapshot and `+` for the live
+// list. Both are sorted, so a single pass over the pair reads as a diff with no context lines.
+function diffPaths(pinned: string[], listed: string[]): string {
+  const lines: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < pinned.length || j < listed.length) {
+    if (i < pinned.length && j < listed.length && pinned[i] === listed[j]) {
+      i += 1;
+      j += 1;
+    } else if (j >= listed.length || (i < pinned.length && pinned[i] < listed[j])) {
+      lines.push(`- ${pinned[i]}`);
+      i += 1;
+    } else {
+      lines.push(`+ ${listed[j]}`);
+      j += 1;
+    }
+  }
+  return lines.join('\n');
+}
 
 interface Manifest {
   version?: string;
@@ -129,6 +156,33 @@ test('the manifest asks for a VS Code no older than its type definitions', () =>
     required <= promised,
     `@types/vscode ${manifest.devDependencies?.['@types/vscode']} is newer than engines.vscode ${manifest.engines?.vscode}`,
   );
+});
+
+test('the file list `vsce package` would ship is the reviewed one', () => {
+  // `@vscode/vsce` runs on the minimatch 11 override in `overrides`, and its `collectFiles`
+  // decides what the `.vsix` holds: a dependency that walks the tree differently ships a
+  // different extension. The list is pinned here so the next such bump is this diff and not a
+  // review replayed by hand. `vsce ls` reads the checkout only, so the test needs no network.
+  const listed = execFileSync(process.execPath, [VSCE, 'ls'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .sort();
+  const pinned = readFileSync(VSCE_LS, 'utf8')
+    .split('\n')
+    .filter((line) => line !== '')
+    .sort();
+  const diff = diffPaths(pinned, listed);
+  if (diff !== '') {
+    assert.fail(
+      'vsce ls no longer matches test/fixtures/vsce-ls.txt. `-` is the snapshot, `+` is what ' +
+        '`vsce package` would ship now. An untracked path here is a real difference in the ' +
+        'package, so check for one before the fixture is blamed. When the walk itself changed, ' +
+        'regenerate it with:\n' +
+        '  npx vsce ls | sort > test/fixtures/vsce-ls.txt\n\n' +
+        diff,
+    );
+  }
 });
 
 test('the end-to-end proof launches the build the manifest declares', () => {
