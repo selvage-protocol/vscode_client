@@ -170,6 +170,7 @@ test('the file list `vsce package` would ship is the reviewed one', () => {
     .sort();
   const pinned = readFileSync(VSCE_LS, 'utf8')
     .split('\n')
+    .map((line) => line.trim())
     .filter((line) => line !== '')
     .sort();
   const diff = diffPaths(pinned, listed);
