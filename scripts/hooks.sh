@@ -46,7 +46,8 @@ run_pre_commit() {
 hooks_path=$(git config --get core.hooksPath || true)
 if [ "$hooks_path" = ".git/hooks" ]; then
   git config --local --unset-all core.hooksPath >/dev/null 2>&1 || true
-  hooks_path=''
+  # The setting can come from a global or worktree scope, which the local unset leaves alone.
+  hooks_path=$(git config --get core.hooksPath || true)
 fi
 
 # Anything else is another repository's hook directory, so the cleanup below or an install would
