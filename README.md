@@ -39,6 +39,13 @@ $ npm run package                      # → selvage-<version>.vsix in the repo 
 $ code --install-extension selvage-<version>.vsix
 ```
 
+Where the `reference_server` dev shell has written `.pre-commit-config.yaml` here,
+`scripts/hooks.sh` installs the pre-push hook and checks that the Nix store paths it embeds still
+exist. A store path that garbage collection has taken makes every push fail before the hook
+runs. That hook set is the sibling dev shell's. Its pre-push stage is four file-hygiene checks,
+while its pre-commit stage is that server's Rust checks, which the script removes so that a
+commit here does not need `--no-verify`.
+
 ### A first session
 
 1. Start `selvaged` and note the address it prints. For a server on this machine that is
