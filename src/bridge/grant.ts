@@ -32,6 +32,7 @@ export const MAX_GRANT_NODES = 2 * MAX_GRANT_PATHS;
 
 /** The longest path in a listing, in bytes, taken from the server's own bound. */
 export const MAX_GRANT_PATH_BYTES = 4096;
+const PATH_ENCODER = new TextEncoder();
 
 /**
  * The largest file a host will put into a document. A whole file becomes one `Y.Text` insert,
@@ -281,6 +282,7 @@ export const GRANT_BINARY_SUFFIXES: readonly string[] = [
   '.zip',
   '.zst',
 ];
+const BINARY_SUFFIX_SET = new Set(GRANT_BINARY_SUFFIXES);
 
 /**
  * Whether a segment carries a character that spoofs a tree or picker row: a control, a
@@ -372,11 +374,9 @@ function isSecretKeyName(folded: string): boolean {
  * nothing but the suffix (`.zip`) has no name a format could be declared on and is not matched.
  */
 export function isBinaryNamedPath(path: string): boolean {
-  const segments = path.split('/');
-  const leaf = (segments[segments.length - 1] ?? '').toLowerCase();
-  return GRANT_BINARY_SUFFIXES.some(
-    (suffix) => leaf.length > suffix.length && leaf.endsWith(suffix),
-  );
+  const leaf = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
+  const dot = leaf.lastIndexOf('.');
+  return dot > 0 && BINARY_SUFFIX_SET.has(leaf.slice(dot));
 }
 
 /**
@@ -402,7 +402,11 @@ export function isGrantedPath(path: string, platform: string = hostPlatform()): 
   if (path.trim() === '' || path.includes('\\')) {
     return false;
   }
-  if (new TextEncoder().encode(path).length > MAX_GRANT_PATH_BYTES) {
+  // A UTF-16 code unit is at most three UTF-8 bytes, so a short path fits without counting it.
+  if (
+    path.length * 3 > MAX_GRANT_PATH_BYTES &&
+    PATH_ENCODER.encode(path).length > MAX_GRANT_PATH_BYTES
+  ) {
     return false;
   }
   const fold = foldsCase(platform);
@@ -515,6 +519,9 @@ export function isIgnoredPath(
   isDirectory: boolean,
   platform: string = hostPlatform(),
 ): boolean {
+  if (sources.length === 0) {
+    return false;
+  }
   const fold = foldsCase(platform);
   const compiled = sources.map((source) => compiledSource(source, fold));
   const segments = (fold ? path.toLowerCase() : path).split('/');
